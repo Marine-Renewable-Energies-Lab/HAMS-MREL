@@ -13,9 +13,14 @@ on:
 jobs:
   build-and-test:
     
-    # Use windows-latest runner.
-    # See https://github.com/actions/runner-images for a list of available runners.
-    runs-on: windows-latest
+    # Pinned to windows-2022 explicitly. Reason: until ~June 15 2026, `windows-latest` aliased
+    # to windows-2022 and the workflow built cleanly. After that date GitHub started redirecting
+    # `windows-latest` to `windows-2025-vs2026`, which has a different Git for Windows install
+    # and PATH ordering. On the new image, fpm + ifx's link step resolves `link` to Git Bash's
+    # coreutils binary and fails with "link: unknown option -- s". Pinning to windows-2022
+    # restores the original working environment. When you're ready to move to the new image,
+    # the workflow will need extra steps to put MSVC's link.exe ahead of Git's on PATH.
+    runs-on: windows-2022
     
     steps:
 
