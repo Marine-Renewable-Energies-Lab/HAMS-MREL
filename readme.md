@@ -4,7 +4,7 @@ HAMS-MREL (Hydrodynamic Analysis of Marine Structures – Marine Renewable Energ
 
 HAMS-MREL is developed as an extension of the original [HAMS solver](https://github.com/YingyiLiu/HAMS). While HAMS focuses on single-body hydrodynamic analysis, HAMS-MREL expands the framework to handle interactions among multiple bodies. Other features include free surface elevation and pressure fields, suppression of irregular frequencies, global symmetry, generalized modes, an optional GMRES iterative solver with H-matrix acceleration for large multi-body problems, and integration with WEC-Sim.
 
-Current version: 2.0
+Current version: 2.3
 
 The binary for Windows is available in the [Releases](https://github.com/vaibhavraghavan/HAMS-MREL/releases/tag/v2.0). This was compiled using OneAPI 2022 (ifort) and Visual Studio 2019. 
 
