@@ -16,7 +16,15 @@ jobs:
     # Use ubuntu-latest runner.
     # See https://github.com/actions/runner-images for a list of available runners.
     runs-on: ubuntu-latest
-    
+
+    # FPM will use the FPM_FFLAGS/FPM_LDFLAGS variables to determine what compiler/linker flags to use.
+    # They are set for the whole job so that the build and the tests use the same flags.
+    # `-heap-arrays 0` is required to keep large multi-body cases from overflowing the per-thread stack;
+    # see docs/installation_linux.md.
+    env:
+      FPM_FFLAGS: -qmkl -qopenmp -heap-arrays 0
+      FPM_LDFLAGS: -qmkl
+
     steps:
 
       # Checkout a copy of this repository on the runner
@@ -39,12 +47,17 @@ jobs:
       # https://github.com/marketplace/actions/setup-fortran
       - uses: fortran-lang/setup-fpm@v7
           
-      # Compile HAMS-MREL using FPM
-      # FPM will use the FPM_FFLAGS/FPM_LDFLAGS variables to determine what compiler/linker flags to use.
-      # `-heap-arrays 0` is required to keep large multi-body cases from overflowing the per-thread stack;
-      # see docs/installation_linux.md.
+      # Compile HAMS-MREL using FPM and place the executable where the integration tests can find it
       - name: Compile HAMS-MREL
         run: |
-          export FPM_FFLAGS="-qmkl -qopenmp -heap-arrays 0"
-          export FPM_LDFLAGS="-qmkl"
           fpm build
+          fpm install --prefix install
+
+      - name: Run unit tests
+        run: |
+          fpm test --target unit-tester
+
+      # The integration tests run full simulations, so they need the path to the executable
+      - name: Run integration tests
+        run: |
+          fpm test --target integration-tester -- install/bin/hamsmrel
