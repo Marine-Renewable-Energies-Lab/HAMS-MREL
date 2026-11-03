@@ -249,10 +249,14 @@ CONTAINS
           REAL*8 :: FREQ_VAL, AMAS_VAL, BDMP_VAL, LAST_FREQ
           INTEGER :: ROW_VAL, COL_VAL
           LOGICAL :: file_exists, file_open
+          CHARACTER(LEN=256) :: IOERR
       
           ! Check if file exists
           INQUIRE(FILE=TRIM(filename), EXIST=file_exists)
-          IF (.NOT. file_exists) RETURN
+          IF (.NOT. file_exists) THEN
+             WRITE(*,*) ' WARNING: AmssDamp.1 not rearranged, file not found: ', TRIM(filename)
+             RETURN
+          ENDIF
           
           ! Make sure unit 61 is closed (the original write unit for AmssDamp.1)
           INQUIRE(UNIT=61, OPENED=file_open)
@@ -260,19 +264,25 @@ CONTAINS
       
           ! Allocate arrays
           ALLOCATE(FREQ(NFREQ, NDOF, NDOF), STAT=IOS)
-          IF (IOS /= 0) RETURN
+          IF (IOS /= 0) THEN
+             WRITE(*,*) ' WARNING: AmssDamp.1 not rearranged, out of memory: ', TRIM(filename)
+             RETURN
+          ENDIF
           ALLOCATE(AMAS(NFREQ, NDOF, NDOF), STAT=IOS)
           IF (IOS /= 0) THEN
+             WRITE(*,*) ' WARNING: AmssDamp.1 not rearranged, out of memory: ', TRIM(filename)
              DEALLOCATE(FREQ)
              RETURN
           ENDIF
           ALLOCATE(BDMP(NFREQ, NDOF, NDOF), STAT=IOS)
           IF (IOS /= 0) THEN
+             WRITE(*,*) ' WARNING: AmssDamp.1 not rearranged, out of memory: ', TRIM(filename)
              DEALLOCATE(FREQ, AMAS)
              RETURN
           ENDIF
           ALLOCATE(FREQ_LIST(NFREQ), STAT=IOS)
           IF (IOS /= 0) THEN
+             WRITE(*,*) ' WARNING: AmssDamp.1 not rearranged, out of memory: ', TRIM(filename)
              DEALLOCATE(FREQ, AMAS, BDMP)
              RETURN
           ENDIF
@@ -284,8 +294,9 @@ CONTAINS
           FREQ_LIST = 0.0D0
       
           ! Read the original file
-          OPEN(UNIT=901, FILE=TRIM(filename), STATUS='OLD', ACTION='READ', IOSTAT=IOS)
+          OPEN(UNIT=901, FILE=TRIM(filename), STATUS='OLD', ACTION='READ', IOSTAT=IOS, IOMSG=IOERR)
           IF (IOS /= 0) THEN
+             WRITE(*,*) ' WARNING: AmssDamp.1 not rearranged, cannot read ', TRIM(filename), ': ', TRIM(IOERR)
              DEALLOCATE(FREQ, AMAS, BDMP, FREQ_LIST)
              RETURN
           ENDIF
@@ -320,8 +331,9 @@ CONTAINS
           NFREQ_FOUND = IFREQ
       
           ! Write reordered data back to original file
-          OPEN(UNIT=902, FILE=TRIM(filename), STATUS='REPLACE', ACTION='WRITE', IOSTAT=IOS)
+          OPEN(UNIT=902, FILE=TRIM(filename), STATUS='REPLACE', ACTION='WRITE', IOSTAT=IOS, IOMSG=IOERR)
           IF (IOS /= 0) THEN
+             WRITE(*,*) ' WARNING: AmssDamp.1 not rearranged, cannot write ', TRIM(filename), ': ', TRIM(IOERR)
              DEALLOCATE(FREQ, AMAS, BDMP, FREQ_LIST)
              RETURN
           ENDIF
