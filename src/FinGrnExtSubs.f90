@@ -1,4 +1,4 @@
-﻿
+
 MODULE FinGrnExtSubs
 
       IMPLICIT NONE
