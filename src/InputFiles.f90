@@ -55,7 +55,7 @@ module IO
         logical, intent(out) :: success
         logical :: exists
 
-        integer I,J,err,IFS,NPET,NB
+        integer I,J,err,IFS,NPET,NB,IPOS,ICOM
         character(len=100) FILE_RADIATION,FILE_NUMBER,BODY_CHECK,line
 
         success = .false.
@@ -180,8 +180,18 @@ module IO
         ISOLV = 1
         read(1, '(A)', IOSTAT=err) line
         if (err == 0 .and. index(line, "Solver_type") > 0) then
-            read(line, '(26x,i16)', IOSTAT=err) ISOLV
-            if (err /= 0) ISOLV = 1
+            ! Accepts "Solver_type 2", "Solver_type (ISOLV): 2" and a trailing "# comment".
+            IPOS = index(line, "Solver_type") + len("Solver_type")
+            ICOM = index(line, "#")
+            if (ICOM == 0) ICOM = len(line) + 1
+            I = scan(line(IPOS:ICOM-1), "+-0123456789")
+            err = 1
+            if (I > 0) read(line(IPOS+I-1:ICOM-1), *, IOSTAT=err) ISOLV
+            if (err /= 0) then
+                print*, 'Warning: could not read Solver_type value. Using default (1 = direct LU).'
+                ISOLV = 1
+            end if
+            err = 0
             if (ISOLV < 1 .or. ISOLV > 2) then
                 print*, 'Warning: ISOLV must be 1 or 2. Using default (1 = direct LU).'
                 ISOLV = 1
@@ -276,10 +286,14 @@ module IO
         character(len=*), intent(in) :: dir
         logical, intent(out) :: success
         logical :: exists
-        integer :: cstat
+        integer :: cstat, probe_unit, ios
         character(100) :: cmsg
 
-        inquire(directory=dir, exist=exists)
+        ! Probe by creating a file: inquire(directory=) is an Intel extension, and
+        ! inquire(file=dir//"/.") reports existing directories as missing under ifort on Windows.
+        open(newunit=probe_unit, file=dir//"/.hams_dir_probe", status="replace", iostat=ios)
+        exists = (ios == 0)
+        if (exists) close(probe_unit, status="delete")
         if (.not. exists) then
             call execute_command_line("mkdir -p " // dir, CMDSTAT=cstat, CMDMSG=cmsg)
             if (cstat /= 0) then
