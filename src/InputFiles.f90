@@ -285,27 +285,58 @@ module IO
         implicit none
         character(len=*), intent(in) :: dir
         logical, intent(out) :: success
-        logical :: exists
-        integer :: cstat, probe_unit, ios
+        integer :: cstat, estat
         character(100) :: cmsg
 
-        ! Probe by creating a file: inquire(directory=) is an Intel extension, and
-        ! inquire(file=dir//"/.") reports existing directories as missing under ifort on Windows.
-        open(newunit=probe_unit, file=dir//"/.hams_dir_probe", status="replace", iostat=ios)
-        exists = (ios == 0)
-        if (exists) close(probe_unit, status="delete")
-        if (.not. exists) then
-            call execute_command_line("mkdir -p " // dir, CMDSTAT=cstat, CMDMSG=cmsg)
-            if (cstat /= 0) then
-                print *, "Failed to create directory ", dir, ". Error: ", trim(cmsg)
-                success = .false.
-                return
-            end if
+        success = DirectoryIsWritable(dir)
+        if (success) return
+
+        cstat = 0
+        estat = 0
+        cmsg = ""
+        call execute_command_line(MkdirCommand(dir), EXITSTAT=estat, CMDSTAT=cstat, CMDMSG=cmsg)
+
+        ! Check the result directly: mkdir -p also exits with 0 on an existing read-only directory.
+        success = DirectoryIsWritable(dir)
+        if (.not. success) then
+            print *, "Failed to create directory ", dir, ". mkdir exit status: ", estat, &
+                     " command status: ", cstat, " ", trim(cmsg)
         end if
 
-        success = .true.
-
     end subroutine CreateDirectory
+
+    ! Probe by creating a file: inquire(directory=) is an Intel extension, and
+    ! inquire(file=dir//"/.") reports existing directories as missing under ifort on Windows.
+    logical function DirectoryIsWritable(dir)
+        implicit none
+        character(len=*), intent(in) :: dir
+        integer :: probe_unit, ios
+
+        open(newunit=probe_unit, file=dir//"/.hams_dir_probe", status="replace", iostat=ios)
+        DirectoryIsWritable = (ios == 0)
+        if (DirectoryIsWritable) close(probe_unit, status="delete")
+    end function DirectoryIsWritable
+
+    ! cmd.exe's mkdir has no -p (it creates parent directories by default, and would make a folder
+    ! named "-p") and can read an unquoted "/" as a switch, so it gets backslashes instead.
+    function MkdirCommand(dir) result(command)
+        implicit none
+        character(len=*), intent(in) :: dir
+        character(len=:), allocatable :: command, native_dir
+        character(len=32) :: os_name
+        integer :: i
+
+        call get_environment_variable("OS", os_name)
+        if (trim(os_name) == "Windows_NT") then
+            native_dir = dir
+            do i = 1, len(native_dir)
+                if (native_dir(i:i) == "/") native_dir(i:i) = "\"
+            end do
+            command = 'mkdir "' // native_dir // '"'
+        else
+            command = 'mkdir -p "' // dir // '"'
+        end if
+    end function MkdirCommand
 
     subroutine CreateHamsFiles(dir)
         implicit none
@@ -419,19 +450,12 @@ module IO
 
         ! Create output directories
         call CreateDirectory(outputdir, success)
-        if (success) then
-            call CreateDirectory(outputdir // "/Hams_format", success)
-            call CreateDirectory(outputdir // "/Wamit_format", success)
-            if (numbodies == 1) then
-                call CreateDirectory(outputdir // "/Hydrostar_format", success)
-            end if
-        end if
+        if (success) call CreateDirectory(outputdir // "/Hams_format", success)
+        if (success) call CreateDirectory(outputdir // "/Wamit_format", success)
+        if (success .and. numbodies == 1) call CreateDirectory(outputdir // "/Hydrostar_format", success)
 
         ! Exit if directories were not created
-        if (.not. success) then
-            success = .false.
-            return
-        end if
+        if (.not. success) return
         
         call CreateHamsFiles(outputdir//"/Hams_format")
         call CreateWamitFiles(outputdir//"/Wamit_format", numbodies)
