@@ -9,6 +9,7 @@ program unit_tester
     use test_suite2, only : collect_suite2
     use test_fingreen3d, only : collect_fingreen3d
     use test_infgreen3d, only : collect_infgreen3d
+    use test_iterative_solvers, only : collect_iterative_solvers
 
     implicit none
     integer :: stat, is
@@ -24,7 +25,8 @@ program unit_tester
     testsuites = [ &
         new_testsuite("suite2", collect_suite2), &
         new_testsuite("fingreen3d", collect_fingreen3d), &
-        new_testsuite("infgreen3d", collect_infgreen3d) &
+        new_testsuite("infgreen3d", collect_infgreen3d), &
+        new_testsuite("iterative_solvers", collect_iterative_solvers) &
     ]
 
     stat = 0
