@@ -29,27 +29,27 @@ module test_integration_gmres
     subroutine run_simulation_gmres(error)
         implicit none
         type(error_type), allocatable, intent(out) :: error
-        character(:), allocatable :: inputdir, outputdir, command, errcode
+        character(:), allocatable :: inputdir, outputdir, command
+        character(len=16) :: errcode
         integer :: exitcode
 
         inputdir  = get_repo_root_path()//test_data_dir//"input/"
         outputdir = get_running_exe_path()//"output_gmres/"
-        command   = hamsexe_path//" "//inputdir//" "//outputdir//" > "//get_running_exe_path()//"gmres.log 2>&1"
+        command   = native_path(hamsexe_path//" "//inputdir//" "//outputdir//" > "//get_running_exe_path()//"gmres.log")//" 2>&1"
 
         print *, "Running simulation config1_gmres (ISOLV=2, H-matrix accelerated GMRES)"
         call execute_command_line(command, exitstat=exitcode, wait=.true.)
         if (exitcode /= 0) then
             simulation_execution_failed = .true.
             write(errcode, '(I0)') exitcode
-            call test_failed(error, "Error: could not execute HAMS for GMRES integration test. Exit code: "//errcode)
+            call test_failed(error, "Error: could not execute HAMS for GMRES integration test. Exit code: "//trim(errcode))
         end if
     end subroutine run_simulation_gmres
 
     ! Cross-check GMRES output vs the direct-LU baseline shipped with config1.
     ! GMRES uses ITER_TOL = 1e-4 (relative), so we compare with a RELATIVE
-    ! Frobenius-norm check at 1e-3 (test_oamass_files_are_close), not the
-    ! absolute check used by the LU regression test — OAMASS entries span ~1e5,
-    ! so an absolute tolerance would demand digit-exact agreement.
+    ! Frobenius-norm check at 1e-3 (test_oamass_files_are_close). This is looser
+    ! than the LU regression test because GMRES stops at its own tolerance.
     subroutine test_oamass_gmres(error)
         implicit none
         type(error_type), allocatable, intent(out) :: error
