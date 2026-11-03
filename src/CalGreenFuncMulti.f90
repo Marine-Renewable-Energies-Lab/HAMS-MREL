@@ -121,7 +121,7 @@ CONTAINS
       IRR=1
 
 !$OMP PARALLEL NUM_THREADS(NTHREAD)                                                                        ! This is the syntax for parallelization
-!$OMP DO PRIVATE(IEL,JEL,IS,XQ,XP,YQ,YP,ZQ,ZP,SIJ,DIJ,GRN,FLAG) SCHEDULE(DYNAMIC,16)
+!$OMP DO PRIVATE(IEL,JEL,IS,XQ,XP,YQ,YP,ZQ,ZP,SIJ,DIJ,GRN,FLAG,DIST) SCHEDULE(DYNAMIC,16)
 
       DO IEL=1, TNELEM
 
@@ -197,7 +197,7 @@ CONTAINS
       ! at startup (Phase 2.3) — those copies are frequency-independent.
       IRR=1
 !$OMP PARALLEL NUM_THREADS(NTHREAD)                                                                        ! This is the syntax for parallelization
-!$OMP DO PRIVATE(IEL,JEL,IS,XQ,XP,YQ,YP,ZQ,ZP,SIJ,DIJ,GRN,FLAG) SCHEDULE(DYNAMIC,16)
+!$OMP DO PRIVATE(IEL,JEL,IS,XQ,XP,YQ,YP,ZQ,ZP,SIJ,DIJ,GRN,FLAG,DIST) SCHEDULE(DYNAMIC,16)
 
       DO IEL=1, NELEM_TOTAL
 
@@ -257,7 +257,7 @@ CONTAINS
 
       IRR=3
 
-!$OMP PARALLEL DO PRIVATE(IEL,JEL,IS,XQ,XP,YQ,YP,ZQ,ZP,SIJ,DIJ,GRN,FLAG) SCHEDULE(DYNAMIC,16)
+!$OMP PARALLEL DO PRIVATE(IEL,JEL,IS,XQ,XP,YQ,YP,ZQ,ZP,SIJ,DIJ,GRN,FLAG,DIST) SCHEDULE(DYNAMIC,16)
 
       DO IEL=1, iNELEM_TOTAL
           
