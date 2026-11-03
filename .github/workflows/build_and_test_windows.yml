@@ -60,12 +60,13 @@ jobs:
       # We add the variables to GITHUB_ENV so that they are available to fpm in the next steps
       # `/heap-arrays0` is required: the Windows stack is 1 MB by default, and the tests and large
       # multi-body cases create larger array temporaries. See docs/installation_windows.md.
+      # `/fpp` is required by test-drive: on Windows, ifx does not preprocess .F90 files by default.
       - name: Configure FPM variables and export them
         shell: cmd
         run: |
           set FPM_FC=ifx
           echo FPM_FC=%FPM_FC% >> "%GITHUB_ENV%"
-          set FPM_FFLAGS=/Qmkl /heap-arrays0
+          set FPM_FFLAGS=/Qmkl /heap-arrays0 /fpp
           echo FPM_FFLAGS=%FPM_FFLAGS% >> "%GITHUB_ENV%"
 
       # Compile HAMS-MREL using FPM and place the executable where the integration tests can find it
