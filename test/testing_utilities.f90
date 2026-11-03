@@ -6,7 +6,7 @@ module testing_utilities
 
     public :: get_running_exe_path
     public :: get_repo_root_path
-    public:: test_oamass_files_are_equal
+    public :: native_path
     public:: test_oamass_files_are_close
 
     ! Path to HAMS suppied by the user
@@ -47,6 +47,25 @@ module testing_utilities
             stop 1
         end if
     end subroutine get_hams_path_from_command_line_args
+
+
+    ! Commands run through cmd.exe on Windows, which reads '/' as the start of a switch:
+    ! "install/bin/hamsmrel.exe" fails with "'install' is not recognized". Use '\' there.
+    function native_path(path) result(native)
+        implicit none
+        character(len=*), intent(in) :: path
+        character(:), allocatable :: native
+        character(len=32) :: os
+        integer :: i, stat
+
+        native = path
+        call get_environment_variable("OS", os, status=stat)
+        if (stat == 0 .and. trim(os) == "Windows_NT") then
+            do i = 1, len(native)
+                if (native(i:i) == '/') native(i:i) = '\'
+            end do
+        end if
+    end function native_path
 
 
     function get_running_exe_path() result(exepath)
@@ -132,10 +151,10 @@ module testing_utilities
     function frobenius_norm(A) result(norm)
         implicit none
         real(kind=8), intent(in) :: A(:,:)
-        real :: sum, norm
+        real(kind=8) :: sum, norm
         integer :: i, j
 
-        sum = 0.0
+        sum = 0.0d0
         do i = 1, size(A, 1)
             do j = 1, size(A, 2)
                 sum = sum + A(i,j)**2
@@ -146,42 +165,18 @@ module testing_utilities
     end function frobenius_norm 
 
 
-    subroutine test_oamass_files_are_equal(fileA, fileB, tolerance, error)
-        implicit none
-        character(len=*), intent(in) :: fileA, fileB
-        real(kind=8), intent(in) :: tolerance
-        type(error_type), allocatable, intent(out) :: error
-        real(kind=8), allocatable :: A(:,:), B(:,:)
-
-        ! Load data into matrices
-        call read_matrix_with_format(fileA, '(F7.3,1X,F7.3,1X,6E14.5)', 8, A)
-        call read_matrix_with_format(fileB, '(F7.3,1X,F7.3,1X,6E14.5)', 8, B)
-
-        ! Check sizes
-        call check(error, size(A,1) == size(B,1))
-        if (allocated(error)) return
-        call check(error, size(A,2) == size(B,2))
-        if (allocated(error)) return
-
-        ! Check frobenius norm of matrices
-        call check(error, frobenius_norm(A - B) < tolerance)
-        if (allocated(error)) return
-    end subroutine test_oamass_files_are_equal
-
-
-    ! Relative version: ||A - B||_F / ||A||_F < tolerance.
-    ! Use this when comparing two solvers (e.g. GMRES vs direct LU) rather than
-    ! regression-testing one solver against its own stored output. The absolute
-    ! comparison above only makes sense when the outputs are expected to be
-    ! identical as printed; entries in OAMASS span ~1e5, so a last-digit change
-    ! already produces an absolute Frobenius difference of order 10.
+    ! Checks ||A - B||_F / ||A||_F < tolerance, where A is the reference file.
+    ! The comparison is relative because entries in OAMASS span ~1e5 and are printed
+    ! to 5 significant figures, so one last-digit change is already an absolute
+    ! difference of order 1.
     subroutine test_oamass_files_are_close(fileA, fileB, tolerance, error)
         implicit none
         character(len=*), intent(in) :: fileA, fileB
         real(kind=8), intent(in) :: tolerance
         type(error_type), allocatable, intent(out) :: error
         real(kind=8), allocatable :: A(:,:), B(:,:)
-        real(kind=8) :: ref_norm
+        real(kind=8) :: ref_norm, rel_diff
+        character(len=16) :: rel_diff_str, tolerance_str
 
         ! Load data into matrices
         call read_matrix_with_format(fileA, '(F7.3,1X,F7.3,1X,6E14.5)', 8, A)
@@ -197,7 +192,11 @@ module testing_utilities
         ref_norm = frobenius_norm(A)
         if (ref_norm < 1.0d-30) ref_norm = 1.0d0
 
-        call check(error, frobenius_norm(A - B) / ref_norm < tolerance)
+        rel_diff = frobenius_norm(A - B) / ref_norm
+        write(rel_diff_str, '(ES10.3)') rel_diff
+        write(tolerance_str, '(ES10.3)') tolerance
+        call check(error, rel_diff < tolerance, "Relative difference "//trim(rel_diff_str)// &
+                   " is not below tolerance "//trim(tolerance_str)//" for "//fileB)
         if (allocated(error)) return
     end subroutine test_oamass_files_are_close
 
