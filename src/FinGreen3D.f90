@@ -748,6 +748,11 @@
             A=-0.000069641D0*V**3-0.0017082D0*V**2+0.45566D0*V+0.80551D0
           ENDIF
            A=DABS(A)/(WK*H)
+           ! Ewald parameter from non-dimensional nu*h so that the 20-term evanescent sum
+           ! converges (A*k*h = 0.7*sqrt(nu*h), clamped to [0.05,5]). The cubic fit above is in
+           ! dimensional nu and is superseded by this rule. Above 5 the exp((A*k*h)**2/4) factor
+           ! amplifies the AQUADF quadrature error (EPS=1E-6).
+           A=MIN(MAX(0.7D0*DSQRT(V*H),0.05D0),5.D0)/(WK*H)
         ENDIF
 !         
 !       PRINT*,A
@@ -829,6 +834,8 @@
        ELSE
            
          ERRSUM(1)=ERRSUM(1)+ERFCC(SR1/PA)/(4.D0*PI*SR1)-1.D0/(4.D0*PI*SR2)
+         ! Limit of (ERFCC(SR/PA)-1)/(4*PI*SR) for SR->0 is -1/(2*PI**1.5*PA)
+         ERRSUM(1)=ERRSUM(1)-1.D0/(2.D0*PI*SQPI*PA)
          ERRSUM(2)=ERRSUM(2)-ERFCC(SR1/PA)/(4.D0*PI*SR1**2)*DSR1R+DERFCC(SR1/PA)/(4.D0*PI*SR1*PA)*DSR1R+DSR2R/(4.D0*PI*SR2**2)
          ERRSUM(3)=ERRSUM(3)-ERFCC(SR1/PA)/(4.D0*PI*SR1**2)*DSR1Z+DERFCC(SR1/PA)/(4.D0*PI*SR1*PA)*DSR1Z+DSR2Z/(4.D0*PI*SR2**2)
          
