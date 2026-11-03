@@ -564,7 +564,7 @@ CONTAINS
         INTEGER :: BID, RS, RE, CS, CE, NR, NC
         INTEGER :: I, J, K, PIVOT_ROW, PIVOT_COL, ORIG_I, ORIG_J
         REAL*8 :: MAX_VAL, CURR_VAL, FROB_SQ, UV_NORM
-        COMPLEX*16 :: PIVOT_ENTRY
+        COMPLEX*16 :: PIVOT_ENTRY, UDOT, VDOT
         COMPLEX*16, ALLOCATABLE :: U_WORK(:,:), VH_WORK(:,:)
         COMPLEX*16, ALLOCATABLE :: ROW_VEC(:), COL_VEC(:)
         REAL*8, ALLOCATABLE :: ROW_USED(:)
@@ -696,14 +696,18 @@ CONTAINS
 
             ! Update Frobenius norm estimate (incremental)
             FROB_SQ = FROB_SQ + UV_NORM**2
-            ! Add cross terms 2*Re(sum_{l<k} <u_l,u_k> * <v_k,v_l>)
+            ! Add cross terms 2*Re(sum_{l<k} <u_l,u_k> * <v_l,v_k>). The two inner products have
+            ! different lengths: U has NR rows and VH has NC columns.
             DO I = 1, K-1
-                CURR_VAL = 0.0D0
+                UDOT = (0.0D0, 0.0D0)
                 DO J = 1, NR
-                    CURR_VAL = CURR_VAL + DBLE(CONJG(U_WORK(J,I)) * U_WORK(J,K)) * &
-                                          DBLE(CONJG(VH_WORK(K,J)) * VH_WORK(I,J))
+                    UDOT = UDOT + DCONJG(U_WORK(J,I)) * U_WORK(J,K)
                 END DO
-                FROB_SQ = FROB_SQ + 2.0D0 * CURR_VAL
+                VDOT = (0.0D0, 0.0D0)
+                DO J = 1, NC
+                    VDOT = VDOT + DCONJG(VH_WORK(I,J)) * VH_WORK(K,J)
+                END DO
+                FROB_SQ = FROB_SQ + 2.0D0 * DBLE(UDOT * VDOT)
             END DO
 
             ! Convergence check
