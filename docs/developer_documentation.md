@@ -39,6 +39,8 @@ fpm test --target unit-tester
 fpm test --target integration-tester -- install/bin/hamsmrel
 ```
 
+The integration tests compare against the outputs stored in `test/data/config1/expected_output` with a relative tolerance, because results change slightly between compilers and flags. The measured differences behind each limit are listed in [test_integration.f90](../test/test_integration.f90). Regenerate the stored outputs only when a change is meant to alter the results.
+
 After executing these commands you should see the following output (or similar):
 
 <img width="557" height="280" alt="hams-tests" src="https://github.com/user-attachments/assets/1bb39a74-593d-498b-8a6d-40f20fcc36f9" />

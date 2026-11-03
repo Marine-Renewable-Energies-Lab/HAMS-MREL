@@ -58,15 +58,27 @@ jobs:
       # FPM_FC = Fortran compiler
       # FPM_FFLAGS = Fortran compiler flags
       # We add the variables to GITHUB_ENV so that they are available to fpm in the next steps
+      # `/heap-arrays0` is required: the Windows stack is 1 MB by default, and the tests and large
+      # multi-body cases create larger array temporaries. See docs/installation_windows.md.
       - name: Configure FPM variables and export them
         shell: cmd
         run: |
           set FPM_FC=ifx
           echo FPM_FC=%FPM_FC% >> "%GITHUB_ENV%"
-          set FPM_FFLAGS=/Qmkl
+          set FPM_FFLAGS=/Qmkl /heap-arrays0
           echo FPM_FFLAGS=%FPM_FFLAGS% >> "%GITHUB_ENV%"
 
-      # Compile HAMS-MREL using FPM
+      # Compile HAMS-MREL using FPM and place the executable where the integration tests can find it
       - name: Compile HAMS-MREL
         run: |
           fpm build
+          fpm install --prefix install
+
+      - name: Run unit tests
+        run: |
+          fpm test --target unit-tester
+
+      # The integration tests run full simulations, so they need the path to the executable
+      - name: Run integration tests
+        run: |
+          fpm test --target integration-tester -- install/bin/hamsmrel.exe
