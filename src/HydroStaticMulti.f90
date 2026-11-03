@@ -55,7 +55,7 @@ CONTAINS
       EXFC_MULTI=CMPLX(0.D0,0.D0)
       AMAS_MULTI=0.D0
       BDMP_MULTI=0.D0
-      DSPL_MULTI=0.D0
+      IF (ALLOCATED(DSPL_MULTI)) DSPL_MULTI=0.D0   ! Only allocated when IRR=1 (see HAMS_Prog.f90)
       
       RETURN
       END SUBROUTINE InitialisationMulti
