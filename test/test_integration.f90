@@ -8,6 +8,20 @@ module test_integration_config1
     character(len=*), parameter :: test_data_dir = "test/data/config1/"
     logical :: simulation_execution_failed = .false. ! Flag to control further tests
 
+    ! Relative tolerances for comparing against the stored direct-LU outputs.
+    ! Outputs differ between compilers and flags, so an absolute check cannot pass
+    ! on every build. Measured on config1, largest relative difference per quantity:
+    !                                     OAMASS     ODAMPING
+    !   ifort 2022.1 vs stored outputs    3.4e-6     2.0e-4
+    !   ifx 2022.1 vs stored outputs      6.8e-7     2.7e-4
+    !   ifort 2022.1 vs ifx 2022.1        3.5e-6     3.1e-4
+    !   Effect of the LINTON fix (eb6144a)    2.1e-4 to 8.7e-4 per file    up to 8.0e-4
+    ! OAMASS is the sharp check: its limit is about 14x the build noise and 4x below
+    ! the smallest change that fix made. Damping (~0.3) is small beside the added-mass
+    ! scale (~1e5), so it carries more noise and its limit only catches larger errors.
+    real(kind=8), parameter :: oamass_tolerance = 5.0d-5
+    real(kind=8), parameter :: odamping_tolerance = 2.0d-3
+
     contains
 
     !> Collect all exported tests for config1
@@ -31,20 +45,21 @@ module test_integration_config1
     subroutine run_simulation_config1(error)
         implicit none
         type(error_type), allocatable, intent(out) :: error
-        character(:), allocatable :: inputdir, outputdir, command, errcode, simlog
+        character(:), allocatable :: inputdir, outputdir, command
+        character(len=16) :: errcode
         integer :: exitcode
-        
+
         inputdir = get_repo_root_path()//test_data_dir//"input/"
         outputdir = get_running_exe_path()//"output_config1/"
-        command = hamsexe_path//" "//inputdir//" "//outputdir//" > "//get_running_exe_path()//"config1.log 2>&1"
-        
+        command = native_path(hamsexe_path//" "//inputdir//" "//outputdir//" > "//get_running_exe_path()//"config1.log")//" 2>&1"
+
         ! Run the simulation
         print *, "Running simulation config1"
         call execute_command_line(command, exitstat=exitcode, wait=.true.)
         if (exitcode /= 0) then
             simulation_execution_failed = .true.
             write(errcode, '(I0)') exitcode
-            call test_failed(error, "Error: could not execute HAMS for integration test config1. Failed with exit code: "//errcode)
+            call test_failed(error, "Error: could not execute HAMS for integration test config1. Failed with exit code: "//trim(errcode))
         end if
     end subroutine run_simulation_config1
 
@@ -68,7 +83,7 @@ module test_integration_config1
             filename_expected = get_repo_root_path()//test_data_dir//'expected_output/OAMASS'//istr//'.txt'
             filename_actual = get_running_exe_path()//'output_config1/Hams_format/OAMASS'//istr//'.txt'
             ! Check data in files is equal
-            call test_oamass_files_are_equal(filename_expected, filename_actual, 1.0d-6, error)
+            call test_oamass_files_are_close(filename_expected, filename_actual, oamass_tolerance, error)
             if (allocated(error)) return   ! stop further comparisons on first failure
         end do
 
@@ -95,7 +110,7 @@ module test_integration_config1
             filename_actual = get_running_exe_path()//'output_config1/Hams_format/ODAMPING'//istr//'.txt'
             ! Check data in files is equal
             ! Use OAMASS because files have same format
-            call test_oamass_files_are_equal(filename_expected, filename_actual, 1.0d-3, error)
+            call test_oamass_files_are_close(filename_expected, filename_actual, odamping_tolerance, error)
             if (allocated(error)) return   ! stop further comparisons on first failure
         end do
 
