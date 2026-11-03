@@ -7,6 +7,8 @@ program unit_tester
 
     ! Tests imports (add only collect functions)
     use test_suite2, only : collect_suite2
+    use test_fingreen3d, only : collect_fingreen3d
+    use test_infgreen3d, only : collect_infgreen3d
 
     implicit none
     integer :: stat, is
@@ -20,7 +22,9 @@ program unit_tester
 
     ! Specify the tests that need to be run
     testsuites = [ &
-        new_testsuite("suite2", collect_suite2) &
+        new_testsuite("suite2", collect_suite2), &
+        new_testsuite("fingreen3d", collect_fingreen3d), &
+        new_testsuite("infgreen3d", collect_infgreen3d) &
     ]
 
     stat = 0

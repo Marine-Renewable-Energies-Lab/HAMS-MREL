@@ -94,6 +94,8 @@ module INFG3D_Open
 
       REAL*8			::	GF_hh
       REAL*8			::	GF_vv
+      ! Scratch used inside HavelockGF, which is called from OpenMP regions: shared copies race.
+!$OMP THREADPRIVATE(GF_alpha,GF_beta,GF_sigma,GF_rho,GF_dd,GF_hh,GF_vv)
 
 contains
 
