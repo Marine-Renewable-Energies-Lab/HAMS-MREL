@@ -95,7 +95,7 @@ CONTAINS
             SR = SR + DBLE(X(I)) * DBLE(Y(I)) + DIMAG(X(I)) * DIMAG(Y(I))
             SI = SI + DBLE(X(I)) * DIMAG(Y(I)) - DIMAG(X(I)) * DBLE(Y(I))
         END DO
-        DOT = CMPLX(SR, SI)
+        DOT = DCMPLX(SR, SI)
     END FUNCTION ZDOT_INLINE
 
 !---------------------------------------------------------------------------------------------
@@ -143,7 +143,7 @@ CONTAINS
                 SR = SR + AR * XR - AI * XI
                 SI = SI + AR * XI + AI * XR
             END DO
-            Y_OUT(I) = CMPLX(SR, SI)
+            Y_OUT(I) = DCMPLX(SR, SI)
         END DO
 
     END SUBROUTINE ZMATVEC
@@ -380,7 +380,7 @@ CONTAINS
 
             V(:, 1) = R / BETA_R
             G = CMPLX(0.0D0, 0.0D0)
-            G(1) = CMPLX(BETA_R, 0.0D0)
+            G(1) = DCMPLX(BETA_R, 0.0D0)
             H = CMPLX(0.0D0, 0.0D0)
 
             M_ACT = 0
@@ -407,7 +407,7 @@ CONTAINS
                     END DO
                 END DO
 
-                H(J+1, J) = CMPLX(ZNRM2_INLINE(N, W), 0.0D0)
+                H(J+1, J) = DCMPLX(ZNRM2_INLINE(N, W), 0.0D0)
 
                 IF (ABS(H(J+1, J)) > 1.0D-30) THEN
                     V(:, J+1) = W / H(J+1, J)
@@ -499,9 +499,12 @@ CONTAINS
             CS = CMPLX(0.0D0, 0.0D0)
             SN = CMPLX(1.0D0, 0.0D0)
         ELSE
+            ! The rotation is applied as [CS, SN; -CONJG(SN), CONJG(CS)], so the conjugates are
+            ! needed to zero B for complex A. Without them the residual estimate is wrong and
+            ! GMRES reports convergence while the true residual is still large.
             DENOM = SQRT(ABS(A)**2 + ABS(B)**2)
-            CS = A / CMPLX(DENOM, 0.0D0)
-            SN = B / CMPLX(DENOM, 0.0D0)
+            CS = DCONJG(A) / DENOM
+            SN = DCONJG(B) / DENOM
         END IF
     END SUBROUTINE ZGIVENS_ROTATION
 
