@@ -732,7 +732,7 @@ program HAMS_MREL
             ENDDO
         ENDDO
         CLOSE(61)
-        CALL ReorderAmssDamp('Output/Wamit_format/AmssDamp.1', NPER, 6*NBODY) !Reorder the WAMIT format .1 file
+        CALL ReorderAmssDamp(trim(outputdir)//'/Wamit_format/AmssDamp.1', NPER, 6*NBODY) !Reorder the WAMIT format .1 file
         CLOSE(61)
        
         ! Deallocate all multi-body arrays in reverse order of allocation.
