@@ -35,7 +35,9 @@ program unit_tester
 
     do is = 1, size(testsuites)
         write(error_unit, fmt) "Testing:", testsuites(is)%name
-        call run_testsuite(testsuites(is)%collect, error_unit, stat)
+        ! The solver tests share module state (HMAT_READY, the preconditioner), so they can't run in parallel.
+        call run_testsuite(testsuites(is)%collect, error_unit, stat, &
+                           parallel=(testsuites(is)%name /= "iterative_solvers"))
     end do
 
     if (stat > 0) then
