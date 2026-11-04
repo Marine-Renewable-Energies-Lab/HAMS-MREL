@@ -21,6 +21,7 @@ program unit_tester
     use test_far_field, only : collect_far_field
     use test_near_field, only : collect_near_field
     use test_second_order_output, only : collect_second_order_output
+    use test_waterline_field, only : collect_waterline_field
 
     implicit none
     integer :: stat, is
@@ -49,7 +50,8 @@ program unit_tester
         new_testsuite("surface_velocity", collect_surface_velocity), &
         new_testsuite("far_field", collect_far_field), &
         new_testsuite("near_field", collect_near_field), &
-        new_testsuite("second_order_output", collect_second_order_output) &
+        new_testsuite("second_order_output", collect_second_order_output), &
+        new_testsuite("waterline_field", collect_waterline_field) &
     ]
 
     stat = 0
@@ -61,7 +63,8 @@ program unit_tester
                            parallel=(testsuites(is)%name /= "iterative_solvers" .and. testsuites(is)%name /= "image_term" &
                                      .and. testsuites(is)%name /= "generalized_modes" &
                                      .and. testsuites(is)%name /= "panel_integrals" &
-                                     .and. testsuites(is)%name /= "first_order_state_serial"))
+                                     .and. testsuites(is)%name /= "first_order_state_serial" &
+                                     .and. testsuites(is)%name /= "waterline_field"))
     end do
 
     if (stat > 0) then

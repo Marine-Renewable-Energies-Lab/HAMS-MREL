@@ -88,6 +88,9 @@ CONTAINS
       ELSE IF (opts%write_terms < 0 .OR. opts%write_terms > 2) THEN
          ok = .FALSE.
          msg = 'write_terms must be 0, 1 or 2 in SecondOrder.in.'
+      ELSE IF (opts%waterline_offset <= 0D0) THEN
+         ok = .FALSE.
+         msg = 'waterline_offset must be positive in SecondOrder.in.'
       END IF
       IF (.NOT. ok) RETURN
 

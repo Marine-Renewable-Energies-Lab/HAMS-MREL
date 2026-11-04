@@ -48,6 +48,7 @@ MODULE SecondOrderDriver
    USE SurfaceVelocity, ONLY: velocity_differencing
    USE FarFieldDrift, ONLY: far_amplitude, far_field_pair, far_field_pairs
    USE NearFieldDrift, ONLY: waterline_extrapolate, near_field_pair, T_WATERLINE, T_HYDROSTATIC
+   USE WaterlineField, ONLY: waterline_rows, waterline_field
    USE SecondOrderOutput, ONLY: write_drift_row, write_terms_row
    IMPLICIT NONE
    PRIVATE
@@ -62,6 +63,8 @@ MODULE SecondOrderDriver
    TYPE(surface_geom) :: geom
    TYPE(first_order_state), ALLOCATABLE :: states(:)   ! one per heading for mean_drift = 2, otherwise only the current
    COMPLEX(8), ALLOCATABLE :: phi_wl(:,:)              ! (nwl, size(states)), total potential on the waterline segments
+   COMPLEX(8), ALLOCATABLE :: rows_g(:,:,:), rows_dg(:,:,:)   ! (nbase, nsys, nwl), of the current frequency, for waterline_method = field
+   LOGICAL :: multi_arrays = .FALSE.                   ! the solver's mesh is in the combined multi-body arrays
    INTEGER :: unit_far = 0, unit_near = 0, unit_terms = 0, unit_diag = 0   ! 0: not open (NEWUNIT gives negative numbers)
    INTEGER :: n_velocity_fields = 0, n_fallback_total = 0                  ! over the run, logged by so_finish
 
@@ -76,6 +79,7 @@ CONTAINS
       ALLOCATE (body(NELEM))
       body = 1
       CALL expand_images(XYZ_P, GEONRM_P, DXYZ_P, DS, PNSZ, XYZ, NCN, NCON, body, RESHAPE(XR, [3, 1]), ISX, ISY, NSYS, mesh)
+      multi_arrays = .FALSE.
       CALL common_setup(opts, outputdir)
    END SUBROUTINE so_setup_single
 
@@ -97,6 +101,7 @@ CONTAINS
                          DS_MULTI_COMB(1:NELEM_PE), PNSZ_MULTI_COMB(1:NELEM_PE), &
                          XYZ_GLOBAL_MULTI_COMB(1:SUM(NTND_MULTI), :), NCN_MULTI_COMB(1:NELEM_PE), &
                          NCON_MULTI_COMB(1:NELEM_PE, :), body, TRANSPOSE(XR_MULTI), ISX, ISY, NSYS, mesh)
+      multi_arrays = .TRUE.
       CALL common_setup(opts, outputdir)
    END SUBROUTINE so_setup_multi
 
@@ -121,6 +126,11 @@ CONTAINS
          END IF
          IF (LEN_TRIM(msg) > 0) WRITE (*, *) 'Mean drift warning: ', msg
          ALLOCATE (phi_wl(geom%nwl, SIZE(states)))
+         IF (opts%waterline_method == 2) THEN
+            ALLOCATE (rows_g(mesh%nbase, mesh%nsys, geom%nwl), rows_dg(mesh%nbase, mesh%nsys, geom%nwl))
+            IF (H >= 0D0) WRITE (*, *) 'Mean drift warning: with waterline_method = field in finite depth, the Green function is', &
+               ' erratic near the free surface at a small horizontal distance, so term I can jump with the mesh or the offset.'
+         END IF
          OPEN (NEWUNIT=unit_near, FILE=outputdir//'/Wamit_format/MeanDriftPressure.9', STATUS='REPLACE', ACTION='WRITE')
          IF (opts%write_terms >= 1) THEN
             OPEN (NEWUNIT=unit_terms, FILE=outputdir//'/Wamit_format/MeanDriftTerms.txt', STATUS='REPLACE', ACTION='WRITE')
@@ -202,7 +212,13 @@ CONTAINS
          CALL velocity_differencing(mesh, geom, states(slot), n_fallback)
          n_velocity_fields = n_velocity_fields + 1
          n_fallback_total = n_fallback_total + n_fallback
-         CALL waterline_extrapolate(mesh, geom, states(slot), phi_wl(:, slot))
+         IF (opts%waterline_method == 2) THEN
+            ! The headings of a frequency come in order, and the rows hold for all of them
+            IF (ib == 1) CALL waterline_rows(mesh, geom, opts%waterline_offset, multi_arrays, rows_g, rows_dg)
+            CALL waterline_field(mesh, geom, states(slot), rows_g, rows_dg, phi_wl(:, slot))
+         ELSE
+            CALL waterline_extrapolate(mesh, geom, states(slot), phi_wl(:, slot))
+         END IF
       END IF
 
       IF (opts%write_terms == 2) THEN

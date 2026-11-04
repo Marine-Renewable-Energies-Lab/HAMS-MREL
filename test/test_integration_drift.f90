@@ -7,6 +7,7 @@ module test_integration_drift
     use testdrive, only : new_unittest, unittest_type, error_type, check, test_failed
     use testing_utilities
     use NearFieldDrift, only : T_WATERLINE, T_FLARE, T_VELOCITY, T_HYDROSTATIC
+    use second_order_fixtures, only : maccamy_fuchs_waterline
 
     implicit none
     private
@@ -55,10 +56,18 @@ module test_integration_drift
     ! Off-diagonal heading pairs of two_body_total are about 1/7 of the diagonal loads: a regression limit
     real(8), parameter :: heading_pair_limit = 1d-1
 
+    ! Term I by field evaluation: between offsets and against MacCamy-Fuchs, as a fraction of the MacCamy-Fuchs value
+    real(8), parameter :: offset_limit = 5d-2
+    ! The offset has to change term I by more than the printed digits, or the runs did not use it
+    real(8), parameter :: offset_used_limit = 1d-5
+
     character(len=*), parameter :: main_case = "drift_cyl"
     character(len=*), parameter :: far_file = "Wamit_format/MeanDriftMomentum.8"
     character(len=*), parameter :: near_file = "Wamit_format/MeanDriftPressure.9"
     character(len=*), parameter :: terms_file = "Wamit_format/MeanDriftTerms.txt"
+    character(len=*), parameter :: offset_cases(4) = [character(len=17) :: "drift_field_0p005", "drift_field_0p01", &
+                                                      "drift_field_0p05", "drift_field_0p1"]
+    real(8), parameter :: offsets(4) = [0.005d0, 0.01d0, 0.05d0, 0.1d0]
 
 contains
 
@@ -87,7 +96,14 @@ contains
             new_unittest("run_drift_irsp", run_drift_irsp), &
             new_unittest("run_drift_irsp_ref", run_drift_irsp_ref), &
             new_unittest("run_drift_two_irsp", run_drift_two_irsp), &
-            new_unittest("run_drift_two_irsp_ref", run_drift_two_irsp_ref) &
+            new_unittest("run_drift_two_irsp_ref", run_drift_two_irsp_ref), &
+            new_unittest("run_drift_field_0p005", run_drift_field_0p005), &
+            new_unittest("run_drift_field_0p01", run_drift_field_0p01), &
+            new_unittest("run_drift_field_0p05", run_drift_field_0p05), &
+            new_unittest("run_drift_field_0p1", run_drift_field_0p1), &
+            new_unittest("run_drift_field_irsp", run_drift_field_irsp), &
+            new_unittest("run_drift_field_irsp_ref", run_drift_field_irsp_ref), &
+            new_unittest("run_drift_field_two", run_drift_field_two) &
         ]
     end subroutine setup_drift
 
@@ -128,7 +144,10 @@ contains
             new_unittest("bidirectional", bidirectional), &
             new_unittest("irsp_stability", irsp_stability), &
             new_unittest("terms_sum_to_total", terms_sum_to_total), &
-            new_unittest("near_output_switches", near_output_switches) &
+            new_unittest("near_output_switches", near_output_switches), &
+            new_unittest("offset_sensitivity_recorded", offset_sensitivity_recorded), &
+            new_unittest("field_irsp_stability", field_irsp_stability), &
+            new_unittest("field_two_bodies", field_two_bodies) &
         ]
     end subroutine collect_tests_drift
 
@@ -286,6 +305,46 @@ contains
         type(error_type), allocatable, intent(out) :: error
         call run_case("drift_two_irsp_ref", both_drift_files(), error)
     end subroutine run_drift_two_irsp_ref
+
+    subroutine run_drift_field_0p005(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("drift_field_0p005", near_with_terms(), error)
+    end subroutine run_drift_field_0p005
+
+    subroutine run_drift_field_0p01(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("drift_field_0p01", near_with_terms(), error)
+    end subroutine run_drift_field_0p01
+
+    subroutine run_drift_field_0p05(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("drift_field_0p05", near_with_terms(), error)
+    end subroutine run_drift_field_0p05
+
+    subroutine run_drift_field_0p1(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("drift_field_0p1", near_with_terms(), error)
+    end subroutine run_drift_field_0p1
+
+    subroutine run_drift_field_irsp(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("drift_field_irsp", near_with_terms(), error)
+    end subroutine run_drift_field_irsp
+
+    subroutine run_drift_field_irsp_ref(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("drift_field_irsp_ref", near_with_terms(), error)
+    end subroutine run_drift_field_irsp_ref
+
+    subroutine run_drift_field_two(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("drift_field_two", near_with_terms(), error)
+    end subroutine run_drift_field_two
+
+    function near_with_terms() result(files)
+        character(len=40) :: files(2)
+        files = [character(len=40) :: near_file, terms_file]
+    end function near_with_terms
 
     function drift_file_only() result(files)
         character(len=40) :: files(1)
@@ -1168,6 +1227,112 @@ contains
         call check(error, used > 0, "No frequency compared in irsp_stability")
     end subroutine irsp_difference
 
+    !> Term I of F_x on the fixed bottom-mounted cylinder, with the waterline potential by field evaluation at each offset,
+    !> against each other and against the same term from the MacCamy-Fuchs series.
+    subroutine offset_sensitivity_recorded(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), parameter :: radius = 5d0, depth = 10d0
+        real(8), parameter :: frequencies(2) = [1.0d0, 1.6d0]
+        real(8) :: term(size(offsets)), analytic, k, worst_mf, worst_spread, smallest_change
+        integer :: iw, ic
+
+        worst_mf = 0d0
+        worst_spread = 0d0
+        smallest_change = huge(1d0)
+        print '(4x,a)', "offset_sensitivity_recorded: omega, offset, term I of F_x / (rho g), relative to MacCamy-Fuchs"
+        do iw = 1, size(frequencies)
+            do ic = 1, size(offset_cases)
+                call waterline_term(trim(offset_cases(ic)), frequencies(iw), 0d0, 1, 1, term(ic), error)
+                if (allocated(error)) return
+            end do
+            k = wave_number(frequencies(iw), depth)
+            analytic = maccamy_fuchs_waterline(radius, depth, k, frequencies(iw), g, 720)
+            do ic = 1, size(offsets)
+                print '(4x,F5.3,F7.3,ES13.5,F9.4)', frequencies(iw), offsets(ic), term(ic), term(ic)/analytic - 1d0
+            end do
+            print '(4x,F5.3,a7,ES13.5)', frequencies(iw), "exact", analytic
+            worst_mf = max(worst_mf, maxval(abs(term - analytic))/abs(analytic))
+            worst_spread = max(worst_spread, (maxval(term) - minval(term))/abs(analytic))
+            smallest_change = min(smallest_change, abs(term(1) - term(size(term)))/abs(analytic))
+        end do
+        call report("offset_sensitivity against MacCamy-Fuchs", worst_mf)
+        call report("offset_sensitivity between offsets", worst_spread)
+        call check(error, smallest_change > offset_used_limit, "Term I does not depend on the offset, so the offset was not used")
+        if (allocated(error)) return
+        call check_below(error, "offset_sensitivity against MacCamy-Fuchs", worst_mf, offset_limit)
+        if (allocated(error)) return
+        call check_below(error, "offset_sensitivity between offsets", worst_spread, offset_limit)
+    end subroutine offset_sensitivity_recorded
+
+    !> Term I by field evaluation with IRSP = 1 against IRSP = 0, away from irregular frequencies. Lid panels are not sources, so
+    !> the lid acts through the hull potentials only.
+    subroutine field_irsp_stability(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), parameter :: frequencies(2) = [0.95d0, 1.10d0]
+        real(8) :: on, off, worst
+        integer :: iw
+
+        worst = 0d0
+        do iw = 1, size(frequencies)
+            call waterline_term("drift_field_irsp", frequencies(iw), 0d0, 1, 1, on, error)
+            if (allocated(error)) return
+            call waterline_term("drift_field_irsp_ref", frequencies(iw), 0d0, 1, 1, off, error)
+            if (allocated(error)) return
+            worst = max(worst, abs(on - off)/abs(off))
+        end do
+        call report("field_irsp_stability", worst)
+        call check_below(error, "field_irsp_stability", worst, irsp_limit)
+    end subroutine field_irsp_stability
+
+    !> Term I per body by field evaluation against extrapolation on the same hulls, through the multi-body path.
+    subroutine field_two_bodies(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), parameter :: omega = 1.35d0
+        real(8), parameter :: headings(2) = [0d0, 30d0]
+        real(8) :: field(2), extrapolated(2), worst, err
+        integer :: ih, b, i
+
+        worst = 0d0
+        do ih = 1, size(headings)
+            do b = 1, 2
+                do i = 1, 2
+                    call waterline_term("drift_field_two", omega, headings(ih), b, i, field(i), error)
+                    if (allocated(error)) return
+                    call waterline_term("drift_two_cyl", omega, headings(ih), b, i, extrapolated(i), error)
+                    if (allocated(error)) return
+                end do
+                err = norm2(field - extrapolated)/norm2(extrapolated)
+                print '(4x,"field_two_bodies beta=",F5.1," body ",I1,": field ",2ES12.4," extrapolated ",2ES12.4," diff ",ES10.3)', &
+                    headings(ih), b, field, extrapolated, err
+                worst = max(worst, err)
+            end do
+        end do
+        call report("field_two_bodies", worst)
+        call check_below(error, "field_two_bodies", worst, near_far_limit)
+    end subroutine field_two_bodies
+
+    !> Real part of the waterline term of load I of a body, for one frequency and heading, as written to MeanDriftTerms.txt.
+    subroutine waterline_term(name, omega, beta_deg, body, i, value, error)
+        character(len=*), intent(in) :: name
+        real(8), intent(in) :: omega, beta_deg
+        integer, intent(in) :: body, i
+        real(8), intent(out) :: value
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: rows(:,:)
+        integer :: r
+
+        call read_terms(output_dir(name)//terms_file, rows, error)
+        if (allocated(error)) return
+        do r = 1, size(rows, 1)
+            if (same(rows(r,1), omega) .and. same(rows(r,2), beta_deg) .and. same(rows(r,3), beta_deg) &
+                .and. nint(rows(r,4)) == body .and. nint(rows(r,5)) == i .and. nint(rows(r,6)) == T_WATERLINE) then
+                value = rows(r,7)
+                return
+            end if
+        end do
+        call test_failed(error, "No waterline term in the output of "//name)
+    end subroutine waterline_term
+
     !> The terms of MeanDriftTerms.txt add up to the totals of the .9 file, row by row. Each has 7 digits, so the difference is
     !> relative to the largest term of the frequency.
     subroutine terms_sum_to_total(error)
@@ -1447,6 +1612,21 @@ contains
         real(8), intent(in) :: k, h
         group_ratio = 0.5d0*(1d0 + 2d0*k*h/sinh(2d0*k*h))
     end function group_ratio
+
+    !> Root of omega^2/g = k tanh(kh), by Newton iteration.
+    real(8) function wave_number(omega, h)
+        real(8), intent(in) :: omega, h
+        real(8) :: nu, f
+        integer :: it
+
+        nu = omega**2/g
+        wave_number = max(nu, sqrt(nu/h))
+        do it = 1, 100
+            f = wave_number*tanh(wave_number*h) - nu
+            wave_number = wave_number - f/(tanh(wave_number*h) + wave_number*h/cosh(wave_number*h)**2)
+            if (abs(f) < 1d-14) exit
+        end do
+    end function wave_number
 
     subroutine find_wave(waves, omega, k, nu, h)
         real(8), intent(in) :: waves(:,:), omega

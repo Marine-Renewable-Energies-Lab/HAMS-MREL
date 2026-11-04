@@ -22,6 +22,7 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("all_keys_parsed", test_all_keys), &
     new_unittest("unknown_key_rejected", test_unknown_key), &
     new_unittest("bad_value_rejected", test_bad_value), &
+    new_unittest("waterline_offset_positive", test_offset_positive), &
     new_unittest("validate_rejects", test_validate_rejects), &
     new_unittest("validate_accepts", test_validate_accepts) &
     ]
@@ -140,6 +141,23 @@ subroutine test_bad_value(error)
   call check(error, index(msg, "velocity_method") > 0, "message does not name the key: "//trim(msg))
   call remove_directory(root)
 end subroutine test_bad_value
+
+subroutine test_offset_positive(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_offset"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "waterline_offset = 0"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, .not. ok, "an offset of zero accepted")
+  if (allocated(error)) return
+  call check(error, index(msg, "waterline_offset") > 0, "message does not name the key: "//trim(msg))
+  call remove_directory(root)
+end subroutine test_offset_positive
 
 subroutine test_validate_rejects(error)
   type(error_type), allocatable, intent(out) :: error

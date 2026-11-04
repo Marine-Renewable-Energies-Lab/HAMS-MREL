@@ -32,7 +32,7 @@ MODULE FirstOrderState
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: depth_factor, wave_gravity, incident_phi, incident_grad, expand_images, build_state
+   PUBLIC :: depth_factor, wave_gravity, incident_phi, incident_grad, image_signs, expand_images, build_state
 
 CONTAINS
 
@@ -92,6 +92,22 @@ CONTAINS
       grad(3) = pref*dzf
    END SUBROUTINE incident_grad
 
+   PURE FUNCTION image_signs(is, isx, isy) RESULT(f)
+      ! The factors on (x, y, z) of symmetry image is, with the image rule of EFORCE_MULTI: with ISX = 1 and ISY = 0 the image is
+      ! x -> -x, otherwise y -> -y.
+      INTEGER, INTENT(IN) :: is, isx, isy
+      REAL(8) :: f(3)
+
+      f = 1D0
+      IF (is == 2) THEN
+         IF (isx == 1 .AND. isy == 0) THEN
+            f(1) = -1D0
+         ELSE
+            f(2) = -1D0
+         END IF
+      END IF
+   END FUNCTION image_signs
+
    SUBROUTINE expand_images(xc_b, nrm_b, dxyz_b, area_b, psize_b, xnode_b, ncn_b, ncon_b, body_b, xr, isx, isy, nsys, mesh)
       ! Builds the full panel set from the base panels by adding the symmetry image. Base arrays use the layout of the
       ! HAMS globals (panel index first), the result uses the layout of panel_mesh.
@@ -101,14 +117,13 @@ CONTAINS
       !   area_b, psize_b    (nbase)                      xnode_b(nnode_b,3), ncn_b(nbase), ncon_b(nbase,4)
       !   body_b(nbase)      body of each panel           xr(3,nbody)      body reference points
       !   isx, isy, nsys     symmetry flags of HAMS (nsys = 1: no image, 2: one image)
-      ! Image rule, as in EFORCE_MULTI: with ISX = 1 and ISY = 0 the image is x -> -x, otherwise y -> -y. The image
-      ! panels follow the base panels, and image nodes follow the base nodes, so ncon stays valid. Components of nj
+      ! The image panels follow the base panels, and image nodes follow the base nodes, so ncon stays valid. Components of nj
       ! take the factors (fx, fy, 1, fy, fx, fx*fy), which are the RX/RY signs of the force integration.
       REAL(8), INTENT(IN) :: xc_b(:,:), nrm_b(:,:), dxyz_b(:,:), area_b(:), psize_b(:), xnode_b(:,:), xr(:,:)
       INTEGER, INTENT(IN) :: ncn_b(:), ncon_b(:,:), body_b(:), isx, isy, nsys
       TYPE(panel_mesh), INTENT(OUT) :: mesh
       INTEGER :: nbase, nnode_b, is, off, node_off, i
-      REAL(8) :: fx, fy, f3(3), fj(6)
+      REAL(8) :: f3(3), fj(6)
 
       IF (nsys /= 1 .AND. nsys /= 2) THEN
          WRITE (*, *) 'expand_images: nsys must be 1 or 2, got ', nsys
@@ -127,17 +142,8 @@ CONTAINS
       mesh%xr = xr
 
       DO is = 1, nsys
-         fx = 1D0
-         fy = 1D0
-         IF (is == 2) THEN
-            IF (isx == 1 .AND. isy == 0) THEN
-               fx = -1D0
-            ELSE
-               fy = -1D0
-            END IF
-         END IF
-         f3 = [fx, fy, 1D0]
-         fj = [fx, fy, 1D0, fy, fx, fx*fy]
+         f3 = image_signs(is, isx, isy)
+         fj = [f3(1), f3(2), 1D0, f3(2), f3(1), f3(1)*f3(2)]
          off = (is - 1)*nbase
          node_off = (is - 1)*nnode_b
          DO i = 1, nbase

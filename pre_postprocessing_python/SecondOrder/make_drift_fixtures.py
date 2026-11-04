@@ -33,6 +33,11 @@ DRIFT_BOX_MESH = dict(lx=20.0, ly=10.0, draft=5.0, nx=20, ny=10, nz=4)
 OBLIQUE_FREQUENCIES = (0.8, 1.0)   # of the box and the ellipsoid
 ROTATED_BOX_MESH = dict(lx=20.0, ly=10.0, draft=5.0, nx=10, ny=5, nz=3)
 ROTATED_DEG = 30.0
+# Bottom-mounted: the wall reaches the sea bed, with no bottom panels, so MacCamy-Fuchs is exact
+BOTTOM_MOUNTED_MESH = dict(radius=5.0, draft=10.0, ntheta=64, nz=16, nr=0)
+BOTTOM_MOUNTED_FREQUENCIES = (1.0, 1.6)
+# Fractions of the waterline segment length
+WATERLINE_OFFSETS = (0.005, 0.01, 0.05, 0.1)
 # Hull panels whose centroids are the field points of drift_cyl: side, bottom, bilge, lee and weather
 FIELD_PANELS = (1, 4, 8, 9, 14, 40, 85, 130, 133, 200, 270, 448)
 
@@ -276,6 +281,38 @@ def main():
                       body_origins=origins, lcs_angle=lcs_angle)
         write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="fixed",
                            write_terms=0)
+
+    # The waterline potential by field evaluation, on the bottom-mounted cylinder at each offset
+    for offset in WATERLINE_OFFSETS:
+        target = case_dir(data, "drift_field_%s" % str(offset).replace(".", "p"))
+        make_mesh.write_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
+                                 **BOTTOM_MOUNTED_MESH)
+        write_control(os.path.join(target, "ControlFile.in"), depth=BOTTOM_MOUNTED_MESH["draft"],
+                      frequencies=BOTTOM_MOUNTED_FREQUENCIES, headings=(0.0,))
+        write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods="near", motion_state="fixed",
+                           write_terms=1, waterline_method="field", waterline_offset=offset)
+
+    # The same method with and without irregular frequency removal
+    for name, irsp in (("drift_field_irsp", 1), ("drift_field_irsp_ref", 0)):
+        target = case_dir(data, name)
+        for file in ("HullMesh.pnl", "Hydrostatic.in"):
+            shutil.copyfile(os.path.join(path, file), os.path.join(target, file))
+        if irsp == 1:
+            make_mesh.write_waterplane(os.path.join(target, "WaterPlaneMesh.pnl"), DRIFT_CYL_MESH["radius"],
+                                       DRIFT_CYL_MESH["ntheta"], DRIFT_CYL_MESH["nr"])
+        write_control(os.path.join(target, "ControlFile.in"), frequencies=IRSP_FREQUENCIES[:2], headings=(0.0,), irsp=irsp)
+        write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods="near", motion_state="free",
+                           write_terms=1, waterline_method="field")
+
+    # The same method through the multi-body path, on the hulls of drift_two_cyl
+    target = case_dir(data, "drift_field_two")
+    for body in (1, 2):
+        make_mesh.write_cylinder(os.path.join(target, "HullMesh_%d.pnl" % body),
+                                 os.path.join(target, "Hydrostatic_%d.in" % body), **TWO_CYL_MESH)
+    write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=(1.35,), headings=(0.0, 30.0),
+                  body_origins=[(0.0, 0.0), (0.0, 30.0)])
+    write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods="near", motion_state="free",
+                       write_terms=1, waterline_method="field")
 
 
 if __name__ == "__main__":

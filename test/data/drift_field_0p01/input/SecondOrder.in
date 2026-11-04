@@ -1,0 +1,7 @@
+! Mean drift options of this integration test
+mean_drift = 1
+drift_methods = near
+motion_state = fixed
+write_terms = 1
+waterline_method = field
+waterline_offset = 0.01

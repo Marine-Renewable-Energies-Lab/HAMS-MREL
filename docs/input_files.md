@@ -230,8 +230,8 @@ Each line is `key = value`. Text after `!` is a comment, blank lines are ignored
 | `mean_drift` | `0`, `1`, `2` | `0` | 0 is off, 1 is unidirectional, 2 is all heading pairs. |
 | `drift_methods` | `far`, `near`, or both separated by a blank or comma | `far` | Far-field (momentum) and near-field (pressure integration) methods. |
 | `velocity_method` | `differencing`, `source` | `differencing` | How the velocity on the body surface is obtained. |
-| `waterline_method` | `extrapolate`, `field` | `extrapolate` | How the free-surface elevation at the waterline is obtained. |
-| `waterline_offset` | real | `0.01` | Offset used for the waterline evaluation, in metres. |
+| `waterline_method` | `extrapolate`, `field` | `extrapolate` | How the potential at the waterline is obtained, for the near-field method. `extrapolate` takes it from the adjacent panel and its gradient. `field` evaluates the boundary integral formula at a point in the fluid close to the waterline, which costs one set of Green function evaluations per waterline segment and frequency. It converges more slowly than `extrapolate`, and in finite depth it can jump with the mesh or the offset: see `test/data/drift_cyl/README.md`. |
+| `waterline_offset` | positive real | `0.01` | With `waterline_method = field`: how far the point lies from the waterline, out into the fluid and down, each as a fraction of the waterline segment length. |
 | `motion_state` | `free`, `fixed` | `free` | Whether the body responds to the waves or is held fixed. |
 | `n_azimuth` | integer, at least 1 | `360` | Number of azimuth points in the far-field integration. |
 | `far_tolerance` | real | `1d-4` | Tolerance of the far-field integration. |

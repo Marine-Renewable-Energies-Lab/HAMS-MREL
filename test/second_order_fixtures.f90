@@ -5,7 +5,8 @@ module second_order_fixtures
   implicit none
   private
 
-  public :: make_cylinder, set_panel, maccamy_fuchs_a, maccamy_fuchs_state, maccamy_fuchs_phi, maccamy_fuchs_drift
+  public :: make_cylinder, set_panel, maccamy_fuchs_a, maccamy_fuchs_state, maccamy_fuchs_phi, maccamy_fuchs_drift, &
+            maccamy_fuchs_waterline
 
 contains
 
@@ -213,6 +214,24 @@ subroutine maccamy_fuchs_coefficients(ka, cn)
     cn(n) = eps * ci**n * 2d0 * ci / (pi * ka * hankel1_prime(n, ka))
   end do
 end subroutine maccamy_fuchs_coefficients
+
+!> Analytic x force of the waterline term of the same cylinder at heading 0, divided by rho g, per unit amplitude squared:
+!> (1/2) int n'_x (1/2) |zeta|^2 a dtheta with n'_x = -cos(theta), by the trapezoid rule with n points.
+real(8) function maccamy_fuchs_waterline(a_rad, h, k, omega, g, n)
+  real(8), intent(in) :: a_rad, h, k, omega, g
+  integer, intent(in) :: n
+  real(8), parameter :: pi = 3.141592653589793d0
+  real(8) :: th, zeta
+  integer :: j
+
+  maccamy_fuchs_waterline = 0d0
+  do j = 1, n
+    th = 2d0 * pi * real(j - 1, 8) / real(n, 8)
+    zeta = omega / g * abs(maccamy_fuchs_phi([a_rad * cos(th), a_rad * sin(th), 0d0], a_rad, h, k, omega, 1d0, 0d0, g))
+    maccamy_fuchs_waterline = maccamy_fuchs_waterline - cos(th) * 0.25d0 * zeta**2
+  end do
+  maccamy_fuchs_waterline = maccamy_fuchs_waterline * a_rad * 2d0 * pi / real(n, 8)
+end function maccamy_fuchs_waterline
 
 !> Exact total potential on r = a at the azimuth and z of the point x(3), which need not lie exactly on r = a.
 complex(8) function maccamy_fuchs_phi(x, a_rad, h, k, omega, amp, beta, g)

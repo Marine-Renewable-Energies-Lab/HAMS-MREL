@@ -1,0 +1,158 @@
+!  ------------------------------------------------------------------------------------------------------
+!
+!    Program HAMS-MREL for the diffraction and radiation of waves
+!    by 3D structures.
+!
+!  License:
+!
+!    This routine is part of HAMS-MREL.
+!
+!    HAMS-MREL is a free software framework: you can redistribute it and/or modify it
+!    under the terms of the Apache License, Version 2.0 (the "License"); you may
+!    not use these subroutines except in compliance with the License. The software
+!    is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.
+!
+!    You should have received a copy of the Apache License, Version 2.0, along with
+!    HAMS-MREL. If not, see <http://www.apache.org/licenses/LICENSE-2.0>.
+!
+!  Code Original Author:
+!
+!    Vaibhav Raghavan
+!
+!  ------------------------------------------------------------------------------------------------------
+MODULE WaterlineField
+   ! The waterline potential by field evaluation. The perturbation potential comes from the boundary integral formula at a point
+   ! in the fluid close to the waterline, and the incident potential is added exactly at z = 0:
+   !
+   !    phi_P(x) = (1 / 4 pi) sum_images sum_j [ G dphi_P/dn - (dG/dn) phi_P ]
+   !
+   ! with G and dG/dn integrated over panel j, as in CalPotential and CalPotentialMulti, the free-surface image term included. The
+   ! point is in the fluid, so the free term is always 4 pi. Only hull panels are sources: with IRSP = 1 the lid acts through the
+   ! hull potentials. The integrals depend on the frequency and not on the state, so one set of rows serves all the headings.
+
+   USE HAMS_mod, ONLY: NTHREAD
+   USE WaveDyn_mod, ONLY: H, NK, V, WVN
+   USE PanelMesh_mod, ONLY: ISX, ISY
+   USE INFG3D_Open, ONLY: INFGREEN3D
+   USE FinGreen3D_Open, ONLY: FINGREEN3D
+   USE SingularIntgr, ONLY: IMAGE_TERM_EXACT, SGLINTBD_QUAD2, SGLINTBD_TRI2
+   USE SingularIntgrMulti, ONLY: IMAGE_TERM_EXACT_MULTI, SGLINTBD_MULTI_QUAD2, SGLINTBD_MULTI_TRI2
+   USE SecondOrderTypes, ONLY: panel_mesh, first_order_state, surface_geom
+   USE FirstOrderState, ONLY: image_signs, incident_phi, wave_gravity
+   USE NearFieldDrift, ONLY: waterline_point
+   IMPLICIT NONE
+   PRIVATE
+
+   PUBLIC :: field_influence_row, field_potential, waterline_rows, waterline_field
+
+   REAL(8), PARAMETER :: PI = 3.141592653589793D0
+   INTEGER, PARAMETER :: IRR_HULL = 1          ! source panel on the hull, in SGLINTBD_*2
+
+CONTAINS
+
+   SUBROUTINE field_influence_row(mesh, xp, is_multi, row_g, row_dg)
+      ! G and dG/dn at xp, integrated over each base panel for each image. The panels stay in place and xp is mirrored, as in
+      ! CalPotential. is_multi selects the panel integrals that read the combined multi-body arrays.
+      !   row_g, row_dg   (nbase, nsys)
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      REAL(8), INTENT(IN) :: xp(3)
+      LOGICAL, INTENT(IN) :: is_multi
+      COMPLEX(8), INTENT(OUT) :: row_g(:, :), row_dg(:, :)
+      REAL(8) :: xq(3), xf(3), nrm(3), area, rkn(4)
+      COMPLEX(8) :: grn(4)
+      INTEGER :: jel, is, flag
+
+      !$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(jel, is, flag, xq, xf, nrm, area, rkn, grn) SCHEDULE(DYNAMIC, 16)
+      DO jel = 1, mesh%nbase
+         xq = mesh%xc(:, jel)
+         nrm = mesh%nrm(:, jel)
+         area = mesh%area(jel)
+         DO is = 1, mesh%nsys
+            xf = image_signs(is, ISX, ISY)*xp
+            flag = MERGE(1, 0, NORM2(xf - xq) <= 50D0*mesh%psize(jel))
+
+            IF (H < 0D0) THEN
+               CALL INFGREEN3D(xq(1), xf(1), xq(2), xf(2), xq(3), xf(3), V, grn, flag)
+            ELSE
+               CALL FINGREEN3D(xq(1), xf(1), xq(2), xf(2), xq(3), xf(3), V, WVN, NK, H, grn, flag)
+            END IF
+
+            rkn = 0D0
+            IF (flag == 1) THEN
+               IF (is_multi) THEN
+                  IF (mesh%ncn(jel) == 3) THEN
+                     CALL SGLINTBD_MULTI_TRI2(xf, jel, rkn, IRR_HULL)
+                  ELSE
+                     CALL SGLINTBD_MULTI_QUAD2(xf, jel, rkn, IRR_HULL)
+                  END IF
+                  CALL IMAGE_TERM_EXACT_MULTI(xf, xq, V, jel, IRR_HULL, grn, rkn(1), rkn(2:4))
+               ELSE
+                  IF (mesh%ncn(jel) == 3) THEN
+                     CALL SGLINTBD_TRI2(xf, jel, rkn, IRR_HULL)
+                  ELSE
+                     CALL SGLINTBD_QUAD2(xf, jel, rkn, IRR_HULL)
+                  END IF
+                  CALL IMAGE_TERM_EXACT(xf, xq, V, jel, IRR_HULL, grn, rkn(1), rkn(2:4))
+               END IF
+            END IF
+
+            row_g(jel, is) = rkn(1) + grn(1)*area
+            row_dg(jel, is) = SUM((rkn(2:4) + grn(2:4)*area)*nrm)
+         END DO
+      END DO
+      !$OMP END PARALLEL DO
+   END SUBROUTINE field_influence_row
+
+   SUBROUTINE waterline_rows(mesh, geom, offset, is_multi, rows_g, rows_dg)
+      ! The rows of the point of each waterline segment, offset by a fraction of the segment length: out into the fluid along the
+      ! horizontal normal, and down.
+      !   rows_g, rows_dg   (nbase, nsys, nwl)
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(surface_geom), INTENT(IN) :: geom
+      REAL(8), INTENT(IN) :: offset
+      LOGICAL, INTENT(IN) :: is_multi
+      COMPLEX(8), INTENT(OUT) :: rows_g(:, :, :), rows_dg(:, :, :)
+      REAL(8) :: x(3), distance
+      INTEGER :: iw
+
+      DO iw = 1, geom%nwl
+         distance = offset*geom%wl_len(iw)
+         x = waterline_point(geom, iw) - distance*geom%wl_nh(:, iw)
+         x(3) = -distance
+         CALL field_influence_row(mesh, x, is_multi, rows_g(:, :, iw), rows_dg(:, :, iw))
+      END DO
+   END SUBROUTINE waterline_rows
+
+   PURE COMPLEX(8) FUNCTION field_potential(mesh, s, row_g, row_dg)
+      ! Perturbation potential of a state at the point of a row.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(first_order_state), INTENT(IN) :: s
+      COMPLEX(8), INTENT(IN) :: row_g(:, :), row_dg(:, :)
+      INTEGER :: i
+
+      field_potential = (0D0, 0D0)
+      DO i = 1, mesh%n
+         field_potential = field_potential + row_g(mesh%base(i), mesh%image(i))*s%dphi_p_dn(i) &
+                           - row_dg(mesh%base(i), mesh%image(i))*s%phi_p(i)
+      END DO
+      field_potential = field_potential/(4D0*PI)
+   END FUNCTION field_potential
+
+   SUBROUTINE waterline_field(mesh, geom, s, rows_g, rows_dg, phi_wl)
+      ! Total potential at the waterline segments, from the rows of waterline_rows.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(surface_geom), INTENT(IN) :: geom
+      TYPE(first_order_state), INTENT(IN) :: s
+      COMPLEX(8), INTENT(IN) :: rows_g(:, :, :), rows_dg(:, :, :)
+      COMPLEX(8), INTENT(OUT) :: phi_wl(:)
+      REAL(8) :: g_wave
+      INTEGER :: iw
+
+      g_wave = wave_gravity(s%omega, s%k, s%h)
+      DO iw = 1, geom%nwl
+         phi_wl(iw) = incident_phi(waterline_point(geom, iw), s%omega, s%k, s%h, s%amp, s%beta, g_wave) &
+                      + field_potential(mesh, s, rows_g(:, :, iw), rows_dg(:, :, iw))
+      END DO
+   END SUBROUTINE waterline_field
+
+END MODULE WaterlineField
