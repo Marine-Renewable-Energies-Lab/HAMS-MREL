@@ -155,6 +155,8 @@ CONTAINS
       
       CALL CalRotNormals(XR_MULTI(BODY_N,:), XYZ_MULTI_P(BODY_N,1:NELEM_MULTI(BODY_N),:), DXYZ_MULTI_P(BODY_N,1:NELEM_MULTI(BODY_N),:), NELEM_MULTI(BODY_N))                    ! The center of gravity should be used here, since the rotational normals are w.r.t COG
 
+      GEONRM_MULTI_P(BODY_N,1:NELEM_MULTI(BODY_N),1:3)=DXYZ_MULTI_P(BODY_N,1:NELEM_MULTI(BODY_N),1:3)      ! Before a generalized mode overwrites DXYZ_MULTI_P
+
       IF (IFLAG.NE.0) THEN                                                            ! IFLAG is used as an indicator for irregular frequency removal. If 1, these will be removed
        IF (iNELEM_MULTI(BODY_N).GT.0) THEN
       

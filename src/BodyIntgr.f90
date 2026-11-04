@@ -56,6 +56,7 @@ CONTAINS
 
       EAR=DS(JEL)
       ENV(:)=DXYZ_P(JEL,:)
+      ENV(1:3)=GEONRM_P(JEL,:)
 
       RKN(:)=RKBN(IEL,JEL,IS,:)                                      ! Rankine 1/r term
       GRN(:)=CGRN(IEL,JEL,IS,:)                                      ! Combination of the Local and Oscillatory term of the Green's function
@@ -156,14 +157,14 @@ CONTAINS
         YQ=SX(IS,IP)*XYZ_P(JEL,2)
         ZQ=           XYZ_P(JEL,3)
         CALL DINP(XQ,YQ,ZQ,XW(1),XW(2),BETA,DPOX,DPOY,DPOZ)
-        DUM(2)=SY(IS,IP)*DPOX*DXYZ_P(JEL,1)+SX(IS,IP)*DPOY*DXYZ_P(JEL,2)+DPOZ*DXYZ_P(JEL,3)        
+        DUM(2)=SY(IS,IP)*DPOX*GEONRM_P(JEL,1)+SX(IS,IP)*DPOY*GEONRM_P(JEL,2)+DPOZ*GEONRM_P(JEL,3)        
         TINRD(IS,IP)=TINRD(IS,IP)-DUM(1)*DUM(2)
        ELSE
         XQ=SX(IS,IP)*XYZ_P(JEL,1)
         YQ=SY(IS,IP)*XYZ_P(JEL,2)
         ZQ=          XYZ_P(JEL,3)
         CALL DINP(XQ,YQ,ZQ,XW(1),XW(2),BETA,DPOX,DPOY,DPOZ)
-        DUM(2)=SX(IS,IP)*DPOX*DXYZ_P(JEL,1)+SY(IS,IP)*DPOY*DXYZ_P(JEL,2)+DPOZ*DXYZ_P(JEL,3)        
+        DUM(2)=SX(IS,IP)*DPOX*GEONRM_P(JEL,1)+SY(IS,IP)*DPOY*GEONRM_P(JEL,2)+DPOZ*GEONRM_P(JEL,3)        
         TINRD(IS,IP)=TINRD(IS,IP)-DUM(1)*DUM(2)
        ENDIF
 
