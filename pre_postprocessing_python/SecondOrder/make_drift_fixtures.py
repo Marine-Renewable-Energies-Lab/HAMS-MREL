@@ -314,6 +314,29 @@ def main():
     write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods="near", motion_state="free",
                        write_terms=1, waterline_method="field")
 
+    # The velocity by source solve, on the hulls above: sharp and rounded, free and fixed, half mesh, deep water, two bodies
+    for name, source, motion, write_terms, depth in (("drift_source_cyl", "drift_cyl", "free", 2, 100.0),
+                                                     ("drift_source_cyl_half", "drift_cyl_half", "free", 0, 100.0),
+                                                     ("drift_source_cyl_fixed", "drift_cyl_fixed", "fixed", 0, 100.0),
+                                                     ("drift_source_round", "drift_round", "free", 2, 100.0),
+                                                     ("drift_source_round_fixed", "drift_round_fixed", "fixed", 0, 100.0),
+                                                     ("drift_source_deep", "drift_round_fixed", "fixed", 0, -1.0)):
+        target = case_dir(data, name)
+        for file in ("HullMesh.pnl", "Hydrostatic.in"):
+            shutil.copyfile(os.path.join(data, source, "input", file), os.path.join(target, file))
+        write_control(os.path.join(target, "ControlFile.in"), depth=depth,
+                      frequencies=DRIFT_CYL_FREQUENCIES[1:] if depth < 0.0 else DRIFT_CYL_FREQUENCIES,
+                      headings=DRIFT_CYL_HEADINGS)
+        write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state=motion,
+                           write_terms=write_terms, velocity_method="source")
+    target = case_dir(data, "drift_source_two_round")
+    for body in (1, 2):
+        for file in ("HullMesh_%d.pnl" % body, "Hydrostatic_%d.in" % body):
+            shutil.copyfile(os.path.join(data, "drift_two_round", "input", file), os.path.join(target, file))
+    shutil.copyfile(os.path.join(data, "drift_two_round", "input", "ControlFile.in"), os.path.join(target, "ControlFile.in"))
+    write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=2, drift_methods=both, motion_state="free",
+                       write_terms=0, velocity_method="source")
+
 
 if __name__ == "__main__":
     main()

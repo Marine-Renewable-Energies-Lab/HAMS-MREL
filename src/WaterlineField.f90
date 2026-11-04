@@ -45,6 +45,7 @@ MODULE WaterlineField
    PRIVATE
 
    PUBLIC :: field_influence_row, field_potential, waterline_rows, waterline_field, field_point_inside_body
+   PUBLIC :: rankine_panel_integral
 
    REAL(8), PARAMETER :: PI = 3.141592653589793D0
    INTEGER, PARAMETER :: IRR_HULL = 1          ! source panel on the hull, in SGLINTBD_*2
@@ -80,19 +81,10 @@ CONTAINS
 
             rkn = 0D0
             IF (flag == 1) THEN
+               CALL rankine_panel_integral(xf, jel, mesh%ncn(jel), is_multi, rkn)
                IF (is_multi) THEN
-                  IF (mesh%ncn(jel) == 3) THEN
-                     CALL SGLINTBD_MULTI_TRI2(xf, jel, rkn, IRR_HULL)
-                  ELSE
-                     CALL SGLINTBD_MULTI_QUAD2(xf, jel, rkn, IRR_HULL)
-                  END IF
                   CALL IMAGE_TERM_EXACT_MULTI(xf, xq, V, jel, IRR_HULL, grn, rkn(1), rkn(2:4))
                ELSE
-                  IF (mesh%ncn(jel) == 3) THEN
-                     CALL SGLINTBD_TRI2(xf, jel, rkn, IRR_HULL)
-                  ELSE
-                     CALL SGLINTBD_QUAD2(xf, jel, rkn, IRR_HULL)
-                  END IF
                   CALL IMAGE_TERM_EXACT(xf, xq, V, jel, IRR_HULL, grn, rkn(1), rkn(2:4))
                END IF
             END IF
@@ -103,6 +95,29 @@ CONTAINS
       END DO
       !$OMP END PARALLEL DO
    END SUBROUTINE field_influence_row
+
+   SUBROUTINE rankine_panel_integral(xf, jel, ncn, is_multi, rk)
+      ! The integral of 1/r over hull panel jel at the point xf in rk(1), and of its gradient with respect to the panel in rk(2:4).
+      ! is_multi selects the routines that read the combined multi-body arrays.
+      REAL(8), INTENT(IN) :: xf(3)
+      INTEGER, INTENT(IN) :: jel, ncn
+      LOGICAL, INTENT(IN) :: is_multi
+      REAL(8), INTENT(OUT) :: rk(4)
+
+      IF (is_multi) THEN
+         IF (ncn == 3) THEN
+            CALL SGLINTBD_MULTI_TRI2(xf, jel, rk, IRR_HULL)
+         ELSE
+            CALL SGLINTBD_MULTI_QUAD2(xf, jel, rk, IRR_HULL)
+         END IF
+      ELSE
+         IF (ncn == 3) THEN
+            CALL SGLINTBD_TRI2(xf, jel, rk, IRR_HULL)
+         ELSE
+            CALL SGLINTBD_QUAD2(xf, jel, rk, IRR_HULL)
+         END IF
+      END IF
+   END SUBROUTINE rankine_panel_integral
 
    PURE ELEMENTAL LOGICAL FUNCTION field_point_inside_body(wl_nz)
       ! True if the field point of a segment lies inside the body. The point is d out of the body along the horizontal normal and

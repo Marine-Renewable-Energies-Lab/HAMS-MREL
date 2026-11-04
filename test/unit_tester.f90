@@ -22,6 +22,7 @@ program unit_tester
     use test_near_field, only : collect_near_field
     use test_second_order_output, only : collect_second_order_output
     use test_waterline_field, only : collect_waterline_field
+    use test_source_velocity, only : collect_source_velocity
 
     implicit none
     integer :: stat, is
@@ -51,7 +52,8 @@ program unit_tester
         new_testsuite("far_field", collect_far_field), &
         new_testsuite("near_field", collect_near_field), &
         new_testsuite("second_order_output", collect_second_order_output), &
-        new_testsuite("waterline_field", collect_waterline_field) &
+        new_testsuite("waterline_field", collect_waterline_field), &
+        new_testsuite("source_velocity", collect_source_velocity) &
     ]
 
     stat = 0
@@ -64,7 +66,8 @@ program unit_tester
                                      .and. testsuites(is)%name /= "generalized_modes" &
                                      .and. testsuites(is)%name /= "panel_integrals" &
                                      .and. testsuites(is)%name /= "first_order_state_serial" &
-                                     .and. testsuites(is)%name /= "waterline_field"))
+                                     .and. testsuites(is)%name /= "waterline_field" &
+                                     .and. testsuites(is)%name /= "source_velocity"))
     end do
 
     if (stat > 0) then

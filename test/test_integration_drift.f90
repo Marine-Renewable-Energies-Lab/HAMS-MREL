@@ -64,6 +64,12 @@ module test_integration_drift
     ! The offset has to change term I by more than the printed digits, or the runs did not use it
     real(8), parameter :: offset_used_limit = 1d-5
 
+    ! Velocity by source solve. The solve holds the normal derivative by construction, and the potential of the sources is another
+    ! approximation of the potential of the direct solve
+    real(8), parameter :: source_normal_limit = 1d-2
+    real(8), parameter :: source_potential_limit = 5d-2
+
+    integer, parameter :: source_columns = 17   ! numeric columns of a SOURCE row of the panel diagnostics
     character(len=*), parameter :: main_case = "drift_cyl"
     character(len=*), parameter :: far_file = "Wamit_format/MeanDriftMomentum.8"
     character(len=*), parameter :: near_file = "Wamit_format/MeanDriftPressure.9"
@@ -106,7 +112,14 @@ contains
             new_unittest("run_drift_field_0p1", run_drift_field_0p1), &
             new_unittest("run_drift_field_irsp", run_drift_field_irsp), &
             new_unittest("run_drift_field_irsp_ref", run_drift_field_irsp_ref), &
-            new_unittest("run_drift_field_two", run_drift_field_two) &
+            new_unittest("run_drift_field_two", run_drift_field_two), &
+            new_unittest("run_drift_source_cyl", run_drift_source_cyl), &
+            new_unittest("run_drift_source_cyl_half", run_drift_source_cyl_half), &
+            new_unittest("run_drift_source_cyl_fixed", run_drift_source_cyl_fixed), &
+            new_unittest("run_drift_source_round", run_drift_source_round), &
+            new_unittest("run_drift_source_round_fixed", run_drift_source_round_fixed), &
+            new_unittest("run_drift_source_deep", run_drift_source_deep), &
+            new_unittest("run_drift_source_two_round", run_drift_source_two_round) &
         ]
     end subroutine setup_drift
 
@@ -150,7 +163,16 @@ contains
             new_unittest("near_output_switches", near_output_switches), &
             new_unittest("offset_sensitivity_recorded", offset_sensitivity_recorded), &
             new_unittest("field_irsp_stability", field_irsp_stability), &
-            new_unittest("field_two_bodies", field_two_bodies) &
+            new_unittest("field_two_bodies", field_two_bodies), &
+            new_unittest("source_normal_consistent", source_normal_consistent), &
+            new_unittest("source_potential_consistent", source_potential_consistent), &
+            new_unittest("source_near_far", source_near_far), &
+            new_unittest("source_near_far_low_frequency", source_near_far_low_frequency), &
+            new_unittest("source_near_far_deep", source_near_far_deep), &
+            new_unittest("source_two_body_total", source_two_body_total), &
+            new_unittest("source_symmetry", source_symmetry), &
+            new_unittest("source_leaves_far_field", source_leaves_far_field), &
+            new_unittest("source_sharp_recorded", source_sharp_recorded) &
         ]
     end subroutine collect_tests_drift
 
@@ -338,6 +360,41 @@ contains
         type(error_type), allocatable, intent(out) :: error
         call run_case("drift_field_irsp_ref", near_with_terms(), error)
     end subroutine run_drift_field_irsp_ref
+
+    subroutine run_drift_source_cyl(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("drift_source_cyl", [character(len=40) :: far_file, near_file, "SecondOrder/PanelDiagnostics.txt"], error)
+    end subroutine run_drift_source_cyl
+
+    subroutine run_drift_source_cyl_half(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("drift_source_cyl_half", [character(len=40) :: far_file, near_file], error)
+    end subroutine run_drift_source_cyl_half
+
+    subroutine run_drift_source_cyl_fixed(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("drift_source_cyl_fixed", [character(len=40) :: far_file, near_file], error)
+    end subroutine run_drift_source_cyl_fixed
+
+    subroutine run_drift_source_round(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("drift_source_round", [character(len=40) :: far_file, near_file, "SecondOrder/PanelDiagnostics.txt"], error)
+    end subroutine run_drift_source_round
+
+    subroutine run_drift_source_round_fixed(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("drift_source_round_fixed", [character(len=40) :: far_file, near_file], error)
+    end subroutine run_drift_source_round_fixed
+
+    subroutine run_drift_source_deep(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("drift_source_deep", [character(len=40) :: far_file, near_file], error)
+    end subroutine run_drift_source_deep
+
+    subroutine run_drift_source_two_round(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("drift_source_two_round", [character(len=40) :: far_file, near_file], error)
+    end subroutine run_drift_source_two_round
 
     subroutine run_drift_field_two(error)
         type(error_type), allocatable, intent(out) :: error
@@ -1315,6 +1372,182 @@ contains
     end subroutine field_two_bodies
 
     !> Real part of the waterline term of load I of a body, for one frequency and heading, as written to MeanDriftTerms.txt.
+    ! ------------------------------------------------------------------------------------- velocity by source solve
+
+    !> The gradient of the source solve has the normal derivative it was solved for, on every panel of every state. The
+    !> difference on a panel is relative to the largest normal derivative of that state.
+    subroutine source_normal_consistent(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst_sharp, worst_round
+
+        call source_normal_of("drift_source_cyl", worst_sharp, error)
+        if (allocated(error)) return
+        call source_normal_of("drift_source_round", worst_round, error)
+        if (allocated(error)) return
+        call report("source_normal_consistent sharp", worst_sharp)
+        call report("source_normal_consistent rounded", worst_round)
+        call check_below(error, "source_normal_consistent", max(worst_sharp, worst_round), source_normal_limit)
+    end subroutine source_normal_consistent
+
+    subroutine source_normal_of(name, worst, error)
+        character(len=*), intent(in) :: name
+        real(8), intent(out) :: worst
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: rows(:,:)
+        complex(8), allocatable :: exact(:), recovered(:)
+        integer :: first, last
+
+        call read_diagnostics(name, "SOURCE", source_columns, rows, error)
+        if (allocated(error)) return
+        exact = cmplx(rows(:,8), rows(:,9), kind=8)
+        recovered = cmplx(rows(:,10), rows(:,11), kind=8)
+        worst = 0d0
+        first = 1
+        do while (first <= size(rows, 1))
+            last = first
+            do while (last < size(rows, 1))
+                if (.not. same(rows(last + 1,1), rows(first,1)) .or. rows(last + 1,2) /= rows(first,2)) exit
+                last = last + 1
+            end do
+            worst = max(worst, maxval(abs(recovered(first:last) - exact(first:last)))/maxval(abs(exact(first:last))))
+            first = last + 1
+        end do
+    end subroutine source_normal_of
+
+    !> The potential of the sources against the potential of the direct solve, per panel. The limit is on the rounded hull.
+    !> The sharp hull is printed, where the two differ most next to the edge.
+    subroutine source_potential_consistent(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst_sharp, worst_round
+
+        call source_potential_of("drift_source_cyl", worst_sharp, error)
+        if (allocated(error)) return
+        call source_potential_of("drift_source_round", worst_round, error)
+        if (allocated(error)) return
+        call report("source_potential_consistent sharp, not limited", worst_sharp)
+        call report("source_potential_consistent rounded", worst_round)
+        call check_below(error, "source_potential_consistent", worst_round, source_potential_limit)
+    end subroutine source_potential_consistent
+
+    subroutine source_potential_of(name, worst, error)
+        character(len=*), intent(in) :: name
+        real(8), intent(out) :: worst
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: rows(:,:)
+        complex(8), allocatable :: direct(:), sources(:)
+
+        call read_diagnostics(name, "SOURCE", source_columns, rows, error)
+        if (allocated(error)) return
+        direct = cmplx(rows(:,4), rows(:,5), kind=8)
+        sources = cmplx(rows(:,6), rows(:,7), kind=8)
+        worst = maxval(abs(sources - direct)/abs(direct))
+    end subroutine source_potential_of
+
+    !> F_x against far-field on the rounded hull, held fixed and free, as fixed_near_far and free_near_far.
+    subroutine source_near_far(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst_fx, worst_f, worst_mz
+
+        call check(error, log_has("drift_source_round", "source solve"), "The source solve did not run")
+        if (allocated(error)) return
+        call near_against_far("drift_source_round_fixed", origins_at_zero(1), 0d0, worst_fx, worst_f, worst_mz, error)
+        if (allocated(error)) return
+        call check_below(error, "source_near_far fixed", worst_fx, near_far_limit)
+        if (allocated(error)) return
+        call near_against_far("drift_source_round", origins_at_zero(1), small_net_force_below, worst_fx, worst_f, worst_mz, error)
+        if (allocated(error)) return
+        call check_below(error, "source_near_far free", worst_fx, near_far_limit)
+    end subroutine source_near_far
+
+    !> The free hull at 0.70 rad/s alone, where the net force is small next to its terms, as free_near_far_low_frequency.
+    subroutine source_near_far_low_frequency(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst_fx, worst_f, worst_mz
+
+        call near_against_far("drift_source_round", origins_at_zero(1), 0d0, worst_fx, worst_f, worst_mz, error, &
+                              only_omega=low_frequency)
+        if (allocated(error)) return
+        call check_below(error, "source_near_far_low_frequency", worst_f, near_far_limit)
+    end subroutine source_near_far_low_frequency
+
+    !> The Green function of deep water goes by another routine.
+    subroutine source_near_far_deep(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst_fx, worst_f, worst_mz
+
+        call near_against_far("drift_source_deep", origins_at_zero(1), 0d0, worst_fx, worst_f, worst_mz, error)
+        if (allocated(error)) return
+        call check_below(error, "source_near_far_deep", worst_fx, near_far_limit)
+    end subroutine source_near_far_deep
+
+    !> The multi-body arrays, as two_body_total.
+    subroutine source_two_body_total(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst_fx, worst_f, worst_mz, worst_pair
+
+        call near_against_far("drift_source_two_round", reshape([0d0, 0d0, 0d0, 30d0], [2, 2]), 0d0, worst_fx, worst_f, worst_mz, &
+                              error, worst_pair)
+        if (allocated(error)) return
+        call check_below(error, "source_two_body_total", worst_f, near_far_limit)
+        if (allocated(error)) return
+        call check_below(error, "source_two_body_total off-diagonal heading pairs", worst_pair, heading_pair_limit)
+    end subroutine source_two_body_total
+
+    !> The same cylinder as a half mesh with ISY = 1 goes through the two symmetry blocks of the solve.
+    subroutine source_symmetry(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: full(:,:), half(:,:)
+        real(8) :: worst
+        integer :: r
+
+        call read_drift(output_dir("drift_source_cyl")//near_file, full, error)
+        if (allocated(error)) return
+        call read_drift(output_dir("drift_source_cyl_half")//near_file, half, error)
+        if (allocated(error)) return
+        call check(error, size(full, 1) == size(half, 1), "Half and full mesh runs have different numbers of near-field rows")
+        if (allocated(error)) return
+        worst = 0d0
+        do r = 1, size(full, 1)
+            if (nint(full(r,4)) == 1) worst = max(worst, abs(full(r,7) - half(r,7))/abs(full(r,7)))
+            if (nint(full(r,4)) == 2 .and. abs(full(r,2)) > 1d-9) worst = max(worst, abs(full(r,7) - half(r,7))/abs(full(r,7)))
+        end do
+        call report("source_symmetry", worst)
+        call check_below(error, "source_symmetry", worst, half_mesh_limit)
+    end subroutine source_symmetry
+
+    !> The source solve only changes the velocity on the body, so far-field stays as it is with differencing.
+    subroutine source_leaves_far_field(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: differencing(:,:), source(:,:)
+
+        call read_drift(output_dir("drift_round")//far_file, differencing, error)
+        if (allocated(error)) return
+        call read_drift(output_dir("drift_source_round")//far_file, source, error)
+        if (allocated(error)) return
+        call check(error, size(differencing, 1) == size(source, 1), "Far-field rows differ in number")
+        if (allocated(error)) return
+        call check_below(error, "source_leaves_far_field", maxval(abs(differencing(:,7) - source(:,7))), printed_limit)
+    end subroutine source_leaves_far_field
+
+    !> The sharp bilge is printed against far-field and differencing, without a limit. No check beyond the numbers being read.
+    subroutine source_sharp_recorded(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst_fx, worst_f, worst_mz
+
+        call near_against_far("drift_source_cyl_fixed", origins_at_zero(1), 0d0, worst_fx, worst_f, worst_mz, error)
+        if (allocated(error)) return
+        call report("sharp bilge fixed, source solve, worst F_x", worst_fx)
+        call near_against_far("drift_cyl_fixed", origins_at_zero(1), 0d0, worst_fx, worst_f, worst_mz, error)
+        if (allocated(error)) return
+        call report("sharp bilge fixed, differencing, worst F_x", worst_fx)
+        call near_against_far("drift_source_cyl", origins_at_zero(1), small_net_force_below, worst_fx, worst_f, worst_mz, error)
+        if (allocated(error)) return
+        call report("sharp bilge free, source solve, worst F_x", worst_fx)
+        call near_against_far(main_case, origins_at_zero(1), small_net_force_below, worst_fx, worst_f, worst_mz, error)
+        if (allocated(error)) return
+        call report("sharp bilge free, differencing, worst F_x", worst_fx)
+    end subroutine source_sharp_recorded
+
     subroutine waterline_term(name, omega, beta_deg, body, i, value, error)
         character(len=*), intent(in) :: name
         real(8), intent(in) :: omega, beta_deg
@@ -1853,7 +2086,7 @@ contains
         character(len=*), intent(in) :: path
         character(len=:), allocatable, intent(out) :: lines(:)
         type(error_type), allocatable, intent(out) :: error
-        character(len=256) :: buffer
+        character(len=512) :: buffer
         integer :: unit, ios, n, r
 
         open (newunit=unit, file=path, status='old', action='read', iostat=ios)
@@ -1866,7 +2099,7 @@ contains
             n = n + 1
         end do
         rewind (unit)
-        allocate (character(len=256) :: lines(n))
+        allocate (character(len=512) :: lines(n))
         do r = 1, n
             read (unit, '(A)') lines(r)
         end do

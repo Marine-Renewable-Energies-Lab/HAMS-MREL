@@ -45,7 +45,7 @@ MODULE SecondOrderDriver
    USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom
    USE FirstOrderState, ONLY: expand_images, build_state
    USE SurfaceGeometry, ONLY: build_surface_geom, DEFAULT_SHARP_DEG
-   USE SurfaceVelocity, ONLY: velocity_differencing
+   USE SurfaceVelocity, ONLY: velocity_differencing, source_operator, build_source_operator, velocity_source
    USE FarFieldDrift, ONLY: far_amplitude, far_field_pair, far_field_pairs
    USE NearFieldDrift, ONLY: waterline_extrapolate, near_field_pair, T_WATERLINE, T_HYDROSTATIC
    USE WaterlineField, ONLY: waterline_rows, waterline_field, field_point_inside_body
@@ -67,6 +67,10 @@ MODULE SecondOrderDriver
    LOGICAL :: multi_arrays = .FALSE.                   ! the solver's mesh is in the combined multi-body arrays
    INTEGER :: unit_far = 0, unit_near = 0, unit_terms = 0, unit_diag = 0   ! 0: not open (NEWUNIT gives negative numbers)
    INTEGER :: n_velocity_fields = 0, n_fallback_total = 0                  ! over the run, logged by so_finish
+   TYPE(source_operator) :: source_op                  ! of the current frequency, for velocity_method = source
+   COMPLEX(8), ALLOCATABLE :: phi_source(:)            ! (n), potential of the sources of the current state, for the diagnostics
+   INTEGER :: n_source_builds = 0                      ! over the run, logged by so_finish with the two times
+   REAL(8) :: source_build_seconds = 0D0, source_solve_seconds = 0D0
 
 CONTAINS
 
@@ -126,6 +130,7 @@ CONTAINS
          END IF
          IF (LEN_TRIM(msg) > 0) WRITE (*, *) 'Mean drift warning: ', msg
          ALLOCATE (phi_wl(geom%nwl, SIZE(states)))
+         IF (opts%velocity_method == 2 .AND. opts%write_terms == 2) ALLOCATE (phi_source(mesh%n))
          IF (opts%waterline_method == 2) THEN
             IF (ANY(field_point_inside_body(geom%wl_nz))) THEN
                WRITE (*, '(a)') 'Mean drift: waterline_method = field puts its point inside the body where'
@@ -165,6 +170,9 @@ CONTAINS
          WRITE (unit_diag, '(a)') '# FORCE omega beta_deg j Re(F_j) Im(F_j)      excitation force, F = i*EXFC'
          WRITE (unit_diag, '(a)') '# TOTAL omega beta_deg theta_deg Re(a) Im(a)  amplitude of the perturbation wave'
          WRITE (unit_diag, '(a)') '# PANEL omega beta_deg panel x y z Re(phi_D) Im(phi_D) Re(phi_total) Im(phi_total)'
+         IF (ALLOCATED(phi_source)) THEN
+            WRITE (unit_diag, '(a)') '# SOURCE omega beta_deg panel phi_P phi_source dphi_P_dn grad_P.n grad_P(1:3)   each Re Im'
+         END IF
       END IF
    END SUBROUTINE common_setup
 
@@ -219,9 +227,15 @@ CONTAINS
       slot = MERGE(ib, 1, opts%mean_drift == 2)
       CALL build_state(mesh, W1, WK, V, H, 1D0, BETA, G, RHO, mxpot_in, dspl_in, opts%motion_fixed, states(slot))
       IF (opts%do_near) THEN
-         CALL velocity_differencing(mesh, geom, states(slot), n_fallback)
+         IF (opts%velocity_method == 2) THEN
+            ! As for the waterline rows below: the operator holds for all the headings of a frequency
+            IF (ib == 1) CALL timed_source_build()
+            CALL timed_source_velocity(states(slot))
+         ELSE
+            CALL velocity_differencing(mesh, geom, states(slot), n_fallback)
+            n_fallback_total = n_fallback_total + n_fallback
+         END IF
          n_velocity_fields = n_velocity_fields + 1
-         n_fallback_total = n_fallback_total + n_fallback
          IF (opts%waterline_method == 2) THEN
             ! The headings of a frequency come in order, and the rows hold for all of them
             IF (ib == 1) CALL waterline_rows(mesh, geom, opts%waterline_offset, multi_arrays, rows_g, rows_dg)
@@ -248,6 +262,30 @@ CONTAINS
          END IF
       END IF
    END SUBROUTINE after_motion
+
+   SUBROUTINE timed_source_build()
+      INTEGER(8) :: t0, t1, rate
+
+      CALL SYSTEM_CLOCK(t0, rate)
+      CALL build_source_operator(mesh, multi_arrays, ALLOCATED(phi_source), source_op)
+      CALL SYSTEM_CLOCK(t1)
+      source_build_seconds = source_build_seconds + REAL(t1 - t0, 8)/REAL(rate, 8)
+      n_source_builds = n_source_builds + 1
+   END SUBROUTINE timed_source_build
+
+   SUBROUTINE timed_source_velocity(s)
+      TYPE(first_order_state), INTENT(INOUT) :: s
+      INTEGER(8) :: t0, t1, rate
+
+      CALL SYSTEM_CLOCK(t0, rate)
+      IF (ALLOCATED(phi_source)) THEN
+         CALL velocity_source(mesh, source_op, s, phi_source)
+      ELSE
+         CALL velocity_source(mesh, source_op, s)
+      END IF
+      CALL SYSTEM_CLOCK(t1)
+      source_solve_seconds = source_solve_seconds + REAL(t1 - t0, 8)/REAL(rate, 8)
+   END SUBROUTINE timed_source_velocity
 
    SUBROUTINE so_end_frequency(opts, kk)
       ! Call after the heading loop of frequency kk. Evaluates the heading pairs when mean_drift = 2.
@@ -280,9 +318,16 @@ CONTAINS
    END SUBROUTINE so_end_frequency
 
    SUBROUTINE so_finish()
-      ! Closes the result files and logs what the velocity differencing could not do. Call after the frequency loop.
-      IF (unit_near /= 0) WRITE (*, '(a,I0,a,I0,a)') ' Mean drift velocity fallback: ', n_fallback_total, &
-         ' panel values over ', n_velocity_fields, ' first-order solutions have only the normal part of the velocity'
+      ! Closes the result files and logs the velocity method: what differencing could not do, or the time of the source solve.
+      ! Call after the frequency loop.
+      IF (n_source_builds > 0) THEN
+         WRITE (*, '(a,F10.2,a,I0,a,F10.2,a,I0,a)') ' Mean drift source solve: ', source_build_seconds, &
+            ' s to assemble and factorize at ', n_source_builds, ' frequencies, ', source_solve_seconds, &
+            ' s to solve ', n_velocity_fields, ' first-order solutions'
+      ELSE IF (unit_near /= 0) THEN
+         WRITE (*, '(a,I0,a,I0,a)') ' Mean drift velocity fallback: ', n_fallback_total, &
+            ' panel values over ', n_velocity_fields, ' first-order solutions have only the normal part of the velocity'
+      END IF
       IF (unit_far /= 0) CLOSE (unit_far)
       IF (unit_near /= 0) CLOSE (unit_near)
       IF (unit_terms /= 0) CLOSE (unit_terms)
@@ -406,6 +451,13 @@ CONTAINS
          WRITE (unit_diag, '(a,2ES24.15,I8,7ES24.15)') 'PANEL ', s%omega, beta_deg, i, mesh%xc(:, i), &
             REAL(phi_d, 8), AIMAG(phi_d), REAL(s%phi_i(i) + s%phi_p(i), 8), AIMAG(s%phi_i(i) + s%phi_p(i))
       END DO
+
+      IF (ALLOCATED(phi_source)) THEN
+         DO i = 1, mesh%n
+            WRITE (unit_diag, '(a,2ES24.15,I8,14ES24.15)') 'SOURCE ', s%omega, beta_deg, i, s%phi_p(i), phi_source(i), &
+               s%dphi_p_dn(i), SUM(s%grad_p(:, i)*mesh%nrm(:, i)), s%grad_p(:, i)
+         END DO
+      END IF
    END SUBROUTINE write_heading_diagnostics
 
    PURE REAL(8) FUNCTION norm_c(z)

@@ -5,6 +5,7 @@ threads. See test/data/drift_cyl/README.md.
 
 Usage:
     python near_far_study.py <path to hamsmrel> <work directory> [--bilge-radius R] [--multiples 1,2,3]
+           [--velocity-method differencing|source] [--cases fixed,free,springs]
 
 With no --bilge-radius, the hull has the sharp bilge of drift_cyl. With one, it is the hull of drift_round, with wall rows
 cosine spaced towards the waterline, as in the fixtures, or uniform in z with --rows uniform. Each multiple scales all the
@@ -61,7 +62,7 @@ def read_terms(path):
     return values
 
 
-def run_case(hams, work, name, motion, external, multiple, bilge_radius, rows):
+def run_case(hams, work, name, motion, external, multiple, bilge_radius, rows, velocity_method):
     """Run one case. Returns the panel count and the rows (omega, far, near, terms)."""
     base = os.path.join(work, "%s_x%d" % (name, multiple))
     path = os.path.join(base, "input")
@@ -69,7 +70,7 @@ def run_case(hams, work, name, motion, external, multiple, bilge_radius, rows):
     mesh = write_hull(path, multiple, bilge_radius, external, rows == "uniform")
     fixtures.write_control(os.path.join(path, "ControlFile.in"), frequencies=FREQUENCIES, threads=os.cpu_count())
     fixtures.write_second_order(os.path.join(path, "SecondOrder.in"), mean_drift=1, drift_methods="far near",
-                                motion_state=motion, write_terms=1)
+                                motion_state=motion, write_terms=1, velocity_method=velocity_method)
     output = os.path.join(base, "output")
     with open(os.path.join(base, "log.txt"), "w") as log:
         subprocess.run([hams, path + os.sep, output + os.sep], stdout=log, stderr=subprocess.STDOUT, check=True)
@@ -87,14 +88,18 @@ def main():
     parser.add_argument("--bilge-radius", type=float)
     parser.add_argument("--multiples", default="1,2,3")
     parser.add_argument("--rows", choices=("cosine", "uniform"), default="cosine")
+    parser.add_argument("--velocity-method", choices=("differencing", "source"), default="differencing")
+    parser.add_argument("--cases", default="fixed,free,springs")
     args = parser.parse_args()
     multiples = [int(text) for text in args.multiples.split(",")]
 
     failed = False
     for name, motion, external, unchecked_below in CASES:
+        if name not in args.cases.split(","):
+            continue
         for multiple in multiples:
             panels, rows = run_case(os.path.abspath(args.hams), args.work, name, motion, external, multiple, args.bilge_radius,
-                                    args.rows)
+                                    args.rows, args.velocity_method)
             for omega, far, near, terms in rows:
                 error = abs(near - far) / abs(far)
                 checked = multiple == multiples[-1] and omega >= unchecked_below

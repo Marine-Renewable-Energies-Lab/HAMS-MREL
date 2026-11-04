@@ -26,6 +26,7 @@ module test_waterline_field
   private
 
   public :: collect_waterline_field
+  public :: set_wave, load_single, load_multi, load_panels
 
   complex(8), parameter :: ci = (0d0, 1d0)
   ! The two sides differ only in the order of the sums and the panels' symmetry bookkeeping
@@ -303,13 +304,22 @@ contains
     integer, intent(in) :: isx_in, isy_in
     type(panel_mesh), intent(out) :: mesh
     type(panel_mesh) :: full
+
+    call make_cylinder(radius, draft, ntheta, nz, nr, full, .true.)
+    call load_panels(full, isx_in, isy_in, mesh)
+  end subroutine load_single
+
+  !> Puts a whole hull in the single-body arrays, or the side of it that a symmetry plane keeps.
+  subroutine load_panels(full, isx_in, isy_in, mesh)
+    type(panel_mesh), intent(in) :: full
+    integer, intent(in) :: isx_in, isy_in
+    type(panel_mesh), intent(out) :: mesh
     logical, allocatable :: keep(:)
     integer, allocatable :: body(:)
     integer :: i, k, ne
 
     call set_symmetry(isx_in, isy_in)
     NBODY = 1
-    call make_cylinder(radius, draft, ntheta, nz, nr, full, .true.)
     call kept_panels(full, isx_in, isy_in, keep)
     ne = count(keep)
     NELEM = ne
@@ -343,7 +353,7 @@ contains
     allocate (body(ne))
     body = 1
     call expand_images(XYZ_P, GEONRM_P, DXYZ_P, DS, PNSZ, XYZ, NCN, NCON, body, reshape([(0d0, i = 1, 3)], [3, 1]), ISX, ISY, NSYS, mesh)
-  end subroutine load_single
+  end subroutine load_panels
 
   !> Two of the cylinders, in the combined arrays. The panel moment arms are about the centre of each cylinder.
   subroutine load_multi(isy_in, mesh)
