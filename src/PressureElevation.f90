@@ -80,9 +80,9 @@ CONTAINS
        XQ(1)=XYZ_P(JEL,1)     ! XQ: source point,  XP: field point
        XQ(2)=XYZ_P(JEL,2)
        XQ(3)=XYZ_P(JEL,3)
-       ENV(1)=DXYZ_P(JEL,1)
-       ENV(2)=DXYZ_P(JEL,2)
-       ENV(3)=DXYZ_P(JEL,3)
+       ENV(1)=GEONRM_P(JEL,1)
+       ENV(2)=GEONRM_P(JEL,2)
+       ENV(3)=GEONRM_P(JEL,3)
        EAR=DS(JEL)
 
        DO IS=1, NSYS
@@ -203,7 +203,7 @@ CONTAINS
       ! pressure/elevation output without touching the (correct) force code.
       !
       ! On-surface test for each panel: (a) the point lies in the panel plane,
-      ! i.e. |(P - vertex).n| is below a thin tolerance (DXYZ_P is the unit
+      ! i.e. |(P - vertex).n| is below a thin tolerance (GEONRM_P is the unit
       ! normal); and (b) the in-plane projection is inside the panel polygon,
       ! i.e. (edge x (P - vertex)).n keeps a consistent sign around all NCN
       ! edges. This is a true point-on-surface test (valid for ANY field point
@@ -212,9 +212,9 @@ CONTAINS
       ONBODY=.FALSE.
       DO JEL=1, NELEM
        NCV=NCN(JEL)
-       EN3(1)=DXYZ_P(JEL,1)
-       EN3(2)=DXYZ_P(JEL,2)
-       EN3(3)=DXYZ_P(JEL,3)
+       EN3(1)=GEONRM_P(JEL,1)
+       EN3(2)=GEONRM_P(JEL,2)
+       EN3(3)=GEONRM_P(JEL,3)
        TOLP=MAX(1.0D-6,1.0D-3*PNSZ(JEL))
        TOLA=1.0D-3*PNSZ(JEL)**2
        DO IS=1, NSYS
