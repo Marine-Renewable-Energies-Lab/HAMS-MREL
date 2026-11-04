@@ -23,6 +23,8 @@ HAMS_to_WECSim/
 ├── HAMS_to_WECSim.py
 └── postprocessing_functions_Mat.py
 generalized_modes.py
+SecondOrder/
+└── make_mesh.py
 ```
 
 Dependencies: `numpy`, `matplotlib`, `shapely`. The WEC-Sim conversion scripts additionally use `cmath`, `os`, and `datetime` (all standard library).
@@ -155,3 +157,16 @@ The script includes a two-stage execution workflow controlled by flags at the bo
 
 1. **`create_data_from_HAMS`** — reads raw HAMS output, compiles all DOF combinations, and produces intermediate per-frequency result files.
 2. **`create_final_WECSIM_files`** — reads the intermediate files and assembles the final WAMIT `.out` file with user-specified hydrostatic data, volumes, and centers of gravity/buoyancy.
+
+## Mesh Generation for Second-Order Cases
+
+**`SecondOrder/make_mesh.py`** writes a `HullMesh.pnl` (format in [Input Files](input_files.md#hullmeshpnl)) and a matching `Hydrostatic.in` for a surface-piercing vertical cylinder or box. It generated the meshes of the `test/data/drift_*` integration cases.
+
+```
+python make_mesh.py cylinder --radius 10 --draft 10 --ntheta 32 --nz 6 --nr 6 --out HullMesh.pnl
+python make_mesh.py box --lx 20 --ly 10 --draft 5 --nx 10 --ny 5 --nz 4 --out HullMesh.pnl
+```
+
+- The hull has no lid. The script stops if any panel normal, computed as HAMS does, points into the fluid.
+- `--x0` and `--y0` shift the body in the horizontal plane. `--hydro-out` sets the path of the hydrostatic file, which by default is `Hydrostatic.in` next to the mesh.
+- The hydrostatics are those of a freely floating, uniform solid prism on the discretized waterplane polygon: mass $\rho V$, centre of gravity and of buoyancy at half draft, about the point $(x_0, y_0, 0)$. Give that point as the rotation centre in `ControlFile.in`. External damping and stiffness are zero. The script stops if a metacentric height is not positive, and prints the values it writes.

@@ -1,0 +1,13 @@
+! field point number in ControlFile.in, hull panel whose centroid it is
+1 1
+2 4
+3 8
+4 10
+5 14
+6 40
+7 85
+8 130
+9 133
+10 200
+11 270
+12 448
