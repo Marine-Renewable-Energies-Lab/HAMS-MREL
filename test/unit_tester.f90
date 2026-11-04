@@ -12,6 +12,7 @@ program unit_tester
     use test_iterative_solvers, only : collect_iterative_solvers
     use test_create_directory, only : collect_create_directory
     use test_image_term, only : collect_image_term
+    use test_panel_integrals, only : collect_panel_integrals
 
     implicit none
     integer :: stat, is
@@ -30,7 +31,8 @@ program unit_tester
         new_testsuite("infgreen3d", collect_infgreen3d), &
         new_testsuite("iterative_solvers", collect_iterative_solvers), &
         new_testsuite("create_directory", collect_create_directory), &
-        new_testsuite("image_term", collect_image_term) &
+        new_testsuite("image_term", collect_image_term), &
+        new_testsuite("panel_integrals", collect_panel_integrals) &
     ]
 
     stat = 0
@@ -39,7 +41,8 @@ program unit_tester
         write(error_unit, fmt) "Testing:", testsuites(is)%name
         ! The solver tests share module state (HMAT_READY, the preconditioner), so they can't run in parallel.
         call run_testsuite(testsuites(is)%collect, error_unit, stat, &
-                           parallel=(testsuites(is)%name /= "iterative_solvers" .and. testsuites(is)%name /= "image_term"))
+                           parallel=(testsuites(is)%name /= "iterative_solvers" .and. testsuites(is)%name /= "image_term" &
+                                     .and. testsuites(is)%name /= "panel_integrals"))
     end do
 
     if (stat > 0) then
