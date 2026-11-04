@@ -26,7 +26,7 @@ MODULE SecondOrderTypes
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: so_options
+   PUBLIC :: so_options, panel_mesh, first_order_state
 
    TYPE :: so_options
       LOGICAL :: active = .FALSE.
@@ -41,5 +41,23 @@ MODULE SecondOrderTypes
       INTEGER :: write_terms = 1         ! 0 none, 1 term file, 2 also panel diagnostics
       REAL(8) :: wl_z_tolerance = 1D-6   ! relative to body size
    END TYPE so_options
+
+   TYPE :: panel_mesh
+      ! Full panel set with symmetry images expanded. Panels 1..nbase are image 1, the next nbase are image 2.
+      INTEGER :: n = 0, nnode = 0, nbody = 1, nbase = 0, nsys = 1
+      REAL(8), ALLOCATABLE :: xc(:,:), nrm(:,:), area(:), psize(:)   ! (3,n), (3,n), (n), (n)
+      REAL(8), ALLOCATABLE :: nj(:,:)       ! (6,n), generalized normals as used in the radiation boundary condition
+      REAL(8), ALLOCATABLE :: xnode(:,:)    ! (3,nnode)
+      INTEGER, ALLOCATABLE :: ncn(:), ncon(:,:), body(:), base(:), image(:)   ! (n), (4,n), (n), (n), (n)
+      REAL(8), ALLOCATABLE :: xr(:,:)       ! (3,nbody), body reference points
+   END TYPE panel_mesh
+
+   TYPE :: first_order_state
+      ! First-order solution for one frequency and heading, in physical quantities with time factor e^{-i omega t}.
+      REAL(8) :: omega = 0D0, k = 0D0, nu = 0D0, h = -1D0, amp = 1D0, beta = 0D0, g = 0D0, rho = 0D0   ! h < 0: deep water
+      COMPLEX(8), ALLOCATABLE :: phi_i(:), phi_p(:), dphi_p_dn(:), dphi_dn(:)   ! (n)
+      COMPLEX(8), ALLOCATABLE :: grad_i(:,:), grad_p(:,:)   ! (3,n); grad_p is filled later by the surface velocity code
+      COMPLEX(8), ALLOCATABLE :: xi(:,:)                    ! (6,nbody), translations then rotations
+   END TYPE first_order_state
 
 END MODULE SecondOrderTypes
