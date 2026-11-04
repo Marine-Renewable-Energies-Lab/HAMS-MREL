@@ -143,12 +143,14 @@ def main():
                       headings=DRIFT_CYL_HEADINGS, **control)
         write_second_order(os.path.join(target, "SecondOrder.in"), **options)
 
-    # The cylinder with a rounded bilge: free, held fixed, and free on external surge and heave springs
-    for name, motion, external in (("drift_round", "free", None), ("drift_round_fixed", "fixed", None),
-                                   ("drift_round_kstf", "free", EXTERNAL_RESTORING)):
+    # The cylinder with a rounded bilge: free, held fixed, and free on external surge and heave springs. The springs have
+    # wall rows uniform in z, the mesh family that converges there: see the README for the cosine rows.
+    for name, motion, external, uniform_rows in (("drift_round", "free", None, False),
+                                                 ("drift_round_fixed", "fixed", None, False),
+                                                 ("drift_round_kstf", "free", EXTERNAL_RESTORING, True)):
         target = case_dir(data, name)
         make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
-                                         external_restoring=external, **ROUND_MESH)
+                                         external_restoring=external, uniform_rows=uniform_rows, **ROUND_MESH)
         write_control(os.path.join(target, "ControlFile.in"), frequencies=DRIFT_CYL_FREQUENCIES,
                       headings=DRIFT_CYL_HEADINGS)
         write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state=motion,
@@ -224,14 +226,15 @@ def main():
         write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="free",
                            write_terms=0)
 
-    # Graded lids, which must draw the warning on thin rim panels, one body and two
-    target = case_dir(data, "drift_lid_graded")
-    make_mesh.write_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"), **THIN_LID_MESH)
-    make_mesh.write_waterplane(os.path.join(target, "WaterPlaneMesh.pnl"), THIN_LID_MESH["radius"], THIN_LID_MESH["ntheta"],
-                               THIN_LID_MESH["nr"], graded=True)
-    write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=(1.35,), headings=(0.0,), irsp=1)
-    write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods="far", motion_state="fixed",
-                       write_terms=0)
+    # Graded lids, which must draw the warning on thin rim panels, one body and two, and with near-field on
+    for name, methods in (("drift_lid_graded", "far"), ("drift_lid_graded_near", both)):
+        target = case_dir(data, name)
+        make_mesh.write_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"), **THIN_LID_MESH)
+        make_mesh.write_waterplane(os.path.join(target, "WaterPlaneMesh.pnl"), THIN_LID_MESH["radius"], THIN_LID_MESH["ntheta"],
+                                   THIN_LID_MESH["nr"], graded=True)
+        write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=(1.35,), headings=(0.0,), irsp=1)
+        write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=methods, motion_state="fixed",
+                           write_terms=0)
     target = case_dir(data, "drift_two_lid_graded")
     for body in (1, 2):
         make_mesh.write_cylinder(os.path.join(target, "HullMesh_%d.pnl" % body),

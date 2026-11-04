@@ -43,7 +43,7 @@ module test_integration_drift
     ! See test/data/drift_cyl/README.md for the values against panel count, and
     ! pre_postprocessing_python/SecondOrder/near_far_study.py for the plan's 5% on these hulls.
     real(8), parameter :: regression_band = 1d-2
-    ! At 0.70 rad/s the free cylinder's net drift force is about 4% of term I, from cancellation between much larger terms,
+    ! At 0.70 rad/s the free cylinder's net drift force is 4.6% of term I, from cancellation between much larger terms,
     ! and near-field against far-field has not been shown to converge there: printed, not checked
     real(8), parameter :: small_net_force_below = 0.8d0
     ! On the springs, the heave resonance moves to about 0.86 rad/s, so 0.95 rad/s is near it and only has a regression band
@@ -85,6 +85,7 @@ contains
             new_unittest("run_drift_two_irsp", run_drift_two_irsp), &
             new_unittest("run_drift_two_irsp_ref", run_drift_two_irsp_ref), &
             new_unittest("run_drift_lid_graded", run_drift_lid_graded), &
+            new_unittest("run_drift_lid_graded_near", run_drift_lid_graded_near), &
             new_unittest("run_drift_two_lid_graded", run_drift_two_lid_graded) &
         ]
     end subroutine setup_drift
@@ -288,6 +289,11 @@ contains
         type(error_type), allocatable, intent(out) :: error
         call run_case("drift_lid_graded", drift_file_only(), error)
     end subroutine run_drift_lid_graded
+
+    subroutine run_drift_lid_graded_near(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("drift_lid_graded_near", drift_file_only(), error)
+    end subroutine run_drift_lid_graded_near
 
     subroutine run_drift_two_lid_graded(error)
         type(error_type), allocatable, intent(out) :: error
@@ -773,6 +779,7 @@ contains
     end subroutine fixed_near_far
 
     !> The free cylinder with a rounded bilge, where terms III and IV take part.
+    !> Its cosine rows carry an error of the first-order potential, so the difference does not fall to zero: see the README.
     subroutine free_near_far(error)
         type(error_type), allocatable, intent(out) :: error
         real(8) :: worst_fx, worst_f, worst_mz
@@ -798,8 +805,9 @@ contains
     end subroutine near_mz_far_mz
 
     !> External springs change the motion, and the near-field form needs no external loads. The spring in x only, at an
-    !> oblique heading, makes F_x small next to F_y, so the check is on the force vector. Away from resonance. This mesh has
-    !> thin rows at the waterline, on which the difference grows with refinement, to 6.1% at 4320 panels: see the README.
+    !> oblique heading, makes F_x small next to F_y, so the check is on the force vector. Away from resonance. The wall rows are
+    !> uniform in z, on which F_x at heading 0 falls as +0.27%, +0.01%, -0.00% at 480, 1920, 4320 panels. Cosine rows on the same
+    !> hull do not converge, +3.8%, +4.9%, +6.1%: see the README.
     subroutine external_stiffness(error)
         type(error_type), allocatable, intent(out) :: error
         real(8) :: worst_fx, worst_f, worst_mz
@@ -810,14 +818,18 @@ contains
         call check_below(error, "external_stiffness", worst_f, near_far_limit)
     end subroutine external_stiffness
 
-    !> Regression band, not accuracy: F_x at 0.95 rad/s, near the heave resonance on the springs, where near-field is 11% above
-    !> far-field at this mesh.
+    !> Regression band, not accuracy: F_x and F_y at 0.95 rad/s, near the heave resonance on the springs, where F_x at heading 0
+    !> is 4.6% above far-field at this mesh, and 9.1% at heading 30, where the force vector is 3.6% off. It falls with refinement
+    !> at heading 0, to +1.2% and +0.6% at 1920 and 4320 panels, but this row is not checked against the plan's 5%.
     subroutine external_stiffness_near_resonance_regression(error)
         type(error_type), allocatable, intent(out) :: error
 
         call check_band("drift_round_kstf", origins_at_zero(1), 1, reshape( &
-            [0.95d0, 0d0, 0d0, 8.2462d0, 9.1704d0, &
-             0.95d0, 30d0, 30d0, 3.7218d0, 4.4137d0], [5, 2]), error)
+            [0.95d0, 0d0, 0d0, 8.2522d0, 8.6316d0, &
+             0.95d0, 30d0, 30d0, 3.7276d0, 4.0674d0], [5, 2]), error)
+        if (allocated(error)) return
+        call check_band("drift_round_kstf", origins_at_zero(1), 2, reshape( &
+            [0.95d0, 30d0, 30d0, 9.3300d0, 9.2128d0], [5, 1]), error)
     end subroutine external_stiffness_near_resonance_regression
 
     !> The sum over the bodies against the far-field total. F_y vanishes by symmetry at heading 0, so the check is on the
@@ -858,7 +870,7 @@ contains
              1.10d0, 0d0, 0d0, 3.4701d0, 3.9892d0], [5, 2]), error)
     end subroutine free_near_far_sharp_regression
 
-    !> Regression band, not accuracy: the sum of F_x over the two coarse hulls with sharp bilges.
+    !> Regression band, not accuracy: the sum of F_x and of F_y over the two coarse hulls with sharp bilges.
     subroutine two_body_total_sharp_regression(error)
         type(error_type), allocatable, intent(out) :: error
 
@@ -867,6 +879,10 @@ contains
              1.35d0, 30d0, 30d0, 3.1483d0, 4.8480d0, &
              1.55d0, 0d0, 0d0, 4.6206d0, 5.5400d0, &
              1.55d0, 30d0, 30d0, 1.8910d0, 2.2295d0], [5, 4]), error)
+        if (allocated(error)) return
+        call check_band("drift_two_cyl", reshape([0d0, 0d0, 0d0, 30d0], [2, 2]), 2, reshape( &
+            [1.35d0, 30d0, 30d0, 2.4504d0, 3.7627d0, &
+             1.55d0, 30d0, 30d0, 1.5899d0, 2.0641d0], [5, 2]), error)
     end subroutine two_body_total_sharp_regression
 
     !> Regression band, not accuracy: M_z on the coarse box and on the coarse cylinder off the origin. For the box the cause is
@@ -1169,8 +1185,9 @@ contains
             end do
             call check(error, n == T_HYDROSTATIC, "A load does not have all its terms")
             if (allocated(error)) return
+            ! Forces against forces and moments against moments, at this frequency
             scale_row = maxval(abs(terms(:,7)), mask=abs(terms(:,1) - rows(r,1)) < 1d-6 .and. &
-                               (nint(terms(:,5)) <= 3) .eqv. (nint(rows(r,4)) <= 3))
+                               ((nint(terms(:,5)) <= 3) .eqv. (nint(rows(r,4)) <= 3)))
             worst = max(worst, (abs(total(1) - rows(r,7)) + abs(total(2) - rows(r,8)))/scale_row)
         end do
         call report("terms_sum_to_total", worst)
@@ -1235,8 +1252,15 @@ contains
     subroutine thin_lid_warning(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=*), parameter :: text = "rim panels of the waterplane"
+        character(len=*), parameter :: near_text = "wrong in sign"
 
         call check(error, log_has("drift_lid_graded", text), "No warning for a graded lid, one body")
+        if (allocated(error)) return
+        call check(error, .not. log_has("drift_lid_graded", near_text), "A near-field warning on a far-only run")
+        if (allocated(error)) return
+        call check(error, log_has("drift_lid_graded_near", text), "No warning for a graded lid with near-field on")
+        if (allocated(error)) return
+        call check(error, log_has("drift_lid_graded_near", near_text), "The warning does not mention near-field")
         if (allocated(error)) return
         call check(error, log_has("drift_two_lid_graded", text), "No warning for a graded lid, second of two bodies")
         if (allocated(error)) return

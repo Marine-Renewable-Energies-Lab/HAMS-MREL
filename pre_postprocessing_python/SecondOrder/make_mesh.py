@@ -176,10 +176,11 @@ def revolved(profile, ntheta):
     return mesh, polygon
 
 
-def rounded_profile(radius, draft, bilge_radius, nz, narc, nr):
-    """Wall with rows cosine spaced towards the waterline, a circular bilge, and a flat bottom, as (r, z)."""
+def rounded_profile(radius, draft, bilge_radius, nz, narc, nr, uniform_rows=False):
+    """Wall with rows cosine spaced towards the waterline, or uniform in z with uniform_rows, a circular bilge, and a flat
+    bottom, as (r, z)."""
     wall = draft - bilge_radius
-    out = [(radius, -wall * (1.0 - math.cos(0.5 * math.pi * i / nz))) for i in range(nz + 1)]
+    out = [(radius, -wall * (i / nz if uniform_rows else 1.0 - math.cos(0.5 * math.pi * i / nz))) for i in range(nz + 1)]
     for i in range(1, narc + 1):
         angle = 0.5 * math.pi * i / narc
         out.append((radius - bilge_radius + bilge_radius * math.cos(angle), -wall - bilge_radius * math.sin(angle)))
@@ -369,9 +370,10 @@ def write_cylinder(mesh_path, hydro_path, radius, draft, ntheta, nz, nr, graded=
     return write_body(mesh, polygon, draft, x0, y0, half_y, mesh_path, hydro_path, external_restoring)[0]
 
 
-def write_rounded_cylinder(mesh_path, hydro_path, radius, draft, bilge_radius, ntheta, nz, narc, nr, external_restoring=None):
+def write_rounded_cylinder(mesh_path, hydro_path, radius, draft, bilge_radius, ntheta, nz, narc, nr, external_restoring=None,
+                           uniform_rows=False):
     """Write the mesh and hydrostatics of a cylinder with a rounded bilge, which has no edge. Returns the written mesh."""
-    mesh, polygon = revolved(rounded_profile(radius, draft, bilge_radius, nz, narc, nr), ntheta)
+    mesh, polygon = revolved(rounded_profile(radius, draft, bilge_radius, nz, narc, nr, uniform_rows), ntheta)
     scale = lambda z: rounded_radius(radius, draft, bilge_radius, z) / radius
     check_normals(mesh, (0.0, 0.0, -draft / 2.0))
     write_mesh(mesh_path, mesh)

@@ -6,8 +6,9 @@ and many minutes beyond. See test/data/drift_cyl/README.md.
 Usage:
     python near_far_study.py <path to hamsmrel> <work directory> [--bilge-radius R] [--multiples 1,2,3]
 
-With no --bilge-radius, the hull has the sharp bilge of drift_cyl. With one, it is the hull of drift_round. Each multiple
-scales all the panel counts. The exit code is 1 if F_x misses the limit at the finest mesh, at frequencies away from
+With no --bilge-radius, the hull has the sharp bilge of drift_cyl. With one, it is the hull of drift_round, with the wall
+rows of each fixture: cosine when fixed and free, uniform in z on the springs. --rows cosine or uniform uses those on all
+three. Each multiple scales all the panel counts. The exit code is 1 if F_x misses the limit at the finest mesh, at frequencies away from
 resonance for the moving hull. Prints the terms of F_x, for finding where a difference comes from.
 """
 
@@ -26,13 +27,13 @@ FREQUENCIES = fixtures.DRIFT_CYL_FREQUENCIES
 CASES = (("fixed", "fixed", None, 0.0), ("free", "free", None, 0.8), ("springs", "free", fixtures.EXTERNAL_RESTORING, 1.0))
 
 
-def write_hull(path, multiple, bilge_radius, external):
+def write_hull(path, multiple, bilge_radius, external, uniform_rows):
     if bilge_radius is None:
         mesh = dict(fixtures.DRIFT_CYL_MESH, external_restoring=external)
         for key in ("ntheta", "nz", "nr"):
             mesh[key] *= multiple
         return make_mesh.write_cylinder(os.path.join(path, "HullMesh.pnl"), os.path.join(path, "Hydrostatic.in"), **mesh)
-    mesh = dict(fixtures.ROUND_MESH, bilge_radius=bilge_radius, external_restoring=external)
+    mesh = dict(fixtures.ROUND_MESH, bilge_radius=bilge_radius, external_restoring=external, uniform_rows=uniform_rows)
     for key in ("ntheta", "nz", "narc", "nr"):
         mesh[key] *= multiple
     return make_mesh.write_rounded_cylinder(os.path.join(path, "HullMesh.pnl"), os.path.join(path, "Hydrostatic.in"), **mesh)
@@ -60,12 +61,13 @@ def read_terms(path):
     return values
 
 
-def run_case(hams, work, name, motion, external, multiple, bilge_radius):
+def run_case(hams, work, name, motion, external, multiple, bilge_radius, rows):
     """Run one case. Returns the panel count and the rows (omega, far, near, terms)."""
     base = os.path.join(work, "%s_x%d" % (name, multiple))
     path = os.path.join(base, "input")
     os.makedirs(path, exist_ok=True)
-    mesh = write_hull(path, multiple, bilge_radius, external)
+    uniform_rows = rows == "uniform" or (rows == "fixture" and external is not None)
+    mesh = write_hull(path, multiple, bilge_radius, external, uniform_rows)
     fixtures.write_control(os.path.join(path, "ControlFile.in"), frequencies=FREQUENCIES, threads=os.cpu_count())
     fixtures.write_second_order(os.path.join(path, "SecondOrder.in"), mean_drift=1, drift_methods="far near",
                                 motion_state=motion, write_terms=1)
@@ -85,13 +87,15 @@ def main():
     parser.add_argument("work")
     parser.add_argument("--bilge-radius", type=float)
     parser.add_argument("--multiples", default="1,2,3")
+    parser.add_argument("--rows", choices=("fixture", "cosine", "uniform"), default="fixture")
     args = parser.parse_args()
     multiples = [int(text) for text in args.multiples.split(",")]
 
     failed = False
     for name, motion, external, unchecked_below in CASES:
         for multiple in multiples:
-            panels, rows = run_case(os.path.abspath(args.hams), args.work, name, motion, external, multiple, args.bilge_radius)
+            panels, rows = run_case(os.path.abspath(args.hams), args.work, name, motion, external, multiple, args.bilge_radius,
+                                    args.rows)
             for omega, far, near, terms in rows:
                 error = abs(near - far) / abs(far)
                 checked = multiple == multiples[-1] and omega >= unchecked_below
