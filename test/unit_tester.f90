@@ -13,6 +13,7 @@ program unit_tester
     use test_create_directory, only : collect_create_directory
     use test_second_order_input, only : collect_second_order_input
     use test_first_order_state, only : collect_first_order_state, collect_first_order_state_serial
+    use test_surface_geometry, only : collect_surface_geometry
 
     implicit none
     integer :: stat, is
@@ -33,7 +34,8 @@ program unit_tester
         new_testsuite("create_directory", collect_create_directory), &
         new_testsuite("second_order_input", collect_second_order_input), &
         new_testsuite("first_order_state", collect_first_order_state), &
-        new_testsuite("first_order_state_serial", collect_first_order_state_serial) &
+        new_testsuite("first_order_state_serial", collect_first_order_state_serial), &
+        new_testsuite("surface_geometry", collect_surface_geometry) &
     ]
 
     stat = 0

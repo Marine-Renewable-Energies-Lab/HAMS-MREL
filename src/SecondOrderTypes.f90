@@ -26,7 +26,7 @@ MODULE SecondOrderTypes
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: so_options, panel_mesh, first_order_state
+   PUBLIC :: so_options, panel_mesh, first_order_state, surface_geom
 
    TYPE :: so_options
       LOGICAL :: active = .FALSE.
@@ -59,5 +59,20 @@ MODULE SecondOrderTypes
       COMPLEX(8), ALLOCATABLE :: grad_i(:,:), grad_p(:,:)   ! (3,n); grad_p is filled later by the surface velocity code
       COMPLEX(8), ALLOCATABLE :: xi(:,:)                    ! (6,nbody), translations then rotations
    END TYPE first_order_state
+
+   TYPE :: surface_geom
+      ! Panel neighbours, waterline segments and per-body waterplane and volume properties, built by build_surface_geom.
+      ! Neighbours are in CSR form: the neighbours of panel i are nbr(nbr_start(i):nbr_start(i+1)-1).
+      ! Waterline segments are oriented counter-clockwise around the waterplane (body on the left). Per-body
+      ! properties are relative to the body reference point xr: xf, yf the centre of flotation, l11 = int x^2 dA,
+      ! l12 = int x y dA, l22 = int y^2 dA over the waterplane, xb, yb, zb the centre of buoyancy.
+      INTEGER, ALLOCATABLE :: nbr_start(:), nbr(:)
+      INTEGER :: nwl = 0
+      REAL(8), ALLOCATABLE :: wl_x1(:,:), wl_x2(:,:), wl_xm(:,:), wl_len(:)   ! (3,nwl), (3,nwl), (3,nwl), (nwl)
+      REAL(8), ALLOCATABLE :: wl_nh(:,:), wl_nz(:)    ! unit horizontal normal into the body (3,nwl); n_z of the panel
+      INTEGER, ALLOCATABLE :: wl_panel(:), wl_body(:)
+      REAL(8), ALLOCATABLE :: awp(:), xf(:), yf(:), l11(:), l12(:), l22(:), vol(:), xb(:), yb(:), zb(:)   ! (nbody)
+      INTEGER, ALLOCATABLE :: n_wl_gaps(:)            ! (nbody)
+   END TYPE surface_geom
 
 END MODULE SecondOrderTypes
