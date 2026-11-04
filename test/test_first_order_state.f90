@@ -298,25 +298,49 @@ subroutine test_build_state_image_index(error)
   type(error_type), allocatable, intent(out) :: error
   type(panel_mesh) :: mesh
   type(first_order_state) :: st
-  complex(8) :: mxpot(1,7,2), dspl(6)
+  complex(8) :: mxpot(1,7,2), dspl(6), p0, gr(3)
   real(8) :: xc(1,3), dxyz(1,6), area(1), psize(1), xnode(4,3), xr(3,1)
   integer :: ncn(1), ncon(1,4), body(1)
-  real(8) :: omega, k
+  real(8) :: omega, k, beta, xm(3), nm(3)
 
   xc(1,:) = [0.5d0, 0.7d0, -1d0]
-  dxyz(1,:) = [0d0, 1d0, 0d0, 0d0, 0d0, 0.7d0]
+  dxyz(1,:) = [0.6d0, 0.8d0, 0d0, 0.1d0, 0.2d0, 0.7d0]
   area = 1d0; psize = 1d0; ncn = 4; ncon(1,:) = [1, 2, 3, 4]; body = 1; xr = 0d0
   xnode = 0d0
-  call expand_images(xc, dxyz, area, psize, xnode, ncn, ncon, body, xr, 0, 1, 2, mesh)
-  omega = 1d0; k = wavenumber(omega, -1d0)
+  call expand_images(xc, dxyz, area, psize, xnode, ncn, ncon, body, xr, 0, 1, 2, mesh)   ! image 2: y -> -y
+  omega = 1d0; k = wavenumber(omega, -1d0); beta = 0.4d0
   mxpot = (0d0, 0d0)
   mxpot(1,7,1) = (1d0, 0d0)
   mxpot(1,7,2) = (0d0, 3d0)
+  mxpot(1,2,2) = (1d0, 0d0)
   dspl = (0d0, 0d0)
-  call build_state(mesh, omega, k, omega**2/g, -1d0, 1d0, 0d0, g, 1000d0, mxpot, dspl, .false., st)
-  call check(error, close_c(st%phi_p(1), ci * (1d0, 0d0), 1d-14), "image 1 potential")
+  dspl(2) = (1d0, 2d0)     ! xi_2 = 1 - 2i
+  dspl(6) = (0d0, 1d0)     ! xi_6 = -i
+  call build_state(mesh, omega, k, omega**2/g, -1d0, 1d0, beta, g, 1000d0, mxpot, dspl, .false., st)
+
+  ! phi_p = i*mxpot(7) - i*omega*xi_2*mxpot(2), per image
+  call check(error, close_c(st%phi_p(1), (0d0, 1d0), 1d-14), "image 1 potential")
   if (allocated(error)) return
-  call check(error, close_c(st%phi_p(2), ci * (0d0, 3d0), 1d-14), "image 2 potential")
+  ! image 2: i*(3i) + (-i)(1-2i)(1) = -3 + (-i - 2) = -5 - i
+  call check(error, close_c(st%phi_p(2), (-5d0, -1d0), 1d-14), "image 2 potential")
+  if (allocated(error)) return
+
+  ! incident quantities at the mirrored point
+  xm = [0.5d0, -0.7d0, -1d0]
+  nm = [0.6d0, -0.8d0, 0d0]
+  call incident_at(omega, -1d0, 1d0, beta, xm, p0, gr)
+  call check(error, close_c(st%phi_i(2), p0, 1d-14), "image 2 incident potential is not at the mirrored point")
+  if (allocated(error)) return
+  call check(error, maxval(abs(st%grad_i(:,2) - gr)) <= 1d-14 * maxval(abs(gr)), "image 2 incident gradient")
+  if (allocated(error)) return
+
+  ! nj of image 2 = (0.6, -0.8, 0, -0.1, 0.2, -0.7), image 1 = (0.6, 0.8, 0, 0.1, 0.2, 0.7)
+  ! dphi_dn(1) = -i[(1-2i)(0.8) + (-i)(0.7)] = -2.3 - 0.8i ; dphi_dn(2) = -i[(1-2i)(-0.8) + (-i)(-0.7)] = 2.3 + 0.8i
+  call check(error, close_c(st%dphi_dn(1), (-2.3d0, -0.8d0), 1d-13), "image 1 dphi_dn")
+  if (allocated(error)) return
+  call check(error, close_c(st%dphi_dn(2), (2.3d0, 0.8d0), 1d-13), "image 2 dphi_dn uses base nj")
+  if (allocated(error)) return
+  call check(error, close_c(st%dphi_p_dn(2), st%dphi_dn(2) - sum(gr * nm), 1d-13), "image 2 dphi_p_dn uses base normal")
 end subroutine test_build_state_image_index
 
 ! ---------------------------------------------------------------------------------------------- expand_images
