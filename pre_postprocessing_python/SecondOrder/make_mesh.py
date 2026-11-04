@@ -8,11 +8,13 @@ Usage:
 The hull has no lid, so the top row of nodes lies on z = 0. --x0 and --y0 shift the body in the horizontal plane. Every
 generated panel normal is checked to point out of the fluid (into the body), computed as HAMS does in CalTransNormals.
 --half-y keeps the panels with y > 0 and sets ISY = 1, for a body symmetric about y = 0.
+--waterplane-out also writes the interior free surface of a cylinder, for irregular frequency removal (IRSP = 1).
 
 Hydrostatic.in is written next to the mesh (or to --hydro-out) for a freely floating, uniform solid prism, using the
 discretized waterplane polygon: mass = rho*V, centre of gravity at half draft, all matrices about the point (x0, y0, 0),
 which must be given as the rotation centre in ControlFile.in. External damping and stiffness are zero. These are the
-values of the whole body, also with --half-y.
+values of the whole body, also with --half-y. write_body and write_cylinder also accept external restoring values, and
+write_submerged_cylinder writes a closed body below the free surface, for use from make_drift_fixtures.py.
 """
 
 import argparse
@@ -22,6 +24,7 @@ import os
 RHO = 1000.0     # as Const_mod in src/WavDynMods.f90
 G = 9.80665
 NODE_FORMAT = "%.10f"   # precision of the node coordinates in the mesh file
+HYDROSTATIC_STEPS = 2000   # sections of a body that is not a prism
 
 
 class Mesh:
@@ -128,6 +131,108 @@ def cylinder(radius, draft, ntheta, nz, nr, graded=False):
     return mesh, polygon
 
 
+def waterplane_disc(radius, ntheta, nr, graded=False):
+    """Interior free surface of a cylinder: rings at z = 0 with triangles at the centre. Normals point down, as in the
+    waterplane meshes of examples/. HAMS needs z = 0 exactly here."""
+    mesh = Mesh()
+    angles = [2.0 * math.pi * j / ntheta for j in range(ntheta)] + [0.0]
+
+    def ring(r, j):
+        return (r * math.cos(angles[j]), r * math.sin(angles[j]), 0.0)
+
+    def ring_radius(i):
+        return radius * (math.cos(0.5 * math.pi * i / nr) if graded else (nr - i) / nr)
+
+    for j in range(ntheta):
+        for i in range(nr):
+            outer = ring_radius(i)
+            inner = ring_radius(i + 1)
+            if i < nr - 1:
+                mesh.add_panel([ring(inner, j + 1), ring(inner, j), ring(outer, j), ring(outer, j + 1)])
+            else:
+                mesh.add_panel([(0.0, 0.0, 0.0), ring(outer, j), ring(outer, j + 1)])
+    return mesh
+
+
+def revolved(profile, ntheta):
+    """Surface of revolution of the profile (r, z), from the waterline down to the axis (r = 0). Returns the mesh and its
+    waterline polygon, counter-clockwise from above."""
+    if ntheta % 2 != 0:
+        raise ValueError("ntheta must be even, to keep the mesh symmetric about both axes")
+    mesh = Mesh()
+    angles = [2.0 * math.pi * j / ntheta for j in range(ntheta)] + [0.0]
+
+    def point(p, j):
+        return (p[0] * math.cos(angles[j]), p[0] * math.sin(angles[j]), p[1])
+
+    for j in range(ntheta):
+        for i in range(len(profile) - 1):
+            a, b = profile[i], profile[i + 1]
+            if b[0] > 1e-12:
+                mesh.add_panel([point(b, j), point(b, j + 1), point(a, j + 1), point(a, j)])
+            else:
+                mesh.add_panel([(0.0, 0.0, b[1]), point(a, j + 1), point(a, j)])
+    polygon = [(profile[0][0] * math.cos(angles[j]), profile[0][0] * math.sin(angles[j])) for j in range(ntheta)]
+    return mesh, polygon
+
+
+def rounded_profile(radius, draft, bilge_radius, nz, narc, nr):
+    """Wall with rows cosine spaced towards the waterline, a circular bilge, and a flat bottom, as (r, z)."""
+    wall = draft - bilge_radius
+    out = [(radius, -wall * (1.0 - math.cos(0.5 * math.pi * i / nz))) for i in range(nz + 1)]
+    for i in range(1, narc + 1):
+        angle = 0.5 * math.pi * i / narc
+        out.append((radius - bilge_radius + bilge_radius * math.cos(angle), -wall - bilge_radius * math.sin(angle)))
+    out += [((radius - bilge_radius) * (1.0 - i / nr), -draft) for i in range(1, nr + 1)]
+    return out
+
+
+def rounded_radius(radius, draft, bilge_radius, z):
+    """Hull radius at depth z of the rounded cylinder."""
+    below = -z - (draft - bilge_radius)
+    if below <= 0.0:
+        return radius
+    return radius - bilge_radius + math.sqrt(max(bilge_radius ** 2 - below ** 2, 0.0))
+
+
+def half_ellipsoid(ax, ay, draft, ntheta, nphi):
+    """Lower half of an ellipsoid with semi-axes ax, ay and draft, and rows of equal polar angle. It has no edges, and
+    at an oblique heading it has a yaw moment of its own. Returns the mesh and its waterline polygon."""
+    mesh, polygon = revolved([(math.cos(0.5 * math.pi * i / nphi), -math.sin(0.5 * math.pi * i / nphi) if i else 0.0)
+                              for i in range(nphi)] + [(0.0, -1.0)], ntheta)
+    mesh.nodes = [(ax * x, ay * y, draft * z) for x, y, z in mesh.nodes]
+    return mesh, [(ax * x, ay * y) for x, y in polygon]
+
+
+def closed_cylinder(radius, top, height, ntheta, nz, nr):
+    """Side wall, top and bottom of a cylinder entirely below the free surface, with its top at z = -top."""
+    mesh = Mesh()
+    angles = [2.0 * math.pi * j / ntheta for j in range(ntheta)] + [0.0]
+
+    def ring(r, j, z):
+        return (r * math.cos(angles[j]), r * math.sin(angles[j]), z)
+
+    for j in range(ntheta):
+        for i in range(nz):
+            upper = -top - height * i / nz
+            lower = -top - height * (i + 1) / nz
+            mesh.add_panel([ring(radius, j, lower), ring(radius, j + 1, lower),
+                            ring(radius, j + 1, upper), ring(radius, j, upper)])
+        for i in range(nr):
+            outer = radius * (nr - i) / nr
+            inner = radius * (nr - i - 1) / nr
+            if i < nr - 1:
+                mesh.add_panel([ring(outer, j + 1, -top - height), ring(outer, j, -top - height),
+                                ring(inner, j, -top - height), ring(inner, j + 1, -top - height)])
+                mesh.add_panel([ring(outer, j, -top), ring(outer, j + 1, -top),
+                                ring(inner, j + 1, -top), ring(inner, j, -top)])
+            else:
+                mesh.add_panel([ring(outer, j + 1, -top - height), ring(outer, j, -top - height),
+                                (0.0, 0.0, -top - height)])
+                mesh.add_panel([ring(outer, j, -top), ring(outer, j + 1, -top), (0.0, 0.0, -top)])
+    return mesh
+
+
 def box(lx, ly, draft, nx, ny, nz):
     """Four walls and a flat bottom, centred on the origin. Returns the mesh and its waterline polygon."""
     mesh = Mesh()
@@ -166,17 +271,24 @@ def polygon_moments(polygon):
     return area, ixx, iyy
 
 
-def hydrostatics(polygon, draft):
-    """Mass and restoring matrices about the waterplane centre of a uniform solid prism floating at its draft."""
+def hydrostatics(polygon, draft, scale=lambda z: 1.0, steps=1):
+    """Mass and restoring matrices about the waterplane centre of a uniform solid floating at its draft, whose sections
+    are the waterline polygon scaled by scale(z). The default is a prism, for which one step of the rule is exact."""
     area, ixx, iyy = polygon_moments(polygon)
-    vol = area * draft
+    vol = zmoment = i44 = i55 = i66 = 0.0
+    dz = draft / steps
+    for step in range(steps):
+        # Exact sections are integrated by the midpoint rule, or for a prism by its exact second moment of z
+        z = -(step + 0.5) * dz
+        f = scale(z)
+        z2 = z * z + dz * dz / 12.0
+        vol += f ** 2 * area * dz
+        zmoment += f ** 2 * area * z * dz
+        i44 += RHO * (f ** 4 * ixx + f ** 2 * area * z2) * dz
+        i55 += RHO * (f ** 4 * iyy + f ** 2 * area * z2) * dz
+        i66 += RHO * f ** 4 * (ixx + iyy) * dz
     mass = RHO * vol
-    zg = -draft / 2.0
-    zb = -draft / 2.0
-    # Inertia of the prism about the origin, by parallel axes from its centre of gravity
-    i44 = RHO * draft * ixx + mass * draft * draft / 12.0 + mass * zg * zg
-    i55 = RHO * draft * iyy + mass * draft * draft / 12.0 + mass * zg * zg
-    i66 = RHO * draft * (ixx + iyy)
+    zg = zb = zmoment / vol
 
     m = [[0.0] * 6 for _ in range(6)]
     for k in range(3):
@@ -194,9 +306,9 @@ def hydrostatics(polygon, draft):
     return {"vol": vol, "area": area, "zg": zg, "zb": zb, "mass": m, "restoring": c}
 
 
-def write_mesh(path, mesh, isy=0):
+def write_mesh(path, mesh, isy=0, title="Hull Mesh File"):
     with open(path, "w") as f:
-        f.write("    --------------Hull Mesh File---------------\n\n")
+        f.write("    --------------%s---------------\n\n" % title)
         f.write("    # Number of Panels, Nodes, X-Symmetry and Y-Symmetry\n")
         f.write("    %8d  %8d  %8d  %8d\n\n" % (len(mesh.panels), len(mesh.nodes), 0, isy))
         f.write("    # Start Definition of Node Coordinates     ! node_number   x   y   z\n")
@@ -207,7 +319,7 @@ def write_mesh(path, mesh, isy=0):
         for number, panel in enumerate(mesh.panels, start=1):
             f.write("    %6d  %3d  " % (number, len(panel)) + "  ".join("%6d" % i for i in panel) + "\n")
         f.write("    # End Definition of Node Relations\n\n")
-        f.write("    --------------End Hull Mesh File---------------\n")
+        f.write("    --------------End %s---------------\n" % title)
 
 
 def write_matrix(f, matrix):
@@ -215,8 +327,12 @@ def write_matrix(f, matrix):
         f.write("".join("  %12.5E" % value for value in row) + "\n")
 
 
-def write_hydrostatic(path, hydro, x0, y0):
+def write_hydrostatic(path, hydro, x0, y0, external_restoring=None):
+    """external_restoring maps a 0-based mode number to a value on the diagonal of the external restoring matrix."""
     zero = [[0.0] * 6 for _ in range(6)]
+    external = [[0.0] * 6 for _ in range(6)]
+    for mode, value in (external_restoring or {}).items():
+        external[mode][mode] = value
     with open(path, "w") as f:
         f.write(" Center of Gravity:\n")
         f.write("  %.12E  %.12E  %.12E\n" % (x0, y0, hydro["zg"]))
@@ -229,10 +345,10 @@ def write_hydrostatic(path, hydro, x0, y0):
         f.write(" Hydrostatic Restoring Matrix:\n")
         write_matrix(f, hydro["restoring"])
         f.write(" External Restoring Matrix:\n")
-        write_matrix(f, zero)
+        write_matrix(f, external)
 
 
-def write_body(mesh, polygon, draft, x0, y0, half_y, mesh_path, hydro_path):
+def write_body(mesh, polygon, draft, x0, y0, half_y, mesh_path, hydro_path, external_restoring=None):
     """Check and write a mesh centred on the origin, and its hydrostatics. Returns the written mesh and hydrostatics."""
     if half_y:
         if y0 != 0.0:
@@ -242,14 +358,78 @@ def write_body(mesh, polygon, draft, x0, y0, half_y, mesh_path, hydro_path):
     check_normals(mesh, (x0, y0 + (draft / 2.0 if half_y else 0.0), -draft / 2.0))
     hydro = hydrostatics(polygon, draft)
     write_mesh(mesh_path, mesh, 1 if half_y else 0)
-    write_hydrostatic(hydro_path, hydro, x0, y0)
+    write_hydrostatic(hydro_path, hydro, x0, y0, external_restoring)
     return mesh, hydro
 
 
-def write_cylinder(mesh_path, hydro_path, radius, draft, ntheta, nz, nr, graded=False, x0=0.0, y0=0.0, half_y=False):
+def write_cylinder(mesh_path, hydro_path, radius, draft, ntheta, nz, nr, graded=False, x0=0.0, y0=0.0, half_y=False,
+                   external_restoring=None):
     """Write the mesh and hydrostatics of a cylinder. Returns the written mesh."""
     mesh, polygon = cylinder(radius, draft, ntheta, nz, nr, graded)
-    return write_body(mesh, polygon, draft, x0, y0, half_y, mesh_path, hydro_path)[0]
+    return write_body(mesh, polygon, draft, x0, y0, half_y, mesh_path, hydro_path, external_restoring)[0]
+
+
+def write_rounded_cylinder(mesh_path, hydro_path, radius, draft, bilge_radius, ntheta, nz, narc, nr, external_restoring=None):
+    """Write the mesh and hydrostatics of a cylinder with a rounded bilge, which has no edge. Returns the written mesh."""
+    mesh, polygon = revolved(rounded_profile(radius, draft, bilge_radius, nz, narc, nr), ntheta)
+    scale = lambda z: rounded_radius(radius, draft, bilge_radius, z) / radius
+    check_normals(mesh, (0.0, 0.0, -draft / 2.0))
+    write_mesh(mesh_path, mesh)
+    write_hydrostatic(hydro_path, hydrostatics(polygon, draft, scale, HYDROSTATIC_STEPS), 0.0, 0.0, external_restoring)
+    return mesh
+
+
+def write_half_ellipsoid(mesh_path, hydro_path, ax, ay, draft, ntheta, nphi):
+    """Write the mesh and hydrostatics of a half ellipsoid. Returns the written mesh."""
+    mesh, polygon = half_ellipsoid(ax, ay, draft, ntheta, nphi)
+    scale = lambda z: math.sqrt(max(1.0 - (z / draft) ** 2, 0.0))
+    check_normals(mesh, (0.0, 0.0, -draft / 2.0))
+    write_mesh(mesh_path, mesh)
+    write_hydrostatic(hydro_path, hydrostatics(polygon, draft, scale, HYDROSTATIC_STEPS), 0.0, 0.0)
+    return mesh
+
+
+def write_box(mesh_path, hydro_path, lx, ly, draft, nx, ny, nz, x0=0.0, y0=0.0):
+    """Write the mesh and hydrostatics of a box. Returns the written mesh."""
+    mesh, polygon = box(lx, ly, draft, nx, ny, nz)
+    return write_body(mesh, polygon, draft, x0, y0, False, mesh_path, hydro_path)[0]
+
+
+def write_waterplane(path, radius, ntheta, nr, graded=False, x0=0.0, y0=0.0):
+    """Write the interior free surface mesh of a cylinder, checking that every normal points down."""
+    mesh = waterplane_disc(radius, ntheta, nr, graded).shifted(x0, y0)
+    for number, panel in enumerate(mesh.panels, start=1):
+        if hams_normal([mesh.nodes[i - 1] for i in panel])[2] >= 0.0:
+            raise ValueError("waterplane panel %d has a normal pointing up" % number)
+    write_mesh(path, mesh, title="Waterplane Mesh File")
+    return mesh
+
+
+def write_submerged_cylinder(mesh_path, hydro_path, radius, top, height, ntheta, nz, nr, x0=0.0, y0=0.0):
+    """Write a closed cylinder below the free surface and the hydrostatics of a neutrally buoyant body with its centre
+    of gravity below the centre of buoyancy, about (x0, y0, 0). Only the roll and pitch restoring is not zero."""
+    mesh = closed_cylinder(radius, top, height, ntheta, nz, nr).shifted(x0, y0)
+    check_normals(mesh, (x0, y0, -top - height / 2.0))
+    polygon = [(radius * math.cos(2.0 * math.pi * j / ntheta), radius * math.sin(2.0 * math.pi * j / ntheta))
+               for j in range(ntheta)]
+    area, ixx, iyy = polygon_moments(polygon)
+    vol = area * height
+    mass = RHO * vol
+    zb = -top - height / 2.0
+    zg = zb - height / 4.0
+    gyration = 0.25 * radius * radius + height * height / 12.0   # uniform solid about a horizontal axis through its centre
+    m = [[0.0] * 6 for _ in range(6)]
+    for k in range(3):
+        m[k][k] = mass
+    m[0][4] = m[4][0] = mass * zg
+    m[1][3] = m[3][1] = -mass * zg
+    m[3][3] = m[4][4] = mass * (gyration + zg * zg)
+    m[5][5] = RHO * height * (ixx + iyy)
+    c = [[0.0] * 6 for _ in range(6)]
+    c[3][3] = c[4][4] = RHO * G * vol * zb - mass * G * zg
+    write_mesh(mesh_path, mesh)
+    write_hydrostatic(hydro_path, {"zg": zg, "mass": m, "restoring": c}, x0, y0)
+    return mesh
 
 
 def main():
@@ -262,6 +442,7 @@ def main():
     cyl.add_argument("--ntheta", type=int, required=True)
     cyl.add_argument("--nr", type=int, required=True)
     cyl.add_argument("--graded", action="store_true", help="cosine spacing, finer at the waterline and the bilge")
+    cyl.add_argument("--waterplane-out", help="also write the interior free surface mesh to this path, for IRSP = 1")
 
     bx = sub_parsers.add_parser("box")
     bx.add_argument("--lx", type=float, required=True)
@@ -287,6 +468,9 @@ def main():
     mesh, hydro = write_body(mesh, polygon, args.draft, args.x0, args.y0, args.half_y, args.out, hydro_path)
 
     print("%d panels, %d nodes, normals checked" % (len(mesh.panels), len(mesh.nodes)))
+    if args.shape == "cylinder" and args.waterplane_out:
+        plane = write_waterplane(args.waterplane_out, args.radius, args.ntheta, args.nr, args.graded, args.x0, args.y0)
+        print("%d waterplane panels, %d nodes" % (len(plane.panels), len(plane.nodes)))
     print("V = %.6f, Awp = %.6f, zg = zb = %.6f" % (hydro["vol"], hydro["area"], hydro["zg"]))
     print("M = %.6E, I44 = %.6E, I55 = %.6E, I66 = %.6E" % (hydro["mass"][0][0], hydro["mass"][3][3],
                                                              hydro["mass"][4][4], hydro["mass"][5][5]))

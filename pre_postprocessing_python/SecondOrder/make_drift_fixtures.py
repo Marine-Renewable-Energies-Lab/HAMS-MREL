@@ -7,6 +7,7 @@ Usage:
 The cases are described in test/data/drift_cyl/README.md. The default path is that of this repository.
 """
 
+import math
 import os
 import shutil
 import sys
@@ -16,14 +17,36 @@ import make_mesh
 DRIFT_CYL_FREQUENCIES = (0.70, 0.95, 1.10)
 DRIFT_CYL_HEADINGS = (0.0, 30.0)
 DRIFT_CYL_MESH = dict(radius=10.0, draft=10.0, ntheta=32, nz=8, nr=6, graded=True)
+# The hull of drift_cyl with a rounded bilge: near-field drift converges slowly at the sharp bilge (see the README)
+ROUND_MESH = dict(radius=10.0, draft=10.0, bilge_radius=3.0, ntheta=32, nz=7, narc=4, nr=4)
+TWO_ROUND_MESH = dict(radius=5.0, draft=5.0, bilge_radius=1.5, ntheta=20, nz=5, narc=3, nr=3)
+ELLIPSOID_MESH = dict(ax=20.0, ay=10.0, draft=5.0, ntheta=48, nphi=12)
+# On external springs: surge at about 0.43 rad/s, heave moved from 0.80 to about 0.86 rad/s, between the fixture frequencies
+EXTERNAL_RESTORING = {0: 1.0e6, 2: 0.5e6}
+# Removal of irregular frequencies: the last one is the first irregular frequency of the cylinder, J0(ka) = 0
+IRSP_FREQUENCIES = (0.95, 1.10, 1.548)
+TWO_CYL_MESH = dict(radius=5.0, draft=5.0, ntheta=20, nz=5, nr=4, graded=True)
+# 50 wavelengths at this frequency, deep water wave length 2 pi g / omega^2
+FAR_APART_FREQUENCY = 1.35
+FAR_APART_SEPARATION = 50.0 * 2.0 * math.pi * 9.80665 / FAR_APART_FREQUENCY ** 2
+DRIFT_BOX_MESH = dict(lx=20.0, ly=10.0, draft=5.0, nx=20, ny=10, nz=4)
+OBLIQUE_FREQUENCIES = (0.8, 1.0)   # of the box and the ellipsoid
+ROTATED_BOX_MESH = dict(lx=20.0, ly=10.0, draft=5.0, nx=10, ny=5, nz=3)
+ROTATED_DEG = 30.0
 # Hull panels whose centroids are the field points of drift_cyl: side, bottom, bilge, lee and weather
 FIELD_PANELS = (1, 4, 8, 9, 14, 40, 85, 130, 133, 200, 270, 448)
 
 
+def real12(value):
+    """A real for a 12 character field of ReadControlFile. The reader takes all the digits that fit in the field."""
+    return "%12.3f" % value if abs(value - round(value, 3)) < 1e-12 else ("%.9f" % value)[:12].rjust(12)
+
+
 def write_control(path, depth=100.0, frequencies=(1.0,), headings=(0.0,), rotation_centre=(0.0, 0.0, 0.0), refl="1.0D0",
-                  sybo=0, solver=None, field_points=(), body_origins=None):
+                  sybo=0, solver=None, field_points=(), body_origins=None, lcs_angle=0.0, irsp=0, threads=1):
     """Write ControlFile.in, in the fixed layout read by ReadControlFile. body_origins lists (x, y) per body of a
-    multi-body case, which is both the LCS origin and the rotation centre."""
+    multi-body case, which is both the LCS origin and the rotation centre. lcs_angle is the rotation of every body's
+    LCS in radians, which is what ReadBodyMeshMulti expects."""
     with open(path, "w") as f:
         f.write("   --------------HAMS Control file---------------\n\n")
         f.write("   Waterdepth  %.1fD0\n\n" % depth)
@@ -37,7 +60,7 @@ def write_control(path, depth=100.0, frequencies=(1.0,), headings=(0.0,), rotati
             f.write("   # Start of definition of bodies for multi-body interaction\n")
             f.write("    Number_of_bodies          %d\n" % len(body_origins))
             for i, (x, y) in enumerate(body_origins, start=1):
-                f.write(("    LCS_%d" % i).ljust(26) + "%12.3f%12.3f%12.3f%12.3f\n" % (x, y, 0.0, 0.0))
+                f.write(("    LCS_%d" % i).ljust(26) + real12(x) + real12(y) + real12(0.0) + real12(lcs_angle) + "\n")
             f.write("   # End of definition of bodies for multi-body interaction\n\n")
         f.write("   #Start Definition of Wave Headings\n")
         f.write("    Number_of_headings          %d\n" % len(headings))
@@ -45,12 +68,12 @@ def write_control(path, depth=100.0, frequencies=(1.0,), headings=(0.0,), rotati
         f.write("   #End Definition of Wave Headings\n\n")
         if body_origins:
             for i, (x, y) in enumerate(body_origins, start=1):
-                f.write(("    Reference_body_center_%d" % i).ljust(28) + "%12.3f%12.3f%12.3f\n" % (x, y, 0.0))
+                f.write(("    Reference_body_center_%d" % i).ljust(28) + real12(x) + real12(y) + real12(0.0) + "\n")
         else:
             f.write("    Reference_body_center".ljust(28) + "%12.3f%12.3f%12.3f\n" % tuple(rotation_centre))
         f.write("    Reference_body_length   %s\n" % refl)
-        f.write("    Wave_diffrac_solution    1\n    If_remove_irr_freq       0\n")
-        f.write("    Number of threads       1\n")
+        f.write("    Wave_diffrac_solution    1\n    If_remove_irr_freq       %d\n" % irsp)
+        f.write("    Number of threads       %d\n" % threads)
         if solver:
             f.write("    Solver_type              %d\n" % solver)
         f.write("\n   #Start Definition of Pressure and/or Elevation (PE)\n")
@@ -90,58 +113,168 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     data = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "..", "..", "test", "data")
 
+    both = "far near"
+
     # Single cylinder with field points on the hull
     path = case_dir(data, "drift_cyl")
     mesh = make_mesh.write_cylinder(os.path.join(path, "HullMesh.pnl"), os.path.join(path, "Hydrostatic.in"),
                                     **DRIFT_CYL_MESH)
     write_control(os.path.join(path, "ControlFile.in"), frequencies=DRIFT_CYL_FREQUENCIES, headings=DRIFT_CYL_HEADINGS,
                   field_points=[panel_centroid(mesh, p) for p in FIELD_PANELS])
-    write_second_order(os.path.join(path, "SecondOrder.in"), mean_drift=1, drift_methods="far", motion_state="free",
+    write_second_order(os.path.join(path, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="free",
                        write_terms=2)
     with open(os.path.join(data, "drift_cyl", "field_panels.txt"), "w") as f:
         f.write("! field point number in ControlFile.in, hull panel whose centroid it is\n")
         for point, panel in enumerate(FIELD_PANELS, start=1):
             f.write("%d %d\n" % (point, panel))
 
-    # The same case with the limit frequencies and all heading pairs, and with the iterative solver
-    for name, control, options in (("drift_cyl_sybo", dict(sybo=1), dict(mean_drift=2)),
-                                   ("drift_cyl_gmres", dict(solver=2), dict(mean_drift=1))):
+    # The same case with the limit frequencies and all heading pairs, with the iterative solver, and held fixed
+    for name, control, options in (("drift_cyl_sybo", dict(sybo=1), dict(drift_methods=both, motion_state="free", write_terms=0,
+                                                                         mean_drift=2)),
+                                   ("drift_cyl_gmres", dict(solver=2), dict(drift_methods="far", motion_state="free", write_terms=0,
+                                                                            mean_drift=1)),
+                                   ("drift_cyl_fixed", dict(), dict(mean_drift=1, drift_methods=both, write_terms=1,
+                                                                    motion_state="fixed"))):
         target = case_dir(data, name)
         for file in ("HullMesh.pnl", "Hydrostatic.in"):
             shutil.copyfile(os.path.join(path, file), os.path.join(target, file))
         write_control(os.path.join(target, "ControlFile.in"), frequencies=DRIFT_CYL_FREQUENCIES,
                       headings=DRIFT_CYL_HEADINGS, **control)
-        write_second_order(os.path.join(target, "SecondOrder.in"), drift_methods="far", motion_state="free",
-                           write_terms=0, **options)
+        write_second_order(os.path.join(target, "SecondOrder.in"), **options)
+
+    # The cylinder with a rounded bilge: free, held fixed, and free on external surge and heave springs
+    for name, motion, external in (("drift_round", "free", None), ("drift_round_fixed", "fixed", None),
+                                   ("drift_round_kstf", "free", EXTERNAL_RESTORING)):
+        target = case_dir(data, name)
+        make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
+                                         external_restoring=external, **ROUND_MESH)
+        write_control(os.path.join(target, "ControlFile.in"), frequencies=DRIFT_CYL_FREQUENCIES,
+                      headings=DRIFT_CYL_HEADINGS)
+        write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state=motion,
+                           write_terms=1)
 
     # The same cylinder as a half mesh with a y symmetry plane
     target = case_dir(data, "drift_cyl_half")
     make_mesh.write_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"), half_y=True,
                              **DRIFT_CYL_MESH)
     write_control(os.path.join(target, "ControlFile.in"), frequencies=DRIFT_CYL_FREQUENCIES, headings=DRIFT_CYL_HEADINGS)
-    write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods="far", motion_state="free",
+    write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="free",
                        write_terms=0)
 
-    # A small cylinder off the origin, so that M_z is not zero, for the REFL scaling
-    for name, refl in (("drift_offset", "1.0D0"), ("drift_offset_refl2", "2.0D0")):
+    # A uniform mesh of that cylinder with and without irregular frequency removal, at two frequencies of drift_cyl and at
+    # the first irregular frequency. Thin rows at the waterline do not work with IRSP = 1: see the README.
+    for name, irsp in (("drift_irsp", 1), ("drift_irsp_ref", 0)):
+        target = case_dir(data, name)
+        make_mesh.write_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
+                                 **dict(DRIFT_CYL_MESH, graded=False))
+        if irsp == 1:
+            make_mesh.write_waterplane(os.path.join(target, "WaterPlaneMesh.pnl"), DRIFT_CYL_MESH["radius"],
+                                       DRIFT_CYL_MESH["ntheta"], DRIFT_CYL_MESH["nr"])
+        write_control(os.path.join(target, "ControlFile.in"), frequencies=IRSP_FREQUENCIES, headings=(0.0,), irsp=irsp)
+        write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="free",
+                           write_terms=0)
+
+    # A small cylinder off the origin, so that M_z is not zero, for the REFL scaling and the near-field M_z
+    for name, refl, methods in (("drift_offset", "1.0D0", both), ("drift_offset_refl2", "2.0D0", "far")):
         target = case_dir(data, name)
         make_mesh.write_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
                                  radius=5.0, draft=5.0, ntheta=16, nz=3, nr=3, x0=6.0, y0=8.0)
         write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=(1.2,), headings=(30.0,),
                       rotation_centre=(6.0, 8.0, 0.0), refl=refl)
-        write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods="far",
+        write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=methods,
                            motion_state="fixed", write_terms=0)
+
+    # A box at an oblique heading has a yaw moment of its own
+    target = case_dir(data, "drift_box")
+    make_mesh.write_box(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"), **DRIFT_BOX_MESH)
+    write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=OBLIQUE_FREQUENCIES, headings=(30.0,))
+    write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="fixed",
+                       write_terms=1)
+
+    # So does a half ellipsoid, which has no edges
+    target = case_dir(data, "drift_ellipsoid")
+    make_mesh.write_half_ellipsoid(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
+                                   **ELLIPSOID_MESH)
+    write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=OBLIQUE_FREQUENCIES, headings=(30.0,))
+    write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="fixed",
+                       write_terms=1)
 
     # Two cylinders, multi-body path
     target = case_dir(data, "drift_two_cyl")
     for body in (1, 2):
         make_mesh.write_cylinder(os.path.join(target, "HullMesh_%d.pnl" % body),
-                                 os.path.join(target, "Hydrostatic_%d.in" % body),
-                                 radius=5.0, draft=5.0, ntheta=20, nz=5, nr=4, graded=True)
+                                 os.path.join(target, "Hydrostatic_%d.in" % body), **TWO_CYL_MESH)
     write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=(1.35, 1.55), headings=(0.0, 30.0),
                   body_origins=[(0.0, 0.0), (0.0, 30.0)])
-    write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=2, drift_methods="far", motion_state="free",
+    write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=2, drift_methods=both, motion_state="free",
                        write_terms=2)
+
+    # A uniform mesh of them with and without irregular frequency removal
+    for name, irsp in (("drift_two_irsp", 1), ("drift_two_irsp_ref", 0)):
+        target = case_dir(data, name)
+        for body in (1, 2):
+            make_mesh.write_cylinder(os.path.join(target, "HullMesh_%d.pnl" % body),
+                                     os.path.join(target, "Hydrostatic_%d.in" % body), **dict(TWO_CYL_MESH, graded=False))
+            if irsp == 1:
+                make_mesh.write_waterplane(os.path.join(target, "WaterPlaneMesh_%d.pnl" % body), TWO_CYL_MESH["radius"],
+                                           TWO_CYL_MESH["ntheta"], TWO_CYL_MESH["nr"])
+        write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=(1.35,), headings=(0.0, 30.0),
+                      body_origins=[(0.0, 0.0), (0.0, 30.0)], irsp=irsp)
+        write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="free",
+                           write_terms=0)
+
+    # Two cylinders with rounded bilges
+    target = case_dir(data, "drift_two_round")
+    for body in (1, 2):
+        make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh_%d.pnl" % body),
+                                         os.path.join(target, "Hydrostatic_%d.in" % body), **TWO_ROUND_MESH)
+    write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=(1.35, 1.55), headings=(0.0, 30.0),
+                  body_origins=[(0.0, 0.0), (0.0, 30.0)])
+    write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=2, drift_methods=both, motion_state="free",
+                       write_terms=0)
+
+    # Two of the sharp cylinders far apart, and one alone
+    target = case_dir(data, "drift_far_apart")
+    for body in (1, 2):
+        make_mesh.write_cylinder(os.path.join(target, "HullMesh_%d.pnl" % body),
+                                 os.path.join(target, "Hydrostatic_%d.in" % body), **TWO_CYL_MESH)
+    write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=(FAR_APART_FREQUENCY,), headings=(0.0,),
+                  body_origins=[(0.0, 0.0), (0.0, FAR_APART_SEPARATION)])
+    write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="free",
+                       write_terms=0)
+    target = case_dir(data, "drift_isolated")
+    make_mesh.write_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"), **TWO_CYL_MESH)
+    write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=(FAR_APART_FREQUENCY,), headings=(0.0,))
+    write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods="near", motion_state="free",
+                       write_terms=0)
+
+    # A surface-piercing and a submerged body
+    target = case_dir(data, "drift_mixed")
+    make_mesh.write_cylinder(os.path.join(target, "HullMesh_1.pnl"), os.path.join(target, "Hydrostatic_1.in"),
+                             **TWO_CYL_MESH)
+    make_mesh.write_submerged_cylinder(os.path.join(target, "HullMesh_2.pnl"), os.path.join(target, "Hydrostatic_2.in"),
+                                       radius=3.0, top=4.0, height=4.0, ntheta=16, nz=3, nr=3)
+    write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=(1.35,), headings=(0.0,),
+                  body_origins=[(0.0, 0.0), (0.0, 20.0)])
+    write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="free",
+                       write_terms=1)
+
+    # Two fixed boxes, not in line with the wave, and the whole layout rotated about the origin through the LCS, with the
+    # wave
+    angle = math.radians(ROTATED_DEG)
+    x2, y2 = 30.0, 25.0
+    for name, origins, lcs_angle, heading in (
+            ("drift_unrotated", [(0.0, 0.0), (x2, y2)], 0.0, 0.0),
+            ("drift_rotated", [(0.0, 0.0), (x2 * math.cos(angle) - y2 * math.sin(angle),
+                                            x2 * math.sin(angle) + y2 * math.cos(angle))], angle, ROTATED_DEG)):
+        target = case_dir(data, name)
+        for body in (1, 2):
+            make_mesh.write_box(os.path.join(target, "HullMesh_%d.pnl" % body),
+                                os.path.join(target, "Hydrostatic_%d.in" % body), **ROTATED_BOX_MESH)
+        write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=(1.0,), headings=(heading,),
+                      body_origins=origins, lcs_angle=lcs_angle)
+        write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="fixed",
+                           write_terms=0)
 
 
 if __name__ == "__main__":
