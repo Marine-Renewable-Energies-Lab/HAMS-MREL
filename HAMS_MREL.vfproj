@@ -77,6 +77,8 @@
 		<File RelativePath=".\src\PrintOutput.f90"/>
 		<File RelativePath=".\src\ReadPanelMesh.f90"/>
 		<File RelativePath=".\src\ReadPanelMeshMulti.f90"/>
+		<File RelativePath=".\src\SecondOrderInput.f90"/>
+		<File RelativePath=".\src\SecondOrderTypes.f90"/>
 		<File RelativePath=".\src\SingularIntgr.f90"/>
 		<File RelativePath=".\src\SingularIntgrMulti.f90"/>
 		<File RelativePath=".\src\SolveMotion.f90"/>

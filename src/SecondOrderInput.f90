@@ -1,0 +1,246 @@
+!  ------------------------------------------------------------------------------------------------------
+!
+!    Program HAMS-MREL for the diffraction and radiation of waves
+!    by 3D structures.
+!
+!  License:
+!
+!    This routine is part of HAMS-MREL.
+!
+!    HAMS-MREL is a free software framework: you can redistribute it and/or modify it
+!    under the terms of the Apache License, Version 2.0 (the "License"); you may
+!    not use these subroutines except in compliance with the License. The software
+!    is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.
+!
+!    You should have received a copy of the Apache License, Version 2.0, along with
+!    HAMS-MREL. If not, see <http://www.apache.org/licenses/LICENSE-2.0>.
+!
+!  Code Original Author:
+!
+!    Vaibhav Raghavan
+!
+!  ------------------------------------------------------------------------------------------------------
+MODULE SecondOrderInput
+   ! Reader and validator for the optional SecondOrder.in file (mean wave drift options).
+
+   USE SecondOrderTypes
+   IMPLICIT NONE
+   PRIVATE
+
+   PUBLIC :: read_second_order_options
+   PUBLIC :: validate_second_order
+
+CONTAINS
+
+   ! Reads <inputdir>/SecondOrder.in. Lines are "key = value", "!" starts a comment, key order is free.
+   ! An absent file is not an error: it leaves opts%active false.
+   SUBROUTINE read_second_order_options(inputdir, opts, ok, msg)
+      CHARACTER(LEN=*), INTENT(IN)  :: inputdir
+      TYPE(so_options), INTENT(OUT) :: opts
+      LOGICAL,          INTENT(OUT) :: ok
+      CHARACTER(LEN=*), INTENT(OUT) :: msg
+
+      CHARACTER(LEN=512) :: line
+      CHARACTER(LEN=:), ALLOCATABLE :: key, value
+      LOGICAL :: exists
+      INTEGER :: unit, ios, ic, ie, iline
+
+      ok = .TRUE.
+      msg = ''
+      INQUIRE(FILE=TRIM(inputdir)//'/SecondOrder.in', EXIST=exists)
+      IF (.NOT. exists) RETURN
+
+      OPEN(NEWUNIT=unit, FILE=TRIM(inputdir)//'/SecondOrder.in', STATUS='OLD', ACTION='READ', IOSTAT=ios)
+      IF (ios /= 0) THEN
+         ok = .FALSE.
+         msg = 'SecondOrder.in could not be opened.'
+         RETURN
+      END IF
+
+      iline = 0
+      DO
+         READ(unit, '(A)', IOSTAT=ios) line
+         IF (ios /= 0) EXIT
+         iline = iline + 1
+         ic = INDEX(line, '!')
+         IF (ic > 0) line(ic:) = ' '
+         IF (LEN_TRIM(line) == 0) CYCLE
+         ie = INDEX(line, '=')
+         IF (ie == 0) THEN
+            ok = .FALSE.
+            msg = 'Line '//itoa(iline)//' of SecondOrder.in has no "=".'
+            EXIT
+         END IF
+         key = lower(TRIM(ADJUSTL(line(:ie-1))))
+         value = lower(TRIM(ADJUSTL(line(ie+1:))))
+         CALL set_option(key, value, opts, ok, msg)
+         IF (.NOT. ok) EXIT
+      END DO
+      CLOSE(unit)
+      IF (.NOT. ok) RETURN
+
+      IF (opts%mean_drift < 0 .OR. opts%mean_drift > 2) THEN
+         ok = .FALSE.
+         msg = 'mean_drift must be 0, 1 or 2 in SecondOrder.in.'
+      ELSE IF (opts%n_azimuth < 1) THEN
+         ok = .FALSE.
+         msg = 'n_azimuth must be positive in SecondOrder.in.'
+      ELSE IF (opts%write_terms < 0 .OR. opts%write_terms > 2) THEN
+         ok = .FALSE.
+         msg = 'write_terms must be 0, 1 or 2 in SecondOrder.in.'
+      END IF
+      IF (.NOT. ok) RETURN
+
+      opts%active = opts%mean_drift > 0
+      ! Without drift_methods the far-field method is used
+      IF (opts%active .AND. .NOT. (opts%do_far .OR. opts%do_near)) opts%do_far = .TRUE.
+   END SUBROUTINE read_second_order_options
+
+   SUBROUTINE set_option(key, value, opts, ok, msg)
+      CHARACTER(LEN=*), INTENT(IN)    :: key, value
+      TYPE(so_options), INTENT(INOUT) :: opts
+      LOGICAL,          INTENT(OUT)   :: ok
+      CHARACTER(LEN=*), INTENT(OUT)   :: msg
+
+      INTEGER :: ios
+
+      ok = .TRUE.
+      msg = ''
+      ios = 0
+      SELECT CASE (key)
+      CASE ('mean_drift')
+         READ(value, *, IOSTAT=ios) opts%mean_drift
+      CASE ('drift_methods')
+         CALL parse_methods(value, opts, ios)
+      CASE ('velocity_method')
+         CALL choose(value, 'differencing', 'source', opts%velocity_method, ios)
+      CASE ('waterline_method')
+         CALL choose(value, 'extrapolate', 'field', opts%waterline_method, ios)
+      CASE ('waterline_offset')
+         READ(value, *, IOSTAT=ios) opts%waterline_offset
+      CASE ('motion_state')
+         IF (value == 'free') THEN
+            opts%motion_fixed = .FALSE.
+         ELSE IF (value == 'fixed') THEN
+            opts%motion_fixed = .TRUE.
+         ELSE
+            ios = 1
+         END IF
+      CASE ('n_azimuth')
+         READ(value, *, IOSTAT=ios) opts%n_azimuth
+      CASE ('far_tolerance')
+         READ(value, *, IOSTAT=ios) opts%far_tolerance
+      CASE ('write_terms')
+         READ(value, *, IOSTAT=ios) opts%write_terms
+      CASE ('wl_z_tolerance')
+         READ(value, *, IOSTAT=ios) opts%wl_z_tolerance
+      CASE DEFAULT
+         ok = .FALSE.
+         msg = 'Unknown key "'//key//'" in SecondOrder.in.'
+         RETURN
+      END SELECT
+      IF (ios /= 0) THEN
+         ok = .FALSE.
+         msg = 'Invalid value "'//value//'" for key "'//key//'" in SecondOrder.in.'
+      END IF
+   END SUBROUTINE set_option
+
+   ! drift_methods is a list of the words "far" and "near", separated by blanks or commas.
+   SUBROUTINE parse_methods(value, opts, ios)
+      CHARACTER(LEN=*), INTENT(IN)    :: value
+      TYPE(so_options), INTENT(INOUT) :: opts
+      INTEGER,          INTENT(OUT)   :: ios
+
+      CHARACTER(LEN=LEN(value)) :: rest
+      INTEGER :: n, i
+
+      ios = 0
+      opts%do_far = .FALSE.
+      opts%do_near = .FALSE.
+      rest = value
+      DO i = 1, LEN(rest)
+         IF (rest(i:i) == ',') rest(i:i) = ' '
+      END DO
+      rest = ADJUSTL(rest)
+      DO WHILE (LEN_TRIM(rest) > 0)
+         n = INDEX(TRIM(rest), ' ')
+         IF (n == 0) n = LEN_TRIM(rest) + 1
+         SELECT CASE (rest(:n-1))
+         CASE ('far')
+            opts%do_far = .TRUE.
+         CASE ('near')
+            opts%do_near = .TRUE.
+         CASE DEFAULT
+            ios = 1
+            RETURN
+         END SELECT
+         rest = ADJUSTL(rest(n:))
+      END DO
+      IF (.NOT. (opts%do_far .OR. opts%do_near)) ios = 1
+   END SUBROUTINE parse_methods
+
+   SUBROUTINE choose(value, word1, word2, code, ios)
+      CHARACTER(LEN=*), INTENT(IN)  :: value, word1, word2
+      INTEGER,          INTENT(OUT) :: code, ios
+
+      ios = 0
+      code = 1
+      IF (value == word1) THEN
+         code = 1
+      ELSE IF (value == word2) THEN
+         code = 2
+      ELSE
+         ios = 1
+      END IF
+   END SUBROUTINE choose
+
+   ! Checks the options against the first-order set-up. Depths above 500 m are rejected because the incident
+   ! wave velocity routines VINP and DINP in PatclVelct.f90 treat them differently, and first-order results
+   ! must stay unchanged.
+   SUBROUTINE validate_second_order(opts, isol, h, isolv, irsp, has_gen_modes, ok, msg)
+      TYPE(so_options), INTENT(IN)  :: opts
+      INTEGER,          INTENT(IN)  :: isol, isolv, irsp
+      REAL(8),          INTENT(IN)  :: h
+      LOGICAL,          INTENT(IN)  :: has_gen_modes
+      LOGICAL,          INTENT(OUT) :: ok
+      CHARACTER(LEN=*), INTENT(OUT) :: msg
+
+      ok = .FALSE.
+      msg = ''
+      IF (isol == 2) THEN
+         msg = 'Mean drift needs ISOL=1 (incident and scattering potentials combined) in ControlFile.in.'
+      ELSE IF (h > 500.0D0) THEN
+         msg = 'Mean drift does not support a water depth above 500 m. Set H<0 in ControlFile.in for infinite depth.'
+      ELSE IF (opts%do_near .AND. has_gen_modes) THEN
+         msg = 'The near-field drift method does not support generalized modes (gen_mod files). Use far only.'
+      ELSE IF (opts%velocity_method == 2 .AND. isolv == 2) THEN
+         msg = 'velocity_method = source needs the direct solver (ISOLV=1) in ControlFile.in.'
+      ELSE IF (opts%velocity_method == 2 .AND. irsp == 1) THEN
+         msg = 'velocity_method = source cannot be used with irregular frequency removal (IRSP=1) in ControlFile.in.'
+      ELSE
+         ok = .TRUE.
+      END IF
+   END SUBROUTINE validate_second_order
+
+   FUNCTION lower(s) RESULT(r)
+      CHARACTER(LEN=*), INTENT(IN) :: s
+      CHARACTER(LEN=LEN(s)) :: r
+      INTEGER :: i, c
+
+      r = s
+      DO i = 1, LEN(s)
+         c = IACHAR(s(i:i))
+         IF (c >= IACHAR('A') .AND. c <= IACHAR('Z')) r(i:i) = ACHAR(c + 32)
+      END DO
+   END FUNCTION lower
+
+   FUNCTION itoa(i) RESULT(r)
+      INTEGER, INTENT(IN) :: i
+      CHARACTER(LEN=:), ALLOCATABLE :: r
+      CHARACTER(LEN=16) :: buf
+
+      WRITE(buf, '(I0)') i
+      r = TRIM(buf)
+   END FUNCTION itoa
+
+END MODULE SecondOrderInput

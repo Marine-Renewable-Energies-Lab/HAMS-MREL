@@ -11,6 +11,7 @@ program unit_tester
     use test_infgreen3d, only : collect_infgreen3d
     use test_iterative_solvers, only : collect_iterative_solvers
     use test_create_directory, only : collect_create_directory
+    use test_second_order_input, only : collect_second_order_input
 
     implicit none
     integer :: stat, is
@@ -28,7 +29,8 @@ program unit_tester
         new_testsuite("fingreen3d", collect_fingreen3d), &
         new_testsuite("infgreen3d", collect_infgreen3d), &
         new_testsuite("iterative_solvers", collect_iterative_solvers), &
-        new_testsuite("create_directory", collect_create_directory) &
+        new_testsuite("create_directory", collect_create_directory), &
+        new_testsuite("second_order_input", collect_second_order_input) &
     ]
 
     stat = 0

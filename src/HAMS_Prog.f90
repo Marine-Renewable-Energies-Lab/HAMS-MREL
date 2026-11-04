@@ -87,6 +87,9 @@ program HAMS_MREL
     use PressureElevation
     use PressureElevationMulti
     use FieldOutput_mod
+    use HAMS_mod
+    use SecondOrderTypes
+    use SecondOrderInput
     use omp_lib
 
     implicit none  
@@ -97,6 +100,11 @@ program HAMS_MREL
     character(len=300) :: MESH_MULTI,HYDROSTATIC_MULTI, WATERPLANEMESH_MULTI ! Full file paths — must be > inputdir length + filename
     character(len=260) :: inputdir, outputdir ! 260 is the max lengths for paths on Windows
     logical :: success
+    type(so_options) :: so_opts
+    logical :: has_gen_modes, gen_file_exists
+    character(len=16) :: body_str, dof_str
+    character(len=200) :: so_msg
+    integer :: gen_body, gen_dof
 
     print*
     write(*,'(80A)') ' ------------------------HAMS-MREL (Hydrodynamic Analysis of Marine Structures - Marine Renewable Energies Lab)---------------------'
@@ -138,6 +146,30 @@ program HAMS_MREL
     if (.not. success) then
         print*, "Error encountered reading input file ControlFile.in. Terminating application."
         stop
+    end if
+
+    ! Optional second-order (mean wave drift) options
+    call read_second_order_options(trim(inputdir), so_opts, success, so_msg)
+    if (.not. success) then
+        print*, trim(so_msg)
+        stop
+    end if
+    if (so_opts%active) then
+        ! Single-body cases use gen_mod_1_{dof}.txt, multi-body cases gen_mod_{body}_{dof}.txt
+        has_gen_modes = .false.
+        do gen_body = 1, NBODY
+            write(body_str, '(I0)') gen_body
+            do gen_dof = 1, 6
+                write(dof_str, '(I0)') gen_dof
+                inquire(file=trim(inputdir)//'/gen_mod_'//trim(body_str)//'_'//trim(dof_str)//'.txt', exist=gen_file_exists)
+                if (gen_file_exists) has_gen_modes = .true.
+            end do
+        end do
+        call validate_second_order(so_opts, ISOL, H, ISOLV, IRSP, has_gen_modes, success, so_msg)
+        if (.not. success) then
+            print*, trim(so_msg)
+            stop
+        end if
     end if
     call VerifyInputFilesExist(trim(inputdir), NBODY, IRSP, success)
     if (.not. success) then

@@ -203,3 +203,37 @@ A few notes:
 ### Generating Generalized Mode Files
 
 A Python helper script (`generalized_modes.py`) is provided to generate these files. The script reads the hull mesh file (`HullMesh[_i].pnl`), computes panel centroid coordinates, reads the LCS from `ControlFile.in` for the corresponding body and transforms the centroids to global coordinates. The generalized normal at each panel centroid is then computed as `n_j = nx * X + ny * Y + nz * Z`, where `X`, `Y`, `Z` are the global centroid coordinates and `nx`, `ny`, `nz` are the user-defined shape function components. The body number is extracted automatically from the mesh filename (e.g., `HullMesh_2.pnl` → body 2).
+
+## SecondOrder.in (Optional)
+
+`SecondOrder.in` switches on the mean wave drift calculation. The file is optional: if it is absent, or `mean_drift = 0`, HAMS-MREL runs exactly as before. It is read from the input directory, right after `ControlFile.in`, and the run stops with a message if an option is unknown, has an invalid value, or conflicts with the first-order set-up.
+
+Each line is `key = value`. Text after `!` is a comment, blank lines are ignored, keys are case-insensitive and may appear in any order. Keys that are left out take their default.
+
+| Key | Values | Default | Description |
+| :-- | :----- | :------ | :---------- |
+| `mean_drift` | `0`, `1`, `2` | `0` | 0 is off, 1 is unidirectional, 2 is all heading pairs. |
+| `drift_methods` | `far`, `near`, or both separated by a blank or comma | `far` | Far-field (momentum) and near-field (pressure integration) methods. |
+| `velocity_method` | `differencing`, `source` | `differencing` | How the velocity on the body surface is obtained. |
+| `waterline_method` | `extrapolate`, `field` | `extrapolate` | How the free-surface elevation at the waterline is obtained. |
+| `waterline_offset` | real | `0.01` | Offset used for the waterline evaluation, in metres. |
+| `motion_state` | `free`, `fixed` | `free` | Whether the body responds to the waves or is held fixed. |
+| `n_azimuth` | integer, at least 1 | `360` | Number of azimuth points in the far-field integration. |
+| `far_tolerance` | real | `1d-4` | Tolerance of the far-field integration. |
+| `write_terms` | `0`, `1`, `2` | `1` | 0 writes nothing extra, 1 writes the term file, 2 also writes panel diagnostics. |
+| `wl_z_tolerance` | real | `1d-6` | Tolerance for panels at the waterline, relative to the body size. |
+
+Example:
+
+```
+! Mean drift with both methods
+mean_drift     = 1
+drift_methods  = far near
+n_azimuth      = 360
+```
+
+The options are checked against `ControlFile.in` and the mesh files. A run is rejected when:
+- `ISOL = 2`, because the incident potential is needed.
+- The water depth `H` is above 500 m. Set `H < 0` for infinite depth instead, because the incident-wave velocity routines treat depths above 500 m differently.
+- `drift_methods` includes `near` and any generalized mode file (`gen_mod_{body}_{dof}.txt`) is present.
+- `velocity_method = source` with `ISOLV = 2` (GMRES), or with `IRSP = 1` (irregular frequency removal).
