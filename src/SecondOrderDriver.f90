@@ -35,7 +35,7 @@ MODULE SecondOrderDriver
    USE WaveDyn_mod, ONLY: AMP, BETA, BLNR, H, NBETA, NBODY, OUFR, TP, V, W1, WK, WVHD, AMAS, BDMP, EXFC, DSPL, &
                           AMAS_MULTI_COMB, BDMP_MULTI_COMB, BLNR_MULTI, EXFC_MULTI_COMB, DSPL_MULTI_COMB
    USE Body_mod, ONLY: CRS, KSTF, MATX, REFL, XR, XR_MULTI, CRS_MULTI, KSTF_MULTI, MATX_MULTI
-   USE PanelMesh_mod, ONLY: DS, DXYZ_P, ISX, ISY, NCN, NCON, NELEM, NSYS, PNSZ, XYZ, XYZ_P, &
+   USE PanelMesh_mod, ONLY: DS, DXYZ_P, GEONRM_P, GEONRM_MULTI_COMB, ISX, ISY, NCN, NCON, NELEM, NSYS, PNSZ, XYZ, XYZ_P, &
                             DS_MULTI_COMB, DXYZ_MULTI_COMB, NCN_MULTI_COMB, NCON_MULTI_COMB, NELEM_MULTI, NTND_MULTI, &
                             PNSZ_MULTI_COMB, XYZ_GLOBAL_MULTI_COMB, XYZ_GLOBAL_MULTI_COMB_P, iXYZ_GLOBAL_MULTI_COMB, &
                             iNCN_MULTI_COMB, iNCON_MULTI_COMB
@@ -80,7 +80,7 @@ CONTAINS
 
       ALLOCATE (body(NELEM))
       body = 1
-      CALL expand_images(XYZ_P, DXYZ_P, DS, PNSZ, XYZ, NCN, NCON, body, RESHAPE(XR, [3, 1]), ISX, ISY, NSYS, mesh)
+      CALL expand_images(XYZ_P, GEONRM_P, DXYZ_P, DS, PNSZ, XYZ, NCN, NCON, body, RESHAPE(XR, [3, 1]), ISX, ISY, NSYS, mesh)
       IF (IRSP == 1) CALL warn_thin_lid(lid_rim_side_ratio(iXYZ, iNCN, iNCON, ISX, ISY), opts%do_near)
       CALL common_setup(opts, outputdir)
    END SUBROUTINE so_setup_single
@@ -99,7 +99,7 @@ CONTAINS
          body(first:first + NELEM_MULTI(b) - 1) = b
          first = first + NELEM_MULTI(b)
       END DO
-      CALL expand_images(XYZ_GLOBAL_MULTI_COMB_P(1:NELEM_PE, :), DXYZ_MULTI_COMB(1:NELEM_PE, :), &
+      CALL expand_images(XYZ_GLOBAL_MULTI_COMB_P(1:NELEM_PE, :), GEONRM_MULTI_COMB(1:NELEM_PE, :), DXYZ_MULTI_COMB(1:NELEM_PE, :), &
                          DS_MULTI_COMB(1:NELEM_PE), PNSZ_MULTI_COMB(1:NELEM_PE), &
                          XYZ_GLOBAL_MULTI_COMB(1:SUM(NTND_MULTI), :), NCN_MULTI_COMB(1:NELEM_PE), &
                          NCON_MULTI_COMB(1:NELEM_PE, :), body, TRANSPOSE(XR_MULTI), ISX, ISY, NSYS, mesh)

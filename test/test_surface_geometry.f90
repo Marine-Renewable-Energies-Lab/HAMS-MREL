@@ -372,7 +372,7 @@ subroutine test_symmetry_images_join(error)
   xc_b = transpose(half%xc)
   dxyz_b = transpose(half%nj)
   xnode_b = transpose(half%xnode)
-  call expand_images(xc_b, dxyz_b, half%area, half%psize, xnode_b, half%ncn, transpose(half%ncon), half%body, &
+  call expand_images(xc_b, dxyz_b(:,1:3), dxyz_b, half%area, half%psize, xnode_b, half%ncn, transpose(half%ncon), half%body, &
                      half%xr, 0, 1, 2, mesh)
   call check(error, mesh%n == 2 * half%n .and. any(mesh%ncn == 3 .and. mesh%ncon(4,:) /= 0), "image triangles carry ncon(4)")
   if (allocated(error)) return

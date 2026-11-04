@@ -30,6 +30,7 @@ subroutine collect_first_order_state(testsuite)
     new_unittest("expand_images_y", test_expand_images_y), &
     new_unittest("expand_images_x", test_expand_images_x), &
     new_unittest("expand_images_single", test_expand_images_single), &
+    new_unittest("expand_images_mode_keeps_direction", test_expand_images_mode), &
     new_unittest("cylinder_fixture", test_cylinder_fixture) &
     ]
 end subroutine collect_first_order_state
@@ -308,7 +309,7 @@ subroutine test_build_state_image_index(error)
   dxyz(1,:) = [0.6d0, 0.8d0, 0d0, 0.1d0, 0.2d0, 0.7d0]
   area = 1d0; psize = 1d0; ncn = 4; ncon(1,:) = [1, 2, 3, 4]; body = 1; xr = 0d0
   xnode = 0d0
-  call expand_images(xc, dxyz, area, psize, xnode, ncn, ncon, body, xr, 0, 1, 2, mesh)   ! image 2: y -> -y
+  call expand_images(xc, dxyz(:,1:3), dxyz, area, psize, xnode, ncn, ncon, body, xr, 0, 1, 2, mesh)   ! image 2: y -> -y
   omega = 1d0; k = wavenumber(omega, -1d0); beta = 0.4d0
   mxpot = (0d0, 0d0)
   mxpot(1,7,1) = (1d0, 0d0)
@@ -394,7 +395,7 @@ subroutine expand_from(base, isx, isy, nsys, mesh)
   integer, intent(in) :: isx, isy, nsys
   type(panel_mesh), intent(out) :: mesh
 
-  call expand_images(transpose(base%xc), transpose(base%nj), base%area, base%psize, transpose(base%xnode), &
+  call expand_images(transpose(base%xc), transpose(base%nrm), transpose(base%nj), base%area, base%psize, transpose(base%xnode), &
                      base%ncn, transpose(base%ncon), base%body, base%xr, isx, isy, nsys, mesh)
 end subroutine expand_from
 
@@ -478,6 +479,22 @@ subroutine test_expand_images_single(error)
   call check(error, all(mesh%xc == base%xc) .and. all(mesh%nj == base%nj) .and. all(mesh%ncon == base%ncon) &
              .and. all(mesh%xnode == base%xnode), "single system is not a copy")
 end subroutine test_expand_images_single
+
+!> A generalized mode in DOF 1 to 3 replaces that column of DXYZ. nj takes the mode, nrm keeps the panel's direction.
+subroutine test_expand_images_mode(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: base, mesh
+  real(8), allocatable :: dxyz(:,:)
+
+  call half_cube(base)
+  dxyz = transpose(base%nj)
+  dxyz(:,1) = 0.25d0
+  call expand_images(transpose(base%xc), transpose(base%nrm), dxyz, base%area, base%psize, transpose(base%xnode), &
+                     base%ncn, transpose(base%ncon), base%body, base%xr, 0, 1, 2, mesh)
+  call check(error, all(mesh%nj(1,:) == 0.25d0), "the mode is not in nj")
+  if (allocated(error)) return
+  call check(error, all(mesh%nrm(:,1:base%n) == base%nrm), "the mode changed the panel's direction")
+end subroutine test_expand_images_mode
 
 subroutine test_cylinder_fixture(error)
   type(error_type), allocatable, intent(out) :: error

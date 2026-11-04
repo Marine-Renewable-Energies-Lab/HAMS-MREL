@@ -92,17 +92,19 @@ CONTAINS
       grad(3) = pref*dzf
    END SUBROUTINE incident_grad
 
-   SUBROUTINE expand_images(xc_b, dxyz_b, area_b, psize_b, xnode_b, ncn_b, ncon_b, body_b, xr, isx, isy, nsys, mesh)
+   SUBROUTINE expand_images(xc_b, nrm_b, dxyz_b, area_b, psize_b, xnode_b, ncn_b, ncon_b, body_b, xr, isx, isy, nsys, mesh)
       ! Builds the full panel set from the base panels by adding the symmetry image. Base arrays use the layout of the
       ! HAMS globals (panel index first), the result uses the layout of panel_mesh.
       !   xc_b(nbase,3)      panel centroids              dxyz_b(nbase,6)  normal and moment-arm components, as DXYZ
+      !   nrm_b(nbase,3)     the panel's direction, as GEONRM. Differs from dxyz_b(:,1:3) when a generalized mode
+      !                      replaces a DOF 1 to 3: nrm is the panel's direction, nj the velocity on it per mode.
       !   area_b, psize_b    (nbase)                      xnode_b(nnode_b,3), ncn_b(nbase), ncon_b(nbase,4)
       !   body_b(nbase)      body of each panel           xr(3,nbody)      body reference points
       !   isx, isy, nsys     symmetry flags of HAMS (nsys = 1: no image, 2: one image)
       ! Image rule, as in EFORCE_MULTI: with ISX = 1 and ISY = 0 the image is x -> -x, otherwise y -> -y. The image
       ! panels follow the base panels, and image nodes follow the base nodes, so ncon stays valid. Components of nj
       ! take the factors (fx, fy, 1, fy, fx, fx*fy), which are the RX/RY signs of the force integration.
-      REAL(8), INTENT(IN) :: xc_b(:,:), dxyz_b(:,:), area_b(:), psize_b(:), xnode_b(:,:), xr(:,:)
+      REAL(8), INTENT(IN) :: xc_b(:,:), nrm_b(:,:), dxyz_b(:,:), area_b(:), psize_b(:), xnode_b(:,:), xr(:,:)
       INTEGER, INTENT(IN) :: ncn_b(:), ncon_b(:,:), body_b(:), isx, isy, nsys
       TYPE(panel_mesh), INTENT(OUT) :: mesh
       INTEGER :: nbase, nnode_b, is, off, node_off, i
@@ -140,7 +142,7 @@ CONTAINS
          node_off = (is - 1)*nnode_b
          DO i = 1, nbase
             mesh%xc(:, off + i) = f3*xc_b(i, :)
-            mesh%nrm(:, off + i) = f3*dxyz_b(i, 1:3)
+            mesh%nrm(:, off + i) = f3*nrm_b(i, :)
             mesh%nj(:, off + i) = fj*dxyz_b(i, 1:6)
             mesh%area(off + i) = area_b(i)
             mesh%psize(off + i) = psize_b(i)
