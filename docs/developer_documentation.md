@@ -41,6 +41,12 @@ fpm test --target integration-tester -- install/bin/hamsmrel
 
 The integration tests compare against the outputs stored in `test/data/config1/expected_output` with a relative tolerance, because results change slightly between compilers and flags. The measured differences behind each limit are listed in [test_integration.f90](../test/test_integration.f90). Regenerate the stored outputs only when a change is meant to alter the results.
 
+### Free-surface image term
+
+The Green function holds the image term 1/r1 of the free surface. Until this change it was taken at the centroid of the source panel and multiplied by the area, also for panels next to the field point, while the 1/r term was integrated over the panel. On a panel close to z = 0 compared with its size, the centroid is too close to its image: for the top row of a wall graded to the waterline, with height 0.02 m and width 0.65 m, the one-point value is 4.7 times the integral. Now, for every pair within 50 panel sizes (`FLAG = 1`), `IMAGE_TERM_EXACT` and `IMAGE_TERM_EXACT_MULTI` move the term and its gradient out of the Green function and add their integral over the panel. They are called in `CALGREEN`, `CALGREEN_IRR`, `CALGREEN_MULTI`, `CALGREEN_MULTI_IRR`, `CalPotential` and `CalPotentialMulti`, so collocation and field points are treated the same. This changes first-order results on all meshes, a little: see [the fixtures](../test/data/image_term/README.md). The stored outputs of `config1` were regenerated for it.
+
+The rest of the Green function stays at the centroid: the logarithmic part of the wave term, also singular at the free surface, and with finite depth the image in the sea bed.
+
 After executing these commands you should see the following output (or similar):
 
 <img width="557" height="280" alt="hams-tests" src="https://github.com/user-attachments/assets/1bb39a74-593d-498b-8a6d-40f20fcc36f9" />
