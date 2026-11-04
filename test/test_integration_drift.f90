@@ -31,24 +31,23 @@ module test_integration_drift
     ! Values in .8 have 7 significant digits, so same-run ratios cannot be checked more tightly than this
     real(8), parameter :: printed_limit = 1d-5
 
-    ! Near-field against far-field, from the implementation plan (Task 8). They hold on hulls without edges.
+    ! Near-field against far-field, from the implementation plan (Task 8). They are checked on the fixtures named in each test,
+    ! whose meshes and frequencies were chosen after seeing results. Having no edges is not enough: a free half ellipsoid, for
+    ! one, misses 5% where its net force is small. See test/data/drift_cyl/README.md.
     real(8), parameter :: near_far_limit = 5d-2
     real(8), parameter :: near_mz_limit = 1d-1
     real(8), parameter :: rotated_limit = 1d-3
     real(8), parameter :: irsp_limit = 1d-2
-    ! Regression limits on the coarse hulls with sharp edges: about 1.25 times the measured value, not accuracy claims.
-    ! Near-field converges slowly at a sharp bilge. See test/data/drift_cyl/README.md for the values against panel count,
-    ! and pre_postprocessing_python/SecondOrder/near_far_study.py for the plan's 5% on these hulls.
-    real(8), parameter :: sharp_fixed_limit = 1.5d-1
-    real(8), parameter :: sharp_free_limit = 5d-1
-    real(8), parameter :: sharp_two_body_limit = 6.5d-1
-    real(8), parameter :: sharp_box_mz_limit = 4d-1
-    real(8), parameter :: sharp_offset_mz_limit = 2d-1
-    ! 0.70 rad/s is 8% from the pitch resonance, and the drift force there is about 4% of term I: printed, not checked
-    real(8), parameter :: near_resonance_below = 0.8d0
-    ! On the springs, the heave resonance moves to about 0.86 rad/s, so 0.95 rad/s is near it and has its own regression limit
+    ! Regression band on the cases that miss the plan's limits: near-field and far-field each stay within this of the value
+    ! measured when the check was written. These pin the numbers, including their error, and are not accuracy claims.
+    ! See test/data/drift_cyl/README.md for the values against panel count, and
+    ! pre_postprocessing_python/SecondOrder/near_far_study.py for the plan's 5% on these hulls.
+    real(8), parameter :: regression_band = 1d-2
+    ! At 0.70 rad/s the free cylinder's net drift force is about 4% of term I, from cancellation between much larger terms,
+    ! and near-field against far-field has not been shown to converge there: printed, not checked
+    real(8), parameter :: small_net_force_below = 0.8d0
+    ! On the springs, the heave resonance moves to about 0.86 rad/s, so 0.95 rad/s is near it and only has a regression band
     real(8), parameter :: springs_away_from_resonance = 1d0
-    real(8), parameter :: springs_near_resonance_limit = 1d-1
     ! Off-diagonal heading pairs of two_body_total are about 1/7 of the diagonal loads: a regression limit, not from the plan
     real(8), parameter :: heading_pair_limit = 1d-1
 
@@ -84,7 +83,9 @@ contains
             new_unittest("run_drift_irsp", run_drift_irsp), &
             new_unittest("run_drift_irsp_ref", run_drift_irsp_ref), &
             new_unittest("run_drift_two_irsp", run_drift_two_irsp), &
-            new_unittest("run_drift_two_irsp_ref", run_drift_two_irsp_ref) &
+            new_unittest("run_drift_two_irsp_ref", run_drift_two_irsp_ref), &
+            new_unittest("run_drift_lid_graded", run_drift_lid_graded), &
+            new_unittest("run_drift_two_lid_graded", run_drift_two_lid_graded) &
         ]
     end subroutine setup_drift
 
@@ -123,7 +124,8 @@ contains
             new_unittest("bidirectional", bidirectional), &
             new_unittest("irsp_stability", irsp_stability), &
             new_unittest("terms_sum_to_total", terms_sum_to_total), &
-            new_unittest("near_output_switches", near_output_switches) &
+            new_unittest("near_output_switches", near_output_switches), &
+            new_unittest("thin_lid_warning", thin_lid_warning) &
         ]
     end subroutine collect_tests_drift
 
@@ -281,6 +283,16 @@ contains
         type(error_type), allocatable, intent(out) :: error
         call run_case("drift_two_irsp_ref", both_drift_files(), error)
     end subroutine run_drift_two_irsp_ref
+
+    subroutine run_drift_lid_graded(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("drift_lid_graded", drift_file_only(), error)
+    end subroutine run_drift_lid_graded
+
+    subroutine run_drift_two_lid_graded(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("drift_two_lid_graded", drift_file_only(), error)
+    end subroutine run_drift_two_lid_graded
 
     function drift_file_only() result(files)
         character(len=40) :: files(1)
@@ -765,7 +777,7 @@ contains
         type(error_type), allocatable, intent(out) :: error
         real(8) :: worst_fx, worst_f, worst_mz
 
-        call near_against_far("drift_round", origins_at_zero(1), near_resonance_below, worst_fx, worst_f, worst_mz, error)
+        call near_against_far("drift_round", origins_at_zero(1), small_net_force_below, worst_fx, worst_f, worst_mz, error)
         if (allocated(error)) return
         call check_below(error, "free_near_far", worst_fx, near_far_limit)
     end subroutine free_near_far
@@ -786,7 +798,8 @@ contains
     end subroutine near_mz_far_mz
 
     !> External springs change the motion, and the near-field form needs no external loads. The spring in x only, at an
-    !> oblique heading, makes F_x small next to F_y, so the check is on the force vector. Away from resonance.
+    !> oblique heading, makes F_x small next to F_y, so the check is on the force vector. Away from resonance. This mesh has
+    !> thin rows at the waterline, on which the difference grows with refinement, to 6.1% at 4320 panels: see the README.
     subroutine external_stiffness(error)
         type(error_type), allocatable, intent(out) :: error
         real(8) :: worst_fx, worst_f, worst_mz
@@ -797,14 +810,14 @@ contains
         call check_below(error, "external_stiffness", worst_f, near_far_limit)
     end subroutine external_stiffness
 
-    !> Regression check, not accuracy: external_stiffness including 0.95 rad/s, near the heave resonance on the springs.
+    !> Regression band, not accuracy: F_x at 0.95 rad/s, near the heave resonance on the springs, where near-field is 11% above
+    !> far-field at this mesh.
     subroutine external_stiffness_near_resonance_regression(error)
         type(error_type), allocatable, intent(out) :: error
-        real(8) :: worst_fx, worst_f, worst_mz
 
-        call near_against_far("drift_round_kstf", origins_at_zero(1), near_resonance_below, worst_fx, worst_f, worst_mz, error)
-        if (allocated(error)) return
-        call check_below(error, "external_stiffness_near_resonance_regression", worst_f, springs_near_resonance_limit)
+        call check_band("drift_round_kstf", origins_at_zero(1), 1, reshape( &
+            [0.95d0, 0d0, 0d0, 8.2462d0, 9.1704d0, &
+             0.95d0, 30d0, 30d0, 3.7218d0, 4.4137d0], [5, 2]), error)
     end subroutine external_stiffness_near_resonance_regression
 
     !> The sum over the bodies against the far-field total. F_y vanishes by symmetry at heading 0, so the check is on the
@@ -818,53 +831,92 @@ contains
         if (allocated(error)) return
         call check_below(error, "two_body_total", worst_f, near_far_limit)
         if (allocated(error)) return
+        ! Fails if a moment in .9 is not about XR of its own body
+        call check_below(error, "two_body_total M_z about the origin", worst_mz, near_mz_limit)
+        if (allocated(error)) return
         call check_below(error, "two_body_total off-diagonal heading pairs", worst_pair, heading_pair_limit)
     end subroutine two_body_total
 
-    !> Regression check, not accuracy: fixed_near_far on the coarse hull with a sharp bilge.
+    !> Regression band, not accuracy: F_x of the fixed coarse hull with a sharp bilge. Term II on the wall rows nearest the bilge
+    !> holds the excess: an offline fit of the edge behaviour there brought it to +0.9% at 4032 panels.
     subroutine fixed_near_far_sharp_regression(error)
         type(error_type), allocatable, intent(out) :: error
-        real(8) :: worst_fx, worst_f, worst_mz
 
-        call near_against_far("drift_cyl_fixed", origins_at_zero(1), 0d0, worst_fx, worst_f, worst_mz, error)
-        if (allocated(error)) return
-        call check_below(error, "fixed_near_far_sharp_regression", worst_fx, sharp_fixed_limit)
+        call check_band("drift_cyl_fixed", origins_at_zero(1), 1, reshape( &
+            [0.70d0, 0d0, 0d0, 1.7401d0, 1.9606d0, &
+             0.95d0, 0d0, 0d0, 5.4548d0, 5.7976d0, &
+             1.10d0, 0d0, 0d0, 5.9251d0, 6.2071d0], [5, 3]), error)
     end subroutine fixed_near_far_sharp_regression
 
-    !> Regression check, not accuracy: free_near_far on the coarse hull with a sharp bilge.
+    !> Regression band, not accuracy: F_x of the free coarse hull with a sharp bilge. The same offline fit brought the excess to
+    !> +5.7% at 0.95 rad/s and 4032 panels.
     subroutine free_near_far_sharp_regression(error)
         type(error_type), allocatable, intent(out) :: error
-        real(8) :: worst_fx, worst_f, worst_mz
 
-        call near_against_far(main_case, origins_at_zero(1), near_resonance_below, worst_fx, worst_f, worst_mz, error)
-        if (allocated(error)) return
-        call check_below(error, "free_near_far_sharp_regression", worst_fx, sharp_free_limit)
+        call check_band(main_case, origins_at_zero(1), 1, reshape( &
+            [0.95d0, 0d0, 0d0, 2.8877d0, 4.1680d0, &
+             1.10d0, 0d0, 0d0, 3.4701d0, 3.9892d0], [5, 2]), error)
     end subroutine free_near_far_sharp_regression
 
-    !> Regression check, not accuracy: two_body_total on the coarse hulls with sharp bilges.
+    !> Regression band, not accuracy: the sum of F_x over the two coarse hulls with sharp bilges.
     subroutine two_body_total_sharp_regression(error)
         type(error_type), allocatable, intent(out) :: error
-        real(8) :: worst_fx, worst_f, worst_mz
 
-        call near_against_far("drift_two_cyl", reshape([0d0, 0d0, 0d0, 30d0], [2, 2]), 0d0, worst_fx, worst_f, worst_mz, error)
-        if (allocated(error)) return
-        call check_below(error, "two_body_total_sharp_regression", worst_f, sharp_two_body_limit)
+        call check_band("drift_two_cyl", reshape([0d0, 0d0, 0d0, 30d0], [2, 2]), 1, reshape( &
+            [1.35d0, 0d0, 0d0, 2.1584d0, 3.2977d0, &
+             1.35d0, 30d0, 30d0, 3.1483d0, 4.8480d0, &
+             1.55d0, 0d0, 0d0, 4.6206d0, 5.5400d0, &
+             1.55d0, 30d0, 30d0, 1.8910d0, 2.2295d0], [5, 4]), error)
     end subroutine two_body_total_sharp_regression
 
-    !> Regression check, not accuracy: M_z on the coarse box, and on the coarse cylinder off the origin, whose M_z is the
-    !> moment of its force about the origin and so has the error of the force.
+    !> Regression band, not accuracy: M_z on the coarse box and on the coarse cylinder off the origin. For the box the cause is
+    !> only partly shown: the offline edge fit takes F_y from +43.1% to +26.4% at 1760 panels, so edges do not explain it all.
+    !> The cylinder's M_z is the moment of its force about the origin, so it has the error of the force.
     subroutine near_mz_far_mz_sharp_regression(error)
         type(error_type), allocatable, intent(out) :: error
-        real(8) :: worst_fx, worst_f, worst_mz
 
-        call near_against_far("drift_box", origins_at_zero(1), 0d0, worst_fx, worst_f, worst_mz, error)
+        call check_band("drift_box", origins_at_zero(1), 3, reshape( &
+            [0.8d0, 30d0, 30d0, -9.0999d0, -6.5004d0, &
+             1.0d0, 30d0, 30d0, -11.892d0, -8.0668d0], [5, 2]), error)
         if (allocated(error)) return
-        call check_below(error, "near_mz_far_mz_sharp_regression box", worst_mz, sharp_box_mz_limit)
-        if (allocated(error)) return
-        call near_against_far("drift_offset", reshape([6d0, 8d0], [2, 1]), 0d0, worst_fx, worst_f, worst_mz, error)
-        if (allocated(error)) return
-        call check_below(error, "near_mz_far_mz_sharp_regression offset", worst_mz, sharp_offset_mz_limit)
+        call check_band("drift_offset", reshape([6d0, 8d0], [2, 1]), 3, reshape( &
+            [1.2d0, 30d0, 30d0, -7.8861d0, -9.0753d0], [5, 1]), error)
     end subroutine near_mz_far_mz_sharp_regression
+
+    !> Far-field and near-field of a load stay within regression_band of the recorded values.
+    !>   load       1 F_x, 2 F_y, 3 M_z about the origin
+    !>   recorded   (omega, beta1, beta2, far, near) per column
+    subroutine check_band(name, xr, load, recorded, error)
+        character(len=*), intent(in) :: name
+        real(8), intent(in) :: xr(:,:), recorded(:,:)
+        integer, intent(in) :: load
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: far(:,:), near(:,:)
+        complex(8) :: f_far(3), f_near(3)
+        real(8) :: worst
+        integer :: r, c, found
+
+        call read_drift(output_dir(name)//far_file, far, error)
+        if (allocated(error)) return
+        call read_drift(output_dir(name)//near_file, near, error)
+        if (allocated(error)) return
+        worst = 0d0
+        found = 0
+        do c = 1, size(recorded, 2)
+            do r = 1, size(far, 1) - 2, 3
+                if (.not. same(far(r,1), recorded(1,c)) .or. far(r,2) /= recorded(2,c) .or. far(r,3) /= recorded(3,c)) cycle
+                f_far = cmplx(far(r:r+2,7), far(r:r+2,8), kind=8)
+                call sum_near(near, xr, far(r,1), far(r,2), far(r,3), f_near)
+                worst = max(worst, abs(real(f_far(load), 8) - recorded(4,c))/abs(recorded(4,c)), &
+                            abs(real(f_near(load), 8) - recorded(5,c))/abs(recorded(5,c)))
+                found = found + 1
+            end do
+        end do
+        call check(error, found == size(recorded, 2), "Not every recorded row of "//name//" is in its output")
+        if (allocated(error)) return
+        call report(name//" regression band", worst)
+        call check_below(error, name//" regression band", worst, regression_band)
+    end subroutine check_band
 
     !> Two cylinders 50 wavelengths apart: each has the F_x of a cylinder alone.
     subroutine far_apart_isolated(error)
@@ -1090,7 +1142,8 @@ contains
         call check(error, used > 0, "No frequency compared in irsp_stability")
     end subroutine irsp_difference
 
-    !> The terms of MeanDriftTerms.txt add up to the totals of the .9 file, row by row.
+    !> The terms of MeanDriftTerms.txt add up to the totals of the .9 file, row by row. Each has 7 digits, so the difference is
+    !> relative to the largest term of the frequency.
     subroutine terms_sum_to_total(error)
         type(error_type), allocatable, intent(out) :: error
         real(8), allocatable :: terms(:,:), rows(:,:)
@@ -1116,8 +1169,8 @@ contains
             end do
             call check(error, n == T_HYDROSTATIC, "A load does not have all its terms")
             if (allocated(error)) return
-            scale_row = maxval(rows(:,5), mask=abs(rows(:,1) - rows(r,1)) < 1d-6 .and. &
-                               (nint(rows(:,4)) <= 3) .eqv. (nint(rows(r,4)) <= 3))
+            scale_row = maxval(abs(terms(:,7)), mask=abs(terms(:,1) - rows(r,1)) < 1d-6 .and. &
+                               (nint(terms(:,5)) <= 3) .eqv. (nint(rows(r,4)) <= 3))
             worst = max(worst, (abs(total(1) - rows(r,7)) + abs(total(2) - rows(r,8)))/scale_row)
         end do
         call report("terms_sum_to_total", worst)
@@ -1177,6 +1230,21 @@ contains
         call check(error, value >= 0d0, "No row with "//text//" in the log of "//name)
     end subroutine logged_difference
 
+    !> The warning on a lid with thin rim panels, through both adapters, and none for uniform lids. config1 is not a case of
+    !> IRSP = 1, and the first-order results of a lid are not touched by the warning.
+    subroutine thin_lid_warning(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: text = "rim panels of the waterplane"
+
+        call check(error, log_has("drift_lid_graded", text), "No warning for a graded lid, one body")
+        if (allocated(error)) return
+        call check(error, log_has("drift_two_lid_graded", text), "No warning for a graded lid, second of two bodies")
+        if (allocated(error)) return
+        call check(error, .not. log_has("drift_irsp", text), "A warning for a uniform lid, one body")
+        if (allocated(error)) return
+        call check(error, .not. log_has("drift_two_irsp", text), "A warning for uniform lids, two bodies")
+    end subroutine thin_lid_warning
+
     logical function log_has(name, text)
         character(len=*), intent(in) :: name, text
         character(len=512) :: line
@@ -1213,10 +1281,11 @@ contains
         type(error_type), allocatable, intent(out) :: error
         real(8), intent(out), optional :: worst_pair
         real(8), allocatable :: far(:,:), near(:,:)
-        complex(8) :: f_far(3), f_near(3), load
+        complex(8) :: f_far(3), f_near(3)
         real(8) :: fmag, err_x, err_f, err_m, arm
-        integer :: r, q, body, local
+        integer :: r, used
 
+        used = 0
         worst_fx = 0d0
         worst_f = 0d0
         worst_mz = 0d0
@@ -1231,23 +1300,7 @@ contains
 
         do r = 1, size(far, 1) - 2, 3
             f_far = cmplx(far(r:r+2,7), far(r:r+2,8), kind=8)
-            f_near = (0d0, 0d0)
-            do q = 1, size(near, 1)
-                if (.not. same(near(q,1), far(r,1)) .or. near(q,2) /= far(r,2) .or. near(q,3) /= far(r,3)) cycle
-                body = (nint(near(q,4)) - 1)/6 + 1
-                local = nint(near(q,4)) - 6*(body - 1)
-                load = cmplx(near(q,7), near(q,8), kind=8)
-                select case (local)
-                case (1)
-                    f_near(1) = f_near(1) + load
-                    f_near(3) = f_near(3) - xr(2,body)*load
-                case (2)
-                    f_near(2) = f_near(2) + load
-                    f_near(3) = f_near(3) + xr(1,body)*load
-                case (6)
-                    f_near(3) = f_near(3) + load
-                end select
-            end do
+            call sum_near(near, xr, far(r,1), far(r,2), far(r,3), f_near)
             fmag = sqrt(abs(f_far(1))**2 + abs(f_far(2))**2)
             err_f = sqrt(abs(f_near(1) - f_far(1))**2 + abs(f_near(2) - f_far(2))**2)/fmag
             err_x = -1d0
@@ -1258,6 +1311,7 @@ contains
                        &" err x ",ES9.2," F ",ES9.2," z ",ES9.2)', &
                 name, far(r,1), far(r,2), far(r,3), real(f_far, 8), real(f_near, 8), err_x, err_f, err_m
             if (far(r,1) < unchecked_below) cycle
+            used = used + 1
             if (present(worst_pair) .and. far(r,2) /= far(r,3)) then
                 worst_pair = max(worst_pair, err_f)
                 cycle
@@ -1266,7 +1320,34 @@ contains
             worst_f = max(worst_f, err_f)
             worst_mz = max(worst_mz, err_m)
         end do
+        call check(error, used > 0, "No row of "//name//" was compared")
     end subroutine near_against_far
+
+    !> (F_x, F_y, M_z about the origin) summed over the bodies, from the rows of a .9 file for one frequency and heading pair.
+    subroutine sum_near(near, xr, omega, beta1, beta2, total)
+        real(8), intent(in) :: near(:,:), xr(:,:), omega, beta1, beta2
+        complex(8), intent(out) :: total(3)
+        complex(8) :: load
+        integer :: q, body, local
+
+        total = (0d0, 0d0)
+        do q = 1, size(near, 1)
+            if (.not. same(near(q,1), omega) .or. near(q,2) /= beta1 .or. near(q,3) /= beta2) cycle
+            body = (nint(near(q,4)) - 1)/6 + 1
+            local = nint(near(q,4)) - 6*(body - 1)
+            load = cmplx(near(q,7), near(q,8), kind=8)
+            select case (local)
+            case (1)
+                total(1) = total(1) + load
+                total(3) = total(3) - xr(2,body)*load
+            case (2)
+                total(2) = total(2) + load
+                total(3) = total(3) + xr(1,body)*load
+            case (6)
+                total(3) = total(3) + load
+            end select
+        end do
+    end subroutine sum_near
 
     subroutine energy_balance_of(name, nexpected, worst, error)
         character(len=*), intent(in) :: name

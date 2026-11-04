@@ -18,7 +18,6 @@ module test_near_field
   real(8), parameter :: radius = 5d0, depth = 10d0, omega = 1d0
   complex(8), parameter :: ci = (0d0, 1d0)
 
-
   ! Box of hydrostatic_exact_box: footprint [bx1,bx2] x [by1,by2], z down to -bdraft, reference point bxr
   real(8), parameter :: bx1 = -1d0, bx2 = 5d0, by1 = -3d0, by2 = 1d0, bdraft = 3d0
   real(8), parameter :: bxr(3) = [0.5d0, 0.25d0, 0.7d0]

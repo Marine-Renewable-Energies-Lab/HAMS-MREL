@@ -33,6 +33,7 @@ DRIFT_BOX_MESH = dict(lx=20.0, ly=10.0, draft=5.0, nx=20, ny=10, nz=4)
 OBLIQUE_FREQUENCIES = (0.8, 1.0)   # of the box and the ellipsoid
 ROTATED_BOX_MESH = dict(lx=20.0, ly=10.0, draft=5.0, nx=10, ny=5, nz=3)
 ROTATED_DEG = 30.0
+THIN_LID_MESH = dict(radius=5.0, draft=5.0, ntheta=12, nz=3, nr=3)
 # Hull panels whose centroids are the field points of drift_cyl: side, bottom, bilge, lee and weather
 FIELD_PANELS = (1, 4, 8, 9, 14, 40, 85, 130, 133, 200, 270, 448)
 
@@ -161,12 +162,12 @@ def main():
     write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="free",
                        write_terms=0)
 
-    # A uniform mesh of that cylinder with and without irregular frequency removal, at two frequencies of drift_cyl and at
-    # the first irregular frequency. Thin rows at the waterline do not work with IRSP = 1: see the README.
+    # That cylinder with and without irregular frequency removal, at two frequencies of drift_cyl and at the first irregular
+    # frequency. The lid is uniform: a lid with thin rim panels shifts the results of IRSP = 1, as the README shows.
     for name, irsp in (("drift_irsp", 1), ("drift_irsp_ref", 0)):
         target = case_dir(data, name)
-        make_mesh.write_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
-                                 **dict(DRIFT_CYL_MESH, graded=False))
+        for file in ("HullMesh.pnl", "Hydrostatic.in"):
+            shutil.copyfile(os.path.join(path, file), os.path.join(target, file))
         if irsp == 1:
             make_mesh.write_waterplane(os.path.join(target, "WaterPlaneMesh.pnl"), DRIFT_CYL_MESH["radius"],
                                        DRIFT_CYL_MESH["ntheta"], DRIFT_CYL_MESH["nr"])
@@ -209,12 +210,12 @@ def main():
     write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=2, drift_methods=both, motion_state="free",
                        write_terms=2)
 
-    # A uniform mesh of them with and without irregular frequency removal
+    # The same with and without irregular frequency removal, uniform lids
     for name, irsp in (("drift_two_irsp", 1), ("drift_two_irsp_ref", 0)):
         target = case_dir(data, name)
         for body in (1, 2):
             make_mesh.write_cylinder(os.path.join(target, "HullMesh_%d.pnl" % body),
-                                     os.path.join(target, "Hydrostatic_%d.in" % body), **dict(TWO_CYL_MESH, graded=False))
+                                     os.path.join(target, "Hydrostatic_%d.in" % body), **TWO_CYL_MESH)
             if irsp == 1:
                 make_mesh.write_waterplane(os.path.join(target, "WaterPlaneMesh_%d.pnl" % body), TWO_CYL_MESH["radius"],
                                            TWO_CYL_MESH["ntheta"], TWO_CYL_MESH["nr"])
@@ -222,6 +223,25 @@ def main():
                       body_origins=[(0.0, 0.0), (0.0, 30.0)], irsp=irsp)
         write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="free",
                            write_terms=0)
+
+    # Graded lids, which must draw the warning on thin rim panels, one body and two
+    target = case_dir(data, "drift_lid_graded")
+    make_mesh.write_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"), **THIN_LID_MESH)
+    make_mesh.write_waterplane(os.path.join(target, "WaterPlaneMesh.pnl"), THIN_LID_MESH["radius"], THIN_LID_MESH["ntheta"],
+                               THIN_LID_MESH["nr"], graded=True)
+    write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=(1.35,), headings=(0.0,), irsp=1)
+    write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods="far", motion_state="fixed",
+                       write_terms=0)
+    target = case_dir(data, "drift_two_lid_graded")
+    for body in (1, 2):
+        make_mesh.write_cylinder(os.path.join(target, "HullMesh_%d.pnl" % body),
+                                 os.path.join(target, "Hydrostatic_%d.in" % body), **THIN_LID_MESH)
+        make_mesh.write_waterplane(os.path.join(target, "WaterPlaneMesh_%d.pnl" % body), THIN_LID_MESH["radius"],
+                                   THIN_LID_MESH["ntheta"], THIN_LID_MESH["nr"], graded=(body == 2))
+    write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=(1.35,), headings=(0.0,),
+                  body_origins=[(0.0, 0.0), (0.0, 30.0)], irsp=1)
+    write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods="far", motion_state="fixed",
+                       write_terms=0)
 
     # Two cylinders with rounded bilges
     target = case_dir(data, "drift_two_round")
