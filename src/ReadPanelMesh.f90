@@ -127,6 +127,14 @@ CONTAINS
 !
       CALL CalPanelCentre( XYZ, NTND, NELEM, NCN, NCON, XYZ_P)
 
+      IEL=FIRST_PANEL_ON_Z0(XYZ_P(:,3),NELEM)
+      IF (IEL.GT.0) THEN
+         PRINT *,' Error: hull panel',IEL,' has its centroid on the free surface, z = 0.'
+         PRINT *,' The image term of the Green function is singular at it. Keep hull panels below z = 0,'
+         PRINT *,' and put an interior free surface in the water plane mesh.'
+         STOP 1
+      ENDIF
+
       CALL CalPanelArea( XYZ, NTND, NELEM, NCN, NCON, DS)
 
       CALL CalPanelChartLength( XYZ, NTND, NELEM, NCN, NCON, PNSZ)
@@ -134,6 +142,8 @@ CONTAINS
       CALL CalTransNormals( XYZ, NTND, NELEM, NCN, NCON, DXYZ_P)
 
       CALL CalRotNormals(XR, XYZ_P, DXYZ_P, NELEM)
+
+      GEONRM_P(1:NELEM,1:3)=DXYZ_P(1:NELEM,1:3)                                       ! Before a generalized mode overwrites DXYZ_P
 
       IF (IFLAG.NE.0) THEN                                                            ! IFLAG is used as an indicator for irregular frequency removal. If 1, these will be removed
 

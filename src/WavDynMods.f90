@@ -107,6 +107,9 @@
         INTEGER,ALLOCATABLE,PUBLIC:: NCN(:),NCON(:,:),NCOND(:,:)
         INTEGER,ALLOCATABLE,PUBLIC:: IPIV(:,:)
         REAL*8,ALLOCATABLE,PUBLIC:: XYZ(:,:),DXYZ_P(:,:),XYZ_P(:,:)
+        ! Geometric unit normal of each panel. A generalized mode overwrites DXYZ_P(:,DOF), so DXYZ_P(:,1:3) are the normals of
+        ! DOF 1 to 3, not the panel's direction. Read GEONRM_* wherever the panel's direction is meant.
+        REAL*8,ALLOCATABLE,PUBLIC:: GEONRM_P(:,:),GEONRM_MULTI_P(:,:,:),GEONRM_MULTI_COMB(:,:)
         REAL*8,ALLOCATABLE,PUBLIC:: DS(:),PNSZ(:)
         
         ! Variables for multi-body interactions (Add the description of the variables)

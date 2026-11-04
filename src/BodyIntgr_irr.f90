@@ -64,6 +64,7 @@ CONTAINS
         EAR=DS(JEL)
         XEC(:)=XYZ_P(JEL,:)
         ENV(:)=DXYZ_P(JEL,:)
+        ENV(1:3)=GEONRM_P(JEL,:)
         TNV(:)=DXYZ_P(IEL,:)
         
       ELSEIF (IRR.EQ.3) THEN
@@ -74,6 +75,7 @@ CONTAINS
         EAR=DS(JEL)
         XEC(:)=XYZ_P(JEL,:)
         ENV(:)=DXYZ_P(JEL,:)
+        ENV(1:3)=GEONRM_P(JEL,:)
         TNV(:)=iDXYZ_P(IEL,:)
         
       ENDIF
@@ -187,6 +189,7 @@ CONTAINS
         EAR=DS(JEL)
         XEC(:)=XYZ_P(JEL,:)
         ENV(:)=DXYZ_P(JEL,:)
+        ENV(1:3)=GEONRM_P(JEL,:)
         TNV(:)=DXYZ_P(IEL,:)
         
       ELSEIF (IRR.EQ.3) THEN  
@@ -197,6 +200,7 @@ CONTAINS
         EAR=DS(JEL)
         XEC(:)=XYZ_P(JEL,:)
         ENV(:)=DXYZ_P(JEL,:)
+        ENV(1:3)=GEONRM_P(JEL,:)
         TNV(:)=iDXYZ_P(IEL,:)
         
       ENDIF    
