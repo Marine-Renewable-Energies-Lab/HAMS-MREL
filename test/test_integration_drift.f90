@@ -20,6 +20,12 @@ module test_integration_drift
     real(8), parameter :: energy_limit = 1d-2         ! radiated energy, Haskind, energy balance
     real(8), parameter :: lateral_limit = 1d-3
     real(8), parameter :: gmres_limit = 1d-2
+    real(8), parameter :: field_point_limit = 1d-12
+    real(8), parameter :: half_mesh_limit = 1d-3
+    real(8), parameter :: moment_limit = 1d-3
+    ! F_x against the lossless (Maruo) form. They differ by kappa (X - int |a|^2), so the 1% of energy_limit becomes 1.8%
+    ! at the lowest frequency, where kappa X / (rho g) is about 1.8 times the drift force.
+    real(8), parameter :: maruo_limit = 2d-2
     ! Values in .8 have 7 significant digits, so same-run ratios cannot be checked more tightly than this
     real(8), parameter :: printed_limit = 1d-5
 
@@ -33,6 +39,7 @@ contains
             new_unittest("run_drift_cyl", run_drift_cyl), &
             new_unittest("run_drift_cyl_sybo", run_drift_cyl_sybo), &
             new_unittest("run_drift_cyl_gmres", run_drift_cyl_gmres), &
+            new_unittest("run_drift_cyl_half", run_drift_cyl_half), &
             new_unittest("run_drift_offset", run_drift_offset), &
             new_unittest("run_drift_offset_refl2", run_drift_offset_refl2), &
             new_unittest("run_drift_two_cyl", run_drift_two_cyl) &
@@ -53,7 +60,11 @@ contains
             new_unittest("refl_scaling", refl_scaling), &
             new_unittest("no_input_no_output", no_input_no_output), &
             new_unittest("gmres_agrees", gmres_agrees), &
-            new_unittest("two_bodies_smoke", two_bodies_smoke) &
+            new_unittest("two_bodies_smoke", two_bodies_smoke), &
+            new_unittest("offset_moment", offset_moment), &
+            new_unittest("two_bodies_moment", two_bodies_moment), &
+            new_unittest("drift_matches_maruo", drift_matches_maruo), &
+            new_unittest("half_mesh_matches_full", half_mesh_matches_full) &
         ]
     end subroutine collect_tests_drift
 
@@ -108,6 +119,11 @@ contains
         call run_case("drift_cyl_gmres", drift_file_only(), error)
     end subroutine run_drift_cyl_gmres
 
+    subroutine run_drift_cyl_half(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("drift_cyl_half", drift_file_only(), error)
+    end subroutine run_drift_cyl_half
+
     subroutine run_drift_offset(error)
         type(error_type), allocatable, intent(out) :: error
         call run_case("drift_offset", drift_file_only(), error)
@@ -145,15 +161,14 @@ contains
         call check_below(error, "convention_residual", maxval(rows(:,3)), residual_limit)
     end subroutine convention_residual
 
-    !> conj(i w rho phi_D / (rho g A)) of the state against the on-body pressure the solver writes to .6p, in the units
-    !> of that file (rho g A). The state's incident wave uses Const_mod's g, while the k behind VINP comes from the
-    !> g = 9.807 in DISPERSION, so the two differ by 3.6e-5 of the incident pressure (spec 5.5, issue 3). Divided by the
-    !> local pressure, this grows on the panels in the lee at depth, where the diffraction pressure is small.
+    !> conj(i w rho phi_D / (rho g A)) of the state against the on-body pressure the solver writes to .6p, relative to the
+    !> local pressure. The field points must be the panel centroids to full precision: the solver's on-body integrals are
+    !> erratic for a point slightly off the panel.
     subroutine diffraction_matches_6p(error)
         type(error_type), allocatable, intent(out) :: error
-        real(8), allocatable :: panels(:,:), pressure(:,:)
+        real(8), allocatable :: panels(:,:), pressure(:,:), field_points(:,:)
         integer, allocatable :: field_panel(:)
-        real(8) :: worst, worst_relative
+        real(8) :: worst, worst_point
         complex(8) :: phi_d, expected, written
         integer :: r, p, matched
 
@@ -164,9 +179,12 @@ contains
         call read_field_panels(get_repo_root_path()//"test/data/"//main_case//"/field_panels.txt", field_panel)
         call check(error, size(pressure, 1) == 6*size(field_panel), "Unexpected number of diffraction rows in .6p")
         if (allocated(error)) return
+        call read_field_points(get_repo_root_path()//"test/data/"//main_case//"/input/ControlFile.in", field_points)
+        call check(error, size(field_points, 1) == size(field_panel), "Field points and field_panels.txt differ in size")
+        if (allocated(error)) return
 
         worst = 0d0
-        worst_relative = 0d0
+        worst_point = 0d0
         matched = 0
         do r = 1, size(pressure, 1)
             do p = 1, size(panels, 1)
@@ -175,15 +193,17 @@ contains
                 phi_d = cmplx(panels(p,7), panels(p,8), kind=8)
                 expected = conjg(ci*panels(p,1)*phi_d/g)
                 written = cmplx(pressure(r,6), pressure(r,7), kind=8)
-                worst = max(worst, abs(expected - written))
-                worst_relative = max(worst_relative, abs(expected - written)/abs(written))
+                worst = max(worst, abs(expected - written)/abs(written))
+                worst_point = max(worst_point, maxval(abs(field_points(nint(pressure(r,3)),:) - panels(p,4:6))))
                 matched = matched + 1
             end do
         end do
         call check(error, matched == size(pressure, 1), "Not every .6p row has a matching panel diagnostic")
         if (allocated(error)) return
+        call report("field point to panel centroid", worst_point)
         call report("diffraction_matches_6p", worst)
-        call report("diffraction_matches_6p relative to the local pressure", worst_relative)
+        call check_below(error, "field point to panel centroid", worst_point, field_point_limit)
+        if (allocated(error)) return
         call check_below(error, "diffraction_matches_6p", worst, diffraction_limit)
     end subroutine diffraction_matches_6p
 
@@ -453,6 +473,115 @@ contains
         call check_below(error, "two bodies energy balance", worst, energy_limit)
     end subroutine two_bodies_smoke
 
+    !> A round body at (x0, y0) has no moment about its own centre, so about the origin M_z = x0 F_y - y0 F_x.
+    subroutine offset_moment(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), parameter :: x0 = 6d0, y0 = 8d0    ! test/data/drift_offset
+        real(8), allocatable :: rows(:,:)
+        real(8) :: expected, worst
+
+        call read_drift(output_dir("drift_offset")//"Wamit_format/MeanDriftMomentum.8", rows, error)
+        if (allocated(error)) return
+        call check(error, size(rows, 1) == 3, "Expected three rows")
+        if (allocated(error)) return
+        expected = x0*rows(2,7) - y0*rows(1,7)
+        worst = abs(rows(3,7) - expected)/abs(expected)
+        call report("offset_moment", worst)
+        call check_below(error, "offset_moment", worst, moment_limit)
+    end subroutine offset_moment
+
+    !> Two equal cylinders at y = 0 and y = 30 in a wave along x are symmetric about y = 15: F_y = 0 and M_z = -15 F_x.
+    subroutine two_bodies_moment(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: rows(:,:)
+        real(8) :: worst_m, worst_y, fx, fy, mz
+        integer :: r, done
+
+        call read_drift(output_dir("drift_two_cyl")//"Wamit_format/MeanDriftMomentum.8", rows, error)
+        if (allocated(error)) return
+        worst_m = 0d0
+        worst_y = 0d0
+        done = 0
+        do r = 1, size(rows, 1) - 2, 3
+            if (abs(rows(r,2)) > 1d-9 .or. abs(rows(r,3)) > 1d-9) cycle
+            fx = rows(r,7)
+            fy = rows(r+1,7)
+            mz = rows(r+2,7)
+            worst_m = max(worst_m, abs(mz + 15d0*fx)/abs(15d0*fx))
+            worst_y = max(worst_y, abs(fy)/abs(fx))
+            done = done + 1
+        end do
+        call check(error, done == 2, "Expected heading 0 at two frequencies")
+        if (allocated(error)) return
+        call report("two bodies M_z = -15 F_x", worst_m)
+        call report("two bodies F_y / F_x", worst_y)
+        call check_below(error, "two bodies M_z = -15 F_x", worst_m, moment_limit)
+        if (allocated(error)) return
+        call check_below(error, "two bodies F_y / F_x", worst_y, lateral_limit)
+    end subroutine two_bodies_moment
+
+    !> The absolute drift force: F.e_beta from .8 against kappa int |a|^2 (1 - cos(theta - beta)) dtheta, with kappa/(rho g)
+    !> = (C_g/C_p)/2 and a from the diagnostics. This is the form for a body that absorbs nothing.
+    subroutine drift_matches_maruo(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: rows(:,:), waves(:,:), total(:,:)
+        real(8) :: k, nu, h, beta, along, integral, worst, err
+        integer :: r, t, m, done
+
+        call read_drift(output_dir(main_case)//"Wamit_format/MeanDriftMomentum.8", rows, error)
+        if (allocated(error)) return
+        call read_diagnostics(main_case, "WAVE", 4, waves, error)
+        if (allocated(error)) return
+        call read_diagnostics(main_case, "TOTAL", 5, total, error)
+        if (allocated(error)) return
+
+        worst = 0d0
+        done = 0
+        do r = 1, size(rows, 1) - 2, 3
+            beta = rows(r,2)*pi/180d0
+            along = rows(r,7)*cos(beta) + rows(r+1,7)*sin(beta)
+            call find_wave(waves, rows(r,1), k, nu, h)
+            integral = 0d0
+            m = 0
+            do t = 1, size(total, 1)
+                if (.not. same(total(t,1), rows(r,1)) .or. abs(total(t,2) - rows(r,2)) > 1d-9) cycle
+                integral = integral + (total(t,4)**2 + total(t,5)**2)*(1d0 - cos(total(t,3)*pi/180d0 - beta))
+                m = m + 1
+            end do
+            integral = 0.5d0*group_ratio(k, h)*integral*2d0*pi/real(m, 8)
+            err = abs(along - integral)/abs(along)
+            print '(4x,"drift_matches_maruo w=",F5.3," beta=",F5.1,": ",ES10.3)', rows(r,1), rows(r,2), err
+            worst = max(worst, err)
+            done = done + 1
+        end do
+        call check(error, done == 6, "Expected 3 frequencies and 2 headings")
+        if (allocated(error)) return
+        call check_below(error, "drift_matches_maruo", worst, maruo_limit)
+    end subroutine drift_matches_maruo
+
+    !> The same cylinder as a half mesh with ISY = 1 goes through the symmetric solver and the image expansion.
+    subroutine half_mesh_matches_full(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: full(:,:), half(:,:)
+        real(8) :: worst
+        integer :: r
+
+        call read_drift(output_dir(main_case)//"Wamit_format/MeanDriftMomentum.8", full, error)
+        if (allocated(error)) return
+        call read_drift(output_dir("drift_cyl_half")//"Wamit_format/MeanDriftMomentum.8", half, error)
+        if (allocated(error)) return
+        call check(error, size(full, 1) == size(half, 1), "Half and full mesh runs have different numbers of rows")
+        if (allocated(error)) return
+        worst = 0d0
+        do r = 1, size(full, 1)
+            if (nint(full(r,4)) == 1) worst = max(worst, abs(full(r,7) - half(r,7))/abs(full(r,7)))
+            ! F_y where it is not zero by symmetry
+            if (nint(full(r,4)) == 2 .and. abs(full(r,2)) > 1d-9) worst = max(worst, abs(full(r,7) - half(r,7))/abs(full(r,7)))
+        end do
+        call report("half_mesh_matches_full", worst)
+        call check_below(error, "half_mesh_matches_full", worst, half_mesh_limit)
+    end subroutine half_mesh_matches_full
+
     subroutine energy_balance_of(name, nexpected, worst, error)
         character(len=*), intent(in) :: name
         integer, intent(in) :: nexpected        ! number of frequency and heading combinations
@@ -656,6 +785,31 @@ contains
         end do
         close (unit)
     end subroutine read_field_panels
+
+    !> The field points listed in a ControlFile.in, one row per point.
+    subroutine read_field_points(path, points)
+        character(len=*), intent(in) :: path
+        real(8), allocatable, intent(out) :: points(:,:)
+        character(len=256) :: line
+        integer :: unit, ios, n, i
+
+        open (newunit=unit, file=path, status='old', action='read')
+        n = -1
+        do
+            read (unit, '(A)', iostat=ios) line
+            if (ios /= 0) error stop "read_field_points: no Number_of_field_points line"
+            i = index(line, "Number_of_field_points")
+            if (i > 0) then
+                read (line(i + len("Number_of_field_points"):), *) n
+                exit
+            end if
+        end do
+        allocate (points(n, 3))
+        do i = 1, n
+            read (unit, *) points(i,:)
+        end do
+        close (unit)
+    end subroutine read_field_points
 
     !> Numeric columns of the rows of PanelDiagnostics.txt that start with a tag.
     subroutine read_diagnostics(name, tag, ncol, rows, error)

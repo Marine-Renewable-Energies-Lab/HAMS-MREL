@@ -7,10 +7,12 @@ Usage:
 
 The hull has no lid, so the top row of nodes lies on z = 0. --x0 and --y0 shift the body in the horizontal plane. Every
 generated panel normal is checked to point out of the fluid (into the body), computed as HAMS does in CalTransNormals.
+--half-y keeps the panels with y > 0 and sets ISY = 1, for a body symmetric about y = 0.
 
 Hydrostatic.in is written next to the mesh (or to --hydro-out) for a freely floating, uniform solid prism, using the
 discretized waterplane polygon: mass = rho*V, centre of gravity at half draft, all matrices about the point (x0, y0, 0),
-which must be given as the rotation centre in ControlFile.in. External damping and stiffness are zero.
+which must be given as the rotation centre in ControlFile.in. External damping and stiffness are zero. These are the
+values of the whole body, also with --half-y.
 """
 
 import argparse
@@ -19,6 +21,7 @@ import os
 
 RHO = 1000.0     # as Const_mod in src/WavDynMods.f90
 G = 9.80665
+NODE_FORMAT = "%.10f"   # precision of the node coordinates in the mesh file
 
 
 class Mesh:
@@ -44,6 +47,18 @@ class Mesh:
         out.nodes = [(x + x0, y + y0, z) for x, y, z in self.nodes]
         out.panels = self.panels
         return out
+
+
+def half_in_y(mesh):
+    """The panels with y > 0 of a mesh symmetric about y = 0, which must not have panels crossing that plane."""
+    out = Mesh()
+    for panel in mesh.panels:
+        points = [mesh.nodes[i - 1] for i in panel]
+        if min(p[1] for p in points) < -1e-9 and max(p[1] for p in points) > 1e-9:
+            raise ValueError("a panel crosses y = 0, so the mesh cannot be halved")
+        if max(p[1] for p in points) > 1e-9:
+            out.add_panel(points)
+    return out
 
 
 def cross(a, b):
@@ -179,14 +194,14 @@ def hydrostatics(polygon, draft):
     return {"vol": vol, "area": area, "zg": zg, "zb": zb, "mass": m, "restoring": c}
 
 
-def write_mesh(path, mesh):
+def write_mesh(path, mesh, isy=0):
     with open(path, "w") as f:
         f.write("    --------------Hull Mesh File---------------\n\n")
         f.write("    # Number of Panels, Nodes, X-Symmetry and Y-Symmetry\n")
-        f.write("    %8d  %8d  %8d  %8d\n\n" % (len(mesh.panels), len(mesh.nodes), 0, 0))
+        f.write("    %8d  %8d  %8d  %8d\n\n" % (len(mesh.panels), len(mesh.nodes), 0, isy))
         f.write("    # Start Definition of Node Coordinates     ! node_number   x   y   z\n")
         for number, (x, y, z) in enumerate(mesh.nodes, start=1):
-            f.write("    %6d  %18.10f  %18.10f  %18.10f\n" % (number, x, y, z))
+            f.write("    %6d  " % number + "  ".join((NODE_FORMAT % c).rjust(18) for c in (x, y, z)) + "\n")
         f.write("    # End Definition of Node Coordinates\n\n")
         f.write("    # Start Definition of Node Relations   ! panel_number  number_of_vertices   Vertex1_ID ...\n")
         for number, panel in enumerate(mesh.panels, start=1):
@@ -217,6 +232,26 @@ def write_hydrostatic(path, hydro, x0, y0):
         write_matrix(f, zero)
 
 
+def write_body(mesh, polygon, draft, x0, y0, half_y, mesh_path, hydro_path):
+    """Check and write a mesh centred on the origin, and its hydrostatics. Returns the written mesh and hydrostatics."""
+    if half_y:
+        if y0 != 0.0:
+            raise ValueError("a half mesh must be centred on y = 0")
+        mesh = half_in_y(mesh)
+    mesh = mesh.shifted(x0, y0)
+    check_normals(mesh, (x0, y0 + (draft / 2.0 if half_y else 0.0), -draft / 2.0))
+    hydro = hydrostatics(polygon, draft)
+    write_mesh(mesh_path, mesh, 1 if half_y else 0)
+    write_hydrostatic(hydro_path, hydro, x0, y0)
+    return mesh, hydro
+
+
+def write_cylinder(mesh_path, hydro_path, radius, draft, ntheta, nz, nr, graded=False, x0=0.0, y0=0.0, half_y=False):
+    """Write the mesh and hydrostatics of a cylinder. Returns the written mesh."""
+    mesh, polygon = cylinder(radius, draft, ntheta, nz, nr, graded)
+    return write_body(mesh, polygon, draft, x0, y0, half_y, mesh_path, hydro_path)[0]
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate a HAMS hull mesh and Hydrostatic.in.")
     sub_parsers = parser.add_subparsers(dest="shape")
@@ -239,6 +274,7 @@ def main():
         p.add_argument("--nz", type=int, required=True)
         p.add_argument("--x0", type=float, default=0.0)
         p.add_argument("--y0", type=float, default=0.0)
+        p.add_argument("--half-y", action="store_true", help="keep y > 0 and set the y symmetry flag")
         p.add_argument("--out", required=True, help="path of the HullMesh file")
         p.add_argument("--hydro-out", help="path of the hydrostatic file (default: Hydrostatic.in next to --out)")
 
@@ -247,13 +283,8 @@ def main():
         mesh, polygon = cylinder(args.radius, args.draft, args.ntheta, args.nz, args.nr, args.graded)
     else:
         mesh, polygon = box(args.lx, args.ly, args.draft, args.nx, args.ny, args.nz)
-    mesh = mesh.shifted(args.x0, args.y0)
-    check_normals(mesh, (args.x0, args.y0, -args.draft / 2.0))
-
-    hydro = hydrostatics(polygon, args.draft)
     hydro_path = args.hydro_out or os.path.join(os.path.dirname(args.out), "Hydrostatic.in")
-    write_mesh(args.out, mesh)
-    write_hydrostatic(hydro_path, hydro, args.x0, args.y0)
+    mesh, hydro = write_body(mesh, polygon, args.draft, args.x0, args.y0, args.half_y, args.out, hydro_path)
 
     print("%d panels, %d nodes, normals checked" % (len(mesh.panels), len(mesh.nodes)))
     print("V = %.6f, Awp = %.6f, zg = zb = %.6f" % (hydro["vol"], hydro["area"], hydro["zg"]))
