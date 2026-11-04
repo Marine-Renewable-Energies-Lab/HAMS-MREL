@@ -215,7 +215,7 @@ CONTAINS
         ETA(1)=0.D0
         KSI(2)=0.D0
         ETA(2)=SQRT(PO3(1)**2+PO3(2)**2+PO3(3)**2)
-        KSI(3)=SQRT(PO2(1)**2+PO2(2)**2+PO2(3)**2)
+        KSI(3)=SIGN(1.0D0,1.D0-ALFA)*SQRT(PO2(1)**2+PO2(2)**2+PO2(3)**2)    ! ALFA>1, an obtuse angle at node 2: node 2 is on the side of PO towards node 1
         ETA(3)=0.D0
         KSI(4)=KSI(1)
         ETA(4)=ETA(1)    
@@ -584,7 +584,7 @@ CONTAINS
         ETA(1)=0.D0
         KSI(2)=0.D0
         ETA(2)=SQRT(PO3(1)**2+PO3(2)**2+PO3(3)**2)
-        KSI(3)=SQRT(PO2(1)**2+PO2(2)**2+PO2(3)**2)
+        KSI(3)=SIGN(1.0D0,1.D0-ALFA)*SQRT(PO2(1)**2+PO2(2)**2+PO2(3)**2)    ! ALFA>1, an obtuse angle at node 2: node 2 is on the side of PO towards node 1
         ETA(3)=0.D0
         KSI(4)=KSI(1)
         ETA(4)=ETA(1)
