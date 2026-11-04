@@ -16,7 +16,7 @@ module test_integration_drift
     real(8), parameter :: rho = 1000d0, g = 9.80665d0   ! as Const_mod
     complex(8), parameter :: ci = (0d0, 1d0)
 
-    ! Acceptance limits, from the implementation plan (Task 5)
+    ! Acceptance limits
     real(8), parameter :: residual_limit = 1d-8
     real(8), parameter :: diffraction_limit = 1d-4
     real(8), parameter :: energy_limit = 1d-2         ! radiated energy, Haskind, energy balance
@@ -31,24 +31,24 @@ module test_integration_drift
     ! Values in .8 have 7 significant digits, so same-run ratios cannot be checked more tightly than this
     real(8), parameter :: printed_limit = 1d-5
 
-    ! Near-field against far-field, from the implementation plan (Task 8). They are checked on the fixtures named in each test,
+    ! Near-field against far-field. They are checked on the fixtures named in each test,
     ! whose meshes and frequencies were chosen after seeing results. Having no edges is not enough: a free half ellipsoid, for
     ! one, misses 5% where its net force is small. See test/data/drift_cyl/README.md.
     real(8), parameter :: near_far_limit = 5d-2
     real(8), parameter :: near_mz_limit = 1d-1
     real(8), parameter :: rotated_limit = 1d-3
     real(8), parameter :: irsp_limit = 1d-2
-    ! Regression band on the cases that miss the plan's limits: near-field and far-field each stay within this of the value
+    ! Regression band on the cases that miss the limits above: near-field and far-field each stay within this of the value
     ! measured when the check was written. These pin the numbers, including their error, and are not accuracy claims.
     ! See test/data/drift_cyl/README.md for the values against panel count, and
-    ! pre_postprocessing_python/SecondOrder/near_far_study.py for the plan's 5% on these hulls.
+    ! pre_postprocessing_python/SecondOrder/near_far_study.py for the 5% on these hulls.
     real(8), parameter :: regression_band = 1d-2
-    ! At 0.70 rad/s the free cylinder's net drift force is 4.6% of term I, from cancellation between much larger terms,
-    ! and near-field against far-field has not been shown to converge there: printed, not checked
+    ! At 0.70 rad/s the free cylinder's net drift force is 4.6% of term I, from cancellation between much larger terms. Near-field
+    ! against far-field falls there, +3.99%, +0.87%, +0.34% at 480, 1920, 4320 panels, and is printed, not checked
     real(8), parameter :: small_net_force_below = 0.8d0
     ! On the springs, the heave resonance moves to about 0.86 rad/s, so 0.95 rad/s is near it and only has a regression band
     real(8), parameter :: springs_away_from_resonance = 1d0
-    ! Off-diagonal heading pairs of two_body_total are about 1/7 of the diagonal loads: a regression limit, not from the plan
+    ! Off-diagonal heading pairs of two_body_total are about 1/7 of the diagonal loads: a regression limit
     real(8), parameter :: heading_pair_limit = 1d-1
 
     character(len=*), parameter :: main_case = "drift_cyl"
@@ -779,7 +779,8 @@ contains
     end subroutine fixed_near_far
 
     !> The free cylinder with a rounded bilge, where terms III and IV take part.
-    !> Its cosine rows carry an error of the first-order potential, so the difference does not fall to zero: see the README.
+    !> On its cosine rows F_x falls with refinement, at 480, 1920, 4320 panels: -0.16%, +0.06%, +0.05% at 0.95 rad/s and +0.86%,
+    !> +0.22%, +0.09% at 1.10 rad/s. See the README.
     subroutine free_near_far(error)
         type(error_type), allocatable, intent(out) :: error
         real(8) :: worst_fx, worst_f, worst_mz
@@ -805,9 +806,8 @@ contains
     end subroutine near_mz_far_mz
 
     !> External springs change the motion, and the near-field form needs no external loads. The spring in x only, at an
-    !> oblique heading, makes F_x small next to F_y, so the check is on the force vector. Away from resonance. The wall rows are
-    !> uniform in z, on which F_x at heading 0 falls as +0.27%, +0.01%, -0.00% at 480, 1920, 4320 panels. Cosine rows on the same
-    !> hull do not converge, +3.8%, +4.9%, +6.1%: see the README.
+    !> oblique heading, makes F_x small next to F_y, so the check is on the force vector. Away from resonance. On the cosine wall
+    !> rows, F_x at heading 0 falls as +1.36%, +0.40%, +0.21% at 480, 1920, 4320 panels. See the README.
     subroutine external_stiffness(error)
         type(error_type), allocatable, intent(out) :: error
         real(8) :: worst_fx, worst_f, worst_mz
@@ -819,21 +819,21 @@ contains
     end subroutine external_stiffness
 
     !> Regression band, not accuracy: F_x and F_y at 0.95 rad/s, near the heave resonance on the springs, where F_x at heading 0
-    !> is 4.6% above far-field at this mesh, and 9.1% at heading 30, where the force vector is 3.6% off. It falls with refinement
-    !> at heading 0, to +1.2% and +0.6% at 1920 and 4320 panels, but this row is not checked against the plan's 5%.
+    !> is 4.4% above far-field at this mesh, and 7.3% at heading 30, where the force vector is 2.7% off. It falls with refinement
+    !> at heading 0, to +1.1% and +0.5% at 1920 and 4320 panels, but this row is not checked against 5%.
     subroutine external_stiffness_near_resonance_regression(error)
         type(error_type), allocatable, intent(out) :: error
 
         call check_band("drift_round_kstf", origins_at_zero(1), 1, reshape( &
-            [0.95d0, 0d0, 0d0, 8.2522d0, 8.6316d0, &
-             0.95d0, 30d0, 30d0, 3.7276d0, 4.0674d0], [5, 2]), error)
+            [0.95d0, 0d0, 0d0, 8.2986d0, 8.6617d0, &
+             0.95d0, 30d0, 30d0, 3.7447d0, 4.0172d0], [5, 2]), error)
         if (allocated(error)) return
         call check_band("drift_round_kstf", origins_at_zero(1), 2, reshape( &
-            [0.95d0, 30d0, 30d0, 9.3300d0, 9.2128d0], [5, 1]), error)
+            [0.95d0, 30d0, 30d0, 9.3662d0, 9.4103d0], [5, 1]), error)
     end subroutine external_stiffness_near_resonance_regression
 
     !> The sum over the bodies against the far-field total. F_y vanishes by symmetry at heading 0, so the check is on the
-    !> force vector. The limit of the plan applies to the single headings, the mean load of one wave.
+    !> force vector. The 5% limit applies to the single headings, the mean load of one wave.
     subroutine two_body_total(error)
         type(error_type), allocatable, intent(out) :: error
         real(8) :: worst_fx, worst_f, worst_mz, worst_pair
@@ -850,24 +850,25 @@ contains
     end subroutine two_body_total
 
     !> Regression band, not accuracy: F_x of the fixed coarse hull with a sharp bilge. Term II on the wall rows nearest the bilge
-    !> holds the excess: an offline fit of the edge behaviour there brought it to +0.9% at 4032 panels.
+    !> holds the excess: an offline fit of the edge behaviour there, not rerun on the current solver, brought it to +0.9% at 4032
+    !> panels.
     subroutine fixed_near_far_sharp_regression(error)
         type(error_type), allocatable, intent(out) :: error
 
         call check_band("drift_cyl_fixed", origins_at_zero(1), 1, reshape( &
-            [0.70d0, 0d0, 0d0, 1.7401d0, 1.9606d0, &
-             0.95d0, 0d0, 0d0, 5.4548d0, 5.7976d0, &
-             1.10d0, 0d0, 0d0, 5.9251d0, 6.2071d0], [5, 3]), error)
+            [0.70d0, 0d0, 0d0, 1.7385d0, 1.9568d0, &
+             0.95d0, 0d0, 0d0, 5.4504d0, 5.7788d0, &
+             1.10d0, 0d0, 0d0, 5.9241d0, 6.1909d0], [5, 3]), error)
     end subroutine fixed_near_far_sharp_regression
 
-    !> Regression band, not accuracy: F_x of the free coarse hull with a sharp bilge. The same offline fit brought the excess to
-    !> +5.7% at 0.95 rad/s and 4032 panels.
+    !> Regression band, not accuracy: F_x of the free coarse hull with a sharp bilge. The same offline fit, not rerun on the current
+    !> solver, brought the excess to +5.7% at 0.95 rad/s and 4032 panels.
     subroutine free_near_far_sharp_regression(error)
         type(error_type), allocatable, intent(out) :: error
 
         call check_band(main_case, origins_at_zero(1), 1, reshape( &
-            [0.95d0, 0d0, 0d0, 2.8877d0, 4.1680d0, &
-             1.10d0, 0d0, 0d0, 3.4701d0, 3.9892d0], [5, 2]), error)
+            [0.95d0, 0d0, 0d0, 2.8874d0, 4.1612d0, &
+             1.10d0, 0d0, 0d0, 3.4665d0, 3.9795d0], [5, 2]), error)
     end subroutine free_near_far_sharp_regression
 
     !> Regression band, not accuracy: the sum of F_x and of F_y over the two coarse hulls with sharp bilges.
@@ -875,28 +876,28 @@ contains
         type(error_type), allocatable, intent(out) :: error
 
         call check_band("drift_two_cyl", reshape([0d0, 0d0, 0d0, 30d0], [2, 2]), 1, reshape( &
-            [1.35d0, 0d0, 0d0, 2.1584d0, 3.2977d0, &
-             1.35d0, 30d0, 30d0, 3.1483d0, 4.8480d0, &
-             1.55d0, 0d0, 0d0, 4.6206d0, 5.5400d0, &
-             1.55d0, 30d0, 30d0, 1.8910d0, 2.2295d0], [5, 4]), error)
+            [1.35d0, 0d0, 0d0, 2.1577d0, 3.2919d0, &
+             1.35d0, 30d0, 30d0, 3.1479d0, 4.8420d0, &
+             1.55d0, 0d0, 0d0, 4.6141d0, 5.5246d0, &
+             1.55d0, 30d0, 30d0, 1.8863d0, 2.2216d0], [5, 4]), error)
         if (allocated(error)) return
         call check_band("drift_two_cyl", reshape([0d0, 0d0, 0d0, 30d0], [2, 2]), 2, reshape( &
-            [1.35d0, 30d0, 30d0, 2.4504d0, 3.7627d0, &
-             1.55d0, 30d0, 30d0, 1.5899d0, 2.0641d0], [5, 2]), error)
+            [1.35d0, 30d0, 30d0, 2.4502d0, 3.7572d0, &
+             1.55d0, 30d0, 30d0, 1.5876d0, 2.0570d0], [5, 2]), error)
     end subroutine two_body_total_sharp_regression
 
     !> Regression band, not accuracy: M_z on the coarse box and on the coarse cylinder off the origin. For the box the cause is
-    !> only partly shown: the offline edge fit takes F_y from +43.1% to +26.4% at 1760 panels, so edges do not explain it all.
+    !> only partly shown: the offline edge fit, not rerun on the current solver, took F_y from +43.1% to +26.4% at 1760 panels.
     !> The cylinder's M_z is the moment of its force about the origin, so it has the error of the force.
     subroutine near_mz_far_mz_sharp_regression(error)
         type(error_type), allocatable, intent(out) :: error
 
         call check_band("drift_box", origins_at_zero(1), 3, reshape( &
-            [0.8d0, 30d0, 30d0, -9.0999d0, -6.5004d0, &
-             1.0d0, 30d0, 30d0, -11.892d0, -8.0668d0], [5, 2]), error)
+            [0.8d0, 30d0, 30d0, -9.1211d0, -6.5082d0, &
+             1.0d0, 30d0, 30d0, -11.916d0, -8.0784d0], [5, 2]), error)
         if (allocated(error)) return
         call check_band("drift_offset", reshape([6d0, 8d0], [2, 1]), 3, reshape( &
-            [1.2d0, 30d0, 30d0, -7.8861d0, -9.0753d0], [5, 1]), error)
+            [1.2d0, 30d0, 30d0, -7.8737d0, -9.0555d0], [5, 1]), error)
     end subroutine near_mz_far_mz_sharp_regression
 
     !> Far-field and near-field of a load stay within regression_band of the recorded values.

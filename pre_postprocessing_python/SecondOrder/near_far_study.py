@@ -1,15 +1,15 @@
 """
 Near-field against far-field mean drift on the hull of drift_cyl as the mesh is refined, held fixed, free, and free on
-external springs, against the implementation plan's 5% limit on F_x. Not part of CI: a run takes a minute at 1792 panels
-and many minutes beyond. See test/data/drift_cyl/README.md.
+external springs, against a 5% limit on F_x. Not part of CI: a run takes a minute at 1920 panels and five at 4320, with 8
+threads. See test/data/drift_cyl/README.md.
 
 Usage:
     python near_far_study.py <path to hamsmrel> <work directory> [--bilge-radius R] [--multiples 1,2,3]
 
-With no --bilge-radius, the hull has the sharp bilge of drift_cyl. With one, it is the hull of drift_round, with the wall
-rows of each fixture: cosine when fixed and free, uniform in z on the springs. --rows cosine or uniform uses those on all
-three. Each multiple scales all the panel counts. The exit code is 1 if F_x misses the limit at the finest mesh, at frequencies away from
-resonance for the moving hull. Prints the terms of F_x, for finding where a difference comes from.
+With no --bilge-radius, the hull has the sharp bilge of drift_cyl. With one, it is the hull of drift_round, with wall rows
+cosine spaced towards the waterline, as in the fixtures, or uniform in z with --rows uniform. Each multiple scales all the
+panel counts. The exit code is 1 if F_x misses the limit at the finest mesh, at frequencies away from resonance for the
+moving hull. Prints the terms of F_x, for finding where a difference comes from.
 """
 
 import argparse
@@ -66,8 +66,7 @@ def run_case(hams, work, name, motion, external, multiple, bilge_radius, rows):
     base = os.path.join(work, "%s_x%d" % (name, multiple))
     path = os.path.join(base, "input")
     os.makedirs(path, exist_ok=True)
-    uniform_rows = rows == "uniform" or (rows == "fixture" and external is not None)
-    mesh = write_hull(path, multiple, bilge_radius, external, uniform_rows)
+    mesh = write_hull(path, multiple, bilge_radius, external, rows == "uniform")
     fixtures.write_control(os.path.join(path, "ControlFile.in"), frequencies=FREQUENCIES, threads=os.cpu_count())
     fixtures.write_second_order(os.path.join(path, "SecondOrder.in"), mean_drift=1, drift_methods="far near",
                                 motion_state=motion, write_terms=1)
@@ -87,7 +86,7 @@ def main():
     parser.add_argument("work")
     parser.add_argument("--bilge-radius", type=float)
     parser.add_argument("--multiples", default="1,2,3")
-    parser.add_argument("--rows", choices=("fixture", "cosine", "uniform"), default="fixture")
+    parser.add_argument("--rows", choices=("cosine", "uniform"), default="cosine")
     args = parser.parse_args()
     multiples = [int(text) for text in args.multiples.split(",")]
 

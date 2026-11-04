@@ -143,14 +143,13 @@ def main():
                       headings=DRIFT_CYL_HEADINGS, **control)
         write_second_order(os.path.join(target, "SecondOrder.in"), **options)
 
-    # The cylinder with a rounded bilge: free, held fixed, and free on external surge and heave springs. The springs have
-    # wall rows uniform in z, the mesh family that converges there: see the README for the cosine rows.
-    for name, motion, external, uniform_rows in (("drift_round", "free", None, False),
-                                                 ("drift_round_fixed", "fixed", None, False),
-                                                 ("drift_round_kstf", "free", EXTERNAL_RESTORING, True)):
+    # The cylinder with a rounded bilge: free, held fixed, and free on external surge and heave springs.
+    for name, motion, external in (("drift_round", "free", None),
+                                   ("drift_round_fixed", "fixed", None),
+                                   ("drift_round_kstf", "free", EXTERNAL_RESTORING)):
         target = case_dir(data, name)
         make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
-                                         external_restoring=external, uniform_rows=uniform_rows, **ROUND_MESH)
+                                         external_restoring=external, **ROUND_MESH)
         write_control(os.path.join(target, "ControlFile.in"), frequencies=DRIFT_CYL_FREQUENCIES,
                       headings=DRIFT_CYL_HEADINGS)
         write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state=motion,
@@ -165,7 +164,7 @@ def main():
                        write_terms=0)
 
     # That cylinder with and without irregular frequency removal, at two frequencies of drift_cyl and at the first irregular
-    # frequency. The lid is uniform: a lid with thin rim panels shifts the results of IRSP = 1, as the README shows.
+    # frequency. The lid is uniform.
     for name, irsp in (("drift_irsp", 1), ("drift_irsp_ref", 0)):
         target = case_dir(data, name)
         for file in ("HullMesh.pnl", "Hydrostatic.in"):
