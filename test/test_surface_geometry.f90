@@ -506,6 +506,9 @@ subroutine test_lid_panels_rejected(error)
   call build_surface_geom(mesh, wl_tol, DEFAULT_SHARP_DEG, geom, ok, msg)
   call check(error, .not. ok, "a lid panel must stop the run")
   if (allocated(error)) return
+  call check(error, geom%nwl == 0 .and. .not. allocated(geom%wl_x1) .and. .not. allocated(geom%awp) .and. &
+             .not. allocated(geom%nbr) .and. .not. allocated(geom%n_wl_gaps), "geom is empty after a stop")
+  if (allocated(error)) return
   call check(error, index(msg, "panel 2 ") > 0 .and. index(msg, "lid") > 0, "message names the panel")
 end subroutine test_lid_panels_rejected
 
@@ -526,6 +529,9 @@ subroutine test_horizontal_normal_rejected(error)
   call set_panel(mesh, 1, [0d0, 0d0, 1d0])
   call build_surface_geom(mesh, wl_tol, DEFAULT_SHARP_DEG, geom, ok, msg)
   call check(error, .not. ok, "vertical normal on the waterline must stop the run")
+  if (allocated(error)) return
+  call check(error, geom%nwl == 0 .and. .not. allocated(geom%wl_x1) .and. .not. allocated(geom%awp) .and. &
+             .not. allocated(geom%nbr) .and. .not. allocated(geom%n_wl_gaps), "geom is empty after a stop")
   if (allocated(error)) return
   call check(error, index(msg, "panel 1 ") > 0 .and. index(msg, "horizontal") > 0, "message names the panel")
 end subroutine test_horizontal_normal_rejected

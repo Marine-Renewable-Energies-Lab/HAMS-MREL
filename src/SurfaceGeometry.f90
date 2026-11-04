@@ -79,6 +79,7 @@ CONTAINS
                ' lies in the free surface z = 0; lid panels are not allowed in the hull mesh'
             msg = TRIM(line)
             ok = .FALSE.
+            geom = surface_geom()   ! one defined state after a stop: nwl = 0, nothing allocated
             RETURN
          END IF
       END DO
@@ -148,6 +149,7 @@ CONTAINS
                //'(horizontal part ', nhm, '); the waterline direction is undefined'
             msg = TRIM(line)
             ok = .FALSE.
+            geom = surface_geom()   ! one defined state after a stop: nwl = 0, nothing allocated
             RETURN
          END IF
          x1 = mesh%xnode(:, ea(e))

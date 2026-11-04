@@ -80,6 +80,7 @@
 		<File RelativePath=".\src\SecondOrderInput.f90"/>
 		<File RelativePath=".\src\SecondOrderTypes.f90"/>
 		<File RelativePath=".\src\FirstOrderState.f90"/>
+		<File RelativePath=".\src\SurfaceGeometry.f90"/>
 		<File RelativePath=".\src\SingularIntgr.f90"/>
 		<File RelativePath=".\src\SingularIntgrMulti.f90"/>
 		<File RelativePath=".\src\SolveMotion.f90"/>
