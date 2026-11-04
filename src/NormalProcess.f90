@@ -27,6 +27,7 @@ MODULE NormalProcess
       ! ..... Public Subroutines ...................................................................................................
 
    PUBLIC :: CalPanelCentre
+   PUBLIC :: FIRST_PANEL_ON_Z0
    PUBLIC :: CalPanelArea
    PUBLIC :: CalPanelArea_TransNormal
    PUBLIC :: CalPanelArea_Normal
@@ -157,6 +158,32 @@ CONTAINS
 !
      RETURN
      END SUBROUTINE CalPanelCentre
+
+!=======================================================================
+!FUNCTION FIRST_PANEL_ON_Z0
+
+!   !   The first hull panel with its centroid on z = 0, or 0 if there is none. ZC holds the z of the centroids.
+!   !   At such a panel the distance from the centroid to its own image is zero, so the image term of the Green
+!   !   function is singular. The limit is the one ReadWTPLMesh uses for a node on z = 0.
+
+      INTEGER FUNCTION FIRST_PANEL_ON_Z0(ZC,NELEM)
+      IMPLICIT   NONE
+
+      INTEGER,INTENT(IN):: NELEM
+      REAL*8,INTENT(IN):: ZC(NELEM)
+
+      INTEGER IEL
+
+      FIRST_PANEL_ON_Z0=0
+      DO IEL=1,NELEM
+       IF (ABS(ZC(IEL)).LT.1.D-10) THEN
+        FIRST_PANEL_ON_Z0=IEL
+        RETURN
+       ENDIF
+      ENDDO
+
+      RETURN
+      END FUNCTION FIRST_PANEL_ON_Z0
       
 
     

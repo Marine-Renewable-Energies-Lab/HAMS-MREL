@@ -138,6 +138,14 @@ CONTAINS
 !      Calculate some panel properties
       
       CALL CalPanelCentre(XYZ_GLOBAL_MULTI(BODY_N,1:NTND_MULTI(BODY_N),:), NTND_MULTI(BODY_N), NELEM_MULTI(BODY_N), NCN_MULTI(BODY_N,1:NELEM_MULTI(BODY_N)), NCON_MULTI(BODY_N,1:NELEM_MULTI(BODY_N),:), XYZ_MULTI_P(BODY_N,1:NELEM_MULTI(BODY_N),:))
+
+      IEL=FIRST_PANEL_ON_Z0(XYZ_MULTI_P(BODY_N,1:NELEM_MULTI(BODY_N),3),NELEM_MULTI(BODY_N))
+      IF (IEL.GT.0) THEN
+         PRINT *,' Error: hull panel',IEL,' of body',BODY_N,' has its centroid on the free surface, z = 0.'
+         PRINT *,' The image term of the Green function is singular at it. Keep hull panels below z = 0,'
+         PRINT *,' and put an interior free surface in the water plane mesh.'
+         STOP 1
+      ENDIF
       
       CALL CalPanelArea(XYZ_GLOBAL_MULTI(BODY_N,1:NTND_MULTI(BODY_N),:), NTND_MULTI(BODY_N), NELEM_MULTI(BODY_N), NCN_MULTI(BODY_N,1:NELEM_MULTI(BODY_N)), NCON_MULTI(BODY_N,1:NELEM_MULTI(BODY_N),:), DS_MULTI(BODY_N,1:NELEM_MULTI(BODY_N)))
       

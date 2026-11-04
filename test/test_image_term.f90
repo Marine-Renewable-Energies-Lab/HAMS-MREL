@@ -8,6 +8,7 @@ module test_image_term
   use SingularIntgrMulti, only : IMAGE_TERM_EXACT_MULTI
   use FinGreen3D_Open, only : FINGREEN3D
   use INFG3D_Open, only : INFGREEN3D
+  use NormalProcess, only : FIRST_PANEL_ON_Z0
 
   implicit none
   private
@@ -32,7 +33,8 @@ contains
       new_unittest("repeated_node_quad", test_repeated_node_quad), &
       new_unittest("infinite_frequency_sign", test_infinite_frequency_sign), &
       new_unittest("wave_part_kept", test_wave_part_kept), &
-      new_unittest("multi_matches_single", test_multi_matches_single) &
+      new_unittest("multi_matches_single", test_multi_matches_single), &
+      new_unittest("hull_panel_on_z0", test_hull_panel_on_z0) &
       ]
   end subroutine collect_image_term
 
@@ -323,5 +325,17 @@ contains
       end do
     end do
   end subroutine test_multi_matches_single
+
+  !> Only a centroid on z = 0 is caught, not the thinnest top row of a graded mesh. The thinnest panel of all the meshes in the
+  !> repo and the validation has its centroid at z = -4.2e-4.
+  subroutine test_hull_panel_on_z0(error)
+    type(error_type), allocatable, intent(out) :: error
+
+    call check(error, FIRST_PANEL_ON_Z0([-1d0, -0.0098d0, -4.2d-4, -1d-6], 4) == 0, "no panel on z = 0")
+    if (allocated(error)) return
+    call check(error, FIRST_PANEL_ON_Z0([-1d0, 0d0, -2d0, -0d0], 4) == 2, "the first panel on z = 0")
+    if (allocated(error)) return
+    call check(error, FIRST_PANEL_ON_Z0([-1d0, -2d0, -3d-11], 3) == 3, "within the limit of a node on z = 0")
+  end subroutine test_hull_panel_on_z0
 
 end module test_image_term

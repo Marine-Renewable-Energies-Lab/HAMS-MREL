@@ -14,6 +14,7 @@ Rows are at z = -(d/2)(1 - cos(pi i/nz)) with cosine rows, thin at the waterline
 | `image_uni` | uniform | 20 x 6 x 3 | 180 | |
 | `image_cos_fine` | cosine | 30 x 9 x 4 | 390 | field points on the top 5 rows of the first column |
 | `image_uni_fine` | uniform | 30 x 9 x 4 | 390 | |
+| `hull_panel_z0`, `hull_panel_z0_two` | none | | 6, 6 each | not the cylinder: a box with a deck panel on z = 0, for the stop in `CalNormals` and `CalNormalsMulti` |
 
 ## Checks, before and after the change
 
