@@ -16,6 +16,7 @@ program unit_tester
     use test_surface_geometry, only : collect_surface_geometry
     use test_surface_velocity, only : collect_surface_velocity
     use test_far_field, only : collect_far_field
+    use test_near_field, only : collect_near_field
     use test_second_order_output, only : collect_second_order_output
 
     implicit none
@@ -41,6 +42,7 @@ program unit_tester
         new_testsuite("surface_geometry", collect_surface_geometry), &
         new_testsuite("surface_velocity", collect_surface_velocity), &
         new_testsuite("far_field", collect_far_field), &
+        new_testsuite("near_field", collect_near_field), &
         new_testsuite("second_order_output", collect_second_order_output) &
     ]
 

@@ -3,7 +3,7 @@ module test_far_field
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use SecondOrderTypes, only : panel_mesh, first_order_state, so_options
   use FarFieldDrift, only : far_amplitude, group_ratio, far_field_pair, far_field_pairs
-  use second_order_fixtures, only : make_cylinder, maccamy_fuchs_a, maccamy_fuchs_state
+  use second_order_fixtures, only : make_cylinder, maccamy_fuchs_a, maccamy_fuchs_state, maccamy_fuchs_drift
   implicit none
   private
 
@@ -61,21 +61,6 @@ subroutine setup_cylinder(mesh, k, beta, s)
   call maccamy_fuchs_state(mesh, radius, depth, k, omega, 1d0, beta, g, rho, s)
 end subroutine setup_cylinder
 
-!> Trapezoid integral of |f|^2 weight(theta) on [0, 2pi) of the analytic series, with n points.
-real(8) function series_integral(k, wcos, n)
-  real(8), intent(in) :: k
-  logical, intent(in) :: wcos   ! false: int |a|^2, true: int |a|^2 cos(theta)
-  integer, intent(in) :: n
-  integer :: j
-  real(8) :: th
-  series_integral = 0d0
-  do j = 1, n
-    th = 2d0 * pi * real(j - 1, 8) / real(n, 8)
-    series_integral = series_integral + abs(maccamy_fuchs_a(th, radius, k, 1d0, 0d0))**2 * merge(cos(th), 1d0, wcos)
-  end do
-  series_integral = series_integral * 2d0 * pi / real(n, 8)
-end function series_integral
-
 ! ---------------------------------------------------------------------------------------------- tests
 
 subroutine test_kochin_matches_series(error)
@@ -105,12 +90,11 @@ subroutine test_drift_matches_analytic(error)
   type(first_order_state) :: s
   type(so_options) :: opts
   complex(8) :: f(3)
-  real(8) :: k, fref, kappa
+  real(8) :: k, fref
 
   call setup_cylinder(mesh, k, 0d0, s)
   call far_field_pair(mesh, s, s, opts, f)
-  kappa = 0.5d0 * rho * g * group_ratio(k, depth)
-  fref = kappa * (series_integral(k, .false., 720) - series_integral(k, .true., 720))
+  fref = maccamy_fuchs_drift(radius, k, 0.5d0 * rho * g * group_ratio(k, depth), 720)
   call check(error, abs(real(f(1)) - fref) < 2d-2 * fref, "drift force differs from the analytic MacCamy-Fuchs value")
 end subroutine test_drift_matches_analytic
 

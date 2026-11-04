@@ -32,7 +32,7 @@ MODULE FirstOrderState
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: depth_factor, incident_phi, incident_grad, expand_images, build_state
+   PUBLIC :: depth_factor, wave_gravity, incident_phi, incident_grad, expand_images, build_state
 
 CONTAINS
 
@@ -54,6 +54,18 @@ CONTAINS
          dzf = k*(ea - eb)/den
       END IF
    END SUBROUTINE depth_factor
+
+   PURE REAL(8) FUNCTION wave_gravity(omega, k, h)
+      ! The gravity of the wave the solver used. VINP and DINP in finite depth have the factor omega/(k sinh kh), and k
+      ! comes from DISPERSION, which has its own g = 9.807, so their wave has omega^2/(k tanh kh), not the g of Const_mod.
+      REAL(8), INTENT(IN) :: omega, k, h
+
+      IF (h < 0D0) THEN
+         wave_gravity = omega*omega/k
+      ELSE
+         wave_gravity = omega*omega/(k*TANH(k*h))
+      END IF
+   END FUNCTION wave_gravity
 
    PURE COMPLEX(8) FUNCTION incident_phi(x, omega, k, h, amp, beta, g)
       ! Incident wave potential at x(3), for an elevation amp e^{i k (x cos(beta) + y sin(beta))} at the origin.
@@ -170,14 +182,8 @@ CONTAINS
       state%beta = beta
       state%g = g
       state%rho = rho
-      ! The incident field must be the one the solver used. VINP and DINP in finite depth have the factor
-      ! omega/(k sinh kh), and k comes from DISPERSION, which has its own g = 9.807. So their wave has the gravity
-      ! omega^2/(k tanh kh), not the g of Const_mod. state%g stays the given g, for the rho g terms.
-      IF (h < 0D0) THEN
-         g_wave = omega*omega/k
-      ELSE
-         g_wave = omega*omega/(k*TANH(k*h))
-      END IF
+      ! The incident field must be the one the solver used. state%g stays the given g, for the rho g terms.
+      g_wave = wave_gravity(omega, k, h)
       ALLOCATE (state%phi_i(mesh%n), state%phi_p(mesh%n), state%dphi_p_dn(mesh%n), state%dphi_dn(mesh%n))
       ALLOCATE (state%grad_i(3, mesh%n), state%grad_p(3, mesh%n), state%xi(6, mesh%nbody))
       state%grad_p = (0D0, 0D0)

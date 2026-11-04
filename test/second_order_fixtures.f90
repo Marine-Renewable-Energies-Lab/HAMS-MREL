@@ -5,7 +5,7 @@ module second_order_fixtures
   implicit none
   private
 
-  public :: make_cylinder, set_panel, maccamy_fuchs_a, maccamy_fuchs_state
+  public :: make_cylinder, set_panel, maccamy_fuchs_a, maccamy_fuchs_state, maccamy_fuchs_phi, maccamy_fuchs_drift
 
 contains
 
@@ -180,6 +180,58 @@ complex(8) function maccamy_fuchs_a(theta, a_rad, k, amp, beta)
   maccamy_fuchs_a = -amp * sqrt(2d0 / (pi * k)) * exp(cmplx(0d0, -pi / 4d0, kind=8)) * acc
 end function maccamy_fuchs_a
 
+!> Analytic drift force of the same cylinder at heading 0 per unit amplitude squared: kappa int |a|^2 (1 - cos theta)
+!> dtheta, with kappa = (rho g / 2) (C_g / C_p), by the trapezoid rule with n points.
+real(8) function maccamy_fuchs_drift(a_rad, k, kappa, n)
+  real(8), intent(in) :: a_rad, k, kappa
+  integer, intent(in) :: n
+  real(8), parameter :: pi = 3.141592653589793d0
+  real(8) :: th
+  integer :: j
+
+  maccamy_fuchs_drift = 0d0
+  do j = 1, n
+    th = 2d0 * pi * real(j - 1, 8) / real(n, 8)
+    maccamy_fuchs_drift = maccamy_fuchs_drift + abs(maccamy_fuchs_a(th, a_rad, k, 1d0, 0d0))**2 * (1d0 - cos(th))
+  end do
+  maccamy_fuchs_drift = kappa * maccamy_fuchs_drift * 2d0 * pi / real(n, 8)
+end function maccamy_fuchs_drift
+
+!> Series coefficients of the total potential on r = a: c_n = eps_n i^n 2i / (pi ka H_n'(ka)).
+subroutine maccamy_fuchs_coefficients(ka, cn)
+  real(8), intent(in) :: ka
+  complex(8), allocatable, intent(out) :: cn(:)
+  complex(8), parameter :: ci = (0d0, 1d0)
+  real(8), parameter :: pi = 3.141592653589793d0
+  real(8) :: eps
+  integer :: n, nmax
+
+  nmax = int(ka) + 20
+  allocate(cn(0:nmax))
+  do n = 0, nmax
+    eps = merge(1d0, 2d0, n == 0)
+    cn(n) = eps * ci**n * 2d0 * ci / (pi * ka * hankel1_prime(n, ka))
+  end do
+end subroutine maccamy_fuchs_coefficients
+
+!> Exact total potential on r = a at the azimuth and z of the point x(3), which need not lie exactly on r = a.
+complex(8) function maccamy_fuchs_phi(x, a_rad, h, k, omega, amp, beta, g)
+  real(8), intent(in) :: x(3), a_rad, h, k, omega, amp, beta, g
+  complex(8), allocatable :: cn(:)
+  complex(8) :: ssum
+  real(8) :: tr, zf, dzf
+  integer :: n
+
+  call maccamy_fuchs_coefficients(k * a_rad, cn)
+  tr = atan2(x(2), x(1)) - beta
+  ssum = (0d0, 0d0)
+  do n = 0, ubound(cn, 1)
+    ssum = ssum + cn(n) * cos(real(n, 8) * tr)
+  end do
+  call depth_factor(k, x(3), h, zf, dzf)
+  maccamy_fuchs_phi = cmplx(0d0, -g * amp / omega, kind=8) * zf * ssum
+end function maccamy_fuchs_phi
+
 !> Analytic first-order state of a fixed bottom-mounted cylinder (axis z, radius a_rad), no BEM solve. The total
 !> potential on r = a is evaluated at each panel centroid's azimuth and z; phi_i and grad_i are the incident wave
 !> at the centroid, phi_p = phi_total - phi_i, dphi_p_dn = -grad_i . n (fixed body), and grad_p = grad_total - grad_i,
@@ -188,11 +240,9 @@ subroutine maccamy_fuchs_state(mesh, a_rad, h, k, omega, amp, beta, g, rho, s)
   type(panel_mesh), intent(in) :: mesh
   real(8), intent(in) :: a_rad, h, k, omega, amp, beta, g, rho
   type(first_order_state), intent(out) :: s
-  complex(8), parameter :: ci = (0d0, 1d0)
-  real(8), parameter :: pi = 3.141592653589793d0
   complex(8), allocatable :: cn(:)
   complex(8) :: pref, ssum, dssum, grad_t(3)
-  real(8) :: th, zf, dzf, ka, eps, tr, phi_dir(3)
+  real(8) :: th, zf, dzf, tr, phi_dir(3)
   integer :: n, nmax, i
 
   s%omega = omega
@@ -208,14 +258,8 @@ subroutine maccamy_fuchs_state(mesh, a_rad, h, k, omega, amp, beta, g, rho, s)
   s%xi = (0d0, 0d0)
   s%dphi_dn = (0d0, 0d0)
 
-  ! Series coefficients c_n = eps_n i^n 2i / (pi ka H_n'(ka))
-  ka = k * a_rad
-  nmax = int(ka) + 20
-  allocate(cn(0:nmax))
-  do n = 0, nmax
-    eps = merge(1d0, 2d0, n == 0)
-    cn(n) = eps * ci**n * 2d0 * ci / (pi * ka * hankel1_prime(n, ka))
-  end do
+  call maccamy_fuchs_coefficients(k * a_rad, cn)
+  nmax = ubound(cn, 1)
   pref = cmplx(0d0, -g * amp / omega, kind=8)
 
   do i = 1, mesh%n
