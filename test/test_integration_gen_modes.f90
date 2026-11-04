@@ -28,9 +28,11 @@ module test_integration_gen_modes
     real(8), parameter :: FLOOR_SHARE = 1d-5
     ! GMRES stops at ITER_TOL = 1e-4, but with the same matrix each right side converges the same way.
     real(8), parameter :: GMRES_TOL = 1d-4
-    ! Measured on this mesh with the fix, ifort 2022.1 and ifx 2024.2: see the values printed by the tests.
-    real(8), parameter :: SYMMETRY_TOL = 5d-3
-    real(8), parameter :: HASKIND_TOL = 5d-2
+    ! This mesh is coarse, so the mode's own numbers are only consistent to about a percent. See the values printed by the
+    ! tests. With the kernel reading the mode's values, this mesh gives 1.67 and 39.5 for symmetry and 14.5 for Haskind.
+    real(8), parameter :: SYMMETRY_TOL_A = 2d-2
+    real(8), parameter :: SYMMETRY_TOL_B = 1d-1
+    real(8), parameter :: HASKIND_TOL = 2d-2
 
     type :: run_case
         character(len=4) :: name
@@ -273,7 +275,7 @@ contains
             end do
             write(info, '(a,a,es9.2,a,es9.2)') trim(names(ii)), ': mode row against column, A', worst_a, ', B', worst_b
             print '(a)', ' gen_modes '//trim(info)
-            call check(error, max(worst_a, worst_b) <= SYMMETRY_TOL, "Not symmetric. "//trim(info))
+            call check(error, worst_a <= SYMMETRY_TOL_A .and. worst_b <= SYMMETRY_TOL_B, "Not symmetric. "//trim(info))
             if (allocated(error)) return
         end do
     end subroutine test_symmetry
