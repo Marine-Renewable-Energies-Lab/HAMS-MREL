@@ -48,7 +48,7 @@ MODULE SecondOrderDriver
    USE SurfaceVelocity, ONLY: velocity_differencing
    USE FarFieldDrift, ONLY: far_amplitude, far_field_pair, far_field_pairs
    USE NearFieldDrift, ONLY: waterline_extrapolate, near_field_pair, T_WATERLINE, T_HYDROSTATIC
-   USE WaterlineField, ONLY: waterline_rows, waterline_field
+   USE WaterlineField, ONLY: waterline_rows, waterline_field, field_point_inside_body
    USE SecondOrderOutput, ONLY: write_drift_row, write_terms_row
    IMPLICIT NONE
    PRIVATE
@@ -127,9 +127,19 @@ CONTAINS
          IF (LEN_TRIM(msg) > 0) WRITE (*, *) 'Mean drift warning: ', msg
          ALLOCATE (phi_wl(geom%nwl, SIZE(states)))
          IF (opts%waterline_method == 2) THEN
+            IF (ANY(field_point_inside_body(geom%wl_nz))) THEN
+               WRITE (*, '(a)') 'Mean drift: waterline_method = field puts its point inside the body where'
+               WRITE (*, '(a)') 'the wall at the waterline widens downward by more than 45 degrees from the'
+               WRITE (*, '(a)') 'vertical. Use waterline_method = extrapolate for this body.'
+               ERROR STOP 1
+            END IF
             ALLOCATE (rows_g(mesh%nbase, mesh%nsys, geom%nwl), rows_dg(mesh%nbase, mesh%nsys, geom%nwl))
-            IF (H >= 0D0) WRITE (*, *) 'Mean drift warning: with waterline_method = field in finite depth, the Green function is', &
-               ' erratic near the free surface at a small horizontal distance, so term I can jump with the mesh or the offset.'
+            IF (H >= 0D0) THEN
+               WRITE (*, '(a)') 'Mean drift warning: with waterline_method = field in finite depth, term I'
+               WRITE (*, '(a)') 'has been seen to jump with the mesh or the offset. The Green function is'
+               WRITE (*, '(a)') 'also seen to scatter near the free surface at a small horizontal distance.'
+               WRITE (*, '(a)') 'A link between the two is not shown.'
+            END IF
          END IF
          OPEN (NEWUNIT=unit_near, FILE=outputdir//'/Wamit_format/MeanDriftPressure.9', STATUS='REPLACE', ACTION='WRITE')
          IF (opts%write_terms >= 1) THEN

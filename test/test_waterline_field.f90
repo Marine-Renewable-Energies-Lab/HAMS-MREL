@@ -20,7 +20,7 @@ module test_waterline_field
   use FirstOrderState, only : expand_images, build_state, incident_phi, wave_gravity
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use NearFieldDrift, only : near_field_pair, T_WATERLINE
-  use WaterlineField, only : field_influence_row, field_potential, waterline_rows, waterline_field
+  use WaterlineField, only : field_influence_row, field_potential, waterline_rows, waterline_field, field_point_inside_body
   use second_order_fixtures, only : make_cylinder, maccamy_fuchs_phi, maccamy_fuchs_state, maccamy_fuchs_waterline
   implicit none
   private
@@ -49,9 +49,28 @@ contains
       new_unittest("field_matches_existing_x_symmetry", test_x_symmetry), &
       new_unittest("field_matches_existing_multi", test_multi), &
       new_unittest("field_matches_existing_multi_y_symmetry", test_multi_y_symmetry), &
-      new_unittest("waterline_reference", test_waterline_reference) &
+      new_unittest("waterline_reference", test_waterline_reference), &
+      new_unittest("field_point_inside_body", test_inside_body) &
       ]
   end subroutine collect_waterline_field
+
+  !> The limit is a wall that widens downward by 45 degrees: n_z = -sqrt(1/2) for a normal into the body.
+  subroutine test_inside_body(error)
+    type(error_type), allocatable, intent(out) :: error
+    real(8), parameter :: limit = sqrt(0.5d0)
+
+    call check(error, field_point_inside_body(0d0), .false., "vertical wall")
+    if (allocated(error)) return
+    call check(error, field_point_inside_body(0.5d0), .false., "wall narrowing downward")
+    if (allocated(error)) return
+    call check(error, field_point_inside_body(-0.9d0*limit), .false., "wall widening by less than 45 degrees")
+    if (allocated(error)) return
+    call check(error, field_point_inside_body(-1.1d0*limit), .true., "wall widening by more than 45 degrees")
+    if (allocated(error)) return
+    call check(error, field_point_inside_body(-1d0), .true., "horizontal floor-like panel")
+    if (allocated(error)) return
+    call check(error, all(field_point_inside_body([0d0, -0.5d0, -0.8d0]) .eqv. [.false., .false., .true.]), "array form")
+  end subroutine test_inside_body
 
   subroutine test_finite_depth(error)
     type(error_type), allocatable, intent(out) :: error

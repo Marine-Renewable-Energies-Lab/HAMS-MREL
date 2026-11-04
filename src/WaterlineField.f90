@@ -27,7 +27,8 @@ MODULE WaterlineField
    !    phi_P(x) = (1 / 4 pi) sum_images sum_j [ G dphi_P/dn - (dG/dn) phi_P ]
    !
    ! with G and dG/dn integrated over panel j, as in CalPotential and CalPotentialMulti, the free-surface image term included. The
-   ! point is in the fluid, so the free term is always 4 pi. Only hull panels are sources: with IRSP = 1 the lid acts through the
+   ! point lies in the fluid, so the free term is 4 pi, if the wall at the waterline widens downward by no more than 45 degrees
+   ! from the vertical (see field_point_inside_body) and no other body is within offset*wl_len of the point. Only hull panels are sources: with IRSP = 1 the lid acts through the
    ! hull potentials. The integrals depend on the frequency and not on the state, so one set of rows serves all the headings.
 
    USE HAMS_mod, ONLY: NTHREAD
@@ -43,7 +44,7 @@ MODULE WaterlineField
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: field_influence_row, field_potential, waterline_rows, waterline_field
+   PUBLIC :: field_influence_row, field_potential, waterline_rows, waterline_field, field_point_inside_body
 
    REAL(8), PARAMETER :: PI = 3.141592653589793D0
    INTEGER, PARAMETER :: IRR_HULL = 1          ! source panel on the hull, in SGLINTBD_*2
@@ -102,6 +103,14 @@ CONTAINS
       END DO
       !$OMP END PARALLEL DO
    END SUBROUTINE field_influence_row
+
+   PURE ELEMENTAL LOGICAL FUNCTION field_point_inside_body(wl_nz)
+      ! True if the field point of a segment lies inside the body. The point is d out of the body along the horizontal normal and
+      ! d down. The unit panel normal (n_h, n_z) points into the body, so the point is a distance -d*(|n_h| + n_z) along it. That
+      ! is negative, which is the fluid side, when n_z > -|n_h| = -sqrt(1 - n_z**2).
+      REAL(8), INTENT(IN) :: wl_nz   ! n_z of the unit normal of the waterline panel
+      field_point_inside_body = wl_nz < -SQRT(MAX(1D0 - wl_nz**2, 0D0))
+   END FUNCTION field_point_inside_body
 
    SUBROUTINE waterline_rows(mesh, geom, offset, is_multi, rows_g, rows_dg)
       ! The rows of the point of each waterline segment, offset by a fraction of the segment length: out into the fluid along the

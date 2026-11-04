@@ -36,6 +36,9 @@ module test_integration_drift
     ! whose meshes and frequencies were chosen after seeing results. Having no edges is not enough: a free half ellipsoid, for
     ! one, misses 5% where its net force is small. See test/data/drift_cyl/README.md.
     real(8), parameter :: near_far_limit = 5d-2
+    ! field_two_bodies checks the driver wiring and the reuse of the rows between bodies. Inter-body correctness rests on
+    ! field_matches_existing_multi in test_waterline_field.f90.
+    real(8), parameter :: field_two_bodies_limit = 5d-2
     real(8), parameter :: near_mz_limit = 1d-1
     real(8), parameter :: rotated_limit = 1d-3
     real(8), parameter :: irsp_limit = 1d-2
@@ -1248,9 +1251,9 @@ contains
             k = wave_number(frequencies(iw), depth)
             analytic = maccamy_fuchs_waterline(radius, depth, k, frequencies(iw), g, 720)
             do ic = 1, size(offsets)
-                print '(4x,F5.3,F7.3,ES13.5,F9.4)', frequencies(iw), offsets(ic), term(ic), term(ic)/analytic - 1d0
+                print '(4x,"offset_sensitivity_recorded ",F5.3,F7.3,ES13.5,F9.4)', frequencies(iw), offsets(ic), term(ic), term(ic)/analytic - 1d0
             end do
-            print '(4x,F5.3,a7,ES13.5)', frequencies(iw), "exact", analytic
+            print '(4x,"offset_sensitivity_recorded ",F5.3,a7,ES13.5)', frequencies(iw), "exact", analytic
             worst_mf = max(worst_mf, maxval(abs(term - analytic))/abs(analytic))
             worst_spread = max(worst_spread, (maxval(term) - minval(term))/abs(analytic))
             smallest_change = min(smallest_change, abs(term(1) - term(size(term)))/abs(analytic))
@@ -1308,7 +1311,7 @@ contains
             end do
         end do
         call report("field_two_bodies", worst)
-        call check_below(error, "field_two_bodies", worst, near_far_limit)
+        call check_below(error, "field_two_bodies", worst, field_two_bodies_limit)
     end subroutine field_two_bodies
 
     !> Real part of the waterline term of load I of a body, for one frequency and heading, as written to MeanDriftTerms.txt.
