@@ -158,6 +158,7 @@ CONTAINS
       COMPLEX(8), PARAMETER :: ci = (0D0, 1D0)
       INTEGER :: nmode, md, i, b, im, j, jb
       COMPLEX(8) :: acc
+      REAL(8) :: g_wave
 
       nmode = 6*mesh%nbody
       md = nmode + 1
@@ -169,6 +170,14 @@ CONTAINS
       state%beta = beta
       state%g = g
       state%rho = rho
+      ! The incident field must be the one the solver used. VINP and DINP in finite depth have the factor
+      ! omega/(k sinh kh), and k comes from DISPERSION, which has its own g = 9.807. So their wave has the gravity
+      ! omega^2/(k tanh kh), not the g of Const_mod. state%g stays the given g, for the rho g terms.
+      IF (h < 0D0) THEN
+         g_wave = omega*omega/k
+      ELSE
+         g_wave = omega*omega/(k*TANH(k*h))
+      END IF
       ALLOCATE (state%phi_i(mesh%n), state%phi_p(mesh%n), state%dphi_p_dn(mesh%n), state%dphi_dn(mesh%n))
       ALLOCATE (state%grad_i(3, mesh%n), state%grad_p(3, mesh%n), state%xi(6, mesh%nbody))
       state%grad_p = (0D0, 0D0)
@@ -182,8 +191,8 @@ CONTAINS
       DO i = 1, mesh%n
          b = mesh%base(i)
          im = mesh%image(i)
-         state%phi_i(i) = incident_phi(mesh%xc(:, i), omega, k, h, amp, beta, g)
-         CALL incident_grad(mesh%xc(:, i), omega, k, h, amp, beta, g, state%grad_i(:, i))
+         state%phi_i(i) = incident_phi(mesh%xc(:, i), omega, k, h, amp, beta, g_wave)
+         CALL incident_grad(mesh%xc(:, i), omega, k, h, amp, beta, g_wave, state%grad_i(:, i))
 
          ! Radiation modes of every body act on every panel
          acc = ci*mxpot(b, md, im)

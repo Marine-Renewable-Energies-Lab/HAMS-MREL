@@ -39,7 +39,8 @@ subroutine collect_first_order_state_serial(testsuite)
   type(unittest_type), allocatable, intent(out) :: testsuite(:)
 
   testsuite = [ &
-    new_unittest("matches_hams_vinp_dinp", test_matches_hams_vinp_dinp) &
+    new_unittest("matches_hams_vinp_dinp", test_matches_hams_vinp_dinp), &
+    new_unittest("build_state_uses_solver_wave", test_build_state_uses_solver_wave) &
     ]
 end subroutine collect_first_order_state_serial
 
@@ -534,5 +535,46 @@ subroutine test_matches_hams_vinp_dinp(error)
     if (allocated(error)) return
   end do
 end subroutine test_matches_hams_vinp_dinp
+
+!> With k from the dispersion relation at g = 9.807, as DISPERSION gives it, the incident field of the state is still
+!> exactly that of VINP and DINP, and state%g stays the given g.
+subroutine test_build_state_uses_solver_wave(error)
+  use WaveDyn_mod, only : H, AMP, V, W1, WK
+  use PatcVelct, only : VINP, DINP
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: st
+  real(8), parameter :: g_dispersion = 9.807d0
+  real(8) :: omega, k, beta, h0, x(3)
+  complex(8) :: dpx, dpy, dpz, v0
+  complex(8), allocatable :: mxpot(:,:,:)
+  complex(8) :: dspl(6)
+  integer :: i
+
+  omega = 1.2d0; beta = 0.6d0; h0 = 70d0
+  k = omega**2 / g_dispersion
+  do i = 1, 50
+    k = k - (k * tanh(k*h0) - omega**2/g_dispersion) / (tanh(k*h0) + k*h0/cosh(k*h0)**2)
+  end do
+  call two_panel_mesh(1, mesh)
+  allocate(mxpot(2, 7, 1))
+  mxpot = (0d0, 0d0)
+  dspl = (0d0, 0d0)
+  H = h0; AMP = 1d0; V = omega**2 / g; W1 = omega; WK = k
+  call build_state(mesh, omega, k, omega**2/g, h0, 1d0, beta, g, 1000d0, mxpot, dspl, .false., st)
+
+  call check(error, st%g == g, "state%g must stay the given g")
+  if (allocated(error)) return
+  do i = 1, 2
+    x = mesh%xc(:,i)
+    v0 = VINP(x(1), x(2), x(3), 0d0, 0d0, beta)
+    call DINP(x(1), x(2), x(3), 0d0, 0d0, beta, dpx, dpy, dpz)
+    call check(error, close_c(ci * v0, st%phi_i(i), 1d-11), "phi_i differs from i*VINP")
+    if (allocated(error)) return
+    call check(error, close_c(ci * dpx, st%grad_i(1,i), 1d-11) .and. close_c(ci * dpy, st%grad_i(2,i), 1d-11) &
+               .and. close_c(ci * dpz, st%grad_i(3,i), 1d-11), "grad_i differs from i*DINP")
+    if (allocated(error)) return
+  end do
+end subroutine test_build_state_uses_solver_wave
 
 end module test_first_order_state
