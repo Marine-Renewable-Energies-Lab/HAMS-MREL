@@ -51,7 +51,9 @@ contains
             new_unittest("multi_matches_single", multi_matches_single), &
             new_unittest("lid_matches_no_lid", lid_matches_no_lid), &
             new_unittest("cosine_and_uniform_approach", cosine_and_uniform_approach), &
-            new_unittest("haskind_heave", haskind_heave) &
+            new_unittest("haskind_heave", haskind_heave), &
+            new_unittest("stops_on_hull_panel_at_z0", stops_on_hull_panel_at_z0), &
+            new_unittest("stops_on_hull_panel_at_z0_multi", stops_on_hull_panel_at_z0_multi) &
             ]
     end subroutine collect_tests_image
 
@@ -72,6 +74,42 @@ contains
             call test_failed(error, "HAMS failed for "//name//" with exit code "//trim(code))
         end if
     end subroutine run_case
+
+    !> A hull panel with its centroid on z = 0: the run must stop and say why, before any result can be NaN.
+    subroutine run_case_expect_stop(name, error)
+        character(len=*), intent(in) :: name
+        type(error_type), allocatable, intent(out) :: error
+        character(:), allocatable :: command, logfile
+        character(len=512) :: line
+        integer :: exitcode, unit, ios
+        logical :: said
+
+        logfile = get_running_exe_path()//name//".log"
+        command = native_path(hamsexe_path//" "//get_repo_root_path()//"test/data/image_term/"//name//"/input/ " &
+                              //output_dir(name)//" > "//logfile)//" 2>&1"
+        call execute_command_line(command, exitstat=exitcode, wait=.true.)
+        call check(error, exitcode /= 0, name//": the run did not stop")
+        if (allocated(error)) return
+        said = .false.
+        open (newunit=unit, file=logfile, status='old', action='read')
+        do
+            read (unit, '(a)', iostat=ios) line
+            if (ios /= 0) exit
+            if (index(line, 'centroid on the free surface') > 0) said = .true.
+        end do
+        close (unit)
+        call check(error, said, name//": the message is not in the log")
+    end subroutine run_case_expect_stop
+
+    subroutine stops_on_hull_panel_at_z0(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case_expect_stop("hull_panel_z0", error)
+    end subroutine stops_on_hull_panel_at_z0
+
+    subroutine stops_on_hull_panel_at_z0_multi(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case_expect_stop("hull_panel_z0_two", error)
+    end subroutine stops_on_hull_panel_at_z0_multi
 
     function output_dir(name) result(dir)
         character(len=*), intent(in) :: name

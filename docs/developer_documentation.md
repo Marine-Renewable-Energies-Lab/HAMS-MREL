@@ -45,7 +45,13 @@ The integration tests compare against the outputs stored in `test/data/config1/e
 
 The Green function holds the image term 1/r1 of the free surface. Until this change it was taken at the centroid of the source panel and multiplied by the area, also for panels next to the field point, while the 1/r term was integrated over the panel. On a panel close to z = 0 compared with its size, the centroid is too close to its image: for the top row of a wall graded to the waterline, with height 0.02 m and width 0.65 m, the one-point value is 4.7 times the integral. Now, for every pair within 50 panel sizes (`FLAG = 1`), `IMAGE_TERM_EXACT` and `IMAGE_TERM_EXACT_MULTI` move the term and its gradient out of the Green function and add their integral over the panel. They are called in `CALGREEN`, `CALGREEN_IRR`, `CALGREEN_MULTI`, `CALGREEN_MULTI_IRR`, `CalPotential` and `CalPotentialMulti`, so collocation and field points are treated the same. This changes first-order results on all meshes, a little: see [the fixtures](../test/data/image_term/README.md). The stored outputs of `config1` were regenerated for it.
 
-The rest of the Green function stays at the centroid: the logarithmic part of the wave term, also singular at the free surface, and with finite depth the image in the sea bed.
+The rest of the Green function stays at the centroid: the logarithmic part of the wave term, also singular at the free surface; in deep water the term `2V/R1` of `GRN(4)`, the z gradient of the wave part (`InfGreen_Appr.f90`), which is stronger near z = 0 than the logarithm; and with finite depth the image in the sea bed.
+
+A hull panel with its centroid on z = 0 has no usable image term: the distance from the centroid to its own image is zero. `CalNormals` and `CalNormalsMulti` stop with a message on such a mesh. Before this check, the same mesh ran to the end and wrote NaN.
+
+### Triangle panels
+
+The triangle routines (`SGLINTBD_TRI`, `SGLINTBD_TRI2` and their multi-body copies) work from `ALFA`, the projection of side 1-3 on side 1-2, in units of side 1-2. Until this change they integrated over the wrong shape when `ALFA > 1`, an obtuse angle at node 2, so the result depended on the node order. This affected the direct term 1/r as well as the image term, in every earlier version. Results now change on any mesh with such a triangle as a hull panel. Lid panels are never sources, so their node order does not matter. Quadrilaterals were not affected. See [test_panel_integrals.f90](../test/test_panel_integrals.f90).
 
 After executing these commands you should see the following output (or similar):
 
