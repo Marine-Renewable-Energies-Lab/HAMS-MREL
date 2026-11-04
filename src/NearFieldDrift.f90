@@ -35,6 +35,7 @@ MODULE NearFieldDrift
    PRIVATE
 
    PUBLIC :: pair_minus, waterline_extrapolate, near_field_pair
+   PUBLIC :: T_WATERLINE, T_FLARE, T_VELOCITY, T_DISPLACEMENT, T_ROTATION, T_HYDROSTATIC
 
    ! Term index of near_field_pair
    INTEGER, PARAMETER :: T_WATERLINE = 1, T_FLARE = 2, T_VELOCITY = 3, T_DISPLACEMENT = 4, T_ROTATION = 5, T_HYDROSTATIC = 6

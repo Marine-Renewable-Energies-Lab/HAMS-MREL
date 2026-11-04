@@ -5,7 +5,8 @@ module test_near_field
   use FirstOrderState, only : incident_phi
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use FarFieldDrift, only : group_ratio
-  use NearFieldDrift, only : pair_minus, waterline_extrapolate, near_field_pair
+  use NearFieldDrift, only : pair_minus, waterline_extrapolate, near_field_pair, T_I => T_WATERLINE, T_IA => T_FLARE, &
+                             T_II => T_VELOCITY, T_III => T_DISPLACEMENT, T_IV => T_ROTATION, T_V => T_HYDROSTATIC
   use second_order_fixtures, only : make_cylinder, set_panel, maccamy_fuchs_state, maccamy_fuchs_phi, maccamy_fuchs_drift
   implicit none
   private
@@ -17,8 +18,6 @@ module test_near_field
   real(8), parameter :: radius = 5d0, depth = 10d0, omega = 1d0
   complex(8), parameter :: ci = (0d0, 1d0)
 
-  ! Positions in the term index of near_field_pair
-  integer, parameter :: T_I = 1, T_IA = 2, T_II = 3, T_III = 4, T_IV = 5, T_V = 6
 
   ! Box of hydrostatic_exact_box: footprint [bx1,bx2] x [by1,by2], z down to -bdraft, reference point bxr
   real(8), parameter :: bx1 = -1d0, bx2 = 5d0, by1 = -3d0, by2 = 1d0, bdraft = 3d0

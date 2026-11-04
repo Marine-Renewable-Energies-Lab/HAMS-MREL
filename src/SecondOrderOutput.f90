@@ -28,7 +28,7 @@ MODULE SecondOrderOutput
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: write_drift_row
+   PUBLIC :: write_drift_row, write_terms_row
 
 CONTAINS
 
@@ -42,17 +42,36 @@ CONTAINS
       COMPLEX(8), INTENT(IN) :: value
       LOGICAL, INTENT(IN) :: moment
       REAL(8), PARAMETER :: RAD_TO_DEG = 180D0/3.141592653589793D0
-      REAL(8) :: nfac
       COMPLEX(8) :: scaled
 
-      IF (moment) THEN
-         nfac = RHO*G*refl**2
-      ELSE
-         nfac = RHO*G*refl
-      END IF
-      scaled = CONJG(value)/nfac
+      scaled = output_value(value, refl, moment)
       WRITE (unit, '(3ES14.6,I6,4ES14.6)') oufr, beta1_deg, beta2_deg, index, ABS(scaled), &
          ATAN2(AIMAG(scaled), REAL(scaled, 8))*RAD_TO_DEG, REAL(scaled, 8), AIMAG(scaled)
    END SUBROUTINE write_drift_row
+
+   SUBROUTINE write_terms_row(unit, oufr, beta1_deg, beta2_deg, body, index, term, value, refl, moment)
+      ! Writes one row PER BETA1 BETA2 body I term Re Im of MeanDriftTerms.txt. I = 1..6 and the moments are about XR of
+      ! the body; term is the term index of NearFieldDrift. The other arguments are as for write_drift_row.
+      INTEGER, INTENT(IN) :: unit, body, index, term
+      REAL(8), INTENT(IN) :: oufr, beta1_deg, beta2_deg, refl
+      COMPLEX(8), INTENT(IN) :: value
+      LOGICAL, INTENT(IN) :: moment
+      COMPLEX(8) :: scaled
+
+      scaled = output_value(value, refl, moment)
+      WRITE (unit, '(3ES14.6,3I6,2ES14.6)') oufr, beta1_deg, beta2_deg, body, index, term, REAL(scaled, 8), AIMAG(scaled)
+   END SUBROUTINE write_terms_row
+
+   PURE COMPLEX(8) FUNCTION output_value(value, refl, moment)
+      COMPLEX(8), INTENT(IN) :: value
+      REAL(8), INTENT(IN) :: refl
+      LOGICAL, INTENT(IN) :: moment
+
+      IF (moment) THEN
+         output_value = CONJG(value)/(RHO*G*refl**2)
+      ELSE
+         output_value = CONJG(value)/(RHO*G*refl)
+      END IF
+   END FUNCTION output_value
 
 END MODULE SecondOrderOutput

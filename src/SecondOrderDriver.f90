@@ -43,8 +43,10 @@ MODULE SecondOrderDriver
    USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom
    USE FirstOrderState, ONLY: expand_images, build_state
    USE SurfaceGeometry, ONLY: build_surface_geom, DEFAULT_SHARP_DEG
+   USE SurfaceVelocity, ONLY: velocity_differencing
    USE FarFieldDrift, ONLY: far_amplitude, far_field_pair, far_field_pairs
-   USE SecondOrderOutput, ONLY: write_drift_row
+   USE NearFieldDrift, ONLY: waterline_extrapolate, near_field_pair, T_WATERLINE, T_HYDROSTATIC
+   USE SecondOrderOutput, ONLY: write_drift_row, write_terms_row
    IMPLICIT NONE
    PRIVATE
 
@@ -57,7 +59,9 @@ MODULE SecondOrderDriver
    TYPE(panel_mesh) :: mesh
    TYPE(surface_geom) :: geom
    TYPE(first_order_state), ALLOCATABLE :: states(:)   ! one per heading for mean_drift = 2, otherwise only the current
-   INTEGER :: unit_far = 0, unit_diag = 0              ! 0: not open (NEWUNIT gives negative numbers)
+   COMPLEX(8), ALLOCATABLE :: phi_wl(:,:)              ! (nwl, size(states)), total potential on the waterline segments
+   INTEGER :: unit_far = 0, unit_near = 0, unit_terms = 0, unit_diag = 0   ! 0: not open (NEWUNIT gives negative numbers)
+   INTEGER :: n_velocity_fields = 0, n_fallback_total = 0                  ! over the run, logged by so_finish
 
 CONTAINS
 
@@ -105,16 +109,23 @@ CONTAINS
          ERROR STOP 1
       END IF
 
-      CALL build_surface_geom(mesh, opts%wl_z_tolerance, DEFAULT_SHARP_DEG, geom, ok, msg)
-      IF (.NOT. ok) THEN
-         WRITE (*, *) 'Mean drift: ', msg
-         ERROR STOP 1
-      END IF
-      IF (LEN_TRIM(msg) > 0) WRITE (*, *) 'Mean drift warning: ', msg
-
-      IF (opts%do_near) WRITE (*, *) 'Mean drift warning: the near-field method is not available yet and is skipped.'
-
       ALLOCATE (states(MERGE(NBETA, 1, opts%mean_drift == 2)))
+      ! Only the near-field method uses the surface geometry, so only it can stop on the geometry's errors
+      IF (opts%do_near) THEN
+         CALL build_surface_geom(mesh, opts%wl_z_tolerance, DEFAULT_SHARP_DEG, geom, ok, msg)
+         IF (.NOT. ok) THEN
+            WRITE (*, *) 'Mean drift: ', msg
+            ERROR STOP 1
+         END IF
+         IF (LEN_TRIM(msg) > 0) WRITE (*, *) 'Mean drift warning: ', msg
+         ALLOCATE (phi_wl(geom%nwl, SIZE(states)))
+         OPEN (NEWUNIT=unit_near, FILE=outputdir//'/Wamit_format/MeanDriftPressure.9', STATUS='REPLACE', ACTION='WRITE')
+         IF (opts%write_terms >= 1) THEN
+            OPEN (NEWUNIT=unit_terms, FILE=outputdir//'/Wamit_format/MeanDriftTerms.txt', STATUS='REPLACE', ACTION='WRITE')
+            WRITE (unit_terms, '(a)') '# PER BETA1 BETA2 body I term Re Im, scaled and conjugated as MeanDriftPressure.9'
+            WRITE (unit_terms, '(a)') '# term: 1 waterline, 2 flare, 3 velocity, 4 displacement, 5 rotation, 6 hydrostatic'
+         END IF
+      END IF
       IF (opts%do_far) THEN
          OPEN (NEWUNIT=unit_far, FILE=outputdir//'/Wamit_format/MeanDriftMomentum.8', STATUS='REPLACE', ACTION='WRITE')
       END IF
@@ -181,10 +192,16 @@ CONTAINS
       COMPLEX(8), INTENT(IN) :: mxpot_in(:, :, :), dspl_in(:), exfc_in(:)
       REAL(8), INTENT(IN) :: mass(:, :), added(:, :), damping(:, :), stiffness(:, :)
       COMPLEX(8) :: f(3)
-      INTEGER :: slot
+      INTEGER :: slot, n_fallback
 
       slot = MERGE(ib, 1, opts%mean_drift == 2)
       CALL build_state(mesh, W1, WK, V, H, 1D0, BETA, G, RHO, mxpot_in, dspl_in, opts%motion_fixed, states(slot))
+      IF (opts%do_near) THEN
+         CALL velocity_differencing(mesh, geom, states(slot), n_fallback)
+         n_velocity_fields = n_velocity_fields + 1
+         n_fallback_total = n_fallback_total + n_fallback
+         CALL waterline_extrapolate(mesh, geom, states(slot), phi_wl(:, slot))
+      END IF
 
       IF (opts%write_terms == 2) THEN
          IF (ib == 1) CALL write_wave_and_modes(states(slot), mxpot_in)
@@ -195,6 +212,13 @@ CONTAINS
          CALL far_field_pair(mesh, states(slot), states(slot), opts, f)
          CALL write_far_rows(WVHD(ib), WVHD(ib), f)
       END IF
+      IF (opts%do_near .AND. opts%mean_drift == 1) THEN
+         IF (opts%do_far) THEN
+            CALL near_field_output(slot, slot, WVHD(ib), WVHD(ib), f)
+         ELSE
+            CALL near_field_output(slot, slot, WVHD(ib), WVHD(ib))
+         END IF
+      END IF
    END SUBROUTINE after_motion
 
    SUBROUTINE so_end_frequency(opts, kk)
@@ -204,21 +228,79 @@ CONTAINS
       COMPLEX(8), ALLOCATABLE :: f(:, :, :)
       INTEGER :: i, j
 
-      IF (is_limit_frequency() .OR. opts%mean_drift /= 2 .OR. .NOT. opts%do_far) RETURN
-      ALLOCATE (f(3, NBETA, NBETA))
-      CALL far_field_pairs(mesh, states, opts, f)
-      DO j = 1, NBETA
-         DO i = 1, NBETA
-            CALL write_far_rows(WVHD(i), WVHD(j), f(:, i, j))
+      IF (is_limit_frequency() .OR. opts%mean_drift /= 2) RETURN
+      IF (opts%do_far) THEN
+         ALLOCATE (f(3, NBETA, NBETA))
+         CALL far_field_pairs(mesh, states, opts, f)
+         DO j = 1, NBETA
+            DO i = 1, NBETA
+               CALL write_far_rows(WVHD(i), WVHD(j), f(:, i, j))
+            END DO
          END DO
-      END DO
+      END IF
+      IF (opts%do_near) THEN
+         DO j = 1, NBETA
+            DO i = 1, NBETA
+               IF (opts%do_far .AND. i == j) THEN
+                  CALL near_field_output(i, j, WVHD(i), WVHD(j), f(:, i, j))
+               ELSE
+                  CALL near_field_output(i, j, WVHD(i), WVHD(j))
+               END IF
+            END DO
+         END DO
+      END IF
    END SUBROUTINE so_end_frequency
 
    SUBROUTINE so_finish()
-      ! Closes the result files. Call after the frequency loop.
+      ! Closes the result files and logs what the velocity differencing could not do. Call after the frequency loop.
+      IF (unit_near /= 0) WRITE (*, '(a,I0,a,I0,a)') ' Mean drift velocity fallback: ', n_fallback_total, &
+         ' panel values over ', n_velocity_fields, ' first-order solutions have only the normal part of the velocity'
       IF (unit_far /= 0) CLOSE (unit_far)
+      IF (unit_near /= 0) CLOSE (unit_near)
+      IF (unit_terms /= 0) CLOSE (unit_terms)
       IF (unit_diag /= 0) CLOSE (unit_diag)
    END SUBROUTINE so_finish
+
+   SUBROUTINE near_field_output(i1, i2, beta1_deg, beta2_deg, far)
+      ! Writes the near-field load of the state pair (i1, i2), per body, about XR of each body. With far (F_x, F_y, M_z
+      ! about the origin), also logs the difference from it, which needs M_z about the origin: M_z + (xr x F)_z per body.
+      INTEGER, INTENT(IN) :: i1, i2
+      REAL(8), INTENT(IN) :: beta1_deg, beta2_deg
+      COMPLEX(8), INTENT(IN), OPTIONAL :: far(3)
+      COMPLEX(8) :: terms(6, 6, mesh%nbody), total(6), near(3)
+      INTEGER :: b, i, term
+
+      CALL near_field_pair(mesh, geom, states(i1), states(i2), phi_wl(:, i1), phi_wl(:, i2), terms)
+      near = (0D0, 0D0)
+      DO b = 1, mesh%nbody
+         total = SUM(terms(:, :, b), DIM=2)
+         DO i = 1, 6
+            CALL write_drift_row(unit_near, OUFR, beta1_deg, beta2_deg, 6*(b - 1) + i, total(i), REFL, i > 3)
+            IF (unit_terms == 0) CYCLE
+            DO term = T_WATERLINE, T_HYDROSTATIC
+               CALL write_terms_row(unit_terms, OUFR, beta1_deg, beta2_deg, b, i, term, terms(i, term, b), REFL, i > 3)
+            END DO
+         END DO
+         near(1:2) = near(1:2) + total(1:2)
+         near(3) = near(3) + total(6) + mesh%xr(1, b)*total(2) - mesh%xr(2, b)*total(1)
+      END DO
+      IF (PRESENT(far)) THEN
+         CALL log_near_far('F_x', beta1_deg, far(1), near(1))
+         CALL log_near_far('F_y', beta1_deg, far(2), near(2))
+         CALL log_near_far('M_z', beta1_deg, far(3), near(3))
+      END IF
+   END SUBROUTINE near_field_output
+
+   SUBROUTINE log_near_far(label, beta_deg, far, near)
+      ! The relative difference has no meaning for a load that is zero by symmetry, so the values are logged with it.
+      CHARACTER(LEN=*), INTENT(IN) :: label
+      REAL(8), INTENT(IN) :: beta_deg
+      COMPLEX(8), INTENT(IN) :: far, near
+
+      WRITE (*, '(a,a,a,F10.5,a,F8.3,a,ES12.4,a,ES12.4,a,ES10.3)') ' Mean drift near vs far ', label, ': omega', W1, &
+         ' beta', beta_deg, ' far', REAL(far, 8), ' near', REAL(near, 8), ' relative difference', &
+         ABS(far - near)/MAX(ABS(far), TINY(1D0))
+   END SUBROUTINE log_near_far
 
    SUBROUTINE write_far_rows(beta1_deg, beta2_deg, f)
       ! f = (F_x, F_y, M_z), written as I = 1, 2, 6
