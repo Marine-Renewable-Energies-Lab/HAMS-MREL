@@ -114,7 +114,7 @@ CONTAINS
       IMPLICIT NONE
 
       INTEGER  IEL,JEL,IS,IP,IRR,FLAG
-      REAL*8   XQ,YQ,ZQ,XP,YP,ZP,SIJ,DIJ(3),DIST
+      REAL*8   XQ,YQ,ZQ,XP,YP,ZP,SIJ,DIJ(3),DIST,XFV(3),XQV(3)
       COMPLEX*16  GRN(4),DPOX,DPOY,DPOZ
 
       ! The per-body→COMB packing previously inlined here is now done once in BuildCombinedArrays
@@ -122,7 +122,7 @@ CONTAINS
       IRR=1
 
 !$OMP PARALLEL NUM_THREADS(NTHREAD)                                                                        ! This is the syntax for parallelization
-!$OMP DO PRIVATE(IEL,JEL,IS,XQ,XP,YQ,YP,ZQ,ZP,SIJ,DIJ,GRN,FLAG,DIST) SCHEDULE(DYNAMIC,16)
+!$OMP DO PRIVATE(IEL,JEL,IS,XQ,XP,YQ,YP,ZQ,ZP,SIJ,DIJ,GRN,FLAG,DIST,XFV,XQV) SCHEDULE(DYNAMIC,16)
 
       DO IEL=1, TNELEM
 
@@ -167,6 +167,16 @@ CONTAINS
           CALL FINGREEN3D(XQ,XP,YQ,YP,ZQ,ZP,V,WVN,NK,H,GRN,FLAG)
          ENDIF
 
+         IF (FLAG.EQ.1) THEN
+          XFV(1)=XP
+          XFV(2)=YP
+          XFV(3)=ZP
+          XQV(1)=XQ
+          XQV(2)=YQ
+          XQV(3)=ZQ
+          CALL IMAGE_TERM_EXACT_MULTI(XFV,XQV,V,JEL,1,GRN,SIJ,DIJ)
+         ENDIF
+
          RKBN_MULTI_COMB(IEL,JEL,IS,1)=SIJ
          RKBN_MULTI_COMB(IEL,JEL,IS,2)=DIJ(1)
          RKBN_MULTI_COMB(IEL,JEL,IS,3)=DIJ(2)
@@ -191,14 +201,14 @@ CONTAINS
       IMPLICIT NONE
 
       INTEGER  IEL,JEL,IS,IP,IRR,FLAG
-      REAL*8   XQ,YQ,ZQ,XP,YP,ZP,SIJ,DIJ(3),DIST
+      REAL*8   XQ,YQ,ZQ,XP,YP,ZP,SIJ,DIJ(3),DIST,XFV(3),XQV(3)
       COMPLEX*16  GRN(4),DPOX,DPOY,DPOZ
 
       ! The per-body→COMB packing previously inlined here is now done once in BuildCombinedArrays
       ! at startup (Phase 2.3) — those copies are frequency-independent.
       IRR=1
 !$OMP PARALLEL NUM_THREADS(NTHREAD)                                                                        ! This is the syntax for parallelization
-!$OMP DO PRIVATE(IEL,JEL,IS,XQ,XP,YQ,YP,ZQ,ZP,SIJ,DIJ,GRN,FLAG,DIST) SCHEDULE(DYNAMIC,16)
+!$OMP DO PRIVATE(IEL,JEL,IS,XQ,XP,YQ,YP,ZQ,ZP,SIJ,DIJ,GRN,FLAG,DIST,XFV,XQV) SCHEDULE(DYNAMIC,16)
 
       DO IEL=1, NELEM_TOTAL
 
@@ -243,6 +253,16 @@ CONTAINS
           CALL FINGREEN3D(XQ,XP,YQ,YP,ZQ,ZP,V,WVN,NK,H,GRN,FLAG)
          ENDIF
 
+         IF (FLAG.EQ.1) THEN
+          XFV(1)=XP
+          XFV(2)=YP
+          XFV(3)=ZP
+          XQV(1)=XQ
+          XQV(2)=YQ
+          XQV(3)=ZQ
+          CALL IMAGE_TERM_EXACT_MULTI(XFV,XQV,V,JEL,IRR,GRN,SIJ,DIJ)
+         ENDIF
+
          RKBN_MULTI_COMB(IEL,JEL,IS,1)=SIJ
          RKBN_MULTI_COMB(IEL,JEL,IS,2)=DIJ(1)
          RKBN_MULTI_COMB(IEL,JEL,IS,3)=DIJ(2)
@@ -258,7 +278,7 @@ CONTAINS
 
       IRR=3
 
-!$OMP PARALLEL DO PRIVATE(IEL,JEL,IS,XQ,XP,YQ,YP,ZQ,ZP,SIJ,DIJ,GRN,FLAG,DIST) SCHEDULE(DYNAMIC,16)
+!$OMP PARALLEL DO PRIVATE(IEL,JEL,IS,XQ,XP,YQ,YP,ZQ,ZP,SIJ,DIJ,GRN,FLAG,DIST,XFV,XQV) SCHEDULE(DYNAMIC,16)
 
       DO IEL=1, iNELEM_TOTAL
           
@@ -301,6 +321,16 @@ CONTAINS
            CALL INFGREEN3D(XQ,XP,YQ,YP,ZQ,ZP,V,GRN,FLAG)
          ELSE
           CALL FINGREEN3D(XQ,XP,YQ,YP,ZQ,ZP,V,WVN,NK,H,GRN,FLAG)
+         ENDIF
+
+         IF (FLAG.EQ.1) THEN
+          XFV(1)=XP
+          XFV(2)=YP
+          XFV(3)=ZP
+          XQV(1)=XQ
+          XQV(2)=YQ
+          XQV(3)=ZQ
+          CALL IMAGE_TERM_EXACT_MULTI(XFV,XQV,V,JEL,IRR,GRN,SIJ,DIJ)
          ENDIF
 
          PKBN_MULTI_COMB(IEL,JEL,IS,1)=SIJ

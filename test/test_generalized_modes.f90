@@ -552,7 +552,9 @@ contains
     NTND = NN
     INELEM = NE
     XR = [0.1d0, -0.2d0, -1d0]
-    if (.not. allocated(XYZ)) then
+    if (.not. allocated(XYZ_P)) then
+      ! test_image_term leaves its one-panel mesh in these
+      if (allocated(XYZ)) deallocate(XYZ, NCN, NCON, PNSZ)
       allocate(XYZ(NN,3), DS(NE), PNSZ(NE), NCN(NE), NCON(NE,4), XYZ_P(NE,3), DXYZ_P(NE,6), GEONRM_P(NE,3), iDXYZ_P(NE,6))
       allocate(CGRN(NE,NE,1,4), RKBN(NE,NE,1,4), DGRN(NE,NE,1,4), PKBN(NE,NE,1,4), MXPOT(NE,7,1))
     end if
@@ -594,6 +596,7 @@ contains
     TNTND = 2*NN
     NELEM_PE = 2*NE
     if (.not. allocated(XYZ_GLOBAL_MULTI)) then
+      if (allocated(XYZ_GLOBAL_MULTI_COMB)) deallocate(XYZ_GLOBAL_MULTI_COMB, NCN_MULTI_COMB, NCON_MULTI_COMB, PNSZ_MULTI_COMB)
       allocate(NELEM_MULTI(2), NTND_MULTI(2), XR_MULTI(2,3))
       allocate(XYZ_GLOBAL_MULTI(2,NN,3), DS_MULTI(2,NE), PNSZ_MULTI(2,NE), NCN_MULTI(2,NE), NCON_MULTI(2,NE,4))
       allocate(XYZ_MULTI_P(2,NE,3), DXYZ_MULTI_P(2,NE,6), GEONRM_MULTI_P(2,NE,3))
