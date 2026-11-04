@@ -11,6 +11,7 @@ program unit_tester
     use test_infgreen3d, only : collect_infgreen3d
     use test_iterative_solvers, only : collect_iterative_solvers
     use test_create_directory, only : collect_create_directory
+    use test_generalized_modes, only : collect_generalized_modes
 
     implicit none
     integer :: stat, is
@@ -28,16 +29,17 @@ program unit_tester
         new_testsuite("fingreen3d", collect_fingreen3d), &
         new_testsuite("infgreen3d", collect_infgreen3d), &
         new_testsuite("iterative_solvers", collect_iterative_solvers), &
-        new_testsuite("create_directory", collect_create_directory) &
+        new_testsuite("create_directory", collect_create_directory), &
+        new_testsuite("generalized_modes", collect_generalized_modes) &
     ]
 
     stat = 0
 
     do is = 1, size(testsuites)
         write(error_unit, fmt) "Testing:", testsuites(is)%name
-        ! The solver tests share module state (HMAT_READY, the preconditioner), so they can't run in parallel.
+        ! These suites share module state (HMAT_READY, the preconditioner, the mesh arrays), so they can't run in parallel.
         call run_testsuite(testsuites(is)%collect, error_unit, stat, &
-                           parallel=(testsuites(is)%name /= "iterative_solvers"))
+                           parallel=(testsuites(is)%name /= "iterative_solvers" .and. testsuites(is)%name /= "generalized_modes"))
     end do
 
     if (stat > 0) then
