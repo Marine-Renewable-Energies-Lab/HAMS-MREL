@@ -13,7 +13,7 @@ module test_integration_gen_modes
     private
     public :: setup_gen_modes, collect_tests_gen_modes
 
-    integer, parameter :: NFREQ = 2, NHEAD = 12
+    integer, parameter :: NFREQ = 2, NHEAD = 12, NFIELD = 2
     real(8), parameter :: W_MIN = 0.8d0, W_STEP = 0.3d0, HEAD_STEP = 30d0
     real(8), parameter :: GRAV = 9.80665d0, PI = 3.141592653589793d0
     real(8), parameter :: DEPTH_MULTI = 30d0
@@ -179,6 +179,11 @@ contains
                 end do
             end do
         end do
+        ! An empty comparison would pass, so the rows must all have been read.
+        call check_field_rows(results(ic), cases(ic), name, error)
+        if (allocated(error)) return
+        call check_field_rows(results(ir), cases(ir), ref_name, error)
+        if (allocated(error)) return
         worst_fp = field_point_difference(results(ic), results(ir), cases(ic))
 
         write(info, '(a,4(a,es9.2))') trim(name), ': largest change against no mode, A', worst_a, ', B', worst_b, &
@@ -186,6 +191,16 @@ contains
         print '(a)', ' gen_modes '//trim(info)
         call check(error, max(worst_a, worst_b, worst_x, worst_fp) <= tol, "Modes other than the generalized one changed. "//trim(info))
     end subroutine compare_with_no_mode
+
+    subroutine check_field_rows(run, c, name, error)
+        type(run_result), intent(in) :: run
+        type(run_case), intent(in) :: c
+        character(len=*), intent(in) :: name
+        type(error_type), allocatable, intent(out) :: error
+        call check(error, size(run%rad, 1) == NFREQ*NFIELD*c%nbody, trim(name)//": wrong number of radiation field-point rows read")
+        if (allocated(error)) return
+        call check(error, size(run%dif, 1) == NFREQ*NHEAD*NFIELD, trim(name)//": wrong number of diffraction field-point rows read")
+    end subroutine check_field_rows
 
     !> Each row's values against the run with no mode, leaving out the mode's own pair in the radiation rows.
     function field_point_difference(run, ref, c) result(worst)
@@ -205,7 +220,7 @@ contains
         end do
         scale = maxval(abs(ref%dif))
         do r = 1, size(ref%dif, 1)
-            do col = 1, 3
+            do col = 1, 2
                 worst = max(worst, rel_diff(run%dif(r,col), ref%dif(r,col), scale))
             end do
         end do
@@ -375,9 +390,10 @@ contains
         end do
         close(unit)
 
-        ! Rows of 14 numbers open a radiation block (w, point, body 1), rows of 12 are the other bodies' values, and rows of 7
-        ! are diffraction (w, heading, point, modulus, phase, real, imaginary). The phase is left out, as it is noisy near zero.
-        allocate(rad(4000,13), dif(4000,3))
+        ! Rows of 14 numbers open a radiation block (w, point, body 1) and rows of 12 are the other bodies' values. Diffraction
+        ! rows are (w, heading, point, modulus, phase, real, imaginary) for one body, and (w, heading, point, real, imaginary)
+        ! for several bodies. Only the real and imaginary parts are compared.
+        allocate(rad(4000,13), dif(4000,2))
         nrow_r = 0
         nrow_d = 0
         count = 0
@@ -399,7 +415,10 @@ contains
                 rad(nrow_r,2:13) = row(1:12)
             else if (ipos == 7) then
                 nrow_d = nrow_d + 1
-                dif(nrow_d,:) = [row(4), row(6), row(7)]
+                dif(nrow_d,:) = [row(6), row(7)]
+            else if (ipos == 5) then
+                nrow_d = nrow_d + 1
+                dif(nrow_d,:) = [row(4), row(5)]
             end if
         end do
         close(unit)
@@ -494,7 +513,7 @@ contains
         if (c%solver == 2) write(u, '(a,i0)') '    Solver_type              ', c%solver
         write(u, '(a)') ''
         write(u, '(a)') '   #Start Definition of Pressure and/or Elevation (PE)'
-        write(u, '(a27,i16)') '    Number_of_field_points', 2
+        write(u, '(a27,i16)') '    Number_of_field_points', NFIELD
         ! A point in the fluid, and the centroid of a side panel of body 1 for the on-body test.
         write(u, '(3f12.5)') HX + 6d0, 1d0, -1d0
         write(u, '(3f12.5)') HX, HY/PY*(1d0 - PY), -DRAFT/PZ/2d0
