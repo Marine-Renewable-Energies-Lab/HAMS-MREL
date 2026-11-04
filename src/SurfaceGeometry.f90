@@ -523,54 +523,77 @@ CONTAINS
 
    END SUBROUTINE build_neighbours
 
-   REAL(8) FUNCTION lid_rim_side_ratio(xyz, ncn, ncon) RESULT(ratio)
-      ! Smallest ratio of the shortest to the longest side, over the panels of a waterplane mesh that have an edge on no
-      ! other panel, which are the panels of its rim. 1 for no panels. Arrays in the layout of the HAMS globals: xyz(node,3),
-      ! ncn(panel), ncon(panel,4). The panels inside are left out: fans at the centre of a disc are thin on any mesh.
+   REAL(8) FUNCTION lid_rim_side_ratio(xyz, ncn, ncon, isx, isy) RESULT(ratio)
+      ! How thin the panels of a waterplane mesh are across its rim: the smallest ratio, capped at 1, of the side running away
+      ! from the rim, the shortest next to a rim side, to the longest rim side, over the panels with a rim side. 1 for no
+      ! panels. A rim side belongs to no other panel and is not on a symmetry plane in use, x = 0 with isx = 1 or y = 0 with
+      ! isy = 1.
+      ! Arrays in the layout of the HAMS globals: xyz(node,3), ncn(panel), ncon(panel,4). Panels without a side on the rim are
+      ! left out, since fans at the centre of a disc are thin on any mesh. Panels narrow along the rim do not lower the ratio:
+      ! they are harmless, as the README of test/data/drift_cyl shows.
       REAL(8), INTENT(IN) :: xyz(:,:)
-      INTEGER, INTENT(IN) :: ncn(:), ncon(:,:)
+      INTEGER, INTENT(IN) :: ncn(:), ncon(:,:), isx, isy
       REAL(8), ALLOCATABLE :: key(:)
-      INTEGER, ALLOCATABLE :: ord(:), panel(:)
-      LOGICAL, ALLOCATABLE :: rim(:)
-      REAL(8) :: side, shortest, longest
-      INTEGER :: i, m, a, b, e, ne
+      INTEGER, ALLOCATABLE :: ord(:)
+      LOGICAL, ALLOCATABLE :: on_rim(:)
+      REAL(8) :: side, across, along, tol, length(4)
+      LOGICAL :: rim_side(4)
+      INTEGER :: i, m, a, b, e, ne, k, next, prev
 
       ratio = 1D0
       ne = SUM(ncn)
       IF (ne == 0) RETURN
-      ALLOCATE (key(ne), panel(ne), rim(SIZE(ncn)))
-      rim = .FALSE.
+      ALLOCATE (key(ne), on_rim(ne))
+      tol = 1D-6*MAXVAL(ABS(xyz))
       e = 0
       DO i = 1, SIZE(ncn)
          DO m = 1, ncn(i)
             a = ncon(i, m)
             b = ncon(i, MOD(m, ncn(i)) + 1)
             e = e + 1
-            panel(e) = i
-            key(e) = REAL(MIN(a, b), 8)*REAL(SIZE(xyz, 1) + 1, 8) + REAL(MAX(a, b), 8)
+            IF (a == b) THEN
+               key(e) = -1D0   ! a triangle written as a quadrilateral
+            ELSE
+               key(e) = REAL(MIN(a, b), 8)*REAL(SIZE(xyz, 1) + 1, 8) + REAL(MAX(a, b), 8)
+            END IF
+            IF (isx == 1 .AND. ABS(xyz(a, 1)) <= tol .AND. ABS(xyz(b, 1)) <= tol) key(e) = -1D0
+            IF (isy == 1 .AND. ABS(xyz(a, 2)) <= tol .AND. ABS(xyz(b, 2)) <= tol) key(e) = -1D0
          END DO
       END DO
       CALL sort_index(key, ord)
+      on_rim = .FALSE.
       DO e = 1, ne
+         IF (key(ord(e)) < 0D0) CYCLE
          IF (e > 1) THEN
             IF (key(ord(e - 1)) == key(ord(e))) CYCLE
          END IF
          IF (e < ne) THEN
             IF (key(ord(e + 1)) == key(ord(e))) CYCLE
          END IF
-         rim(panel(ord(e))) = .TRUE.
+         on_rim(ord(e)) = .TRUE.
       END DO
+      e = 0
       DO i = 1, SIZE(ncn)
-         IF (.NOT. rim(i)) CYCLE
-         shortest = HUGE(1D0)
-         longest = 0D0
+         k = 0
          DO m = 1, ncn(i)
+            e = e + 1
             side = SQRT(SUM((xyz(ncon(i, m), :) - xyz(ncon(i, MOD(m, ncn(i)) + 1), :))**2))
             IF (side <= 0D0) CYCLE   ! a triangle written as a quadrilateral
-            shortest = MIN(shortest, side)
-            longest = MAX(longest, side)
+            k = k + 1
+            length(k) = side
+            rim_side(k) = on_rim(e)
          END DO
-         IF (longest > 0D0) ratio = MIN(ratio, shortest/longest)
+         across = HUGE(1D0)
+         along = 0D0
+         DO m = 1, k
+            IF (.NOT. rim_side(m)) CYCLE
+            along = MAX(along, length(m))
+            next = MOD(m, k) + 1
+            prev = MOD(m + k - 2, k) + 1
+            IF (.NOT. rim_side(next)) across = MIN(across, length(next))
+            IF (.NOT. rim_side(prev)) across = MIN(across, length(prev))
+         END DO
+         IF (along > 0D0) ratio = MIN(ratio, across/along)
       END DO
    END FUNCTION lid_rim_side_ratio
 
