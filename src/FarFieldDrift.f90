@@ -30,7 +30,7 @@ MODULE FarFieldDrift
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: far_amplitude, group_ratio, far_field_pair
+   PUBLIC :: far_amplitude, group_ratio, far_field_pair, far_field_pairs
 
    REAL(8), PARAMETER :: PI = 3.141592653589793D0
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
@@ -104,38 +104,84 @@ CONTAINS
 
    SUBROUTINE far_field_pair(mesh, s1, s2, opts, f)
       ! Mean load F_12 = (F_x, F_y, M_z) from two states of the same frequency, per unit amplitude pair, with M_z about
-      ! the global origin. For s1 = s2 this is the mean drift of one heading. The azimuth integrals use the trapezoid
-      ! rule, doubling the number of points from opts%n_azimuth until the change is below opts%far_tolerance
-      ! (absolute after scaling by rho g, or relative) or 2^14 points are reached. a(theta) is evaluated once per point.
+      ! the global origin. For s1 = s2 this is the mean drift of one heading. See pair_core for the integration.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(first_order_state), INTENT(IN) :: s1, s2
       TYPE(so_options), INTENT(IN) :: opts
       COMPLEX(8), INTENT(OUT) :: f(3)
-      COMPLEX(8), ALLOCATABLE :: a1(:), da1(:), a2(:), da2(:), t1(:), dt1(:), t2(:), dt2(:)
-      COMPLEX(8) :: pt(3), iv(3), fold(3), ep, a1b2, da1b2, a2b1, da2b1
-      REAL(8) :: kappa, sq, k, scale
-      INTEGER :: n, j
+      COMPLEX(8) :: fp(3, 1)
 
-      k = s1%k
-      kappa = 0.5D0*s1%rho*s1%g*group_ratio(k, s1%h)
+      CALL pair_core(mesh, [s1, s2], [1], [2], opts, fp)
+      f = fp(:, 1)
+   END SUBROUTINE far_field_pair
+
+   SUBROUTINE far_field_pairs(mesh, states, opts, f)
+      ! Mean loads of all pairs of states (one per heading, same frequency): f(:, i, j) = F_ij. Each state's a(theta)
+      ! grid is built once and shared by all pairs, and the grids are refined together until every pair converges.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(first_order_state), INTENT(IN) :: states(:)
+      TYPE(so_options), INTENT(IN) :: opts
+      COMPLEX(8), INTENT(OUT) :: f(3, SIZE(states), SIZE(states))
+      INTEGER :: ns, i, j, p
+      INTEGER, ALLOCATABLE :: ip(:), jp(:)
+      COMPLEX(8), ALLOCATABLE :: fp(:, :)
+
+      ns = SIZE(states)
+      ALLOCATE (ip(ns*ns), jp(ns*ns), fp(3, ns*ns))
+      p = 0
+      DO j = 1, ns
+         DO i = 1, ns
+            p = p + 1
+            ip(p) = i
+            jp(p) = j
+         END DO
+      END DO
+      CALL pair_core(mesh, states, ip, jp, opts, fp)
+      f = RESHAPE(fp, [3, ns, ns])
+   END SUBROUTINE far_field_pairs
+
+   SUBROUTINE pair_core(mesh, states, ip, jp, opts, f)
+      ! Loads f(:, p) = F_{ip(p), jp(p)} for a list of pairs of states. The azimuth integrals use the trapezoid rule,
+      ! doubling the number of points from opts%n_azimuth until, for every pair, the change is below
+      ! opts%far_tolerance (absolute after scaling by rho g, or relative), or 2^14 points are reached. a(theta) and
+      ! da/dtheta are evaluated once per state and point.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(first_order_state), INTENT(IN) :: states(:)
+      INTEGER, INTENT(IN) :: ip(:), jp(:)
+      TYPE(so_options), INTENT(IN) :: opts
+      COMPLEX(8), INTENT(OUT) :: f(:, :)
+      COMPLEX(8), ALLOCATABLE :: a(:, :), da(:, :), t(:, :), dt(:, :), pt(:, :), fold(:, :), iv(:, :)
+      COMPLEX(8) :: ep, a1b2, da1b2, a2b1, da2b1
+      REAL(8) :: kappa, sq, k, scale
+      INTEGER :: n, j, m, p, np, ns
+
+      ns = SIZE(states)
+      np = SIZE(ip)
+      k = states(1)%k
+      kappa = 0.5D0*states(1)%rho*states(1)%g*group_ratio(k, states(1)%h)
       sq = SQRT(2D0*PI/k)
       ep = EXP(CI*PI/4D0)
+      scale = states(1)%rho*states(1)%g
 
       ! Terms evaluated at the incident headings
-      CALL far_amplitude(mesh, s2, s1%beta, a2b1, da2b1)
-      CALL far_amplitude(mesh, s1, s2%beta, a1b2, da1b2)
-      pt(1:2) = -sq*([COS(s1%beta), SIN(s1%beta)]*CONJG(a2b1*ep) + [COS(s2%beta), SIN(s2%beta)]*a1b2*ep)
-      pt(3) = sq*(CI*CONJG(da2b1*ep) - CI*da1b2*ep)
+      ALLOCATE (pt(3, np), fold(3, np), iv(3, np))
+      DO p = 1, np
+         CALL far_amplitude(mesh, states(jp(p)), states(ip(p))%beta, a2b1, da2b1)
+         CALL far_amplitude(mesh, states(ip(p)), states(jp(p))%beta, a1b2, da1b2)
+         pt(1:2, p) = -sq*([COS(states(ip(p))%beta), SIN(states(ip(p))%beta)]*CONJG(a2b1*ep) &
+                           + [COS(states(jp(p))%beta), SIN(states(jp(p))%beta)]*a1b2*ep)
+         pt(3, p) = sq*(CI*CONJG(da2b1*ep) - CI*da1b2*ep)
+      END DO
 
       n = MAX(opts%n_azimuth, 4)
-      ALLOCATE (a1(n), da1(n), a2(n), da2(n))
-      DO j = 1, n
-         CALL far_amplitude(mesh, s1, 2D0*PI*REAL(j - 1, 8)/REAL(n, 8), a1(j), da1(j))
-         CALL far_amplitude(mesh, s2, 2D0*PI*REAL(j - 1, 8)/REAL(n, 8), a2(j), da2(j))
+      ALLOCATE (a(n, ns), da(n, ns))
+      DO m = 1, ns
+         DO j = 1, n
+            CALL far_amplitude(mesh, states(m), 2D0*PI*REAL(j - 1, 8)/REAL(n, 8), a(j, m), da(j, m))
+         END DO
       END DO
-      iv = azimuth_integrals(a1, da1, a2, da2)
-      f = assemble(iv)
-      scale = s1%rho*s1%g
+      CALL integrate()
+      f = assemble()
 
       DO
          IF (2*n > MAX_AZIMUTH) THEN
@@ -143,54 +189,54 @@ CONTAINS
             EXIT
          END IF
          ! Double the grid: old points sit at the odd positions, only the even ones are new
-         ALLOCATE (t1(2*n), dt1(2*n), t2(2*n), dt2(2*n))
-         DO j = 1, n
-            t1(2*j - 1) = a1(j)
-            dt1(2*j - 1) = da1(j)
-            t2(2*j - 1) = a2(j)
-            dt2(2*j - 1) = da2(j)
-            CALL far_amplitude(mesh, s1, 2D0*PI*REAL(2*j - 1, 8)/REAL(2*n, 8), t1(2*j), dt1(2*j))
-            CALL far_amplitude(mesh, s2, 2D0*PI*REAL(2*j - 1, 8)/REAL(2*n, 8), t2(2*j), dt2(2*j))
+         ALLOCATE (t(2*n, ns), dt(2*n, ns))
+         DO m = 1, ns
+            DO j = 1, n
+               t(2*j - 1, m) = a(j, m)
+               dt(2*j - 1, m) = da(j, m)
+               CALL far_amplitude(mesh, states(m), 2D0*PI*REAL(2*j - 1, 8)/REAL(2*n, 8), t(2*j, m), dt(2*j, m))
+            END DO
          END DO
-         CALL MOVE_ALLOC(t1, a1)
-         CALL MOVE_ALLOC(dt1, da1)
-         CALL MOVE_ALLOC(t2, a2)
-         CALL MOVE_ALLOC(dt2, da2)
+         CALL MOVE_ALLOC(t, a)
+         CALL MOVE_ALLOC(dt, da)
          n = 2*n
          fold = f
-         iv = azimuth_integrals(a1, da1, a2, da2)
-         f = assemble(iv)
+         CALL integrate()
+         f = assemble()
          IF (ALL(ABS(f - fold) <= opts%far_tolerance*MAX(scale, ABS(f)))) EXIT
       END DO
 
    CONTAINS
 
-      PURE FUNCTION azimuth_integrals(x1, dx1, x2, dx2) RESULT(r)
-         ! Trapezoid rule on [0, 2pi): int x1 x2* e_theta and int (x2* dx1 - x1 dx2*)/(2i)
-         COMPLEX(8), INTENT(IN) :: x1(:), dx1(:), x2(:), dx2(:)
-         COMPLEX(8) :: r(3)
-         INTEGER :: m, jj
+      SUBROUTINE integrate()
+         ! Trapezoid rule on [0, 2pi): int a_i a_j* e_theta and int (a_j* da_i - a_i da_j*)/(2i), for every pair
+         INTEGER :: pp, jj
          REAL(8) :: th
+         COMPLEX(8) :: x1, x2, dx1, dx2
 
-         m = SIZE(x1)
-         r = (0D0, 0D0)
-         DO jj = 1, m
-            th = 2D0*PI*REAL(jj - 1, 8)/REAL(m, 8)
-            r(1) = r(1) + x1(jj)*CONJG(x2(jj))*COS(th)
-            r(2) = r(2) + x1(jj)*CONJG(x2(jj))*SIN(th)
-            r(3) = r(3) + (CONJG(x2(jj))*dx1(jj) - x1(jj)*CONJG(dx2(jj)))/(2D0*CI)
+         iv = (0D0, 0D0)
+         DO pp = 1, np
+            DO jj = 1, n
+               th = 2D0*PI*REAL(jj - 1, 8)/REAL(n, 8)
+               x1 = a(jj, ip(pp))
+               dx1 = da(jj, ip(pp))
+               x2 = a(jj, jp(pp))
+               dx2 = da(jj, jp(pp))
+               iv(1, pp) = iv(1, pp) + x1*CONJG(x2)*COS(th)
+               iv(2, pp) = iv(2, pp) + x1*CONJG(x2)*SIN(th)
+               iv(3, pp) = iv(3, pp) + (CONJG(x2)*dx1 - x1*CONJG(dx2))/(2D0*CI)
+            END DO
          END DO
-         r = r*(2D0*PI/REAL(m, 8))
-      END FUNCTION azimuth_integrals
+         iv = iv*(2D0*PI/REAL(n, 8))
+      END SUBROUTINE integrate
 
-      PURE FUNCTION assemble(ints) RESULT(r)
-         COMPLEX(8), INTENT(IN) :: ints(3)
-         COMPLEX(8) :: r(3)
+      FUNCTION assemble() RESULT(r)
+         COMPLEX(8) :: r(3, np)
 
-         r(1:2) = kappa*(pt(1:2) - ints(1:2))
-         r(3) = -(kappa/k)*(ints(3) + pt(3))
+         r(1:2, :) = kappa*(pt(1:2, :) - iv(1:2, :))
+         r(3, :) = -(kappa/k)*(iv(3, :) + pt(3, :))
       END FUNCTION assemble
 
-   END SUBROUTINE far_field_pair
+   END SUBROUTINE pair_core
 
 END MODULE FarFieldDrift

@@ -2,7 +2,7 @@
 module test_far_field
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use SecondOrderTypes, only : panel_mesh, first_order_state, so_options
-  use FarFieldDrift, only : far_amplitude, group_ratio, far_field_pair
+  use FarFieldDrift, only : far_amplitude, group_ratio, far_field_pair, far_field_pairs
   use second_order_fixtures, only : make_cylinder, maccamy_fuchs_a, maccamy_fuchs_state
   implicit none
   private
@@ -28,7 +28,8 @@ subroutine collect_far_field(testsuite)
     new_unittest("conjugate_symmetry", test_conjugate_symmetry), &
     new_unittest("diagonal_consistent", test_diagonal_consistent), &
     new_unittest("reference_shift", test_reference_shift), &
-    new_unittest("group_ratio_limits", test_group_ratio_limits) &
+    new_unittest("group_ratio_limits", test_group_ratio_limits), &
+    new_unittest("pairs_match_pair", test_pairs_match_pair) &
     ]
 end subroutine collect_far_field
 
@@ -253,32 +254,71 @@ end subroutine test_diagonal_consistent
 subroutine test_reference_shift(error)
   type(error_type), allocatable, intent(out) :: error
   type(panel_mesh) :: mesh, moved
-  type(first_order_state) :: s, sm
+  type(first_order_state) :: s1, s2, sm1, sm2
   type(so_options) :: opts
-  complex(8) :: f(3), fm(3)
-  real(8) :: k, d(3), beta, dxf
-  complex(8) :: phase
+  complex(8) :: f(3), fm(3), ph1, ph2, phi
+  real(8) :: k, d(3), b1, b2, dxf
 
-  beta = 0d0
-  call setup_cylinder(mesh, k, beta, s)
+  b1 = 0d0
+  b2 = 0.7d0
+  call setup_cylinder(mesh, k, b1, s1)
+  call maccamy_fuchs_state(mesh, radius, depth, k, omega, 1d0, b2, g, rho, s2)
   d = [3d0, 4d0, 0d0]
   moved = mesh
   moved%xnode = moved%xnode + spread(d, 2, moved%nnode)
   moved%xc = moved%xc + spread(d, 2, moved%n)
-  ! The load is unchanged and the moment about the global origin gains d x F (the body's load acts at its new place).
   ! The same physical wave reaches the moved body later by the phase e^{ik d.e_beta}
-  phase = exp(cmplx(0d0, k * (d(1) * cos(beta) + d(2) * sin(beta)), kind=8))
-  sm = s
-  sm%phi_p = s%phi_p * phase
-  sm%dphi_p_dn = s%dphi_p_dn * phase
-  call far_field_pair(mesh, s, s, opts, f)
-  call far_field_pair(moved, sm, sm, opts, fm)
+  ph1 = exp(cmplx(0d0, k * (d(1) * cos(b1) + d(2) * sin(b1)), kind=8))
+  ph2 = exp(cmplx(0d0, k * (d(1) * cos(b2) + d(2) * sin(b2)), kind=8))
+  sm1 = s1
+  sm1%phi_p = s1%phi_p * ph1
+  sm1%dphi_p_dn = s1%dphi_p_dn * ph1
+  sm2 = s2
+  sm2%phi_p = s2%phi_p * ph2
+  sm2%dphi_p_dn = s2%dphi_p_dn * ph2
+
+  ! Diagonal: the load is unchanged and the moment about the global origin gains d x F (the load acts at the new place)
+  call far_field_pair(mesh, s1, s1, opts, f)
+  call far_field_pair(moved, sm1, sm1, opts, fm)
   dxf = d(1) * real(f(2)) - d(2) * real(f(1))   ! (d x F)_z
   call check(error, maxval(abs(fm(1:2) - f(1:2))) <= 1d-6 * abs(f(1)), "force changed under a shift of the body")
   if (allocated(error)) return
   call check(error, abs(real(fm(3)) - (real(f(3)) + dxf)) <= 1d-6 * abs(f(1)) * norm2(d), &
              "yaw moment did not change by (d x F)_z under a shift of the body")
+  if (allocated(error)) return
+
+  ! Off-diagonal: F12' = Phi F12 and M12' = Phi (M12 + (d x F12)_z), Phi = e^{ik d.(e_b1 - e_b2)}
+  phi = ph1 / ph2
+  call far_field_pair(mesh, s1, s2, opts, f)
+  call far_field_pair(moved, sm1, sm2, opts, fm)
+  call check(error, maxval(abs(fm(1:2) - phi * f(1:2))) <= 1d-6 * maxval(abs(f(1:2))), &
+             "off-diagonal force is not multiplied by the phase under a shift of the body")
+  if (allocated(error)) return
+  call check(error, abs(fm(3) - phi * (f(3) + (d(1) * f(2) - d(2) * f(1)))) <= 1d-6 * maxval(abs(f(1:2))) * norm2(d), &
+             "off-diagonal yaw moment is not phase times (M + d x F)_z under a shift of the body")
 end subroutine test_reference_shift
+
+subroutine test_pairs_match_pair(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: states(2)
+  type(so_options) :: opts
+  complex(8) :: fall(3, 2, 2), f(3)
+  real(8) :: k
+  integer :: i, j
+
+  call setup_cylinder(mesh, k, 0d0, states(1))
+  call maccamy_fuchs_state(mesh, radius, depth, k, omega, 1d0, 0.7d0, g, rho, states(2))
+  call far_field_pairs(mesh, states, opts, fall)
+  do j = 1, 2
+    do i = 1, 2
+      call far_field_pair(mesh, states(i), states(j), opts, f)
+      call check(error, maxval(abs(fall(:, i, j) - f)) <= 1d-10 * maxval(abs(f)), &
+                 "far_field_pairs differs from far_field_pair")
+      if (allocated(error)) return
+    end do
+  end do
+end subroutine test_pairs_match_pair
 
 subroutine test_group_ratio_limits(error)
   type(error_type), allocatable, intent(out) :: error
@@ -287,6 +327,9 @@ subroutine test_group_ratio_limits(error)
   call check(error, abs(group_ratio(1d-4, 1d0) - 1d0) < 1d-6, "shallow-water group ratio is not 1")
   if (allocated(error)) return
   call check(error, abs(group_ratio(1d0, 30d0) - 0.5d0) < 1d-12, "large-kh group ratio is not 1/2")
+  if (allocated(error)) return
+  call check(error, abs(group_ratio(1d0, 1d0) - 0.5d0 * (1d0 + 2d0 / sinh(2d0))) < 1d-5, &
+             "intermediate-depth group ratio differs from 0.5 (1 + 2kh / sinh 2kh)")
 end subroutine test_group_ratio_limits
 
 end module test_far_field
