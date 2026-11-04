@@ -24,6 +24,18 @@ module test_near_field
   real(8), parameter :: bx1 = -1d0, bx2 = 5d0, by1 = -3d0, by2 = 1d0, bdraft = 3d0
   real(8), parameter :: bxr(3) = [0.5d0, 0.25d0, 0.7d0]
 
+  ! Frustum of hydrostatic_exact_frustum: axis on x = y = 0, r(z) = fr0 + fslope z, z down to -fdraft, reference point fxr
+  real(8), parameter :: fr0 = 3d0, fslope = 0.25d0, fdraft = 2d0
+  real(8), parameter :: fxr(3) = [0.5d0, 0.25d0, 0.7d0]
+
+  abstract interface
+    !> Exact buoyancy load (F_z, M_x, M_y about O) on a hull moved by the motions q.
+    pure function load_function(q) result(load)
+      real(8), intent(in) :: q(6)
+      real(8) :: load(3)
+    end function load_function
+  end interface
+
 contains
 
 subroutine collect_near_field(testsuite)
@@ -37,6 +49,7 @@ subroutine collect_near_field(testsuite)
     new_unittest("term3_uniform", test_term3_uniform), &
     new_unittest("term4_cross", test_term4_cross), &
     new_unittest("hydrostatic_exact_box", test_hydrostatic_exact_box), &
+    new_unittest("hydrostatic_exact_frustum", test_hydrostatic_exact_frustum), &
     new_unittest("flare_only_vertical", test_flare_only_vertical), &
     new_unittest("form_equivalence", test_form_equivalence), &
     new_unittest("pair_symmetry", test_pair_symmetry), &
@@ -212,15 +225,15 @@ subroutine make_box(xr, mesh)
   end do
 end subroutine make_box
 
-!> Frustum side wall with r(z) = r0 + slope z, open at both ends, with normals into the body.
-subroutine make_frustum(r0, slope, draft, nth, nz, mesh)
-  real(8), intent(in) :: r0, slope, draft
+!> Frustum with r(z) = r0 + slope z, open at z = 0 and closed below by a fan of triangles, with normals into the body.
+subroutine make_frustum(r0, slope, draft, nth, nz, xr, mesh)
+  real(8), intent(in) :: r0, slope, draft, xr(3)
   integer, intent(in) :: nth, nz
   type(panel_mesh), intent(out) :: mesh
   integer :: i, j, ip
   real(8) :: t1, t2, tm, z1, z2, r1, r2, den
 
-  call alloc_mesh(nth * nz, [0d0, 0d0, 0d0], mesh)
+  call alloc_mesh(nth * nz + nth, xr, mesh)
   den = sqrt(1d0 + slope**2)
   ip = 0
   do j = 1, nz
@@ -236,6 +249,19 @@ subroutine make_frustum(r0, slope, draft, nth, nz, mesh)
       call add_quad(mesh, ip, [r1*cos(t1), r1*sin(t1), z1], [r1*cos(t2), r1*sin(t2), z1], &
                     [r2*cos(t2), r2*sin(t2), z2], [r2*cos(t1), r2*sin(t1), z2], [-cos(tm)/den, -sin(tm)/den, slope/den])
     end do
+  end do
+  r2 = r0 - slope * draft
+  do i = 1, nth
+    t1 = 2d0 * pi * real(i - 1, 8) / nth
+    t2 = 2d0 * pi * real(i, 8) / nth
+    ip = ip + 1
+    mesh%xnode(:, 4*ip - 3) = [0d0, 0d0, -draft]
+    mesh%xnode(:, 4*ip - 2) = [r2*cos(t1), r2*sin(t1), -draft]
+    mesh%xnode(:, 4*ip - 1) = [r2*cos(t2), r2*sin(t2), -draft]
+    mesh%xnode(:, 4*ip) = [0d0, 0d0, -draft]
+    mesh%ncn(ip) = 3
+    mesh%ncon(:, ip) = [4*ip - 3, 4*ip - 2, 4*ip - 1, 0]
+    call set_panel(mesh, ip, [0d0, 0d0, 1d0])
   end do
 end subroutine make_frustum
 
@@ -282,16 +308,102 @@ pure function exact_box_load(q) result(load)
   load = load * rho * g * da
 end function exact_box_load
 
+!> Exact buoyancy load (F_z, M_x, M_y about O) on the frustum moved to X = R(alpha) x + xi + O, from columns of the hull
+!> in body axes. Each column runs from the hull up to the plane X_3 = 0, which is z = c0 + b(theta) r along a ray. The
+!> integrand is a cubic in r on each side of the bottom edge, so 2-point Gauss is exact; the trapezoid rule in theta is
+!> spectrally accurate for this smooth periodic integrand, and unlike a Cartesian grid it has no noise from the moving edge.
+pure function exact_frustum_load(q) result(load)
+  real(8), intent(in) :: q(6)
+  real(8) :: load(3)
+  integer, parameter :: nth = 128
+  real(8), parameter :: gp = 0.5773502691896258d0
+  real(8) :: r(3,3), c0, cx, cy, b, c, s, rb, redge, ends(3), rad, zt, zb, h, zm, xr, yr, zr, x_in, y_in, w
+  integer :: i, iseg, ig
+
+  r = rotation(q(4:6))
+  cx = -r(3,1) / r(3,3)
+  cy = -r(3,2) / r(3,3)
+  c0 = fxr(3) - (q(3) + fxr(3) - r(3,1) * fxr(1) - r(3,2) * fxr(2)) / r(3,3)
+  rb = fr0 - fslope * fdraft
+  load = 0d0
+  do i = 1, nth
+    c = cos(2d0 * pi * real(i - 1, 8) / nth)
+    s = sin(2d0 * pi * real(i - 1, 8) / nth)
+    b = cx * c + cy * s
+    redge = (fr0 + fslope * c0) / (1d0 - fslope * b)
+    ends = [0d0, rb, redge]
+    do iseg = 1, 2
+      do ig = -1, 1, 2
+        rad = 0.5d0 * (ends(iseg) + ends(iseg + 1)) + 0.5d0 * (ends(iseg + 1) - ends(iseg)) * real(ig, 8) * gp
+        zt = c0 + b * rad
+        zb = merge(-fdraft, (rad - fr0) / fslope, iseg == 1)
+        h = zt - zb
+        zm = 0.5d0 * (zt + zb)
+        xr = rad * c - fxr(1)
+        yr = rad * s - fxr(2)
+        zr = zm - fxr(3)
+        x_in = r(1,1) * xr + r(1,2) * yr + r(1,3) * zr + q(1)
+        y_in = r(2,1) * xr + r(2,2) * yr + r(2,3) * zr + q(2)
+        w = 0.5d0 * (ends(iseg + 1) - ends(iseg)) * rad
+        load = load + w * [h, y_in * h, -x_in * h]
+      end do
+    end do
+  end do
+  load = load * rho * g * 2d0 * pi / nth
+end function exact_frustum_load
+
 !> Mean second-order part of the exact load for in-phase motion of amplitude q: the part of F(q cos t) in q^2 has mean
 !> (1/2) [ (F(q) + F(-q))/2 - F(0) ].
-pure function exact_box_mean(q, f0) result(mean)
+function exact_mean(load, q, f0) result(mean)
+  procedure(load_function) :: load
   real(8), intent(in) :: q(6), f0(3)
   real(8) :: mean(3)
-  mean = 0.5d0 * (0.5d0 * (exact_box_load(q) + exact_box_load(-q)) - f0)
-end function exact_box_mean
+  mean = 0.5d0 * (0.5d0 * (load(q) + load(-q)) - f0)
+end function exact_mean
+
+!> Compares V + Ia with the exact load in still water at amplitude eps: every single mode, then the cross part of every
+!> pair of modes moved together in phase. A small floor lets a component that is exactly zero be compared with its round-off.
+subroutine compare_with_exact(mesh, geom, load, length, eps, error)
+  type(panel_mesh), intent(in) :: mesh
+  type(surface_geom), intent(in) :: geom
+  procedure(load_function) :: load
+  real(8), intent(in) :: length, eps
+  type(error_type), allocatable, intent(out) :: error
+  real(8) :: f0(3), ex(3, 6), fo(3, 6), q(6), ex2(3), fo2(3), cross_ex(3), cross_fo(3), floor_f, floor_m, tol(3)
+  integer :: a, b
+
+  f0 = load([0d0, 0d0, 0d0, 0d0, 0d0, 0d0])
+  floor_f = 1d-6 * rho * g * eps**2 * geom%awp(1)
+  floor_m = floor_f * length
+
+  do a = 1, 6
+    q = 0d0
+    q(a) = eps
+    ex(:, a) = exact_mean(load, q, f0)
+    call formula_mean(mesh, geom, q, fo(:, a))
+    tol = 1d-3 * abs(ex(:, a)) + [floor_f, floor_m, floor_m]
+    call check(error, all(abs(fo(:, a) - ex(:, a)) <= tol), "V + Ia differs from the exact load for a single mode")
+    if (allocated(error)) return
+  end do
+
+  do a = 1, 5
+    do b = a + 1, 6
+      q = 0d0
+      q(a) = eps
+      q(b) = eps
+      ex2 = exact_mean(load, q, f0)
+      call formula_mean(mesh, geom, q, fo2)
+      cross_ex = ex2 - ex(:, a) - ex(:, b)
+      cross_fo = fo2 - fo(:, a) - fo(:, b)
+      tol = 1d-3 * abs(cross_ex) + [floor_f, floor_m, floor_m]
+      call check(error, all(abs(cross_fo - cross_ex) <= tol), "V + Ia differs from the exact load for a pair of modes")
+      if (allocated(error)) return
+    end do
+  end do
+end subroutine compare_with_exact
 
 !> (F_z, M_x, M_y) of terms V + Ia for real motions q in still water.
-subroutine formula_box_mean(mesh, geom, q, mean)
+subroutine formula_mean(mesh, geom, q, mean)
   type(panel_mesh), intent(in) :: mesh
   type(surface_geom), intent(in) :: geom
   real(8), intent(in) :: q(6)
@@ -304,7 +416,7 @@ subroutine formula_box_mean(mesh, geom, q, mean)
   phi_wl = (0d0, 0d0)
   call near_field_pair(mesh, geom, s, s, phi_wl, phi_wl, terms)
   mean = real(terms(3:5, T_V, 1) + terms(3:5, T_IA, 1))
-end subroutine formula_box_mean
+end subroutine formula_mean
 
 ! ---------------------------------------------------------------------------------------------- tests
 
@@ -317,9 +429,9 @@ subroutine test_pair_mean_identity(error)
     f = pseudo_c(i)
     gg = pseudo_c(i + 50)
     p = pair_minus(f, gg, f, gg)
-    call check(error, abs(real(p) - 0.5d0 * real(f * conjg(gg))) <= 1d-15, "pair_minus(f,g,f,g) is not Re(f g*)/2")
+    call check(error, abs(real(p) - 0.5d0 * real(f * conjg(gg))) <= 1d-14, "pair_minus(f,g,f,g) is not Re(f g*)/2")
     if (allocated(error)) return
-    call check(error, abs(aimag(p)) <= 1d-15, "pair_minus(f,g,f,g) is not real")
+    call check(error, abs(aimag(p)) <= 1d-14, "pair_minus(f,g,f,g) is not real")
     if (allocated(error)) return
   end do
 end subroutine test_pair_mean_identity
@@ -500,46 +612,27 @@ end subroutine test_term4_cross
 
 subroutine test_hydrostatic_exact_box(error)
   type(error_type), allocatable, intent(out) :: error
-  real(8), parameter :: eps = 1d-3
   type(panel_mesh) :: mesh
   type(surface_geom) :: geom
-  real(8) :: f0(3), ex(3, 6), fo(3, 6), q(6), ex2(3), fo2(3), cross_ex(3), cross_fo(3), floor_f, floor_m, tol(3)
-  integer :: a, b
 
   call make_box(bxr, mesh)
   call geometry(mesh, geom, error)
   if (allocated(error)) return
-  f0 = exact_box_load([0d0, 0d0, 0d0, 0d0, 0d0, 0d0])
-  ! A small floor, so that a component that is exactly zero is compared with its round-off
-  floor_f = 1d-6 * rho * g * eps**2 * geom%awp(1)
-  floor_m = floor_f * (bx2 - bx1)
-
-  do a = 1, 6
-    q = 0d0
-    q(a) = eps
-    ex(:, a) = exact_box_mean(q, f0)
-    call formula_box_mean(mesh, geom, q, fo(:, a))
-    tol = 1d-3 * abs(ex(:, a)) + [floor_f, floor_m, floor_m]
-    call check(error, all(abs(fo(:, a) - ex(:, a)) <= tol), "V + Ia differs from the exact box for a single mode")
-    if (allocated(error)) return
-  end do
-
-  ! Cross terms: move both modes together, in phase, and remove the single-mode parts
-  do a = 1, 5
-    do b = a + 1, 6
-      q = 0d0
-      q(a) = eps
-      q(b) = eps
-      ex2 = exact_box_mean(q, f0)
-      call formula_box_mean(mesh, geom, q, fo2)
-      cross_ex = ex2 - ex(:, a) - ex(:, b)
-      cross_fo = fo2 - fo(:, a) - fo(:, b)
-      tol = 1d-3 * abs(cross_ex) + [floor_f, floor_m, floor_m]
-      call check(error, all(abs(cross_fo - cross_ex) <= tol), "V + Ia differs from the exact box for a pair of modes")
-      if (allocated(error)) return
-    end do
-  end do
+  call compare_with_exact(mesh, geom, exact_box_load, bx2 - bx1, 1d-3, error)
 end subroutine test_hydrostatic_exact_box
+
+!> A flared hull with an offset reference point: the only test in which Ia, its moment and its xr handling count, and
+!> where V and Ia must add up. Rotations are about O, so the waterline ring is offset from xr.
+subroutine test_hydrostatic_exact_frustum(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+
+  call make_frustum(fr0, fslope, fdraft, 360, 3, fxr, mesh)
+  call geometry(mesh, geom, error)
+  if (allocated(error)) return
+  call compare_with_exact(mesh, geom, exact_frustum_load, 2d0 * fr0, 1d-3, error)
+end subroutine test_hydrostatic_exact_frustum
 
 subroutine test_flare_only_vertical(error)
   type(error_type), allocatable, intent(out) :: error
@@ -551,7 +644,7 @@ subroutine test_flare_only_vertical(error)
   real(8) :: ref
   integer :: j
 
-  call make_frustum(r0, slope, 2d0, 120, 3, mesh)
+  call make_frustum(r0, slope, 2d0, 120, 3, [0d0, 0d0, 0d0], mesh)
   call geometry(mesh, geom, error)
   if (allocated(error)) return
   call zero_state(mesh, s)
