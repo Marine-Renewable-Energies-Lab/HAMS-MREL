@@ -8,6 +8,10 @@ Current version: 2.3.2 (The repository has migrated from https://github.com/vaib
 
 The binary for Windows is available in the [Releases](https://github.com/Marine-Renewable-Energies-Lab/HAMS-MREL/releases). This was compiled using OneAPI 2022 (ifort) and Visual Studio 2019. 
 
+## Release notes
+
+**Correction to generalized modes in DOF 1 to 3 (after v2.3.2).** Results with a mode file `gen_mod_<body>_<dof>.txt` in DOF 1, 2 or 3, from commit ca4c744 (2026-02-27) up to this fix, are wrong and should be re-run. This covers added mass, damping and excitation of all modes of all bodies, motions and field-point output. The cause was that code needing the panel's direction read the columns the mode overrides. On example 3, with a mode in DOF 1 at 0.14 rad/s, the added mass of body 1 in sway (a mode not involving the file) was 61.8 and is now 135.5, as in the same case with no mode file. Modes in DOF 4 and 5 were measured not to change, and the fix does not touch DOF 4 to 6. Runs with no mode file do not change: the outputs of examples 1, 2, 4 and 5 are byte-identical with and without the fix on the same build. See [gen_mod](docs/input_files.md#gen_mod-optional) for what the values affect.
+
 ## Installation and Usage
 
 Installation instructions are provided for:
