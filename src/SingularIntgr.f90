@@ -30,12 +30,59 @@ MODULE SingularIntgr
 
       ! ..... Public Subroutines ...................................................................................................
 
+   PUBLIC :: IMAGE_TERM_EXACT
    PUBLIC :: SGLINTBD_TRI
    PUBLIC :: SGLINTBD_QUAD
    PUBLIC :: SGLINTBD_TRI2
    PUBLIC :: SGLINTBD_QUAD2
    
 CONTAINS
+!-------------------------------------------------------------------------------
+!     The free-surface image term 1/r1 of the Green function over a source panel.
+!     FINGREEN3D and INFGREEN3D give it at the panel centroid only, to be multiplied by the area. That fails on a
+!     panel close to z = 0 compared with its size, where the centroid is too close to its image. This routine
+!     moves the term and its gradient out of GRN and adds their integral over the panel, from the 1/r integral at
+!     the mirror image of the field point, to SIJ and DIJ, which hold the 1/r integral. Call it for FLAG = 1 only:
+!     FLAG = 0 has no panel integrals, and is far enough for one point.
+!       XF   field point, already reflected for the symmetry image
+!       XQ   centroid of the source panel JEL
+!       IRR  as in SGLINTBD_TRI2 and SGLINTBD_QUAD2
+!-------------------------------------------------------------------------------
+      SUBROUTINE IMAGE_TERM_EXACT(XF,XQ,V,JEL,IRR,GRN,SIJ,DIJ)
+      IMPLICIT NONE
+
+      INTEGER,INTENT(IN):: JEL,IRR
+      REAL*8,INTENT(IN):: XF(3),XQ(3),V
+      COMPLEX*16,INTENT(INOUT):: GRN(4)
+      REAL*8,INTENT(INOUT):: SIJ,DIJ(3)
+      REAL*8:: XI(3),RK(4),R1,SGN
+
+      R1=SQRT((XQ(1)-XF(1))**2+(XQ(2)-XF(2))**2+(XQ(3)+XF(3))**2)
+      XI(1)=XF(1)
+      XI(2)=XF(2)
+      XI(3)=-XF(3)
+      IF (NCN(JEL).EQ.3) THEN
+       CALL SGLINTBD_TRI2(XI,JEL,RK,IRR)
+      ELSE
+       CALL SGLINTBD_QUAD2(XI,JEL,RK,IRR)
+      ENDIF
+
+      SGN=1.D0
+      IF (ABS(V+1.D0).LT.1.E-8) SGN=-1.D0        ! the limit of infinite frequency, as in the Green function routines
+
+      SIJ=SIJ+SGN*RK(1)
+      DIJ(1)=DIJ(1)+SGN*RK(2)
+      DIJ(2)=DIJ(2)+SGN*RK(3)
+      DIJ(3)=DIJ(3)+SGN*RK(4)
+
+      GRN(1)=GRN(1)-SGN/R1
+      GRN(2)=GRN(2)+SGN*(XQ(1)-XF(1))/R1**3
+      GRN(3)=GRN(3)+SGN*(XQ(2)-XF(2))/R1**3
+      GRN(4)=GRN(4)+SGN*(XQ(3)+XF(3))/R1**3
+
+      RETURN
+      END SUBROUTINE IMAGE_TERM_EXACT
+
 !-------------------------------------------------------------------------------
 !          Evaluation of 1/r singular integrals in Constant Panel Method  
 !      using the analytical formula derived by Newman's method (Newman,1986)

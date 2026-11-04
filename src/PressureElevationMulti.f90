@@ -117,6 +117,8 @@ CONTAINS
           CALL FINGREEN3D(XQ(1),XP(1),XQ(2),XP(2),XQ(3),XP(3),V,WVN,NK,H,GRN,FLAG)
          ENDIF
 
+         IF (FLAG.EQ.1) CALL IMAGE_TERM_EXACT_MULTI(XP,XQ,V,JEL,IRR,GRN,RKN(1),RKN(2:4))
+
          IF (FLAG.EQ.1) THEN
           DUM(1)= RKN(1)+GRN(1)*EAR
           DUM(2)=(RKN(2)+GRN(2)*EAR)*ENV(1)   &

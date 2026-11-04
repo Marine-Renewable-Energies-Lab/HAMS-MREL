@@ -1,5 +1,5 @@
-!> The analytical 1/r panel integrals, against an independent composite Gauss quadrature in this file, in every node order, on
-!> the single-body and multi-body copies. The
+!> The analytical 1/r panel integrals, against an independent composite Gauss quadrature in this file: the direct term at the
+!> field point and the image term at its mirror in z = 0, in every node order, on the single-body and multi-body copies. The
 !> triangle routines place node 2 in local coordinates from ALFA, the projection of side 1-3 on side 1-2 in units of side 1-2,
 !> so the triangles here cover every range of ALFA. They use the mesh arrays of the solver, so this suite runs serially.
 module test_panel_integrals
@@ -8,8 +8,9 @@ module test_panel_integrals
   use PanelMesh_mod, only : XYZ, XYZ_P, NCN, NCON, PNSZ, ISX, ISY, XYZ_GLOBAL_MULTI_COMB, XYZ_GLOBAL_MULTI_COMB_P, &
                             iXYZ_GLOBAL_MULTI_COMB_P, NCN_MULTI_COMB, NCON_MULTI_COMB, PNSZ_MULTI_COMB
   use Inerfs_mod, only : iXYZ_P
-  use SingularIntgr, only : SGLINTBD_TRI, SGLINTBD_QUAD, SGLINTBD_TRI2, SGLINTBD_QUAD2
-  use SingularIntgrMulti, only : SGLINTBD_MULTI_TRI, SGLINTBD_MULTI_QUAD, SGLINTBD_MULTI_TRI2, SGLINTBD_MULTI_QUAD2
+  use SingularIntgr, only : IMAGE_TERM_EXACT, SGLINTBD_TRI, SGLINTBD_QUAD, SGLINTBD_TRI2, SGLINTBD_QUAD2
+  use SingularIntgrMulti, only : IMAGE_TERM_EXACT_MULTI, SGLINTBD_MULTI_TRI, SGLINTBD_MULTI_QUAD, SGLINTBD_MULTI_TRI2, &
+                                 SGLINTBD_MULTI_QUAD2
 
   implicit none
   private
@@ -20,10 +21,10 @@ module test_panel_integrals
   real(8), parameter :: gx(4) = [0.1834346424956498d0, 0.5255324099163290d0, 0.7966664774136267d0, 0.9602898564975363d0]
   real(8), parameter :: gw(4) = [0.3626837833783620d0, 0.3137066458778873d0, 0.2223810344533745d0, 0.1012285362903763d0]
   integer, parameter :: default_cells = 48
-  integer, parameter :: npaths = 6
+  integer, parameter :: npaths = 8
   character(len=*), parameter :: path_name(npaths) = [character(len=28) :: &
-    "single, hull field", "single, lid field", "single, given point", &
-    "multi, hull field", "multi, lid field", "multi, given point"]
+    "single, direct, hull field", "single, direct, lid field", "single, direct, given point", "single, image", &
+    "multi, direct, hull field", "multi, direct, lid field", "multi, direct, given point", "multi, image"]
 
 contains
 
@@ -146,15 +147,17 @@ contains
     ISY = 0
   end subroutine set_panel
 
-  !> Run one path on the panel of set_panel.
+  !> Run one path on the panel of set_panel. With the image paths, the field point is mirrored inside the routine.
   subroutine evaluate(path, p, s, d)
     integer, intent(in) :: path
     real(8), intent(in) :: p(3)
     real(8), intent(out) :: s, d(3)
-    real(8) :: rk(4)
+    real(8) :: rk(4), q(3)
+    complex(8) :: grn(4)
     logical :: tri
 
     tri = NCN(1) == 3
+    q = sum(XYZ(1:NCN(1), :), dim=1)/real(NCN(1), 8)
     select case (path)
     case (1, 2)
       if (tri) then
@@ -170,13 +173,18 @@ contains
       end if
       s = rk(1)
       d = rk(2:4)
-    case (4, 5)
+    case (4)
+      grn = (0d0, 0d0)
+      s = 0d0
+      d = 0d0
+      call IMAGE_TERM_EXACT(p, q, 0d0, 1, 1, grn, s, d)
+    case (5, 6)
       if (tri) then
-        call SGLINTBD_MULTI_TRI(1, 1, 1, s, d, 2*(path - 3) - 1)
+        call SGLINTBD_MULTI_TRI(1, 1, 1, s, d, 2*(path - 4) - 1)
       else
-        call SGLINTBD_MULTI_QUAD(1, 1, 1, s, d, 2*(path - 3) - 1)
+        call SGLINTBD_MULTI_QUAD(1, 1, 1, s, d, 2*(path - 4) - 1)
       end if
-    case (6)
+    case (7)
       if (tri) then
         call SGLINTBD_MULTI_TRI2(p, 1, rk, 1)
       else
@@ -184,6 +192,11 @@ contains
       end if
       s = rk(1)
       d = rk(2:4)
+    case (8)
+      grn = (0d0, 0d0)
+      s = 0d0
+      d = 0d0
+      call IMAGE_TERM_EXACT_MULTI(p, q, 0d0, 1, 1, grn, s, d)
     end select
   end subroutine evaluate
 
@@ -282,29 +295,36 @@ contains
     end if
   end subroutine compare
 
-  !> Every path and every node order, at field point p.
-  subroutine check_paths(nodes, p, cells, name, error)
+  !> Every path and every node order, at field point p. With direct false, p is on the panel, and only the image is compared.
+  subroutine check_paths(nodes, p, direct, cells, name, error)
     real(8), intent(in) :: nodes(:, :), p(3)
+    logical, intent(in) :: direct
     integer, intent(in) :: cells
     character(len=*), intent(in) :: name
     type(error_type), allocatable, intent(out) :: error
-    real(8) :: sref, dref(3), s, d(3)
+    real(8) :: sd, dd(3), sm, dm(3), s, d(3)
     integer :: ord, path
     character(len=2) :: ostr
 
-    call reference(nodes, p, cells, sref, dref)
+    if (direct) call reference(nodes, p, cells, sd, dd)
+    call reference(nodes, [p(1), p(2), -p(3)], cells, sm, dm)
     do ord = 1, 2*size(nodes, 1)
       call set_panel(ordered(nodes, ord), p)
       write (ostr, '(i2)') ord
       do path = 1, npaths
-        call evaluate(path, p, s, d)
-        call compare(s, d, sref, dref, name//", order"//ostr//", "//trim(path_name(path)), error)
+        if (mod(path, 4) == 0) then
+          call evaluate(path, p, s, d)
+          call compare(s, d, sm, dm, name//", order"//ostr//", "//trim(path_name(path)), error)
+        else if (direct) then
+          call evaluate(path, p, s, d)
+          call compare(s, d, sd, dd, name//", order"//ostr//", "//trim(path_name(path)), error)
+        end if
         if (allocated(error)) return
       end do
     end do
   end subroutine check_paths
 
-  !> On a wall and on a tilted and a horizontal panel: off the panel and at the next panel along. check_self covers the centroid.
+  !> On a wall and on a tilted and a horizontal panel: at the centroid, off the panel, and at the next panel along.
   subroutine check_shape(uv, name, error)
     real(8), intent(in) :: uv(:, :)
     character(len=*), intent(in) :: name
@@ -318,9 +338,11 @@ contains
       c = centroid(nodes)
       side = longest_side(nodes)
       write (kstr, '(i1)') kind
-      call check_paths(nodes, c + 0.15d0*side*en, default_cells, name//", kind "//kstr//", off the panel", error)
+      call check_paths(nodes, c, .false., default_cells, name//", kind "//kstr//", centroid", error)
       if (allocated(error)) return
-      call check_paths(nodes, c + 1.4d0*side*e1, default_cells, name//", kind "//kstr//", next along", error)
+      call check_paths(nodes, c + 0.15d0*side*en, .true., default_cells, name//", kind "//kstr//", off the panel", error)
+      if (allocated(error)) return
+      call check_paths(nodes, c + 1.4d0*side*e1, .true., default_cells, name//", kind "//kstr//", next along", error)
       if (allocated(error)) return
     end do
   end subroutine check_shape
@@ -358,6 +380,7 @@ contains
       do ord = 1, 2*n
         call set_panel(ordered(nodes, ord), c)
         do path = 1, npaths
+          if (mod(path, 4) == 0) cycle
           call evaluate(path, c, s, d)
           write (tag, '(", kind ", i1, ", order ", i1, ", path ", i1)') kind, ord, path
           call check(error, abs(s - sref) < tol*abs(sref), name//trim(tag)//": G at its own centroid")
@@ -462,7 +485,7 @@ contains
     call check_shape(tri_uv(0d0, 0d0, 1d0, 0d0, 0.4d0, 0.8d0), "acute", error)
   end subroutine test_triangle_acute
 
-  !> A thin triangle at the waterline with ALFA > 1, on a wall. It needs more cells.
+  !> A thin triangle at the waterline with ALFA > 1, on a wall: the case where the image term matters most. It needs more cells.
   subroutine test_triangle_thin_obtuse(error)
     type(error_type), allocatable, intent(out) :: error
     real(8) :: uv(3, 2), nodes(3, 3), e1(3), en(3), c(3), side
@@ -473,9 +496,11 @@ contains
     call embed(uv, 4, nodes, e1, en)
     c = centroid(nodes)
     side = longest_side(nodes)
-    call check_paths(nodes, c + 0.15d0*side*en, 160, "thin, off the panel", error)
+    call check_paths(nodes, c, .false., 160, "thin, centroid", error)
     if (allocated(error)) return
-    call check_paths(nodes, c + 1.4d0*side*e1, 160, "thin, next along", error)
+    call check_paths(nodes, c + 0.15d0*side*en, .true., 160, "thin, off the panel", error)
+    if (allocated(error)) return
+    call check_paths(nodes, c + 1.4d0*side*e1, .true., 160, "thin, next along", error)
   end subroutine test_triangle_thin_obtuse
 
   subroutine test_triangle_self(error)
@@ -552,17 +577,18 @@ contains
     call check_self(quad_uv(0d0, 0d0, 1d0, 0.1d0, 1.3d0, 0.8d0, 0.2d0, 0.5d0), "general", error)
   end subroutine test_quadrilateral_self
 
-  !> A triangle with ALFA > 1 written as a quadrilateral, with a repeated node: the quadrilateral routine is right for it. Nodes 1
-  !> and 2 at the same point are left out, as the quadrilateral routine gives NaN for that form.
+  !> A triangle with ALFA > 1 written as a quadrilateral, with a repeated node: the quadrilateral routine is right for it. Node 1
+  !> and node 2 the same point is left out: see the report of this change.
   subroutine test_repeated_node(error)
     type(error_type), allocatable, intent(out) :: error
-    real(8) :: tri(3, 3), e1(3), en(3), nodes(4, 3), p(3), sd, dd(3), s, d(3)
+    real(8) :: tri(3, 3), e1(3), en(3), nodes(4, 3), p(3), sd, dd(3), sm, dm(3), s, d(3)
     integer :: kind, form, path
 
     do kind = 1, 3
       call embed(tri_uv(0d0, 0d0, 1d0, 0d0, 1.5d0, 0.6d0), kind, tri, e1, en)
       p = centroid(tri) + 0.15d0*en + 0.1d0*e1
       call reference(tri, p, default_cells, sd, dd)
+      call reference(tri, [p(1), p(2), -p(3)], default_cells, sm, dm)
       do form = 1, 3
         select case (form)
         case (1)  ! a b c c
@@ -576,9 +602,14 @@ contains
           nodes(2:4, :) = tri
         end select
         call set_panel(nodes, p)
+        ! The centroid IMAGE_TERM_EXACT is given only sets the one-point part, which is not compared here
         do path = 1, npaths
           call evaluate(path, p, s, d)
-          call compare(s, d, sd, dd, "repeated node", error)
+          if (mod(path, 4) == 0) then
+            call compare(s, d, sm, dm, "repeated node, image", error)
+          else
+            call compare(s, d, sd, dd, "repeated node, direct", error)
+          end if
           if (allocated(error)) return
         end do
       end do
