@@ -90,6 +90,7 @@ program HAMS_MREL
     use HAMS_mod
     use SecondOrderTypes
     use SecondOrderInput
+    use SecondOrderDriver
     use omp_lib
 
     implicit none  
@@ -274,6 +275,8 @@ program HAMS_MREL
        
         CALL CalNormals(IRSP,TRIM(inputdir))
 
+        IF (so_opts%active) CALL so_setup_single(so_opts, trim(outputdir))
+
         DO MD1=1,5
             CLOSE(MD1)
         ENDDO
@@ -330,10 +333,15 @@ program HAMS_MREL
         
                 CALL EFORCE(WK,W1,TP,BETA,AMP,EXFC(KK,II,:))
                 CALL SolveMotion(W1,TP,OUFR,BETA,AMP,AMAS(KK,:,:),BDMP(KK,:,:),BLNR,BQDR,EXFC(KK,II,:),DSPL(KK,II,:))           ! Has to be implemented for multi-bodies
+                IF (so_opts%active) CALL so_after_motion_single(so_opts, KK, II)
                 CALL OutputPressureElevation_Diffraction(640)                  ! Has to be implemented for multi-bodies
             ENDDO
+
+            IF (so_opts%active) CALL so_end_frequency(so_opts, KK)
         
         ENDDO
+
+        IF (so_opts%active) CALL so_finish()
        
         DO KK=1,NPER
             DO MD1=1,6
@@ -600,6 +608,7 @@ program HAMS_MREL
         ! Pack the per-body padded geometry into the contiguous _COMB arrays once.
         ! This was previously redone every frequency inside CALGREEN_MULTI / ASSB_LEFT_MULTI (Phase 2.3 / 3.1).
         CALL BuildCombinedArrays
+        IF (so_opts%active) CALL so_setup_multi(so_opts, trim(outputdir))
         ! The per-body padded arrays are no longer referenced; free them now.
         DEALLOCATE(XYZ_GLOBAL_MULTI, XYZ_MULTI_P, DS_MULTI, PNSZ_MULTI, NCN_MULTI, NCON_MULTI, DXYZ_MULTI_P)
         IF (IRSP.EQ.1) THEN
@@ -754,6 +763,7 @@ program HAMS_MREL
                     EXFC_MULTI_COMB(KK,II,6*(FILE_M-1)+1:6*(FILE_M-1)+6) = EXFC_MULTI(FILE_M,KK,II,:)
                 ENDDO
                 CALL SolveMotionMulti(W1,TP,OUFR,BETA,AMP,AMAS_MULTI_COMB(KK,:,:),BDMP_MULTI_COMB(KK,:,:),BLNR_MULTI,BQDR_MULTI,EXFC_MULTI_COMB(KK,II,:),DSPL_MULTI_COMB(KK,II,:),NBODY)
+                IF (so_opts%active) CALL so_after_motion_multi(so_opts, KK, II)
                 if (separate_wamit_diffraction_radiation_files) then
                     CALL OutputPressureElevation_DiffractionMulti(639,NBODY)
                 else 
@@ -762,7 +772,10 @@ program HAMS_MREL
                 CALL OutputPressureElevation_IncidenceMulti(66,NBODY)
          
             ENDDO
+
+            IF (so_opts%active) CALL so_end_frequency(so_opts, KK)
         ENDDO
+        IF (so_opts%active) CALL so_finish()
         CLOSE(61)
         CALL ReorderAmssDamp(trim(outputdir)//'/Wamit_format/AmssDamp.1', NPER, 6*NBODY) !Reorder the WAMIT format .1 file
         CLOSE(61)

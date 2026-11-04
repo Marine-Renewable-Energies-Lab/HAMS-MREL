@@ -1,0 +1,58 @@
+!  ------------------------------------------------------------------------------------------------------
+!
+!    Program HAMS-MREL for the diffraction and radiation of waves
+!    by 3D structures.
+!
+!  License:
+!
+!    This routine is part of HAMS-MREL.
+!
+!    HAMS-MREL is a free software framework: you can redistribute it and/or modify it
+!    under the terms of the Apache License, Version 2.0 (the "License"); you may
+!    not use these subroutines except in compliance with the License. The software
+!    is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.
+!
+!    You should have received a copy of the Apache License, Version 2.0, along with
+!    HAMS-MREL. If not, see <http://www.apache.org/licenses/LICENSE-2.0>.
+!
+!  Code Original Author:
+!
+!    Vaibhav Raghavan
+!
+!  ------------------------------------------------------------------------------------------------------
+MODULE SecondOrderOutput
+   ! Writers for the second-order result files. The loads are computed with time factor e^{-i omega t}. This module is
+   ! the one place where they are conjugated, to the e^{+i omega t} convention of the WAMIT-format outputs.
+
+   USE Const_mod, ONLY: G, RHO
+   IMPLICIT NONE
+   PRIVATE
+
+   PUBLIC :: write_drift_row
+
+CONTAINS
+
+   SUBROUTINE write_drift_row(unit, oufr, beta1_deg, beta2_deg, index, value, refl, moment)
+      ! Writes one row PER BETA1 BETA2 I Mod Pha Re Im, with the phase in degrees.
+      !   oufr     output frequency in the form chosen by OUFT in ControlFile.in
+      !   value    load per unit amplitude pair, e^{-i omega t}
+      !   moment   true: scale by rho g refl^2, false: scale by rho g refl
+      INTEGER, INTENT(IN) :: unit, index
+      REAL(8), INTENT(IN) :: oufr, beta1_deg, beta2_deg, refl
+      COMPLEX(8), INTENT(IN) :: value
+      LOGICAL, INTENT(IN) :: moment
+      REAL(8), PARAMETER :: RAD_TO_DEG = 180D0/3.141592653589793D0
+      REAL(8) :: nfac
+      COMPLEX(8) :: scaled
+
+      IF (moment) THEN
+         nfac = RHO*G*refl**2
+      ELSE
+         nfac = RHO*G*refl
+      END IF
+      scaled = CONJG(value)/nfac
+      WRITE (unit, '(3ES14.6,I6,4ES14.6)') oufr, beta1_deg, beta2_deg, index, ABS(scaled), &
+         ATAN2(AIMAG(scaled), REAL(scaled, 8))*RAD_TO_DEG, REAL(scaled, 8), AIMAG(scaled)
+   END SUBROUTINE write_drift_row
+
+END MODULE SecondOrderOutput

@@ -78,6 +78,28 @@ WAMIT files:
     - *See Wamit Manual section 5.6.*
     - Written by the subroutine `ReadHydroStatic` ([HydroStatic.f90](../src/HydroStatic.f90)) for single-body simulations and `ReadHydroStaticMulti` ([HydroStaticMulti.f90](../src/HydroStaticMulti.f90)) for multi-body simulations.
 
+- `MeanDriftMomentum.8 file`: the **far-field mean drift loads**, written only when `SecondOrder.in` switches on `mean_drift` and `drift_methods` includes `far`. The file contains 8 columns: first-order frequency column, $\beta_1$, $\beta_2$, I, Mod, Pha, Re, Im. I = 1, 2, 6 are the force in x, the force in y and the moment about the global z axis through the origin, of the whole system. Forces are divided by $\rho g L$ and moments by $\rho g L^2$, with $L$ the reference length `REFL`, so the values are per unit wave amplitude pair. Pha is in degrees.
+
+    - The first column is `OUFR`, in the form chosen by `Output_frequency_type` in `ControlFile.in`. WAMIT always writes the period here.
+    - With `mean_drift = 1` there are 3 rows per frequency and heading, with $\beta_1 = \beta_2$. With `mean_drift = 2` there are 3 rows per frequency and pair of headings. The mean load of two waves of amplitudes $A_1$, $A_2$ at the same frequency is then $|A_1|^2 F_{11} + |A_2|^2 F_{22} + 2 Re(A_1 A_2^* F_{12})$, and $F_{21} = F_{12}^*$. Values follow the time factor $e^{+i\omega t}$ of the other WAMIT-format files.
+    - The zero and infinite frequencies added by `0_inf_frequency_limits = 1` have no rows.
+    - Written by the subroutine `write_drift_row` ([SecondOrderOutput.f90](../src/SecondOrderOutput.f90)).
+
+## Second-Order Diagnostics
+
+`SecondOrder/PanelDiagnostics.txt` is test and debugging output, written only with `write_terms = 2` in `SecondOrder.in`. All its values are per unit wave amplitude, in SI units, with time factor $e^{-i\omega t}$ and angles in degrees. Each row starts with a tag:
+
+| Tag | Columns | Content |
+| :--- | :--- | :--- |
+| `WAVE` | $\omega$, $k$, $\nu$, $h$ | Once per frequency. $h < 0$ is deep water. |
+| `MODE` | $\omega$, $j$, $\theta$, Re $a_j$, Im $a_j$ | Far-field amplitude of the wave radiated by unit motion in mode $j$, at 72 angles, once per frequency. |
+| `RESIDUAL` | $\omega$, $\beta$, $r$ | $r = \lvert[-\omega^2(M+A) - i\omega B + C]\xi - F\rvert / \lvert F\rvert$. It is meaningful only without quadratic damping, and absent with `motion_state = fixed`. |
+| `FORCE` | $\omega$, $\beta$, $j$, Re $F_j$, Im $F_j$ | Excitation force, recovered as $F = i \cdot$ `EXFC`. |
+| `TOTAL` | $\omega$, $\beta$, $\theta$, Re $a$, Im $a$ | Far-field amplitude of the perturbation wave, at the same 72 angles. |
+| `PANEL` | $\omega$, $\beta$, panel, x, y, z, Re $\phi_D$, Im $\phi_D$, Re $\phi$, Im $\phi$ | Potentials at the panel centroid: diffraction, $\phi_D = \phi_I + i \cdot$ `MXPOT`, and total, including the motions. Symmetry images follow the base panels. |
+
+Written by [SecondOrderDriver.f90](../src/SecondOrderDriver.f90).
+
 ## Hydrostar Format
 
 The Hydrostar format output is provided for compatibility with the [Hydrostar software](https://marine-offshore.bureauveritas.com/hydrostar-software-powerful-hydrodynamic). Currently, these files are only generated for single-body simulations. Documentation for this format will be added in the future.

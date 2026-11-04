@@ -8,6 +8,7 @@ program integration_tester
     ! Tests imports (add only collect functions)
     use test_integration_config1, only : setup_config1, collect_tests_config1
     use test_integration_gmres,   only : setup_gmres,   collect_tests_gmres
+    use test_integration_drift,   only : setup_drift,   collect_tests_drift
     use testing_utilities
 
     implicit none
@@ -28,7 +29,9 @@ program integration_tester
         new_testsuite("setup_config1", setup_config1), &
         new_testsuite("test_config1", collect_tests_config1), &
         new_testsuite("setup_gmres",   setup_gmres),   &
-        new_testsuite("test_gmres",    collect_tests_gmres)  &
+        new_testsuite("test_gmres",    collect_tests_gmres), &
+        new_testsuite("setup_drift",   setup_drift),   &
+        new_testsuite("test_drift",    collect_tests_drift)  &
     ]
 
     stat = 0
