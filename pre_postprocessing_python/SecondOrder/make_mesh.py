@@ -180,8 +180,7 @@ def hydrostatics(polygon, draft):
 
 
 def write_mesh(path, mesh):
-    with open(path, "w", newline="
-") as f:
+    with open(path, "w") as f:
         f.write("    --------------Hull Mesh File---------------\n\n")
         f.write("    # Number of Panels, Nodes, X-Symmetry and Y-Symmetry\n")
         f.write("    %8d  %8d  %8d  %8d\n\n" % (len(mesh.panels), len(mesh.nodes), 0, 0))
@@ -203,8 +202,7 @@ def write_matrix(f, matrix):
 
 def write_hydrostatic(path, hydro, x0, y0):
     zero = [[0.0] * 6 for _ in range(6)]
-    with open(path, "w", newline="
-") as f:
+    with open(path, "w") as f:
         f.write(" Center of Gravity:\n")
         f.write("  %.12E  %.12E  %.12E\n" % (x0, y0, hydro["zg"]))
         f.write(" Body Mass Matrix:\n")
