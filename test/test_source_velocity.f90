@@ -28,12 +28,13 @@ module test_source_velocity
 
   ! Depth 10: EIGENE at most of these distances, with no noise that a small step shows. The largest value measured is 5.7e-4.
   real(8), parameter :: step_clean = 1d-3, limit_clean = 1d-3
-  ! Deep water: the value and the gradient come from separate approximations in HavelockGF, which differ by up to 0.46% of the
-  ! gradient over the near panels. The difference converges with the step, so it is not noise.
+  ! Deep water: the value and the gradient differ by up to 0.46% of the gradient over the near panels. The difference converges
+  ! with the step, so it is not noise. Inference, not shown: they come from separate approximations in HavelockGF. The worst
+  ! component is z (4.6e-3), and GRN(4) comes from GF, like the value, so the inference does not explain that component.
   real(8), parameter :: limit_deep = 6d-3
   ! Depth 100: PIDCOCK near the body. A move of 1e-9 changes the value by up to 1.8e-4 of it, so the step has to be wide.
   real(8), parameter :: step_wide = 5d-2, limit_wide = 1d-2
-  ! The same, against deep water, where only the sea bed differs. The largest value measured is 2.2e-3.
+  ! The same, against deep water, where only the sea bed differs. The largest value measured at the points of the loop is 1.73e-3.
   real(8), parameter :: limit_against_deep = 5d-3
   real(8), parameter :: solve_limit = 1d-9
   ! Whole mesh against half mesh: the two sum the same terms in another order
@@ -156,7 +157,8 @@ contains
     call check(error, worst <= limit_against_deep, "Gradient at depth 100 against deep water")
   end subroutine test_against_deep
 
-  !> At the centroid of a panel, within its plane: the 1/r part is continuous there, and the normal part is the free term.
+  !> At the centroid of a panel, within its plane: the 1/r part is continuous there.
+  !> Only the in-plane part is checked, not the normal part.
   subroutine test_gradient_on_own_panel(error)
     type(error_type), allocatable, intent(out) :: error
     type(panel_mesh) :: mesh

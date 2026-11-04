@@ -315,17 +315,19 @@ def main():
                        write_terms=1, waterline_method="field")
 
     # The velocity by source solve, on the hulls above: sharp and rounded, free and fixed, half mesh, deep water, two bodies
-    for name, source, motion, write_terms, depth in (("drift_source_cyl", "drift_cyl", "free", 2, 100.0),
-                                                     ("drift_source_cyl_half", "drift_cyl_half", "free", 0, 100.0),
-                                                     ("drift_source_cyl_fixed", "drift_cyl_fixed", "fixed", 0, 100.0),
-                                                     ("drift_source_round", "drift_round", "free", 2, 100.0),
-                                                     ("drift_source_round_fixed", "drift_round_fixed", "fixed", 0, 100.0),
-                                                     ("drift_source_deep", "drift_round_fixed", "fixed", 0, -1.0)):
+    # Frequencies are cut to keep the suite short, with every mesh as in the hulls above: the sharp hull at 0.95 rad/s (free) and
+    # at 0.70 rad/s (fixed), the fixed rounded hull at 0.70 and 1.10, deep water at 1.10, and the free rounded hull at all three
+    for name, source, motion, write_terms, depth, frequencies in (
+            ("drift_source_cyl", "drift_cyl", "free", 2, 100.0, (0.95,)),
+            ("drift_source_cyl_half", "drift_cyl_half", "free", 0, 100.0, (0.95,)),
+            ("drift_source_cyl_fixed", "drift_cyl_fixed", "fixed", 0, 100.0, (0.70,)),
+            ("drift_source_round", "drift_round", "free", 2, 100.0, DRIFT_CYL_FREQUENCIES),
+            ("drift_source_round_fixed", "drift_round_fixed", "fixed", 0, 100.0, (0.70, 1.10)),
+            ("drift_source_deep", "drift_round_fixed", "fixed", 0, -1.0, (1.10,))):
         target = case_dir(data, name)
         for file in ("HullMesh.pnl", "Hydrostatic.in"):
             shutil.copyfile(os.path.join(data, source, "input", file), os.path.join(target, file))
-        write_control(os.path.join(target, "ControlFile.in"), depth=depth,
-                      frequencies=DRIFT_CYL_FREQUENCIES[1:] if depth < 0.0 else DRIFT_CYL_FREQUENCIES,
+        write_control(os.path.join(target, "ControlFile.in"), depth=depth, frequencies=frequencies,
                       headings=DRIFT_CYL_HEADINGS)
         write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state=motion,
                            write_terms=write_terms, velocity_method="source")

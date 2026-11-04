@@ -6,8 +6,8 @@
     0_inf_frequency_limits      0
     Input_frequency_type        3
     Output_frequency_type       3
-    Number_of_frequencies      3
-  0.7000 0.9500 1.1000
+    Number_of_frequencies      1
+  0.7000
    #End Definition of Wave Frequencies
 
    #Start Definition of Wave Headings

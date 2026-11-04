@@ -31,11 +31,14 @@ MODULE SurfaceVelocity
    !    (2 pi I + D) sigma = 4 pi dphi_p/dn,   D_ij = n_i . int_j grad_p G dS
    !    grad phi_p(i) = (1/4 pi) [ 2 pi sigma_i n_i + sum_j sigma_j int_j grad_p G dS ]
    !
-   ! with grad_p the gradient with respect to the field point. CGRN and RKBN cannot give it. They hold derivatives with respect
-   ! to the source point, and on near panels RKBN adds the z parts of 1/r and of its image, whose z gradients with respect to the
-   ! field point have opposite signs. In finite depth the wave part is not a function of z_p + z_q alone, so its z gradient with
-   ! respect to the field point is a different number. So source_panel_integrals calls the Green function again, with the
-   ! field point in the first place.
+   ! with grad_p the gradient with respect to the field point. The stored arrays CGRN and RKBN are not used. For the entry (i, j)
+   ! they hold derivatives with respect to the source point, and on near panels RKBN adds the z parts of 1/r and of its image,
+   ! whose z gradients with respect to the field point have opposite signs. In finite depth the wave part is not a function of
+   ! z_p + z_q alone, so its z gradient with respect to the field point is a different number. The transposed entry
+   ! CGRN(j, i, is, 2:4) does hold the wave part of the gradient, from FINGREEN3D with xq = x_i and xp = M_is x_j. So a stored
+   ! route exists for the most part. The Rankine z part would still need one fresh panel integral for each near pair, and the
+   ! stored values are single precision. What it would save has not been measured. This route calls the Green function again
+   ! in double precision, with the field point in the first place, in source_panel_integrals.
 
    USE Const_mod, ONLY: RXY
    USE HAMS_mod, ONLY: NTHREAD
@@ -154,6 +157,7 @@ CONTAINS
          RETURN
       END IF
 
+      ! The V = -1 branch of IMAGE_TERM_EXACT is left out, since limit frequencies return before this code.
       CALL rankine_panel_integral(xf, jel, mesh%ncn(jel), is_multi, rk)
       CALL rankine_panel_integral([xf(1), xf(2), -xf(3)], jel, mesh%ncn(jel), is_multi, rk_image)
       d = [xf(1) - xq(1), xf(2) - xq(2), xf(3) + xq(3)]
