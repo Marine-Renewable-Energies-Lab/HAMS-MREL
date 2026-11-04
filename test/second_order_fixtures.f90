@@ -1,10 +1,11 @@
 !> Geometry fixtures shared by the second-order unit tests.
 module second_order_fixtures
-  use SecondOrderTypes, only : panel_mesh
+  use SecondOrderTypes, only : panel_mesh, first_order_state
+  use FirstOrderState, only : depth_factor, incident_phi, incident_grad
   implicit none
   private
 
-  public :: make_cylinder, set_panel
+  public :: make_cylinder, set_panel, maccamy_fuchs_a, maccamy_fuchs_state
 
 contains
 
@@ -130,5 +131,113 @@ contains
   end function bottom_node
 
 end subroutine make_cylinder
+
+!> Hankel function of the first kind H_n^(1)(x).
+complex(8) function hankel1(n, x)
+  integer, intent(in) :: n
+  real(8), intent(in) :: x
+  hankel1 = cmplx(bessel_jn(n, x), bessel_yn(n, x), kind=8)
+end function hankel1
+
+!> Derivative H_n^(1)'(x) = H_{n-1}(x) - (n/x) H_n(x), using H_{-1} = -H_1.
+complex(8) function hankel1_prime(n, x)
+  integer, intent(in) :: n
+  real(8), intent(in) :: x
+  if (n == 0) then
+    hankel1_prime = -hankel1(1, x)
+  else
+    hankel1_prime = hankel1(n - 1, x) - real(n, 8) / x * hankel1(n, x)
+  end if
+end function hankel1_prime
+
+!> Derivative J_n'(x) = J_{n-1}(x) - (n/x) J_n(x), using J_{-1} = -J_1.
+real(8) function bessel_j_prime(n, x)
+  integer, intent(in) :: n
+  real(8), intent(in) :: x
+  if (n == 0) then
+    bessel_j_prime = -bessel_jn(1, x)
+  else
+    bessel_j_prime = bessel_jn(n - 1, x) - real(n, 8) / x * bessel_jn(n, x)
+  end if
+end function bessel_j_prime
+
+!> Far-field amplitude a(theta) of the scattered wave of a fixed bottom-mounted cylinder of radius a_rad
+!> (MacCamy-Fuchs), for an incident elevation amp e^{ik(x cos(beta) + y sin(beta))}:
+!> a = -amp sqrt(2/(pi k)) e^{-i pi/4} sum_n eps_n J_n'(ka)/H_n'(ka) cos n(theta - beta).
+complex(8) function maccamy_fuchs_a(theta, a_rad, k, amp, beta)
+  real(8), intent(in) :: theta, a_rad, k, amp, beta
+  real(8), parameter :: pi = 3.141592653589793d0
+  complex(8) :: acc
+  integer :: n, nmax
+  real(8) :: eps
+
+  nmax = int(k * a_rad) + 20
+  acc = (0d0, 0d0)
+  do n = 0, nmax
+    eps = merge(1d0, 2d0, n == 0)
+    acc = acc + eps * bessel_j_prime(n, k * a_rad) / hankel1_prime(n, k * a_rad) * cos(real(n, 8) * (theta - beta))
+  end do
+  maccamy_fuchs_a = -amp * sqrt(2d0 / (pi * k)) * exp(cmplx(0d0, -pi / 4d0, kind=8)) * acc
+end function maccamy_fuchs_a
+
+!> Analytic first-order state of a fixed bottom-mounted cylinder (axis z, radius a_rad), no BEM solve. The total
+!> potential on r = a is evaluated at each panel centroid's azimuth and z; phi_i and grad_i are the incident wave
+!> at the centroid, phi_p = phi_total - phi_i, dphi_p_dn = -grad_i . n (fixed body), and grad_p = grad_total - grad_i,
+!> where the total gradient on r = a has only azimuthal and vertical parts. h < 0 is deep water.
+subroutine maccamy_fuchs_state(mesh, a_rad, h, k, omega, amp, beta, g, rho, s)
+  type(panel_mesh), intent(in) :: mesh
+  real(8), intent(in) :: a_rad, h, k, omega, amp, beta, g, rho
+  type(first_order_state), intent(out) :: s
+  complex(8), parameter :: ci = (0d0, 1d0)
+  real(8), parameter :: pi = 3.141592653589793d0
+  complex(8), allocatable :: cn(:)
+  complex(8) :: pref, ssum, dssum, grad_t(3)
+  real(8) :: th, zf, dzf, ka, eps, tr, phi_dir(3)
+  integer :: n, nmax, i
+
+  s%omega = omega
+  s%k = k
+  s%nu = omega**2 / g
+  s%h = h
+  s%amp = amp
+  s%beta = beta
+  s%g = g
+  s%rho = rho
+  allocate(s%phi_i(mesh%n), s%phi_p(mesh%n), s%dphi_p_dn(mesh%n), s%dphi_dn(mesh%n))
+  allocate(s%grad_i(3, mesh%n), s%grad_p(3, mesh%n), s%xi(6, mesh%nbody))
+  s%xi = (0d0, 0d0)
+  s%dphi_dn = (0d0, 0d0)
+
+  ! Series coefficients c_n = eps_n i^n 2i / (pi ka H_n'(ka))
+  ka = k * a_rad
+  nmax = int(ka) + 20
+  allocate(cn(0:nmax))
+  do n = 0, nmax
+    eps = merge(1d0, 2d0, n == 0)
+    cn(n) = eps * ci**n * 2d0 * ci / (pi * ka * hankel1_prime(n, ka))
+  end do
+  pref = cmplx(0d0, -g * amp / omega, kind=8)
+
+  do i = 1, mesh%n
+    th = atan2(mesh%xc(2, i), mesh%xc(1, i))
+    tr = th - beta
+    ssum = (0d0, 0d0)
+    dssum = (0d0, 0d0)
+    do n = 0, nmax
+      ssum = ssum + cn(n) * cos(real(n, 8) * tr)
+      dssum = dssum - cn(n) * real(n, 8) * sin(real(n, 8) * tr)
+    end do
+    call depth_factor(k, mesh%xc(3, i), h, zf, dzf)
+    phi_dir = [-sin(th), cos(th), 0d0]
+    grad_t = pref * zf * dssum / a_rad * phi_dir
+    grad_t(3) = pref * dzf * ssum
+
+    s%phi_i(i) = incident_phi(mesh%xc(:, i), omega, k, h, amp, beta, g)
+    call incident_grad(mesh%xc(:, i), omega, k, h, amp, beta, g, s%grad_i(:, i))
+    s%phi_p(i) = pref * zf * ssum - s%phi_i(i)
+    s%dphi_p_dn(i) = -sum(s%grad_i(:, i) * mesh%nrm(:, i))
+    s%grad_p(:, i) = grad_t - s%grad_i(:, i)
+  end do
+end subroutine maccamy_fuchs_state
 
 end module second_order_fixtures
