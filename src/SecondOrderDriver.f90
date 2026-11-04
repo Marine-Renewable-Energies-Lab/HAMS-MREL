@@ -31,18 +31,20 @@ MODULE SecondOrderDriver
    ! docs/output_files.md.
 
    USE Const_mod, ONLY: G, RHO
+   USE HAMS_mod, ONLY: IRSP
    USE WaveDyn_mod, ONLY: AMP, BETA, BLNR, H, NBETA, NBODY, OUFR, TP, V, W1, WK, WVHD, AMAS, BDMP, EXFC, DSPL, &
                           AMAS_MULTI_COMB, BDMP_MULTI_COMB, BLNR_MULTI, EXFC_MULTI_COMB, DSPL_MULTI_COMB
    USE Body_mod, ONLY: CRS, KSTF, MATX, REFL, XR, XR_MULTI, CRS_MULTI, KSTF_MULTI, MATX_MULTI
    USE PanelMesh_mod, ONLY: DS, DXYZ_P, ISX, ISY, NCN, NCON, NELEM, NSYS, PNSZ, XYZ, XYZ_P, &
                             DS_MULTI_COMB, DXYZ_MULTI_COMB, NCN_MULTI_COMB, NCON_MULTI_COMB, NELEM_MULTI, NTND_MULTI, &
-                            PNSZ_MULTI_COMB, XYZ_GLOBAL_MULTI_COMB, XYZ_GLOBAL_MULTI_COMB_P
-   USE Inerfs_mod, ONLY: NELEM_PE
+                            PNSZ_MULTI_COMB, XYZ_GLOBAL_MULTI_COMB, XYZ_GLOBAL_MULTI_COMB_P, iXYZ_GLOBAL_MULTI_COMB, &
+                            iNCN_MULTI_COMB, iNCON_MULTI_COMB
+   USE Inerfs_mod, ONLY: NELEM_PE, iXYZ, iNCN, iNCON
    USE Potentials_mod, ONLY: MXPOT, MXPOT_MULTI_COMB
    USE IO, ONLY: CreateDirectory
    USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom
    USE FirstOrderState, ONLY: expand_images, build_state
-   USE SurfaceGeometry, ONLY: build_surface_geom, DEFAULT_SHARP_DEG
+   USE SurfaceGeometry, ONLY: build_surface_geom, lid_rim_side_ratio, DEFAULT_SHARP_DEG
    USE SurfaceVelocity, ONLY: velocity_differencing
    USE FarFieldDrift, ONLY: far_amplitude, far_field_pair, far_field_pairs
    USE NearFieldDrift, ONLY: waterline_extrapolate, near_field_pair, T_WATERLINE, T_HYDROSTATIC
@@ -55,6 +57,10 @@ MODULE SecondOrderDriver
    REAL(8), PARAMETER :: PI = 3.141592653589793D0
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
    INTEGER, PARAMETER :: DIAG_N_ANGLES = 72            ! angles of the far-field amplitudes in the diagnostics
+   ! A rim side ratio of the waterplane mesh below this starts to shift results with IRSP = 1, on the hull of test/data/drift_cyl:
+   ! at 0.5 near-field F_x by up to 1.2% and heave excitation by 1.3%, at 0.3 by 3.5% and 4.6%, at 0.2 by 13.6% and 6.7%.
+   ! Discs with rings uniform in radius have at least 0.67, graded ones at most 0.34, the lids in examples/ 0.53.
+   REAL(8), PARAMETER :: THIN_LID_RIM_RATIO = 0.5D0
 
    TYPE(panel_mesh) :: mesh
    TYPE(surface_geom) :: geom
@@ -74,6 +80,7 @@ CONTAINS
       ALLOCATE (body(NELEM))
       body = 1
       CALL expand_images(XYZ_P, DXYZ_P, DS, PNSZ, XYZ, NCN, NCON, body, RESHAPE(XR, [3, 1]), ISX, ISY, NSYS, mesh)
+      IF (IRSP == 1) CALL warn_thin_lid(lid_rim_side_ratio(iXYZ, iNCN, iNCON))
       CALL common_setup(opts, outputdir)
    END SUBROUTINE so_setup_single
 
@@ -95,8 +102,17 @@ CONTAINS
                          DS_MULTI_COMB(1:NELEM_PE), PNSZ_MULTI_COMB(1:NELEM_PE), &
                          XYZ_GLOBAL_MULTI_COMB(1:SUM(NTND_MULTI), :), NCN_MULTI_COMB(1:NELEM_PE), &
                          NCON_MULTI_COMB(1:NELEM_PE, :), body, TRANSPOSE(XR_MULTI), ISX, ISY, NSYS, mesh)
+      IF (IRSP == 1) CALL warn_thin_lid(lid_rim_side_ratio(iXYZ_GLOBAL_MULTI_COMB, iNCN_MULTI_COMB, iNCON_MULTI_COMB))
       CALL common_setup(opts, outputdir)
    END SUBROUTINE so_setup_multi
+
+   SUBROUTINE warn_thin_lid(ratio)
+      REAL(8), INTENT(IN) :: ratio
+
+      IF (ratio < THIN_LID_RIM_RATIO) WRITE (*, '(a,F6.3,a,F4.2,a)') ' Mean drift warning: the rim panels of the waterplane ' &
+         //'mesh have a side ratio of', ratio, ', below ', THIN_LID_RIM_RATIO, '. With IRSP = 1 such a lid shifts first-order ' &
+         //'results and drift. See docs/output_files.md.'
+   END SUBROUTINE warn_thin_lid
 
    SUBROUTINE common_setup(opts, outputdir)
       TYPE(so_options), INTENT(IN) :: opts

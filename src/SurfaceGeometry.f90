@@ -30,7 +30,7 @@ MODULE SurfaceGeometry
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: build_surface_geom, DEFAULT_SHARP_DEG
+   PUBLIC :: build_surface_geom, lid_rim_side_ratio, DEFAULT_SHARP_DEG
 
    REAL(8), PARAMETER :: DEFAULT_SHARP_DEG = 45D0
    REAL(8), PARAMETER :: MERGE_TOL = 1D-6   ! node merging tolerance, relative to the body size
@@ -54,7 +54,7 @@ CONTAINS
       INTEGER :: n, nb, nn, i, m, mp, a, b, e, ne, g, h, iw, ib
       REAL(8), ALLOCATABLE :: bsize(:), ztol(:), key(:)
       INTEGER, ALLOCATABLE :: rep(:), ea(:), eb(:), ep(:), ord(:), segn(:,:), cnt(:), nbad(:), nfree(:), nwl_b(:)
-      LOGICAL, ALLOCATABLE :: single(:), onwl(:)
+      LOGICAL, ALLOCATABLE :: single(:), onwl(:), nonconforming(:)
       REAL(8) :: nhm, t(2), x1(3), x2(3)
       CHARACTER(LEN=300) :: line
 
@@ -119,9 +119,10 @@ CONTAINS
          IF (key(ord(g)) >= 0D0 .AND. h == g) single(ord(g)) = .TRUE.
          g = h + 1
       END DO
-      ALLOCATE (nfree(nb), nwl_b(nb))
+      ALLOCATE (nfree(nb), nwl_b(nb), nonconforming(n))
       nfree = 0
       nwl_b = 0
+      nonconforming = .FALSE.
       DO e = 1, ne
          onwl(e) = .FALSE.
          IF (.NOT. single(e)) CYCLE
@@ -130,6 +131,7 @@ CONTAINS
             onwl(e) = .TRUE.
          ELSE
             nfree(ib) = nfree(ib) + 1
+            nonconforming(ep(e)) = .TRUE.
          END IF
       END DO
 
@@ -176,7 +178,7 @@ CONTAINS
 
       CALL waterplane_properties(mesh, geom)
       CALL volume_properties(mesh, geom)
-      CALL build_neighbours(mesh, rep, sharp_deg, geom%nbr_start, geom%nbr)
+      CALL build_neighbours(mesh, rep, nonconforming, sharp_deg, geom%nbr_start, geom%nbr)
 
       ! A waterline node should close up in exactly two segments of its body.
       ALLOCATE (cnt(nn), nbad(nb))
@@ -426,11 +428,14 @@ CONTAINS
       quad_sum = a*a + b*b + c*c + a*b + b*c + a*c
    END FUNCTION quad_sum
 
-   SUBROUTINE build_neighbours(mesh, rep, sharp_deg, nbr_start, nbr)
-      ! Neighbours of a panel: panels sharing a merged node, plus panels of the same body whose centroids are within
-      ! 1.5 x the larger panel size (non-conforming meshes). Pairs with normals more than sharp_deg apart are dropped.
+   SUBROUTINE build_neighbours(mesh, rep, nonconforming, sharp_deg, nbr_start, nbr)
+      ! Neighbours of a panel: panels sharing a merged node. A panel with an open edge away from the waterline
+      ! (nonconforming) also has the panels of the same body whose centroids are within 1.5 x the larger panel size, to
+      ! reach across the gap. Other panels must not: this distance changes with the panel aspect ratio, and the velocity
+      ! fit and the drift jump with it. Pairs with normals more than sharp_deg apart are dropped.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       INTEGER, INTENT(IN) :: rep(:)
+      LOGICAL, INTENT(IN) :: nonconforming(:)
       REAL(8), INTENT(IN) :: sharp_deg
       INTEGER, ALLOCATABLE, INTENT(OUT) :: nbr_start(:), nbr(:)
       INTEGER, ALLOCATABLE :: nstart(:), nlist(:), fillpos(:), mark(:), ord(:), rank(:)
@@ -488,6 +493,7 @@ CONTAINS
                END DO
             END DO
             DO dirn = -1, 1, 2   ! centroids close by
+               IF (.NOT. nonconforming(i)) EXIT
                r = rank(i) + dirn
                DO WHILE (r >= 1 .AND. r <= n)
                   j = ord(r)
@@ -516,5 +522,56 @@ CONTAINS
       END SUBROUTINE consider
 
    END SUBROUTINE build_neighbours
+
+   REAL(8) FUNCTION lid_rim_side_ratio(xyz, ncn, ncon) RESULT(ratio)
+      ! Smallest ratio of the shortest to the longest side, over the panels of a waterplane mesh that have an edge on no
+      ! other panel, which are the panels of its rim. 1 for no panels. Arrays in the layout of the HAMS globals: xyz(node,3),
+      ! ncn(panel), ncon(panel,4). The panels inside are left out: fans at the centre of a disc are thin on any mesh.
+      REAL(8), INTENT(IN) :: xyz(:,:)
+      INTEGER, INTENT(IN) :: ncn(:), ncon(:,:)
+      REAL(8), ALLOCATABLE :: key(:)
+      INTEGER, ALLOCATABLE :: ord(:), panel(:)
+      LOGICAL, ALLOCATABLE :: rim(:)
+      REAL(8) :: side, shortest, longest
+      INTEGER :: i, m, a, b, e, ne
+
+      ratio = 1D0
+      ne = SUM(ncn)
+      IF (ne == 0) RETURN
+      ALLOCATE (key(ne), panel(ne), rim(SIZE(ncn)))
+      rim = .FALSE.
+      e = 0
+      DO i = 1, SIZE(ncn)
+         DO m = 1, ncn(i)
+            a = ncon(i, m)
+            b = ncon(i, MOD(m, ncn(i)) + 1)
+            e = e + 1
+            panel(e) = i
+            key(e) = REAL(MIN(a, b), 8)*REAL(SIZE(xyz, 1) + 1, 8) + REAL(MAX(a, b), 8)
+         END DO
+      END DO
+      CALL sort_index(key, ord)
+      DO e = 1, ne
+         IF (e > 1) THEN
+            IF (key(ord(e - 1)) == key(ord(e))) CYCLE
+         END IF
+         IF (e < ne) THEN
+            IF (key(ord(e + 1)) == key(ord(e))) CYCLE
+         END IF
+         rim(panel(ord(e))) = .TRUE.
+      END DO
+      DO i = 1, SIZE(ncn)
+         IF (.NOT. rim(i)) CYCLE
+         shortest = HUGE(1D0)
+         longest = 0D0
+         DO m = 1, ncn(i)
+            side = SQRT(SUM((xyz(ncon(i, m), :) - xyz(ncon(i, MOD(m, ncn(i)) + 1), :))**2))
+            IF (side <= 0D0) CYCLE   ! a triangle written as a quadrilateral
+            shortest = MIN(shortest, side)
+            longest = MAX(longest, side)
+         END DO
+         IF (longest > 0D0) ratio = MIN(ratio, shortest/longest)
+      END DO
+   END FUNCTION lid_rim_side_ratio
 
 END MODULE SurfaceGeometry

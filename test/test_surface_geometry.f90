@@ -3,7 +3,7 @@ module test_surface_geometry
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use SecondOrderTypes, only : panel_mesh, surface_geom
   use FirstOrderState, only : expand_images
-  use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
+  use SurfaceGeometry, only : build_surface_geom, lid_rim_side_ratio, DEFAULT_SHARP_DEG
   use second_order_fixtures, only : make_cylinder, set_panel
   implicit none
   private
@@ -26,6 +26,8 @@ subroutine collect_surface_geometry(testsuite)
     new_unittest("submerged_body_no_waterline", test_submerged_body_no_waterline), &
     new_unittest("symmetry_images_join", test_symmetry_images_join), &
     new_unittest("nonconforming_neighbours", test_nonconforming_neighbours), &
+    new_unittest("conforming_no_proximity", test_conforming_no_proximity), &
+    new_unittest("lid_rim_ratio", test_lid_rim_ratio), &
     new_unittest("sharp_edge_excluded", test_sharp_edge_excluded), &
     new_unittest("wp_properties_box", test_wp_properties_box), &
     new_unittest("lid_panels_rejected", test_lid_panels_rejected), &
@@ -421,6 +423,104 @@ subroutine test_nonconforming_neighbours(error)
   if (allocated(error)) return
   call check(error, .not. has_nbr(geom, 2, 2), "not its own neighbour")
 end subroutine test_nonconforming_neighbours
+
+!> A 5 x 5 flat grid below the waterline, with a panel size large enough for centroids two columns apart to be in reach.
+!> The panels with an open edge get them, the panels with none do not.
+subroutine test_conforming_no_proximity(error)
+  type(error_type), allocatable, intent(out) :: error
+  integer, parameter :: ng = 5
+  real(8), parameter :: nrm(3) = [0d0, 1d0, 0d0]
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  logical :: ok
+  character(len=:), allocatable :: msg
+  integer :: ix, iz
+
+  call alloc_mesh(ng*ng, (ng + 1)*(ng + 1), mesh)
+  do iz = 0, ng
+    do ix = 0, ng
+      mesh%xnode(:, node(ix, iz)) = [real(ix, 8), 0d0, -1d0 - real(iz, 8)]
+    end do
+  end do
+  do iz = 0, ng - 1
+    do ix = 0, ng - 1
+      call set_quad(mesh, panel(ix, iz), node(ix, iz), node(ix + 1, iz), node(ix + 1, iz + 1), node(ix, iz + 1), nrm)
+    end do
+  end do
+  mesh%psize = 2d0
+  call build_surface_geom(mesh, wl_tol, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call check(error, ok, "build")
+  if (allocated(error)) return
+  call check(error, has_nbr(geom, panel(2, 2), panel(1, 1)) .and. has_nbr(geom, panel(2, 2), panel(3, 2)), &
+             "a conforming panel keeps the panels sharing a node")
+  if (allocated(error)) return
+  call check(error, .not. has_nbr(geom, panel(2, 2), panel(0, 2)) .and. .not. has_nbr(geom, panel(2, 2), panel(4, 2)), &
+             "a conforming panel has a proximity neighbour")
+  if (allocated(error)) return
+  call check(error, geom%nbr_start(panel(2, 2) + 1) - geom%nbr_start(panel(2, 2)) == 8, &
+             "a conforming panel of the grid has 8 neighbours")
+  if (allocated(error)) return
+  call check(error, has_nbr(geom, panel(0, 2), panel(2, 2)), "a panel with an open edge has lost its proximity neighbour")
+
+contains
+
+  integer function node(ix, iz)
+    integer, intent(in) :: ix, iz
+    node = 1 + ix + (ng + 1)*iz
+  end function node
+
+  integer function panel(ix, iz)
+    integer, intent(in) :: ix, iz
+    panel = 1 + ix + ng*iz
+  end function panel
+
+end subroutine test_conforming_no_proximity
+
+!> A lid of 3 x 3 panels: a thin rim column gives the ratio, a repeated node is not a zero side, and no panels give 1.
+subroutine test_lid_rim_ratio(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8) :: xyz(16, 3)
+  integer :: ncn(9), ncon(9, 4), ix, iy, ip
+  real(8), parameter :: tol = 1d-12
+
+  ncn = 4
+  ip = 0
+  do iy = 0, 2
+    do ix = 0, 2
+      ip = ip + 1
+      ncon(ip, :) = [1 + ix + 4*iy, 2 + ix + 4*iy, 6 + ix + 4*iy, 5 + ix + 4*iy]
+    end do
+  end do
+
+  call fill([0d0, 1d0, 2d0, 3d0], [0d0, 1d0, 2d0, 3d0])
+  call check(error, abs(lid_rim_side_ratio(xyz, ncn, ncon) - 1d0) < tol, "uniform lid")
+  if (allocated(error)) return
+
+  call fill([0d0, 0.2d0, 1.2d0, 2.2d0], [0d0, 1d0, 2d0, 3d0])
+  call check(error, abs(lid_rim_side_ratio(xyz, ncn, ncon) - 0.2d0) < tol, "thin rim column")
+  if (allocated(error)) return
+
+  call fill([0d0, 1d0, 2d0, 3d0], [0d0, 1d0, 2d0, 3d0])
+  ncon(1, 4) = ncon(1, 3)
+  call check(error, lid_rim_side_ratio(xyz, ncn, ncon) > 0.5d0, "a repeated node")
+  if (allocated(error)) return
+
+  call check(error, lid_rim_side_ratio(xyz, ncn(1:0), ncon(1:0, :)) == 1d0, "no panels")
+
+contains
+
+  subroutine fill(x, y)
+    real(8), intent(in) :: x(4), y(4)
+    integer :: i, j
+
+    do j = 0, 3
+      do i = 0, 3
+        xyz(1 + i + 4*j, :) = [x(i + 1), y(j + 1), 0d0]
+      end do
+    end do
+  end subroutine fill
+
+end subroutine test_lid_rim_ratio
 
 subroutine test_sharp_edge_excluded(error)
   type(error_type), allocatable, intent(out) :: error
