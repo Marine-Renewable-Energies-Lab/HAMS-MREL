@@ -67,6 +67,8 @@ contains
         call check(error, all(DXYZ_P(1:NE,col) == plain(:,col)), "a mode changed another column of DXYZ_P")
         if (allocated(error)) return
       end do
+      call check(error, all(GEONRM_P(1:NE,:) == plain(:,1:3)), "a mode changed the geometric normal")
+      if (allocated(error)) return
     end do
   end subroutine test_single_override
 
@@ -110,20 +112,24 @@ contains
   subroutine test_single_dbc(error)
     type(error_type), allocatable, intent(out) :: error
     complex(8) :: plain(NE,NE,2,3), got(NE,NE,2,3)
-    integer :: dof
+    integer :: dof, sym
     call setup_single
-    call read_single(0)
-    call single_dbc(plain)
-    do dof = 1, 3
-      call read_single(dof)
-      call single_dbc(got)
-      call check_close(plain(:,:,:,1), got(:,:,:,1), "DBC_RIGHT", dof, error)
-      if (allocated(error)) return
-      call check_close(plain(:,:,:,2), got(:,:,:,2), "DBC_IRR, hull rows", dof, error)
-      if (allocated(error)) return
-      call check_close(plain(:,:,:,3), got(:,:,:,3), "DBC_IRR, lid rows", dof, error)
-      if (allocated(error)) return
+    do sym = 0, 1
+      call set_symmetry(sym)
+      call read_single(0)
+      call single_dbc(plain)
+      do dof = 1, 3
+        call read_single(dof)
+        call single_dbc(got)
+        call check_close(plain(:,:,:,1), got(:,:,:,1), "DBC_RIGHT", dof, error)
+        if (allocated(error)) return
+        call check_close(plain(:,:,:,2), got(:,:,:,2), "DBC_IRR, hull rows", dof, error)
+        if (allocated(error)) return
+        call check_close(plain(:,:,:,3), got(:,:,:,3), "DBC_IRR, lid rows", dof, error)
+        if (allocated(error)) return
+      end do
     end do
+    call set_symmetry(0)
   end subroutine test_single_dbc
 
   subroutine single_dbc(out)
@@ -135,13 +141,13 @@ contains
         do iel = 1, NE
           tinrd = (0d0, 0d0)
           call DBC_RIGHT(1, iel, jel, tinrd, flag)
-          out(iel,jel,flag+1,1) = tinrd(1,1)
+          out(iel,jel,flag+1,1) = tinrd(1,1) + (0d0, 1d0)*tinrd(1,2)
           tinrd = (0d0, 0d0)
           call DBC_IRR(1, iel, jel, tinrd, 1, flag)
-          out(iel,jel,flag+1,2) = tinrd(1,1)
+          out(iel,jel,flag+1,2) = tinrd(1,1) + (0d0, 1d0)*tinrd(1,2)
           tinrd = (0d0, 0d0)
           call DBC_IRR(1, iel, jel, tinrd, 3, flag)
-          out(iel,jel,flag+1,3) = tinrd(1,1)
+          out(iel,jel,flag+1,3) = tinrd(1,1) + (0d0, 1d0)*tinrd(1,2)
         end do
       end do
     end do
@@ -260,6 +266,8 @@ contains
           end if
           if (allocated(error)) return
         end do
+        call check(error, all(GEONRM_MULTI_COMB(1:2*NE,:) == plain(:,1:3)), "a mode changed the geometric normal")
+        if (allocated(error)) return
       end do
     end do
   end subroutine test_multi_override
@@ -306,22 +314,26 @@ contains
   subroutine test_multi_dbc(error)
     type(error_type), allocatable, intent(out) :: error
     complex(8) :: plain(2*NE,2*NE,2,3), got(2*NE,2*NE,2,3)
-    integer :: dof, body
+    integer :: dof, body, sym
     call setup_multi
-    call read_multi(0, 0)
-    call multi_dbc(plain)
-    do body = 1, 2
-      do dof = 1, 3
-        call read_multi(body, dof)
-        call multi_dbc(got)
-        call check_close(plain(:,:,:,1), got(:,:,:,1), "DBC_MULTI_RIGHT", dof, error)
-        if (allocated(error)) return
-        call check_close(plain(:,:,:,2), got(:,:,:,2), "DBC_IRR_MULTI, hull rows", dof, error)
-        if (allocated(error)) return
-        call check_close(plain(:,:,:,3), got(:,:,:,3), "DBC_IRR_MULTI, lid rows", dof, error)
-        if (allocated(error)) return
+    do sym = 0, 1
+      call set_symmetry(sym)
+      call read_multi(0, 0)
+      call multi_dbc(plain)
+      do body = 1, 2
+        do dof = 1, 3
+          call read_multi(body, dof)
+          call multi_dbc(got)
+          call check_close(plain(:,:,:,1), got(:,:,:,1), "DBC_MULTI_RIGHT", dof, error)
+          if (allocated(error)) return
+          call check_close(plain(:,:,:,2), got(:,:,:,2), "DBC_IRR_MULTI, hull rows", dof, error)
+          if (allocated(error)) return
+          call check_close(plain(:,:,:,3), got(:,:,:,3), "DBC_IRR_MULTI, lid rows", dof, error)
+          if (allocated(error)) return
+        end do
       end do
     end do
+    call set_symmetry(0)
   end subroutine test_multi_dbc
 
   subroutine multi_dbc(out)
@@ -333,13 +345,13 @@ contains
         do iel = 1, 2*NE
           tinrd = (0d0, 0d0)
           call DBC_MULTI_RIGHT(1, iel, jel, tinrd, flag)
-          out(iel,jel,flag+1,1) = tinrd(1,1)
+          out(iel,jel,flag+1,1) = tinrd(1,1) + (0d0, 1d0)*tinrd(1,2)
           tinrd = (0d0, 0d0)
           call DBC_IRR_MULTI(1, iel, jel, tinrd, 1, flag)
-          out(iel,jel,flag+1,2) = tinrd(1,1)
+          out(iel,jel,flag+1,2) = tinrd(1,1) + (0d0, 1d0)*tinrd(1,2)
           tinrd = (0d0, 0d0)
           call DBC_IRR_MULTI(1, iel, jel, tinrd, 3, flag)
-          out(iel,jel,flag+1,3) = tinrd(1,1)
+          out(iel,jel,flag+1,3) = tinrd(1,1) + (0d0, 1d0)*tinrd(1,2)
         end do
       end do
     end do
@@ -521,6 +533,14 @@ contains
     XW = 0d0
   end subroutine common_state
 
+  !> The DBC routines have a separate branch for ISX = 1, ISY = 0, which writes a second image in TINRD.
+  subroutine set_symmetry(sym)
+    integer, intent(in) :: sym
+    NSYS = 1 + sym
+    ISX = sym
+    ISY = 0
+  end subroutine set_symmetry
+
   subroutine setup_single
     integer :: i, j, k
     real(8) :: nodes(NN,3)
@@ -533,7 +553,7 @@ contains
     INELEM = NE
     XR = [0.1d0, -0.2d0, -1d0]
     if (.not. allocated(XYZ)) then
-      allocate(XYZ(NN,3), DS(NE), PNSZ(NE), NCN(NE), NCON(NE,4), XYZ_P(NE,3), DXYZ_P(NE,6), iDXYZ_P(NE,6))
+      allocate(XYZ(NN,3), DS(NE), PNSZ(NE), NCN(NE), NCON(NE,4), XYZ_P(NE,3), DXYZ_P(NE,6), GEONRM_P(NE,3), iDXYZ_P(NE,6))
       allocate(CGRN(NE,NE,1,4), RKBN(NE,NE,1,4), DGRN(NE,NE,1,4), PKBN(NE,NE,1,4), MXPOT(NE,7,1))
     end if
     call box_mesh(nodes, conn)
@@ -576,9 +596,9 @@ contains
     if (.not. allocated(XYZ_GLOBAL_MULTI)) then
       allocate(NELEM_MULTI(2), NTND_MULTI(2), XR_MULTI(2,3))
       allocate(XYZ_GLOBAL_MULTI(2,NN,3), DS_MULTI(2,NE), PNSZ_MULTI(2,NE), NCN_MULTI(2,NE), NCON_MULTI(2,NE,4))
-      allocate(XYZ_MULTI_P(2,NE,3), DXYZ_MULTI_P(2,NE,6))
+      allocate(XYZ_MULTI_P(2,NE,3), DXYZ_MULTI_P(2,NE,6), GEONRM_MULTI_P(2,NE,3))
       allocate(XYZ_GLOBAL_MULTI_COMB(2*NN,3), XYZ_GLOBAL_MULTI_COMB_P(2*NE,3), PNSZ_MULTI_COMB(2*NE), &
-               NCN_MULTI_COMB(2*NE), NCON_MULTI_COMB(2*NE,4), DS_MULTI_COMB(2*NE), DXYZ_MULTI_COMB(2*NE,6), iDXYZ_MULTI_COMB(2*NE,6))
+               NCN_MULTI_COMB(2*NE), NCON_MULTI_COMB(2*NE,4), DS_MULTI_COMB(2*NE), DXYZ_MULTI_COMB(2*NE,6), GEONRM_MULTI_COMB(2*NE,3), iDXYZ_MULTI_COMB(2*NE,6))
       allocate(CGRN_MULTI_COMB(2*NE,2*NE,1,4), RKBN_MULTI_COMB(2*NE,2*NE,1,4), DGRN_MULTI_COMB(2*NE,2*NE,1,4), &
                PKBN_MULTI_COMB(2*NE,2*NE,1,4), MXPOT_MULTI_COMB(2*NE,13,1))
     end if

@@ -135,6 +135,8 @@ CONTAINS
 
       CALL CalRotNormals(XR, XYZ_P, DXYZ_P, NELEM)
 
+      GEONRM_P(1:NELEM,1:3)=DXYZ_P(1:NELEM,1:3)                                       ! Before a generalized mode overwrites DXYZ_P
+
       IF (IFLAG.NE.0) THEN                                                            ! IFLAG is used as an indicator for irregular frequency removal. If 1, these will be removed
 
          CALL CalPanelCentre(iXYZ,INTND,INELEM,INCN,INCON,iXYZ_P)

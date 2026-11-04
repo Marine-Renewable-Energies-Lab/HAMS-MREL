@@ -64,6 +64,7 @@ CONTAINS
         EAR=DS_MULTI_COMB(JEL)
         XEC(:)=XYZ_GLOBAL_MULTI_COMB_P(JEL,:)
         ENV(:)=DXYZ_MULTI_COMB(JEL,:)
+        ENV(1:3)=GEONRM_MULTI_COMB(JEL,:)
         TNV(:)=DXYZ_MULTI_COMB(IEL,:)
         
       ELSEIF (IRR.EQ.3) THEN
@@ -74,6 +75,7 @@ CONTAINS
         EAR=DS_MULTI_COMB(JEL)
         XEC(:)=XYZ_GLOBAL_MULTI_COMB_P(JEL,:)
         ENV(:)=DXYZ_MULTI_COMB(JEL,:)
+        ENV(1:3)=GEONRM_MULTI_COMB(JEL,:)
         TNV(:)=iDXYZ_MULTI_COMB(IEL,:)
         
       ENDIF
@@ -187,6 +189,7 @@ CONTAINS
         EAR=DS_MULTI_COMB(JEL)
         XEC(:)=XYZ_GLOBAL_MULTI_COMB_P(JEL,:)
         ENV(:)=DXYZ_MULTI_COMB(JEL,:)
+        ENV(1:3)=GEONRM_MULTI_COMB(JEL,:)
         TNV(:)=DXYZ_MULTI_COMB(IEL,:)
         
       ELSEIF (IRR.EQ.3) THEN  
@@ -197,6 +200,7 @@ CONTAINS
         EAR=DS_MULTI_COMB(JEL)
         XEC(:)=XYZ_GLOBAL_MULTI_COMB_P(JEL,:)
         ENV(:)=DXYZ_MULTI_COMB(JEL,:)
+        ENV(1:3)=GEONRM_MULTI_COMB(JEL,:)
         TNV(:)=iDXYZ_MULTI_COMB(IEL,:)
         
       ENDIF    
