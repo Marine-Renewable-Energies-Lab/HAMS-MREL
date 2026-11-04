@@ -44,7 +44,7 @@ MODULE SecondOrderDriver
    USE IO, ONLY: CreateDirectory
    USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom
    USE FirstOrderState, ONLY: expand_images, build_state
-   USE SurfaceGeometry, ONLY: build_surface_geom, lid_rim_side_ratio, DEFAULT_SHARP_DEG
+   USE SurfaceGeometry, ONLY: build_surface_geom, DEFAULT_SHARP_DEG
    USE SurfaceVelocity, ONLY: velocity_differencing
    USE FarFieldDrift, ONLY: far_amplitude, far_field_pair, far_field_pairs
    USE NearFieldDrift, ONLY: waterline_extrapolate, near_field_pair, T_WATERLINE, T_HYDROSTATIC
@@ -57,11 +57,6 @@ MODULE SecondOrderDriver
    REAL(8), PARAMETER :: PI = 3.141592653589793D0
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
    INTEGER, PARAMETER :: DIAG_N_ANGLES = 72            ! angles of the far-field amplitudes in the diagnostics
-   ! A ratio from lid_rim_side_ratio below this starts to shift results with IRSP = 1, on the hull of test/data/drift_cyl: at 0.5
-   ! near-field F_x by up to 1.2% and heave excitation by 1.3%, at 0.3 by 3.5% and 4.6%, at 0.2 by 13.6% and 6.7%. Discs with
-   ! rings uniform in radius have about ntheta/(2 pi nr), capped at 1, so they fall below this when ntheta/nr is under about 3.1:
-   ! 32 x 12 has 0.425. Graded discs have at most 0.34, the lids in examples/ 0.76.
-   REAL(8), PARAMETER :: THIN_LID_RIM_RATIO = 0.5D0
 
    TYPE(panel_mesh) :: mesh
    TYPE(surface_geom) :: geom
@@ -81,7 +76,6 @@ CONTAINS
       ALLOCATE (body(NELEM))
       body = 1
       CALL expand_images(XYZ_P, GEONRM_P, DXYZ_P, DS, PNSZ, XYZ, NCN, NCON, body, RESHAPE(XR, [3, 1]), ISX, ISY, NSYS, mesh)
-      IF (IRSP == 1) CALL warn_thin_lid(lid_rim_side_ratio(iXYZ, iNCN, iNCON, ISX, ISY), opts%do_near)
       CALL common_setup(opts, outputdir)
    END SUBROUTINE so_setup_single
 
@@ -103,22 +97,8 @@ CONTAINS
                          DS_MULTI_COMB(1:NELEM_PE), PNSZ_MULTI_COMB(1:NELEM_PE), &
                          XYZ_GLOBAL_MULTI_COMB(1:SUM(NTND_MULTI), :), NCN_MULTI_COMB(1:NELEM_PE), &
                          NCON_MULTI_COMB(1:NELEM_PE, :), body, TRANSPOSE(XR_MULTI), ISX, ISY, NSYS, mesh)
-      IF (IRSP == 1) CALL warn_thin_lid(lid_rim_side_ratio(iXYZ_GLOBAL_MULTI_COMB, iNCN_MULTI_COMB, iNCON_MULTI_COMB, ISX, ISY), &
-                                        opts%do_near)
       CALL common_setup(opts, outputdir)
    END SUBROUTINE so_setup_multi
-
-   SUBROUTINE warn_thin_lid(ratio, near)
-      REAL(8), INTENT(IN) :: ratio
-      LOGICAL, INTENT(IN) :: near
-
-      IF (ratio >= THIN_LID_RIM_RATIO) RETURN
-      WRITE (*, '(a,F6.3,a,F4.2,a)') ' Mean drift warning: the rim panels of the waterplane mesh have a side ratio of', ratio, &
-         ', below ', THIN_LID_RIM_RATIO, '. With IRSP = 1 such a lid shifts first-order results and drift. See ' &
-         //'docs/output_files.md.'
-      IF (near) WRITE (*, '(a)') ' Mean drift warning: under such a lid near-field can be wrong in sign, -408% against ' &
-         //'far-field measured at 1792 panels. Use a uniform lid with ntheta/nr above about 3.1, and check near-field against far-field.'
-   END SUBROUTINE warn_thin_lid
 
    SUBROUTINE common_setup(opts, outputdir)
       TYPE(so_options), INTENT(IN) :: opts

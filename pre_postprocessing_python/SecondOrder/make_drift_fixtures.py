@@ -33,7 +33,6 @@ DRIFT_BOX_MESH = dict(lx=20.0, ly=10.0, draft=5.0, nx=20, ny=10, nz=4)
 OBLIQUE_FREQUENCIES = (0.8, 1.0)   # of the box and the ellipsoid
 ROTATED_BOX_MESH = dict(lx=20.0, ly=10.0, draft=5.0, nx=10, ny=5, nz=3)
 ROTATED_DEG = 30.0
-THIN_LID_MESH = dict(radius=5.0, draft=5.0, ntheta=12, nz=3, nr=3)
 # Hull panels whose centroids are the field points of drift_cyl: side, bottom, bilge, lee and weather
 FIELD_PANELS = (1, 4, 8, 9, 14, 40, 85, 130, 133, 200, 270, 448)
 
@@ -224,26 +223,6 @@ def main():
                       body_origins=[(0.0, 0.0), (0.0, 30.0)], irsp=irsp)
         write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="free",
                            write_terms=0)
-
-    # Graded lids, which must draw the warning on thin rim panels, one body and two, and with near-field on
-    for name, methods in (("drift_lid_graded", "far"), ("drift_lid_graded_near", both)):
-        target = case_dir(data, name)
-        make_mesh.write_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"), **THIN_LID_MESH)
-        make_mesh.write_waterplane(os.path.join(target, "WaterPlaneMesh.pnl"), THIN_LID_MESH["radius"], THIN_LID_MESH["ntheta"],
-                                   THIN_LID_MESH["nr"], graded=True)
-        write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=(1.35,), headings=(0.0,), irsp=1)
-        write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=methods, motion_state="fixed",
-                           write_terms=0)
-    target = case_dir(data, "drift_two_lid_graded")
-    for body in (1, 2):
-        make_mesh.write_cylinder(os.path.join(target, "HullMesh_%d.pnl" % body),
-                                 os.path.join(target, "Hydrostatic_%d.in" % body), **THIN_LID_MESH)
-        make_mesh.write_waterplane(os.path.join(target, "WaterPlaneMesh_%d.pnl" % body), THIN_LID_MESH["radius"],
-                                   THIN_LID_MESH["ntheta"], THIN_LID_MESH["nr"], graded=(body == 2))
-    write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=(1.35,), headings=(0.0,),
-                  body_origins=[(0.0, 0.0), (0.0, 30.0)], irsp=1)
-    write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods="far", motion_state="fixed",
-                       write_terms=0)
 
     # Two cylinders with rounded bilges
     target = case_dir(data, "drift_two_round")

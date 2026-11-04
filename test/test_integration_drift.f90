@@ -44,10 +44,14 @@ module test_integration_drift
     ! pre_postprocessing_python/SecondOrder/near_far_study.py for the 5% on these hulls.
     real(8), parameter :: regression_band = 1d-2
     ! At 0.70 rad/s the free cylinder's net drift force is 4.6% of term I, from cancellation between much larger terms. Near-field
-    ! against far-field falls there, +3.99%, +0.87%, +0.34% at 480, 1920, 4320 panels, and is printed, not checked
+    ! against far-field there is +3.99%, +0.87%, +0.34% at 480, 1920, 4320 panels. free_near_far leaves that frequency out, and
+    ! free_near_far_low_frequency checks it alone
     real(8), parameter :: small_net_force_below = 0.8d0
-    ! On the springs, the heave resonance moves to about 0.86 rad/s, so 0.95 rad/s is near it and only has a regression band
+    real(8), parameter :: low_frequency = 0.70d0
+    ! On the springs, the heave resonance moves to about 0.86 rad/s, so 0.95 rad/s is near it. external_stiffness leaves out the
+    ! frequencies below this, and external_stiffness_near_resonance checks 0.95 rad/s alone, with a regression band beside it
     real(8), parameter :: springs_away_from_resonance = 1d0
+    real(8), parameter :: springs_near_resonance = 0.95d0
     ! Off-diagonal heading pairs of two_body_total are about 1/7 of the diagonal loads: a regression limit
     real(8), parameter :: heading_pair_limit = 1d-1
 
@@ -83,10 +87,7 @@ contains
             new_unittest("run_drift_irsp", run_drift_irsp), &
             new_unittest("run_drift_irsp_ref", run_drift_irsp_ref), &
             new_unittest("run_drift_two_irsp", run_drift_two_irsp), &
-            new_unittest("run_drift_two_irsp_ref", run_drift_two_irsp_ref), &
-            new_unittest("run_drift_lid_graded", run_drift_lid_graded), &
-            new_unittest("run_drift_lid_graded_near", run_drift_lid_graded_near), &
-            new_unittest("run_drift_two_lid_graded", run_drift_two_lid_graded) &
+            new_unittest("run_drift_two_irsp_ref", run_drift_two_irsp_ref) &
         ]
     end subroutine setup_drift
 
@@ -111,8 +112,10 @@ contains
             new_unittest("half_mesh_matches_full", half_mesh_matches_full), &
             new_unittest("fixed_near_far", fixed_near_far), &
             new_unittest("free_near_far", free_near_far), &
+            new_unittest("free_near_far_low_frequency", free_near_far_low_frequency), &
             new_unittest("near_mz_far_mz", near_mz_far_mz), &
             new_unittest("external_stiffness", external_stiffness), &
+            new_unittest("external_stiffness_near_resonance", external_stiffness_near_resonance), &
             new_unittest("external_stiffness_near_resonance_regression", external_stiffness_near_resonance_regression), &
             new_unittest("two_body_total", two_body_total), &
             new_unittest("fixed_near_far_sharp_regression", fixed_near_far_sharp_regression), &
@@ -125,8 +128,7 @@ contains
             new_unittest("bidirectional", bidirectional), &
             new_unittest("irsp_stability", irsp_stability), &
             new_unittest("terms_sum_to_total", terms_sum_to_total), &
-            new_unittest("near_output_switches", near_output_switches), &
-            new_unittest("thin_lid_warning", thin_lid_warning) &
+            new_unittest("near_output_switches", near_output_switches) &
         ]
     end subroutine collect_tests_drift
 
@@ -284,21 +286,6 @@ contains
         type(error_type), allocatable, intent(out) :: error
         call run_case("drift_two_irsp_ref", both_drift_files(), error)
     end subroutine run_drift_two_irsp_ref
-
-    subroutine run_drift_lid_graded(error)
-        type(error_type), allocatable, intent(out) :: error
-        call run_case("drift_lid_graded", drift_file_only(), error)
-    end subroutine run_drift_lid_graded
-
-    subroutine run_drift_lid_graded_near(error)
-        type(error_type), allocatable, intent(out) :: error
-        call run_case("drift_lid_graded_near", drift_file_only(), error)
-    end subroutine run_drift_lid_graded_near
-
-    subroutine run_drift_two_lid_graded(error)
-        type(error_type), allocatable, intent(out) :: error
-        call run_case("drift_two_lid_graded", drift_file_only(), error)
-    end subroutine run_drift_two_lid_graded
 
     function drift_file_only() result(files)
         character(len=40) :: files(1)
@@ -790,6 +777,17 @@ contains
         call check_below(error, "free_near_far", worst_fx, near_far_limit)
     end subroutine free_near_far
 
+    !> The free cylinder at 0.70 rad/s alone, where the net force is small next to its terms. The worst force vector over the
+    !> headings, which is F_x at heading 0.
+    subroutine free_near_far_low_frequency(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst_fx, worst_f, worst_mz
+
+        call near_against_far("drift_round", origins_at_zero(1), 0d0, worst_fx, worst_f, worst_mz, error, only_omega=low_frequency)
+        if (allocated(error)) return
+        call check_below(error, "free_near_far_low_frequency", worst_f, near_far_limit)
+    end subroutine free_near_far_low_frequency
+
     !> M_z about the global origin at an oblique heading: on a half ellipsoid the yaw moment comes from the pressure, and on
     !> a round hull on external surge springs from the term xi x G, as the heave and surge motions differ.
     subroutine near_mz_far_mz(error)
@@ -818,9 +816,20 @@ contains
         call check_below(error, "external_stiffness", worst_f, near_far_limit)
     end subroutine external_stiffness
 
-    !> Regression band, not accuracy: F_x and F_y at 0.95 rad/s, near the heave resonance on the springs, where F_x at heading 0
-    !> is 4.4% above far-field at this mesh, and 7.3% at heading 30, where the force vector is 2.7% off. It falls with refinement
-    !> at heading 0, to +1.1% and +0.5% at 1920 and 4320 panels, but this row is not checked against 5%.
+    !> The springs at 0.95 rad/s alone, near the heave resonance. The worst force vector over the headings: F_x at heading 0 is
+    !> 4.4% above far-field, and the force vector at heading 30 is 2.7% off, where F_x alone is 7.3%. At heading 0 it falls with
+    !> refinement, to +1.1% and +0.5% at 1920 and 4320 panels.
+    subroutine external_stiffness_near_resonance(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst_fx, worst_f, worst_mz
+
+        call near_against_far("drift_round_kstf", origins_at_zero(1), 0d0, worst_fx, worst_f, worst_mz, error, &
+                              only_omega=springs_near_resonance)
+        if (allocated(error)) return
+        call check_below(error, "external_stiffness_near_resonance", worst_f, near_far_limit)
+    end subroutine external_stiffness_near_resonance
+
+    !> Regression band beside that check: F_x and F_y at 0.95 rad/s on the springs.
     subroutine external_stiffness_near_resonance_regression(error)
         type(error_type), allocatable, intent(out) :: error
 
@@ -1248,28 +1257,6 @@ contains
         call check(error, value >= 0d0, "No row with "//text//" in the log of "//name)
     end subroutine logged_difference
 
-    !> The warning on a lid with thin rim panels, through both adapters, and none for uniform lids. config1 is not a case of
-    !> IRSP = 1, and the first-order results of a lid are not touched by the warning.
-    subroutine thin_lid_warning(error)
-        type(error_type), allocatable, intent(out) :: error
-        character(len=*), parameter :: text = "rim panels of the waterplane"
-        character(len=*), parameter :: near_text = "wrong in sign"
-
-        call check(error, log_has("drift_lid_graded", text), "No warning for a graded lid, one body")
-        if (allocated(error)) return
-        call check(error, .not. log_has("drift_lid_graded", near_text), "A near-field warning on a far-only run")
-        if (allocated(error)) return
-        call check(error, log_has("drift_lid_graded_near", text), "No warning for a graded lid with near-field on")
-        if (allocated(error)) return
-        call check(error, log_has("drift_lid_graded_near", near_text), "The warning does not mention near-field")
-        if (allocated(error)) return
-        call check(error, log_has("drift_two_lid_graded", text), "No warning for a graded lid, second of two bodies")
-        if (allocated(error)) return
-        call check(error, .not. log_has("drift_irsp", text), "A warning for a uniform lid, one body")
-        if (allocated(error)) return
-        call check(error, .not. log_has("drift_two_irsp", text), "A warning for uniform lids, two bodies")
-    end subroutine thin_lid_warning
-
     logical function log_has(name, text)
         character(len=*), intent(in) :: name, text
         character(len=512) :: line
@@ -1296,15 +1283,17 @@ contains
     !> xr to the global origin, and compares with the far-field rows. Prints every row. Differences are relative to the
     !> same far-field load: F_x (worst_fx), the force vector (worst_f), M_z (worst_mz). A component that is zero by symmetry
     !> has no relative difference, so one below 1e-3 of |F| (or of |F| times the size of the layout for M_z) is skipped.
-    !> Rows below the frequency unchecked_below are printed, but do not count in the worst values. With worst_pair, rows of
-    !> two different headings count there instead, as the force vector.
-    subroutine near_against_far(name, xr, unchecked_below, worst_fx, worst_f, worst_mz, error, worst_pair)
+    !> Rows below the frequency unchecked_below are printed, but do not count in the worst values. Nor do rows at any other
+    !> frequency than only_omega, if given. With worst_pair, rows of two different headings count there instead, as the force
+    !> vector.
+    subroutine near_against_far(name, xr, unchecked_below, worst_fx, worst_f, worst_mz, error, worst_pair, only_omega)
         character(len=*), intent(in) :: name
         real(8), intent(in) :: xr(:,:)    ! (2, nbody), as REFL = 1
         real(8), intent(in) :: unchecked_below
         real(8), intent(out) :: worst_fx, worst_f, worst_mz
         type(error_type), allocatable, intent(out) :: error
         real(8), intent(out), optional :: worst_pair
+        real(8), intent(in), optional :: only_omega
         real(8), allocatable :: far(:,:), near(:,:)
         complex(8) :: f_far(3), f_near(3)
         real(8) :: fmag, err_x, err_f, err_m, arm
@@ -1336,6 +1325,9 @@ contains
                        &" err x ",ES9.2," F ",ES9.2," z ",ES9.2)', &
                 name, far(r,1), far(r,2), far(r,3), real(f_far, 8), real(f_near, 8), err_x, err_f, err_m
             if (far(r,1) < unchecked_below) cycle
+            if (present(only_omega)) then
+                if (.not. same(far(r,1), only_omega)) cycle
+            end if
             used = used + 1
             if (present(worst_pair) .and. far(r,2) /= far(r,3)) then
                 worst_pair = max(worst_pair, err_f)

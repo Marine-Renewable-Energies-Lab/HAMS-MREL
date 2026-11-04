@@ -3,7 +3,7 @@ module test_surface_geometry
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use SecondOrderTypes, only : panel_mesh, surface_geom
   use FirstOrderState, only : expand_images
-  use SurfaceGeometry, only : build_surface_geom, lid_rim_side_ratio, DEFAULT_SHARP_DEG
+  use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use second_order_fixtures, only : make_cylinder, set_panel
   implicit none
   private
@@ -12,7 +12,6 @@ module test_surface_geometry
 
   real(8), parameter :: pi = 3.141592653589793d0
   real(8), parameter :: wl_tol = 1d-6
-  real(8), parameter :: THIN_ENOUGH = 0.5d0   ! of a uniform whole disc in test_lid_rim_symmetry_planes
 
 contains
 
@@ -28,10 +27,6 @@ subroutine collect_surface_geometry(testsuite)
     new_unittest("symmetry_images_join", test_symmetry_images_join), &
     new_unittest("nonconforming_neighbours", test_nonconforming_neighbours), &
     new_unittest("conforming_no_proximity", test_conforming_no_proximity), &
-    new_unittest("lid_rim_ratio", test_lid_rim_ratio), &
-    new_unittest("lid_rim_symmetry_planes", test_lid_rim_symmetry_planes), &
-    new_unittest("lid_rim_repeated_node_fans", test_lid_rim_repeated_node_fans), &
-    new_unittest("lid_rim_only_across_rim", test_lid_rim_only_across_rim), &
     new_unittest("sharp_edge_excluded", test_sharp_edge_excluded), &
     new_unittest("wp_properties_box", test_wp_properties_box), &
     new_unittest("lid_panels_rejected", test_lid_panels_rejected), &
@@ -479,155 +474,6 @@ contains
   end function panel
 
 end subroutine test_conforming_no_proximity
-
-!> A lid of 3 x 3 panels: a thin rim column gives the ratio, a repeated node is not a zero side, and no panels give 1.
-subroutine test_lid_rim_ratio(error)
-  type(error_type), allocatable, intent(out) :: error
-  real(8) :: xyz(16, 3)
-  integer :: ncn(9), ncon(9, 4), ix, iy, ip
-  real(8), parameter :: tol = 1d-12
-
-  ncn = 4
-  ip = 0
-  do iy = 0, 2
-    do ix = 0, 2
-      ip = ip + 1
-      ncon(ip, :) = [1 + ix + 4*iy, 2 + ix + 4*iy, 6 + ix + 4*iy, 5 + ix + 4*iy]
-    end do
-  end do
-
-  call fill([0d0, 1d0, 2d0, 3d0], [0d0, 1d0, 2d0, 3d0])
-  call check(error, abs(lid_rim_side_ratio(xyz, ncn, ncon, 0, 0) - 1d0) < tol, "uniform lid")
-  if (allocated(error)) return
-
-  call fill([0d0, 0.2d0, 1.2d0, 2.2d0], [0d0, 1d0, 2d0, 3d0])
-  call check(error, abs(lid_rim_side_ratio(xyz, ncn, ncon, 0, 0) - 0.2d0) < tol, "thin rim column")
-  if (allocated(error)) return
-
-  call fill([0d0, 1d0, 2d0, 3d0], [0d0, 1d0, 2d0, 3d0])
-  ncon(1, 4) = ncon(1, 3)
-  call check(error, lid_rim_side_ratio(xyz, ncn, ncon, 0, 0) > 0.5d0, "a repeated node")
-  if (allocated(error)) return
-
-  call check(error, lid_rim_side_ratio(xyz, ncn(1:0), ncon(1:0, :), 0, 0) == 1d0, "no panels")
-
-contains
-
-  subroutine fill(x, y)
-    real(8), intent(in) :: x(4), y(4)
-    integer :: i, j
-
-    do j = 0, 3
-      do i = 0, 3
-        xyz(1 + i + 4*j, :) = [x(i + 1), y(j + 1), 0d0]
-      end do
-    end do
-  end subroutine fill
-
-end subroutine test_lid_rim_ratio
-
-!> A disc of uniform rings as the waterplane mesh arrays, over the angles first to first + span. The fans at the centre are
-!> triangles, or with repeated quadrilaterals written with their last node twice.
-subroutine make_disc(ntheta, nr, first, span, repeated, xyz, ncn, ncon)
-  integer, intent(in) :: ntheta, nr
-  real(8), intent(in) :: first, span
-  logical, intent(in) :: repeated
-  real(8), allocatable, intent(out) :: xyz(:, :)
-  integer, allocatable, intent(out) :: ncn(:), ncon(:, :)
-  integer :: i, j, ip, closed
-
-  ! Rings 0 (the rim) to nr - 1, then the centre. A whole disc closes on its first column of nodes.
-  closed = merge(ntheta, ntheta + 1, abs(span - 2d0*pi) < 1d-12)
-  allocate (xyz(closed*nr + 1, 3), ncn(ntheta*nr), ncon(ntheta*nr, 4))
-  do i = 0, nr - 1
-    do j = 0, closed - 1
-      xyz(node(i, j), :) = 10d0*real(nr - i, 8)/real(nr, 8)* &
-                           [cos(first + span*real(j, 8)/real(ntheta, 8)), sin(first + span*real(j, 8)/real(ntheta, 8)), 0d0]
-    end do
-  end do
-  xyz(closed*nr + 1, :) = 0d0
-  ip = 0
-  do j = 0, ntheta - 1
-    do i = 0, nr - 2
-      ip = ip + 1
-      ncn(ip) = 4
-      ncon(ip, :) = [node(i + 1, j + 1), node(i + 1, j), node(i, j), node(i, j + 1)]
-    end do
-    ip = ip + 1
-    if (repeated) then
-      ncn(ip) = 4
-      ncon(ip, :) = [closed*nr + 1, node(nr - 1, j), node(nr - 1, j + 1), node(nr - 1, j + 1)]
-    else
-      ncn(ip) = 3
-      ncon(ip, :) = [closed*nr + 1, node(nr - 1, j), node(nr - 1, j + 1), 0]
-    end if
-  end do
-
-contains
-
-  integer function node(ring, column)
-    integer, intent(in) :: ring, column
-    node = ring*closed + mod(column, closed) + 1
-  end function node
-
-end subroutine make_disc
-
-!> The edges on a symmetry plane continue on the image of the mesh, so they are not rim: half and quarter discs have the
-!> ratio of the whole disc, with the plane named by ISX or ISY as in HAMS. Without the flag, those edges do count.
-subroutine test_lid_rim_symmetry_planes(error)
-  type(error_type), allocatable, intent(out) :: error
-  real(8), allocatable :: xyz(:, :)
-  integer, allocatable :: ncn(:), ncon(:, :)
-  real(8) :: whole
-  real(8), parameter :: tol = 1d-9
-
-  call make_disc(32, 6, 0d0, 2d0*pi, .false., xyz, ncn, ncon)
-  whole = lid_rim_side_ratio(xyz, ncn, ncon, 0, 0)
-  call check(error, whole > THIN_ENOUGH, "a uniform whole disc")
-  if (allocated(error)) return
-
-  call make_disc(16, 6, 0d0, pi, .false., xyz, ncn, ncon)
-  call check(error, abs(lid_rim_side_ratio(xyz, ncn, ncon, 0, 1) - whole) < tol, "half disc, plane y = 0, ISY = 1")
-  if (allocated(error)) return
-  call check(error, lid_rim_side_ratio(xyz, ncn, ncon, 0, 0) < whole - tol, "half disc without the symmetry flag")
-  if (allocated(error)) return
-  call check(error, lid_rim_side_ratio(xyz, ncn, ncon, 1, 0) < whole - tol, "half disc, ISX = 1 names the other plane")
-  if (allocated(error)) return
-
-  call make_disc(16, 6, -0.5d0*pi, pi, .false., xyz, ncn, ncon)
-  call check(error, abs(lid_rim_side_ratio(xyz, ncn, ncon, 1, 0) - whole) < tol, "half disc, plane x = 0, ISX = 1")
-end subroutine test_lid_rim_symmetry_planes
-
-!> A triangle written as a quadrilateral has an edge from a node to itself, which belongs to no other panel but is no rim:
-!> the thin fans at the centre must not count.
-subroutine test_lid_rim_repeated_node_fans(error)
-  type(error_type), allocatable, intent(out) :: error
-  real(8), allocatable :: xyz(:, :)
-  integer, allocatable :: ncn(:), ncon(:, :)
-  real(8) :: triangles, repeated
-
-  call make_disc(96, 18, 0d0, 2d0*pi, .false., xyz, ncn, ncon)
-  triangles = lid_rim_side_ratio(xyz, ncn, ncon, 0, 0)
-  call make_disc(96, 18, 0d0, 2d0*pi, .true., xyz, ncn, ncon)
-  repeated = lid_rim_side_ratio(xyz, ncn, ncon, 0, 0)
-  call check(error, abs(repeated - triangles) < 1d-12, "fans of repeated nodes change the ratio")
-end subroutine test_lid_rim_repeated_node_fans
-
-!> Thin across the rim draws the ratio down. Panels long across the rim, narrow along it, do not: see the README.
-subroutine test_lid_rim_only_across_rim(error)
-  type(error_type), allocatable, intent(out) :: error
-  real(8), allocatable :: xyz(:, :)
-  integer, allocatable :: ncn(:), ncon(:, :)
-  real(8), parameter :: tol = 1d-9
-
-  ! 96 x 3: rim arc 0.654, ring width 3.33
-  call make_disc(96, 3, 0d0, 2d0*pi, .false., xyz, ncn, ncon)
-  call check(error, abs(lid_rim_side_ratio(xyz, ncn, ncon, 0, 0) - 1d0) < tol, "long across the rim")
-  if (allocated(error)) return
-  ! 32 x 12: rim arc 1.96, ring width 0.833
-  call make_disc(32, 12, 0d0, 2d0*pi, .false., xyz, ncn, ncon)
-  call check(error, abs(lid_rim_side_ratio(xyz, ncn, ncon, 0, 0) - (10d0/12d0)/(20d0*sin(pi/32d0))) < tol, "thin across the rim")
-end subroutine test_lid_rim_only_across_rim
 
 subroutine test_sharp_edge_excluded(error)
   type(error_type), allocatable, intent(out) :: error

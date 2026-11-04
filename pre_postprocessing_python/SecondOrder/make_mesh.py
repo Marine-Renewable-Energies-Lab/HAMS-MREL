@@ -471,7 +471,7 @@ def main():
 
     print("%d panels, %d nodes, normals checked" % (len(mesh.panels), len(mesh.nodes)))
     if args.shape == "cylinder" and args.waterplane_out:
-        # Uniform even for a graded hull: a lid with thin rim panels shifts the results of IRSP = 1. See docs/output_files.md
+        # Uniform even for a graded hull
         plane = write_waterplane(args.waterplane_out, args.radius, args.ntheta, args.nr, x0=args.x0, y0=args.y0)
         print("%d waterplane panels, %d nodes" % (len(plane.panels), len(plane.nodes)))
     print("V = %.6f, Awp = %.6f, zg = zb = %.6f" % (hydro["vol"], hydro["area"], hydro["zg"]))
