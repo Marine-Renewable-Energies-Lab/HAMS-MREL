@@ -1,0 +1,999 @@
+"""
+Convergence study of the mean wave drift: generate the cases, write Slurm scripts, run one case, and collect a table.
+
+Usage:
+    python drift_convergence.py list [--tier full|small] [--markdown]
+    python drift_convergence.py generate <root> [--case NAME | --group GROUP]
+    python drift_convergence.py run <root> --case NAME --hams <path> [--hams-grn8 <path>] [--nemoh-build <path>] [--threads N]
+    python drift_convergence.py calibrate <root> --hams <path> [--threads N]
+    python drift_convergence.py slurm <root on the cluster> --repo <path on the cluster> [--out <local folder>]
+                                [--tier full|small] [--account NAME]
+    python drift_convergence.py collect <root> [--out table.csv]
+
+Each case is one run of HAMS-MREL or Nemoh, under <root>/<name>. Its input is written when it is first run. A run writes
+result.json with its wall time and peak memory.
+
+The table gives F_x, F_y and M_z of the near-field method against the far-field method of the same run. On the bottom-mounted
+cylinder it also gives F_x of both methods against the MacCamy-Fuchs value, where the exact F_y and M_z are zero.
+
+The frequencies are set here before any result is seen, and stay as they are: a uniform grid with the three frequencies of the
+fixtures added. 1.6 rad/s is 3% from the first irregular frequency of the cylinder, 1.548 rad/s, without a lid.
+
+Nemoh runs as a separate program. Only its documented input and output files are used. Its source and binaries stay out of this
+repository. --nemoh-build is the folder holding its built programs.
+
+The estimates use the constants below, from `calibrate` on a laptop, and are checked against the wall time of a real run by
+`collect`. The collector needs scipy for the MacCamy-Fuchs value: on Snellius, load a SciPy-bundle module or collect elsewhere.
+"""
+
+import argparse
+import csv
+import json
+import math
+import os
+import re
+import socket
+import subprocess
+import sys
+import time
+
+import make_drift_fixtures as fixtures
+import make_mesh
+
+# Frequencies in rad/s
+FIXTURE_FREQUENCIES = fixtures.DRIFT_CYL_FREQUENCIES
+WIDE_FREQUENCIES = (0.40, 0.60, 0.70, 0.80, 0.95, 1.00, 1.10, 1.20, 1.40, 1.60, 1.80)
+# The first two irregular frequencies of the cylinder of radius 10 and draft 10, from J0(ka) = 0 and J1(ka) = 0
+IRREGULAR_FREQUENCIES = (1.10, 1.50, 1.548, 1.60, 1.939)
+BOX_FINE_FREQUENCIES = (0.80, 1.00, 1.40)
+# Nemoh needs a uniform grid. All of these lie below the first irregular frequency, and contain WIDE_FREQUENCIES up to 1.40
+NEMOH_FREQUENCY_RANGE = (0.40, 1.40, 21)
+NEMOH_STAGES = (("preProcessor", "preProc"), ("Solver", "solver"), ("postProcessor", "postProc"),
+                (os.path.join("QTF", "PreProcessor"), "QTFpreProc"), (os.path.join("QTF", "Solver"), "QTFsolver"),
+                (os.path.join("QTF", "PostProcessor"), "QTFpostProc"))
+# Holds a Nemoh body still, against the wave forces of these cases: under 1e6 N
+NEMOH_FIXED_STIFFNESS = 1.0e13
+
+# Laptop, 8 threads, ifort 2022, seconds per frequency for two headings: A + B N^2 + C N^3. From `calibrate` at 1008 and 1792
+# panels, with the logged 153 s per frequency at 4032 panels. The N^3 part is what the small sizes cannot fix on their own.
+TIME_N0 = 0.5
+TIME_N2 = 3.0e-6
+TIME_N3 = 1.6e-9
+# The source solve adds this. Its assembly and factorization are logged, 0.82, 3.77 and 16.5 s at 448, 1008 and 1792 panels
+SOURCE_N2 = 3.5e-6
+SOURCE_N3 = 0.9e-9
+# ISOLV=2 against ISOLV=1, measured at 480 panels only
+GMRES_FACTOR = 1.0
+# Laptop time over Snellius time at 32 threads. See the job table for the evidence
+SNELLIUS_SPEEDUP = 4.0
+# Nemoh, one thread on the laptop, seconds per frequency, from runs of two frequencies at 448, 1008 and 1792 panels. They do
+# not fix the N^3 part, which is the factorization of N panels at a rate similar to the HAMS one on one thread.
+NEMOH_N2 = 6.0e-6
+NEMOH_N3 = 0.5e-9
+NEMOH_QTF_N2 = 6.2e-6
+NEMOH_BYTES = 102.0   # per N^2, measured at 1792 panels
+
+# Bytes per N^2 per symmetry image, from the ALLOCATE statements of HAMS_Prog.f90 and SurfaceVelocity.f90
+BYTES_AMAT = 16.0
+BYTES_GREEN = {4: 48.0, 8: 96.0}   # four parts, each of a complex and a real array
+BYTES_SOURCE = 64.0   # lu 16, gradient 3 x 16
+BYTES_GMRES = 320.0   # measured at 480 panels, where the H-matrix compresses least
+BYTES_BASE = 0.02e9   # all the rest, from `calibrate`
+
+# Slurm settings. 48 CPUs are charged for this request, with a weight of 1.5 on this partition (sacct: billing=72)
+PARTITION = "fat_genoa"
+CPUS = 32
+MEMORY_GB = 64
+CHARGED_CPUS = 48
+SBU_PER_JOB_HOUR = 72.0
+
+
+class Case:
+    """One run. tier is "both", "full" or "small": whether it belongs to the full study, the smaller option, or both."""
+
+    def __init__(self, name, group, question, hull, multiple, motion="fixed", velocity="differencing", waterline="extrapolate",
+                 frequencies=WIDE_FREQUENCIES, headings=(0.0, 30.0), grn=4, isolv=1, irsp=0, mean_drift=1, tier="both",
+                 solver="hams", where="snellius"):
+        self.name = name
+        self.group = group
+        self.question = question
+        self.hull = hull
+        self.multiple = multiple
+        self.motion = motion
+        self.velocity = velocity
+        self.waterline = waterline
+        self.frequencies = frequencies
+        self.headings = headings
+        self.grn = grn
+        self.isolv = isolv
+        self.irsp = irsp
+        self.mean_drift = mean_drift
+        self.tier = tier
+        self.solver = solver
+        self.where = where
+
+
+def in_tier(case, tier):
+    return case.tier == "both" or case.tier == tier
+
+
+# Hulls: water depth, panels at multiple 1, and lid panels at multiple 1 where a lid exists
+HULLS = {
+    "sharp": dict(depth=100.0, panels=448, lid=192),
+    "round": dict(depth=100.0, panels=480, lid=192),
+    "bottom": dict(depth=10.0, panels=256),
+    "box": dict(depth=50.0, panels=440),
+    "round_box": dict(depth=50.0, panels=500),
+    "corner_box": dict(depth=50.0, panels=440),
+}
+# Both radii are for a box 20 x 10 x 5. 1.5 is the bilge radius of the rounded cylinder over its draft, times the draft here
+ROUND_BOX_MESH = dict(lx=20.0, ly=10.0, draft=5.0, corner_radius=2.5, bilge_radius=1.5, nx=16, ny=6, ncorner=4, nz=3, narc=2)
+CORNER_BOX_MESH = dict(lx=20.0, ly=10.0, draft=5.0, corner_radius=2.5, bilge_radius=0.0, nx=16, ny=6, ncorner=4, nz=4, narc=0)
+BOTTOM_RADIUS = fixtures.BOTTOM_MOUNTED_MESH["radius"]
+BOTTOM_DEPTH = fixtures.BOTTOM_MOUNTED_MESH["draft"]
+
+
+def scaled(mesh, keys, multiple):
+    out = dict(mesh)
+    for key in keys:
+        out[key] = int(round(mesh[key] * multiple))
+    return out
+
+
+def panels_of(case):
+    return int(round(HULLS[case.hull]["panels"] * case.multiple ** 2))
+
+
+def lid_panels_of(case):
+    return int(round(HULLS[case.hull]["lid"] * case.multiple ** 2)) if case.irsp else 0
+
+
+def tag(multiple):
+    return "m%g" % multiple
+
+
+def study_cases():
+    """All the cases, by the question they answer. Combinations that answer none of them are not here."""
+    cases = []
+    short = {"differencing": "diff", "source": "src"}
+
+    # A: truncated cylinder, sharp and rounded bilge. Which velocity method, by hull and by frequency, whether the rounded hull's
+    # term II error goes to zero, and the sharp free hull at 0.70 rad/s. Multiples 1, 2, 4 double the panels per side on the wide
+    # range. Multiple 3 with the source solve completes the table of 4032 and 4320 panels at the frequencies of the fixtures.
+    for hull in ("sharp", "round"):
+        for motion in ("fixed", "free"):
+            for velocity in ("differencing", "source"):
+                for m in (1, 2, 4):
+                    cases.append(Case("a_%s_%s_%s_%s" % (hull, motion, short[velocity], tag(m)), "A", "1,2,7", hull, m, motion,
+                                      velocity, tier="full" if m == 4 else "both"))
+            cases.append(Case("a_%s_%s_src_m3" % (hull, motion), "A", "1,2", hull, 3, motion, "source",
+                              frequencies=FIXTURE_FREQUENCIES))
+
+    # B: bottom-mounted cylinder, the only exact reference. Motion plays no part, and heading 0 is enough for a circle
+    for velocity in ("differencing", "source"):
+        for m in (1, 2, 4):
+            cases.append(Case("b_bottom_%s_%s" % (short[velocity], tag(m)), "B", "1,7", "bottom", m, "fixed", velocity,
+                              headings=(0.0,)))
+
+    # C: box at heading 30, the residual of M_z and F_y. The sharp box is the second sharp hull for the velocity method. The
+    # rounded box asks whether having no edges removes the residual, and corners alone whether the vertical edges carry it.
+    for hull, motions in (("box", ("fixed", "free")), ("round_box", ("fixed", "free"))):
+        for velocity in ("differencing", "source"):
+            for motion in motions:
+                for m in (1, 2):
+                    cases.append(Case("c_%s_%s_%s_%s" % (hull, motion, short[velocity], tag(m)), "C", "3,1,7", hull, m, motion,
+                                      velocity, headings=(30.0,)))
+            cases.append(Case("c_%s_fixed_%s_m4" % (hull, short[velocity]), "C", "3,7", hull, 4, "fixed", velocity,
+                              frequencies=BOX_FINE_FREQUENCIES, headings=(30.0,), tier="full"))
+            cases.append(Case("c_%s_fixed_%s_m3" % (hull, short[velocity]), "C", "3,7", hull, 3, "fixed", velocity,
+                              frequencies=BOX_FINE_FREQUENCIES, headings=(30.0,), tier="small"))
+    for m in (1, 2):
+        cases.append(Case("c_corner_box_fixed_diff_%s" % tag(m), "C", "3", "corner_box", m, "fixed", headings=(30.0,)))
+
+    # D: settings. Each is compared with the same mesh and frequency in group A
+    for hull, velocity, m in (("round", "differencing", 2), ("round", "source", 2), ("sharp", "differencing", 2),
+                              ("sharp", "source", 2), ("round", "source", 3)):
+        cases.append(Case("d_grn8_%s_free_%s_%s" % (hull, short[velocity], tag(m)), "D", "6", hull, m, "free", velocity,
+                          frequencies=FIXTURE_FREQUENCIES, grn=8))
+    # The source solve refuses ISOLV=2, so this is differencing only
+    cases.append(Case("d_base_round_free_diff_m3", "D", "6", "round", 3, "free", frequencies=FIXTURE_FREQUENCIES))
+    for hull, m in (("round", 1), ("round", 2), ("round", 3), ("sharp", 2)):
+        cases.append(Case("d_gmres_%s_free_%s" % (hull, tag(m)), "D", "6", hull, m, "free", frequencies=FIXTURE_FREQUENCIES,
+                          isolv=2))
+    # Near the irregular frequencies: the source solve refuses IRSP=1, so it is run with IRSP=0 to see what it does there
+    for hull, m in (("round", 1), ("round", 2), ("sharp", 2)):
+        for label, velocity, irsp in (("diff_irsp0", "differencing", 0), ("diff_irsp1", "differencing", 1),
+                                      ("src_irsp0", "source", 0)):
+            cases.append(Case("d_%s_%s_free_%s" % (label, hull, tag(m)), "D", "6", hull, m, "free", velocity,
+                              frequencies=IRREGULAR_FREQUENCIES, irsp=irsp))
+
+    # E: a small check of the field waterline. Each is compared with its extrapolate run in group A
+    for hull in ("round", "sharp"):
+        cases.append(Case("e_field_%s_free_m2" % hull, "E", "5", hull, 2, "free", waterline="field"))
+
+    # N: code comparison with Nemoh. The HAMS runs of group A serve on the frequencies shared with the Nemoh grid. These add
+    # what group A does not have: differencing on the fixed rounded hull at multiple 3, and the heading pairs.
+    cases.append(Case("n_round_fixed_diff_m3", "N", "8", "round", 3, "fixed", frequencies=FIXTURE_FREQUENCIES))
+    for m in (1, 2):
+        cases.append(Case("n_pair_round_free_%s" % tag(m), "N", "8", "round", m, "free", mean_drift=2,
+                          frequencies=(0.70, 0.95, 1.10), tier="full"))
+
+    # Nemoh itself. Multiple 1 is short enough for the laptop. Finer runs need a Nemoh build on Snellius
+    nemoh = dict(group="N", question="8", solver="nemoh", headings=(0.0,))
+    for hull, multiples in (("round", (1, 2, 3)), ("sharp", (1, 2))):
+        for motion in ("fixed", "free"):
+            for m in multiples:
+                tier = "both" if m == 1 or (hull == "round" and m == 2) else "full"
+                cases.append(Case("nemoh_%s_%s_%s" % (hull, motion, tag(m)), hull=hull, multiple=m, motion=motion, tier=tier,
+                                  where="laptop" if m == 1 else "snellius", **nemoh))
+    for m in (1, 2):
+        pair = dict(nemoh, headings=(0.0, 30.0))
+        cases.append(Case("nemoh_pair_round_free_%s" % tag(m), hull="round", multiple=m, motion="free", mean_drift=2, tier="full",
+                          where="laptop" if m == 1 else "snellius", **pair))
+
+    names = [case.name for case in cases]
+    if len(names) != len(set(names)):
+        raise ValueError("two cases have the same name")
+    return cases
+
+
+def nemoh_frequencies():
+    low, high, count = NEMOH_FREQUENCY_RANGE
+    return [low + (high - low) * i / (count - 1) for i in range(count)]
+
+
+def laptop_seconds(case):
+    """Estimated laptop time of a HAMS run at 8 threads."""
+    n = panels_of(case) + lid_panels_of(case)
+    per_frequency = TIME_N0 + TIME_N2 * n ** 2 + TIME_N3 * n ** 3
+    if case.isolv == 2:
+        per_frequency *= GMRES_FACTOR
+    if case.velocity == "source":
+        per_frequency += SOURCE_N2 * n ** 2 + SOURCE_N3 * n ** 3
+    return per_frequency * len(case.frequencies)
+
+
+def nemoh_seconds(case):
+    """Estimated single thread time of a Nemoh run: the first-order solver, and the QTF stages."""
+    n = panels_of(case)
+    count = NEMOH_FREQUENCY_RANGE[2]
+    problems = (len(case.headings) + 6) / 7.0
+    return count * problems * (NEMOH_N2 * n ** 2 + NEMOH_N3 * n ** 3 + NEMOH_QTF_N2 * n ** 2)
+
+
+def wall_hours(case):
+    """Estimated wall time on Snellius, or on the laptop for a case that runs there."""
+    if case.solver == "nemoh":
+        return nemoh_seconds(case) / 3600.0
+    return laptop_seconds(case) / SNELLIUS_SPEEDUP / 3600.0
+
+
+def memory_gb(case):
+    """Estimated peak memory, from the arrays that grow with N^2."""
+    n = panels_of(case)
+    total = n + lid_panels_of(case)
+    if case.solver == "nemoh":
+        return (BYTES_BASE + NEMOH_BYTES * n ** 2) / 1e9
+    size = BYTES_AMAT * total ** 2 + BYTES_GREEN[case.grn] * n ** 2 + BYTES_BASE
+    if case.irsp:
+        size += BYTES_AMAT * n ** 2 + BYTES_GREEN[case.grn] * n * lid_panels_of(case)
+    if case.velocity == "source":
+        size += BYTES_SOURCE * n ** 2
+    if case.isolv == 2:
+        size += BYTES_GMRES * total ** 2
+    return size / 1e9
+
+
+def write_hams_hull(case, path):
+    """Write the hull of a case at the folder path, in the HAMS format, and any lid. Returns the mesh."""
+    mesh_path = os.path.join(path, "HullMesh.pnl")
+    hydro_path = os.path.join(path, "Hydrostatic.in")
+    m = case.multiple
+    if case.hull == "sharp":
+        mesh = make_mesh.write_cylinder(mesh_path, hydro_path, **scaled(fixtures.DRIFT_CYL_MESH, ("ntheta", "nz", "nr"), m))
+    elif case.hull == "round":
+        mesh = make_mesh.write_rounded_cylinder(mesh_path, hydro_path,
+                                                **scaled(fixtures.ROUND_MESH, ("ntheta", "nz", "narc", "nr"), m))
+    elif case.hull == "bottom":
+        mesh = make_mesh.write_cylinder(mesh_path, hydro_path,
+                                        **scaled(dict(fixtures.BOTTOM_MOUNTED_MESH, ntheta=32, nz=8), ("ntheta", "nz"), m))
+    elif case.hull == "box":
+        mesh = make_mesh.write_box(mesh_path, hydro_path, **scaled(fixtures.DRIFT_BOX_MESH, ("nx", "ny", "nz"), m))
+    elif case.hull == "round_box":
+        mesh = make_mesh.write_rounded_box(mesh_path, hydro_path,
+                                           **scaled(ROUND_BOX_MESH, ("nx", "ny", "ncorner", "nz", "narc"), m))
+    elif case.hull == "corner_box":
+        mesh = make_mesh.write_rounded_box(mesh_path, hydro_path,
+                                           **scaled(CORNER_BOX_MESH, ("nx", "ny", "ncorner", "nz", "narc"), m))
+    else:
+        raise ValueError("unknown hull " + case.hull)
+    if len(mesh.panels) != panels_of(case):
+        raise ValueError("%s has %d panels, not the %d of the job table" % (case.name, len(mesh.panels), panels_of(case)))
+    if case.irsp:
+        lid = make_mesh.write_waterplane(os.path.join(path, "WaterPlaneMesh.pnl"), 10.0, int(round(32 * m)), int(round(6 * m)))
+        if len(lid.panels) != lid_panels_of(case):
+            raise ValueError("the lid of %s has %d panels" % (case.name, len(lid.panels)))
+    return mesh
+
+
+def write_hams_case(case, root, threads):
+    path = os.path.join(root, case.name, "input")
+    os.makedirs(path, exist_ok=True)
+    write_hams_hull(case, path)
+    fixtures.write_control(os.path.join(path, "ControlFile.in"), depth=HULLS[case.hull]["depth"], frequencies=case.frequencies,
+                           headings=case.headings, solver=2 if case.isolv == 2 else None, irsp=case.irsp, threads=threads)
+    options = dict(mean_drift=case.mean_drift, drift_methods="far near", motion_state=case.motion,
+                   write_terms=1 if case.mean_drift == 1 else 0, velocity_method=case.velocity,
+                   waterline_method=case.waterline)
+    fixtures.write_second_order(os.path.join(path, "SecondOrder.in"), **options)
+    return path
+
+
+def read_matrices(path):
+    """The matrices of a Hydrostatic.in file, by the order they are written in."""
+    matrices = []
+    current = None
+    for line in open(path):
+        try:
+            row = [float(text) for text in line.split()]
+        except ValueError:
+            current = None
+            continue
+        if len(row) == 6:
+            if current is None:
+                current = []
+                matrices.append(current)
+            current.append(row)
+    return {"mass": matrices[0], "restoring": matrices[3]}
+
+
+def nemoh_matrix(path, matrix):
+    with open(path, "w") as f:
+        for row in matrix:
+            f.write(" ".join("%.7E" % value for value in row) + "\n")
+
+
+def write_nemoh_case(case, root):
+    """Write the input of a Nemoh run. The nodes and panels are those of the HAMS case. No lid and no external loads, and the
+    matrices are those given to HAMS, about the same point. A fixed body has a large external stiffness."""
+    base = os.path.join(root, case.name)
+    for folder in ("Mechanics", "Motion", os.path.join("results", "QTF"), os.path.join("results", "sources"), "QTFPreprocOut",
+                   "mesh", "hams_hull"):
+        os.makedirs(os.path.join(base, folder), exist_ok=True)
+    mesh = write_hams_hull(case, os.path.join(base, "hams_hull"))
+    make_mesh.write_nemoh_mesh(os.path.join(base, "hull.dat"), mesh)
+    matrices = read_matrices(os.path.join(base, "hams_hull", "Hydrostatic.in"))
+    zero = [[0.0] * 6 for _ in range(6)]
+    stiffness = [[NEMOH_FIXED_STIFFNESS if case.motion == "fixed" and i == j else 0.0 for j in range(6)] for i in range(6)]
+    nemoh_matrix(os.path.join(base, "Mechanics", "Inertia.dat"), matrices["mass"])
+    nemoh_matrix(os.path.join(base, "Mechanics", "Kh.dat"), matrices["restoring"])
+    nemoh_matrix(os.path.join(base, "Mechanics", "Km.dat"), stiffness)
+    nemoh_matrix(os.path.join(base, "Mechanics", "Badd.dat"), zero)
+    low, high, count = NEMOH_FREQUENCY_RANGE
+    modes = ("1 1. 0. 0. 0. 0. 0.", "1 0. 1. 0. 0. 0. 0.", "1 0. 0. 1. 0. 0. 0.",
+             "2 1. 0. 0. 0. 0. 0.", "2 0. 1. 0. 0. 0. 0.", "2 0. 0. 1. 0. 0. 0.")
+    lines = ["--- Environment ---", "%.1f" % make_mesh.RHO, "%.5f" % make_mesh.G, "%.1f" % HULLS[case.hull]["depth"], "0. 0.",
+             "--- Description of floating bodies ---", "1", "--- Body 1 ---", "hull.dat",
+             "%d %d" % (len(mesh.nodes), len(mesh.panels)), "6"]
+    lines += list(modes) + ["6"] + list(modes) + ["0", "--- Load cases ---", "1 %d %.4f %.4f" % (count, low, high),
+                                                  "%d %.4f %.4f" % (len(case.headings), case.headings[0], case.headings[-1]),
+                                                  "--- Post processing ---", "0 0.1 10.", "0", "0 0. 180.", "0 50 400. 400.",
+                                                  "1", "1", "--- QTF ---", "1", "%d %.4f %.4f" % (count, low, high),
+                                                  "%d" % (1 if case.mean_drift == 2 else 0), "1", "NA", "0 0 0", "1", "1", "1",
+                                                  "0", "0", "---"]
+    with open(os.path.join(base, "Nemoh.cal"), "w") as f:
+        f.write("\n".join(lines) + "\n")
+    with open(os.path.join(base, "input_solver.txt"), "w") as f:
+        f.write("2\n0.001\n1\n10 1e-5 1000\n")
+    return base
+
+
+def peak_memory_bytes(process):
+    """Peak memory of a finished child process, or None where it cannot be read."""
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        class Counters(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD), ("PeakWorkingSetSize", ctypes.c_size_t),
+                        ("WorkingSetSize", ctypes.c_size_t), ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPagedPoolUsage", ctypes.c_size_t), ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaNonPagedPoolUsage", ctypes.c_size_t), ("PagefileUsage", ctypes.c_size_t),
+                        ("PeakPagefileUsage", ctypes.c_size_t)]
+
+        counters = Counters()
+        counters.cb = ctypes.sizeof(Counters)
+        psapi = ctypes.WinDLL("psapi")
+        psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+        if psapi.GetProcessMemoryInfo(int(process._handle), ctypes.byref(counters), counters.cb):
+            return float(counters.PeakWorkingSetSize)
+        return None
+    import resource
+    # Of all the children so far. Each Slurm task runs one solver, so this is that solver
+    return 1024.0 * resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+
+
+def run_program(command, log_path, cwd=None):
+    """Run a program with its output in a log. Returns the return code, wall seconds and peak memory in bytes."""
+    start = time.time()
+    with open(log_path, "w") as log:
+        process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, cwd=cwd)
+        code = process.wait()
+    return code, time.time() - start, peak_memory_bytes(process)
+
+
+def run_hams(case, root, hams, threads):
+    path = write_hams_case(case, root, threads)
+    base = os.path.join(root, case.name)
+    code, wall, peak = run_program([hams, path + os.sep, os.path.join(base, "output") + os.sep], os.path.join(base, "log.txt"))
+    # The solver stops on a bad input with return code 0, so its last message is the check
+    finished = "completes successfully" in open(os.path.join(base, "log.txt"), errors="replace").read()
+    return dict(code=code if finished else (code or 1), wall_s=wall, peak_bytes=peak)
+
+
+def run_nemoh(case, root, build, threads):
+    base = write_nemoh_case(case, root)
+    stages = {}
+    peak = 0.0
+    code = 0
+    for folder, program in NEMOH_STAGES:
+        command = [os.path.abspath(os.path.join(build, folder, program + (".exe" if sys.platform == "win32" else ""))), "."]
+        code, wall, memory = run_program(command, os.path.join(base, "log_%s.txt" % program), cwd=base)
+        stages[program] = wall
+        peak = max(peak, memory or 0.0)
+        if code:
+            break
+    return dict(code=code, wall_s=sum(stages.values()), peak_bytes=peak, stages=stages)
+
+
+def binary_for(case, args):
+    return args.hams_grn8 if case.grn == 8 else args.hams
+
+
+def run_case(case, args):
+    if case.solver == "nemoh":
+        if not args.nemoh_build:
+            raise SystemExit("%s needs --nemoh-build" % case.name)
+        result = run_nemoh(case, args.root, args.nemoh_build, args.threads)
+    else:
+        binary = binary_for(case, args)
+        if not binary:
+            raise SystemExit("%s needs --hams-grn8, a build with GRN_KIND = 8" % case.name)
+        result = run_hams(case, args.root, os.path.abspath(binary), args.threads)
+    result.update(name=case.name, panels=panels_of(case), lid=lid_panels_of(case), threads=args.threads,
+                  host=socket.gethostname(), estimate_hours=wall_hours(case), estimate_gb=memory_gb(case))
+    with open(os.path.join(args.root, case.name, "result.json"), "w") as f:
+        json.dump(result, f, indent=1)
+    print("%s: code %d, %.1f s, peak %.3f GB" % (case.name, result["code"], result["wall_s"], (result["peak_bytes"] or 0.0) / 1e9))
+    return result
+
+
+def calibrate(args):
+    """Time small runs on this machine. Prints the fit of time per frequency to A N^2 + B N^3."""
+    rows = []
+    for multiple in (1, 1.5, 2):
+        for velocity in ("differencing", "source"):
+            case = Case("cal_%s_%g" % (velocity, multiple), "cal", "", "sharp", multiple, "free", velocity,
+                        frequencies=(0.95,))
+            rows.append((panels_of(case), velocity, run_case(case, args)))
+            log = open(os.path.join(args.root, case.name, "log.txt"), errors="replace").read()
+            found = re.search(r"source solve:\s+([\d.]+) s to assemble and factorize", log)
+            print("   source assembly and factorization: %s s" % (found.group(1) if found else "not logged"))
+    for velocity in ("differencing", "source"):
+        points = [(n, result["wall_s"]) for n, v, result in rows if v == velocity]
+        a, b = fit_n2_n3(points)
+        print("%s: %.4g N^2 + %.4g N^3 s per frequency, residuals %s" % (
+            velocity, a, b, ["%+.1f%%" % (100.0 * (a * n ** 2 + b * n ** 3 - t) / t) for n, t in points]))
+
+
+def fit_n2_n3(points):
+    """Least squares of t/n^2 = a + b n, which weighs the sizes evenly in relative terms."""
+    xs = [float(n) for n, _ in points]
+    ys = [t / n ** 2 for n, t in points]
+    mx = sum(xs) / len(xs)
+    my = sum(ys) / len(ys)
+    b = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sum((x - mx) ** 2 for x in xs)
+    return my - b * mx, b
+
+
+def read_drift(path):
+    """Rows of a mean drift file: real part by (omega, beta1, beta2, index)."""
+    values = {}
+    for line in open(path):
+        columns = line.split()
+        if columns and not line.startswith("#"):
+            values[(round(float(columns[0]), 4), round(float(columns[1]), 3), round(float(columns[2]), 3),
+                    int(columns[3]))] = float(columns[6])
+    return values
+
+
+def read_terms(path):
+    """Terms of F_x, by (omega, beta1, beta2), in the order of the file."""
+    values = {}
+    if not os.path.exists(path):
+        return values
+    for line in open(path):
+        if line.startswith("#"):
+            continue
+        columns = line.split()
+        if int(columns[4]) == 1:
+            key = (round(float(columns[0]), 4), round(float(columns[1]), 3), round(float(columns[2]), 3))
+            values.setdefault(key, []).append(float(columns[6]))
+    return values
+
+
+def wave_number(omega, depth):
+    """Solve omega^2 = g k tanh(k h) by Newton from the deep water value."""
+    nu = omega ** 2 / make_mesh.G
+    k = max(nu, math.sqrt(nu / depth))
+    for _ in range(100):
+        step = (k * math.tanh(k * depth) - nu) / (math.tanh(k * depth) + k * depth / math.cosh(k * depth) ** 2)
+        k -= step
+        if abs(step) < 1e-14 * k:
+            break
+    return k
+
+
+def maccamy_fuchs_fx(omega, radius, depth, count=720):
+    """Mean surge drift on a bottom-mounted cylinder, over rho g, per unit amplitude squared, from the far-field integral of
+    the exact scattered amplitude. The same formula as the unit tests."""
+    from scipy.special import h1vp, jvp
+
+    k = wave_number(omega, depth)
+    x = 2.0 * k * depth
+    ratio = 0.5 * (1.0 + 2.0 * x * math.exp(-x) / (1.0 - math.exp(-2.0 * x)))
+    orders = int(k * radius) + 20
+    coefficient = [(1.0 if n == 0 else 2.0) * jvp(n, k * radius) / h1vp(n, k * radius) for n in range(orders + 1)]
+    total = 0.0
+    for j in range(count):
+        theta = 2.0 * math.pi * j / count
+        amplitude = sum(c * math.cos(n * theta) for n, c in enumerate(coefficient))
+        total += abs(amplitude) ** 2 * 2.0 / (math.pi * k) * (1.0 - math.cos(theta))
+    return 0.5 * ratio * total * 2.0 * math.pi / count
+
+
+def percent(value, reference, scale):
+    """Relative error in percent, or an empty field where the reference is too small to divide by."""
+    if abs(reference) < 1e-4 * scale:
+        return ""
+    return "%+.3f" % (100.0 * (value - reference) / abs(reference))
+
+
+def collect_hams(case, root, result):
+    folder = os.path.join(root, case.name, "output", "Wamit_format")
+    far = read_drift(os.path.join(folder, "MeanDriftMomentum.8"))
+    near = read_drift(os.path.join(folder, "MeanDriftPressure.9"))
+    terms = read_terms(os.path.join(folder, "MeanDriftTerms.txt"))
+    rows = []
+    for omega, beta1, beta2 in sorted(set(key[:3] for key in far)):
+        if beta1 != beta2 and case.mean_drift == 1:
+            continue
+        get = lambda table, index: table.get((omega, beta1, beta2, index), float("nan"))
+        scale = math.hypot(get(far, 1), get(far, 2))
+        row = dict(case=case.name, group=case.group, hull=case.hull, motion=case.motion, velocity=case.velocity,
+                   waterline=case.waterline, grn=case.grn, isolv=case.isolv, irsp=case.irsp, panels=panels_of(case), omega=omega,
+                   beta1=beta1, beta2=beta2, wall_s="%.1f" % result["wall_s"],
+                   peak_gb="%.3f" % ((result.get("peak_bytes") or 0.0) / 1e9))
+        for label, index in (("Fx", 1), ("Fy", 2), ("Mz", 6)):
+            row[label + "_near"] = "%.6g" % get(near, index)
+            row[label + "_far"] = "%.6g" % get(far, index)
+            row[label + "_err_pct"] = percent(get(near, index), get(far, index), scale if index < 3 else 10.0 * scale)
+        if case.hull == "bottom" and beta1 == 0.0:
+            exact = maccamy_fuchs_fx(omega, BOTTOM_RADIUS, BOTTOM_DEPTH)
+            row["Fx_exact"] = "%.6g" % exact
+            row["Fx_near_exact_pct"] = percent(get(near, 1), exact, exact)
+            row["Fx_far_exact_pct"] = percent(get(far, 1), exact, exact)
+        for number, value in enumerate(terms.get((omega, beta1, beta2), []), start=1):
+            row["Fx_term%d" % number] = "%.5f" % value
+        rows.append(row)
+    return rows
+
+
+def read_nemoh_drift(path):
+    """The diagonal of OUT_QTFM_N.dat: real part over rho g, by (omega, beta1, beta2, dof)."""
+    values = {}
+    for line in open(path):
+        columns = line.split()
+        if len(columns) < 9 or not columns[0][0].isdigit():
+            continue
+        if abs(float(columns[0]) - float(columns[1])) < 1e-6:
+            values[(round(float(columns[0]), 2), round(float(columns[2]), 1), round(float(columns[3]), 1),
+                    int(columns[4]))] = float(columns[7])
+    return values
+
+
+def read_nemoh_matrix(path):
+    """Added mass or damping of a Nemoh output file, by rounded frequency, as a 6 x 6 list."""
+    numbers = open(path).read().split("\n")
+    out = {}
+    i = 1
+    while i + 6 < len(numbers) and numbers[i].strip():
+        out[round(float(numbers[i]), 2)] = [[float(text) for text in numbers[i + 1 + r].split()] for r in range(6)]
+        i += 7
+    return out
+
+
+def read_nemoh_tec(path, zone=1):
+    """Numeric rows of one zone of a Tecplot output file of Nemoh, by rounded frequency. zone counts from 1."""
+    rows = {}
+    current = 0
+    for line in open(path, errors="replace"):
+        if line.lstrip().lower().startswith("zone"):
+            if "I=" in line:
+                current += 1
+            continue
+        if current != zone:
+            continue
+        try:
+            values = [float(text) for text in line.split()]
+        except ValueError:
+            continue
+        if values:
+            rows[round(values[0], 2)] = values[1:]
+    return rows
+
+
+def read_hams_first_order(folder):
+    """A, B, |X| and |RAO| of the WAMIT format output."""
+    a, b, x, rao = {}, {}, {}, {}
+    for line in open(os.path.join(folder, "AmssDamp.1")):
+        c = line.split()
+        if len(c) >= 5:
+            a[(round(float(c[0]), 2), int(c[1]), int(c[2]))] = float(c[3])
+            b[(round(float(c[0]), 2), int(c[1]), int(c[2]))] = float(c[4])
+    for name, table in (("ExcForce.3", x), ("Motion.4", rao)):
+        for line in open(os.path.join(folder, name)):
+            c = line.split()
+            if len(c) >= 5:
+                table[(round(float(c[0]), 2), round(float(c[1]), 1), int(c[2]))] = float(c[3])
+    return a, b, x, rao
+
+
+def hams_case_for_nemoh(case, cases, velocity):
+    """The HAMS case on the same mesh and motion as a Nemoh case, or None."""
+    short = {"differencing": "diff", "source": "src"}[velocity]
+    if case.mean_drift == 2:
+        name = "n_pair_%s_%s_%s" % (case.hull, case.motion, tag(case.multiple))
+        return cases.get(name) if velocity == "differencing" else None
+    for name in ("a_%s_%s_%s_%s" % (case.hull, case.motion, short, tag(case.multiple)),
+                 "n_%s_%s_%s_%s" % (case.hull, case.motion, short, tag(case.multiple)),
+                 "d_base_%s_%s_%s_%s" % (case.hull, case.motion, short, tag(case.multiple))):
+        if name in cases:
+            return cases[name]
+    return None
+
+
+def collect_nemoh(case, root, cases, result):
+    """Rows of Nemoh against the HAMS case on the same mesh, for the shared frequencies. A second list has first-order values."""
+    base = os.path.join(root, case.name)
+    drift = read_nemoh_drift(os.path.join(base, "results", "QTF", "OUT_QTFM_N.dat"))
+    rows = []
+    first_order = []
+    for velocity in ("differencing", "source"):
+        partner = hams_case_for_nemoh(case, cases, velocity)
+        if partner is None:
+            continue
+        folder = os.path.join(root, partner.name, "output", "Wamit_format")
+        near_path = os.path.join(folder, "MeanDriftPressure.9")
+        if not os.path.exists(near_path):
+            continue
+        near = read_drift(near_path)
+        far = read_drift(os.path.join(folder, "MeanDriftMomentum.8"))
+        for (omega, beta1, beta2, index), value in sorted(near.items()):
+            key = (round(omega, 2), round(beta1, 1), round(beta2, 1), index)
+            if index in (1, 2, 6) and key in drift:
+                scale = math.hypot(near.get((omega, beta1, beta2, 1), 0.0), near.get((omega, beta1, beta2, 2), 0.0))
+                rows.append(dict(nemoh_case=case.name, hams_case=partner.name, velocity=velocity, panels=panels_of(case), omega=omega,
+                                 beta1=beta1, beta2=beta2, index=index, hams_near="%.6g" % value,
+                                 hams_far="%.6g" % far.get((omega, beta1, beta2, index), float("nan")),
+                                 nemoh="%.6g" % drift[key], near_against_nemoh_pct=percent(value, drift[key], scale)))
+    partner = hams_case_for_nemoh(case, cases, "differencing")
+    if partner is not None and os.path.exists(os.path.join(root, partner.name, "output", "Wamit_format", "AmssDamp.1")):
+        a, b, x, rao = read_hams_first_order(os.path.join(root, partner.name, "output", "Wamit_format"))
+        added = read_nemoh_matrix(os.path.join(base, "results", "CM.dat"))
+        damping = read_nemoh_matrix(os.path.join(base, "results", "CA.dat"))
+        excitation = read_nemoh_tec(os.path.join(base, "results", "ExcitationForce.tec"))
+        motion = read_nemoh_tec(os.path.join(base, "Motion", "RAO.tec"))
+        for omega in sorted(set(key[0] for key in a)):
+            if omega not in added:
+                continue
+            for i, j in ((1, 1), (3, 3), (5, 5), (1, 5)):
+                first_order.append(dict(quantity="A%d%d" % (i, j), panels=panels_of(case), omega=omega,
+                                        hams=a[(omega, i, j)] * make_mesh.RHO, nemoh=added[omega][i - 1][j - 1]))
+                first_order.append(dict(quantity="B%d%d" % (i, j), panels=panels_of(case), omega=omega,
+                                        hams=b[(omega, i, j)] * make_mesh.RHO * omega, nemoh=damping[omega][i - 1][j - 1]))
+            for i in (1, 3, 5):
+                if (omega, 0.0, i) in x and omega in excitation:
+                    first_order.append(dict(quantity="X%d" % i, panels=panels_of(case), omega=omega,
+                                            hams=x[(omega, 0.0, i)] * make_mesh.RHO * make_mesh.G,
+                                            nemoh=excitation[omega][2 * (i - 1)]))
+                if (omega, 0.0, i) in rao and omega in motion and case.motion == "free":
+                    # Nemoh gives rotations in degrees per metre
+                    first_order.append(dict(quantity="RAO%d" % i, panels=panels_of(case), omega=omega,
+                                            hams=rao[(omega, 0.0, i)],
+                                            nemoh=motion[omega][i - 1] * (math.pi / 180.0 if i > 3 else 1.0)))
+        for row in first_order:
+            row["nemoh_case"] = case.name
+            row["difference_pct"] = percent(row["hams"], row["nemoh"], 1e-12)
+    return rows, first_order
+
+
+def write_csv(path, rows):
+    columns = []
+    for row in rows:
+        columns += [key for key in row if key not in columns]
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def collect(args):
+    """Write the table of drift values and errors for each finished case, and against Nemoh. Prints time and memory against the
+    estimates."""
+    cases = {case.name: case for case in study_cases()}
+    hams_rows, nemoh_rows, first_rows = [], [], []
+    print("| Case | Code | Panels | Wall (s) | Estimate (s) | Peak (GB) | Estimate (GB) |")
+    print("| :--- | ---: | ---: | ---: | ---: | ---: | ---: |")
+    for name in sorted(os.listdir(args.root)):
+        path = os.path.join(args.root, name, "result.json")
+        if not os.path.exists(path):
+            continue
+        result = json.load(open(path))
+        print("| %s | %d | %d | %.1f | %.0f | %.3f | %.3f |" % (
+            name, result["code"], result["panels"], result["wall_s"], result["estimate_hours"] * 3600.0,
+            (result.get("peak_bytes") or 0.0) / 1e9, result["estimate_gb"]))
+        if result["code"] or name not in cases:
+            continue
+        if cases[name].solver == "nemoh":
+            rows, first = collect_nemoh(cases[name], args.root, cases, result)
+            nemoh_rows += rows
+            first_rows += first
+        else:
+            hams_rows += collect_hams(cases[name], args.root, result)
+    out = args.out or os.path.join(args.root, "drift_table.csv")
+    write_csv(out, hams_rows)
+    print("%d rows in %s" % (len(hams_rows), out))
+    for label, rows in (("nemoh", nemoh_rows), ("first_order", first_rows)):
+        if rows:
+            other = out.replace(".csv", "_%s.csv" % label)
+            write_csv(other, rows)
+            print("%d rows in %s" % (len(rows), other))
+
+
+def fortran_files_in_order(folders):
+    """Fortran files of the folders, ordered so that every module is compiled before the files that use it. Files holding a
+    program are left out."""
+    files, provides, needs = [], {}, {}
+    for folder in folders:
+        for name in sorted(os.listdir(folder)):
+            if not name.lower().endswith((".f90",)):
+                continue
+            path = os.path.join(folder, name)
+            text = open(path, errors="replace").read().lower()
+            if re.search(r"^\s*program\s+\w+", text, re.M):
+                continue
+            files.append(name)
+            for module in re.findall(r"^\s*module\s+(?!procedure)(\w+)", text, re.M):
+                provides[module] = name
+            needs[name] = set(re.findall(r"^\s*use\s*(?:,\s*\w+\s*::\s*)?(\w+)", text, re.M))
+    ordered, done = [], set()
+
+    def visit(name, stack=()):
+        if name in done:
+            return
+        if name in stack:
+            raise ValueError("files use each other: " + name)
+        for module in sorted(needs[name]):
+            if module in provides and provides[module] != name:
+                visit(provides[module], stack + (name,))
+        done.add(name)
+        ordered.append(name)
+
+    for name in files:
+        visit(name)
+    return ordered
+
+
+SBATCH_HEAD = """#!/bin/bash
+#SBATCH -J {name}
+#SBATCH -p {partition}
+#SBATCH -N 1
+#SBATCH --ntasks 1
+#SBATCH --cpus-per-task {cpus}
+#SBATCH --mem={memory}G
+#SBATCH -t {limit}
+#SBATCH -o {logs}/{log}
+{extra}module load 2024
+module load intel/2024a
+ulimit -s unlimited
+export OMP_NUM_THREADS={cpus}
+"""
+
+
+def time_limit(hours):
+    """A Slurm time limit of twice the estimate, at least 30 minutes."""
+    minutes = int(max(30.0, 120.0 * hours))
+    return "%d:%02d:00" % (minutes // 60, minutes % 60)
+
+
+def write_slurm(args):
+    """Write the scripts of the study into <root>/jobs. Nothing is submitted."""
+    root = args.root.rstrip("/")
+    jobs = "%s/jobs" % root
+    logs = "%s/logs" % root
+    out = args.out or jobs
+    os.makedirs(out, exist_ok=True)
+    script = "%s/pre_postprocessing_python/SecondOrder/drift_convergence.py" % args.repo
+    extra = "#SBATCH -A %s\n" % args.account if args.account else ""
+    cases = [case for case in study_cases() if in_tier(case, args.tier) and case.where == "snellius"]
+    head = dict(partition=PARTITION, cpus=CPUS, memory=MEMORY_GB, logs=logs, extra=extra)
+
+    src = os.path.join(args.source or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."), "src")
+    order = " ".join(fortran_files_in_order([src]))
+    with open(os.path.join(out, "build.sbatch"), "w", newline="\n") as f:
+        f.write(SBATCH_HEAD.format(name="drift_build", limit="0:30:00", log="build_%j.log", **head))
+        f.write("set -e\nFLAGS=\"-qmkl -qopenmp -heap-arrays 0\"\nLIST=\"%s HAMS_Prog.f90\"\n" % order)
+        f.write("# GRN_KIND is a compile-time constant, so the second build changes it in a copy of the source\n")
+        f.write("for kind in 4 8; do\n  d=%s/build_grn$kind; rm -rf $d; mkdir -p $d; cp %s/src/*.f90 $d/; cd $d\n" % (root, args.repo))
+        f.write("  sed -i \"s/GRN_KIND = 4/GRN_KIND = $kind/\" WavDynMods.f90\n")
+        f.write("  grep -q \"GRN_KIND = $kind\" WavDynMods.f90\n")
+        f.write("  ifx $FLAGS -o %s/hamsmrel_grn$kind $LIST\ndone\n" % root)
+
+    with open(os.path.join(out, "tests.sbatch"), "w", newline="\n") as f:
+        f.write(SBATCH_HEAD.format(name="drift_tests", limit="1:00:00", log="tests_%j.log", **head))
+        f.write("# Unit and integration tests under ifx on Linux, for the thin margins of the fixtures and the suite time\n")
+        f.write("# TESTDRIVE is the folder of the test-drive source files, testdrive.F90 and testdrive_version.f90\n")
+        f.write("TESTDRIVE=${TESTDRIVE:?set TESTDRIVE}\nFLAGS=\"-qmkl -qopenmp -heap-arrays 0\"\n")
+        test_folder = os.path.join(os.path.dirname(src), "test")
+        files = [name for name in fortran_files_in_order([src, test_folder])]
+        f.write("d=%s/build_tests; rm -rf $d; mkdir -p $d; cd $d\n" % root)
+        f.write("cp %s/src/*.f90 %s/test/*.f90 $TESTDRIVE/testdrive_version.f90 $TESTDRIVE/testdrive.F90 .\n" % (args.repo, args.repo))
+        f.write("OBJ=\"\"\nfor file in testdrive_version.f90 testdrive.F90 %s; do\n" % " ".join(files))
+        f.write("  ifx $FLAGS -fpp -c $file || exit 1; OBJ=\"$OBJ ${file%.*}.o\"\ndone\n")
+        f.write("ifx $FLAGS -o unit-tester unit_tester.f90 $OBJ\nifx $FLAGS -o integration-tester integration_tester.f90 $OBJ\n")
+        f.write("cd %s\n" % args.repo)
+        f.write("time timeout 600 $d/unit-tester > %s/unit.log 2>&1; echo unit rc=$?\n" % logs)
+        f.write("time timeout 1800 $d/integration-tester %s/hamsmrel_grn4 > %s/integration.log 2>&1; echo integration rc=$?\n" % (root, logs))
+
+    # Arrays by the size of the run, since an array has one time limit
+    classes = (("short", 0.0, 0.5), ("medium", 0.5, 2.0), ("long", 2.0, 1e9))
+    for label, low, high in classes:
+        chosen = [case for case in cases if case.solver == "hams" and low <= wall_hours(case) < high]
+        if not chosen:
+            continue
+        with open(os.path.join(out, label + ".txt"), "w", newline="\n") as f:
+            f.write("\n".join(case.name for case in chosen) + "\n")
+        limit = time_limit(max(wall_hours(case) for case in chosen))
+        with open(os.path.join(out, label + ".sbatch"), "w", newline="\n") as f:
+            f.write(SBATCH_HEAD.format(name="drift_" + label, limit=limit, log="%A_%a.log",
+                                       **dict(head, extra="#SBATCH --array=1-%d%%8\n%s" % (len(chosen), extra))))
+            f.write("CASE=$(sed -n \"${SLURM_ARRAY_TASK_ID}p\" %s/%s.txt)\n" % (jobs, label))
+            f.write("python3 %s run %s --case \"$CASE\" --hams %s/hamsmrel_grn4 --hams-grn8 %s/hamsmrel_grn8 --threads %d\n" % (
+                script, root, root, root, CPUS))
+
+    # Nemoh is run with one thread per case, as many at a time as there are cases, in one allocation
+    chosen = [case for case in cases if case.solver == "nemoh"]
+    if chosen:
+        with open(os.path.join(out, "nemoh.txt"), "w", newline="\n") as f:
+            f.write("\n".join(case.name for case in chosen) + "\n")
+        limit = time_limit(max(wall_hours(case) for case in chosen))
+        with open(os.path.join(out, "nemoh.sbatch"), "w", newline="\n") as f:
+            f.write(SBATCH_HEAD.format(name="drift_nemoh", limit=limit, log="nemoh_%j.log", **head).replace(
+                "export OMP_NUM_THREADS=%d" % CPUS, "export OMP_NUM_THREADS=1"))
+            f.write("# Needs a build of Nemoh on Snellius, kept outside the repository. Set NEMOH_BUILD to its build folder.\n")
+            f.write("NEMOH_BUILD=${NEMOH_BUILD:?set NEMOH_BUILD}\n")
+            f.write("xargs -P %d -I{} python3 %s run %s --case {} --hams none --nemoh-build $NEMOH_BUILD --threads 1 < %s/nemoh.txt\n" % (
+                len(chosen), script, root, jobs))
+    print("Scripts in %s, for %s on the cluster, with logs in %s. Nothing was submitted." % (out, jobs, logs))
+
+
+def job_table(tier, markdown):
+    cases = [case for case in study_cases() if in_tier(case, tier)]
+    head = ("Case", "Group", "Q", "Hull", "Motion", "Velocity", "Setting", "Panels", "Freq", "Head", "Wall (h)", "Mem (GB)", "Runs on")
+    rows = []
+    for case in cases:
+        setting = []
+        if case.grn == 8:
+            setting.append("GRN_KIND 8")
+        if case.isolv == 2:
+            setting.append("ISOLV 2")
+        if case.irsp:
+            setting.append("IRSP 1")
+        if case.waterline == "field":
+            setting.append("field")
+        if case.mean_drift == 2:
+            setting.append("pairs")
+        if case.solver == "nemoh":
+            setting.append("Nemoh")
+        count = NEMOH_FREQUENCY_RANGE[2] if case.solver == "nemoh" else len(case.frequencies)
+        rows.append((case.name, case.group, case.question, case.hull, case.motion,
+                     "-" if case.solver == "nemoh" else case.velocity, ", ".join(setting) or "-",
+                     "%d" % (panels_of(case) + lid_panels_of(case)), "%d" % count, "%d" % len(case.headings),
+                     "%.2f" % wall_hours(case), "%.2f" % memory_gb(case), case.where))
+    if markdown:
+        print("| " + " | ".join(head) + " |")
+        print("| " + " | ".join(":---" if i < 7 or i == 12 else "---:" for i in range(len(head))) + " |")
+        for row in rows:
+            print("| " + " | ".join(row) + " |")
+    else:
+        for row in rows:
+            print("  ".join(row))
+    print()
+    for label, chosen in (("HAMS on Snellius, 32 threads each", [c for c in cases if c.solver == "hams"]),
+                          ("Nemoh on Snellius, 1 thread each", [c for c in cases if c.solver == "nemoh" and c.where == "snellius"]),
+                          ("Nemoh on the laptop", [c for c in cases if c.where == "laptop"])):
+        hours = sum(wall_hours(c) for c in chosen)
+        longest = max([wall_hours(c) for c in chosen] or [0.0])
+        print("%s: %d runs, %.1f wall h in sum, longest %.2f h, largest memory %.1f GB" % (
+            label, len(chosen), hours, longest, max([memory_gb(c) for c in chosen] or [0.0])))
+    hams_hours = sum(wall_hours(c) for c in cases if c.solver == "hams")
+    nemoh_list = [c for c in cases if c.solver == "nemoh" and c.where == "snellius"]
+    nemoh_hours = max([wall_hours(c) for c in nemoh_list] or [0.0])
+    print("Charged: HAMS %.1f job hours, %.0f CPU-hours, %.0f SBU" % (hams_hours, hams_hours * CHARGED_CPUS, hams_hours * SBU_PER_JOB_HOUR))
+    print("Charged: Nemoh in one allocation %.1f job hours, %.0f CPU-hours, %.0f SBU" % (
+        nemoh_hours, nemoh_hours * CHARGED_CPUS, nemoh_hours * SBU_PER_JOB_HOUR))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command")
+    sub.required = True
+
+    p = sub.add_parser("list")
+    p.add_argument("--tier", choices=("full", "small"), default="full")
+    p.add_argument("--markdown", action="store_true")
+
+    p = sub.add_parser("generate")
+    p.add_argument("root")
+    p.add_argument("--case")
+    p.add_argument("--group")
+
+    for command in ("run", "calibrate"):
+        p = sub.add_parser(command)
+        p.add_argument("root")
+        p.add_argument("--hams", required=True)
+        p.add_argument("--threads", type=int, default=os.cpu_count())
+        p.add_argument("--hams-grn8")
+        p.add_argument("--nemoh-build")
+        if command == "run":
+            p.add_argument("--case", required=True)
+
+    p = sub.add_parser("slurm")
+    p.add_argument("root", help="folder of the study on the cluster")
+    p.add_argument("--repo", required=True, help="checkout of this repository on the cluster")
+    p.add_argument("--source", help="local checkout to read the source list from, by default this one")
+    p.add_argument("--out", help="local folder for the scripts, by default <root>/jobs")
+    p.add_argument("--tier", choices=("full", "small"), default="full")
+    p.add_argument("--account", help="Slurm account, by default that of the user")
+
+    p = sub.add_parser("collect")
+    p.add_argument("root")
+    p.add_argument("--out")
+
+    args = parser.parse_args()
+    if args.command == "list":
+        job_table(args.tier, args.markdown)
+    elif args.command == "generate":
+        for case in study_cases():
+            if (args.case and case.name != args.case) or (args.group and case.group != args.group):
+                continue
+            if case.solver == "nemoh":
+                write_nemoh_case(case, args.root)
+            else:
+                write_hams_case(case, args.root, CPUS)
+    elif args.command == "run":
+        found = [case for case in study_cases() if case.name == args.case]
+        if not found:
+            raise SystemExit("no case named " + args.case)
+        sys.exit(1 if run_case(found[0], args)["code"] else 0)
+    elif args.command == "calibrate":
+        calibrate(args)
+    elif args.command == "slurm":
+        write_slurm(args)
+    elif args.command == "collect":
+        collect(args)
+
+
+if __name__ == "__main__":
+    main()

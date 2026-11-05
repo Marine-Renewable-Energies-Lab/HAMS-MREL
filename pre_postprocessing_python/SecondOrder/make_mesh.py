@@ -4,6 +4,7 @@ Generate a HAMS hull mesh and a matching Hydrostatic.in for a surface-piercing v
 Usage:
     python make_mesh.py cylinder --radius 10 --draft 10 --ntheta 32 --nz 6 --nr 6 --out HullMesh.pnl
     python make_mesh.py box --lx 20 --ly 10 --draft 5 --nx 10 --ny 5 --nz 4 --out HullMesh.pnl
+    python make_mesh.py cylinder --radius 10 --draft 10 --ntheta 32 --nz 6 --nr 6 --format nemoh --out hull.dat
 
 The hull has no lid, so the top row of nodes lies on z = 0. --x0 and --y0 shift the body in the horizontal plane. Every
 generated panel normal is checked to point out of the fluid (into the body), computed as HAMS does in CalTransNormals.
@@ -15,6 +16,11 @@ discretized waterplane polygon: mass = rho*V, centre of gravity at half draft, a
 which must be given as the rotation centre in ControlFile.in. External damping and stiffness are zero. These are the
 values of the whole body, also with --half-y. write_body and write_cylinder also accept external restoring values, and
 write_submerged_cylinder writes a closed body below the free surface, for use from make_drift_fixtures.py.
+write_rounded_box writes a box with rounded vertical corners and, if wanted, a rounded bilge, for drift_convergence.py.
+
+--format nemoh writes the same nodes and panels in the mesh format of Nemoh v3. The vertex order is kept: it gives a right-hand
+normal into the fluid, as Nemoh documents, while HAMS computes the opposite normal from the same order. A triangle has its last
+node repeated, since that format only has four node panels. Hydrostatic.in is still written in the HAMS format.
 """
 
 import argparse
@@ -260,6 +266,76 @@ def box(lx, ly, draft, nx, ny, nz):
     return mesh, corners
 
 
+def rounded_rectangle(lx, ly, corner_radius, nx, ny, ncorner, inset=0.0):
+    """Closed polygon of a rectangle with rounded corners, moved inwards by inset, counter-clockwise from above. It starts in
+    the middle of the corner at (-x, -y). It has nx and ny segments on the straight sides and ncorner on each corner, so
+    the sides between corner middles have nx + ncorner and ny + ncorner segments."""
+    half_x = lx / 2.0 - corner_radius
+    half_y = ly / 2.0 - corner_radius
+    radius = corner_radius - inset
+    centres = [(-half_x, -half_y), (half_x, -half_y), (half_x, half_y), (-half_x, half_y)]
+
+    def arc(c, i):
+        angle = math.pi + 0.5 * math.pi * (c + i / ncorner)
+        return (centres[c][0] + radius * math.cos(angle), centres[c][1] + radius * math.sin(angle))
+
+    points = []
+    for c in range(4):
+        points += [arc(c, i) for i in range(ncorner // 2 if c == 0 else 0, ncorner + 1)]
+        ax, ay = arc(c, ncorner)
+        bx, by = arc((c + 1) % 4, 0)
+        count = nx if c % 2 == 0 else ny
+        points += [(ax + (bx - ax) * i / count, ay + (by - ay) * i / count) for i in range(1, count)]
+    return points + [arc(0, i) for i in range(ncorner // 2)]
+
+
+def rounded_box(lx, ly, draft, corner_radius, bilge_radius, nx, ny, ncorner, nz, narc):
+    """Walls with rounded vertical corners, rows cosine spaced towards the waterline, a rounded bilge if bilge_radius is not
+    zero, and a flat bottom of quadrilaterals. ncorner must be even. Returns the mesh and its waterline polygon."""
+    if ncorner % 2 != 0:
+        raise ValueError("ncorner must be even, since the sides of the bottom meet in the middle of a corner")
+    if bilge_radius >= corner_radius:
+        raise ValueError("the bilge radius must be less than the corner radius, to keep the corners of the bottom rounded")
+    profile = rounded_profile(bilge_radius, draft, bilge_radius, nz, narc, 0)
+    rings = [rounded_rectangle(lx, ly, corner_radius, nx, ny, ncorner, bilge_radius - r) for r, _ in profile]
+    mesh = Mesh()
+    count = len(rings[0])
+    for level in range(len(profile) - 1):
+        upper, lower = rings[level], rings[level + 1]
+        z_upper, z_lower = profile[level][1], profile[level + 1][1]
+        for j in range(count):
+            k = (j + 1) % count
+            mesh.add_panel([lower[j] + (z_lower,), lower[k] + (z_lower,), upper[k] + (z_upper,), upper[j] + (z_upper,)])
+
+    # The bottom is a transfinite grid between the four sides of the last ring
+    edge = rings[-1]
+    side_x = nx + ncorner
+    side_y = ny + ncorner
+    south = edge[:side_x + 1]
+    east = edge[side_x:side_x + side_y + 1]
+    north = edge[side_x + side_y:2 * side_x + side_y + 1][::-1]
+    west = (edge[2 * side_x + side_y:] + edge[:1])[::-1]
+
+    def bottom(i, j):
+        if j == 0:
+            return south[i] + (-draft,)
+        if j == side_y:
+            return north[i] + (-draft,)
+        if i == 0:
+            return west[j] + (-draft,)
+        if i == side_x:
+            return east[j] + (-draft,)
+        s, t = i / side_x, j / side_y
+        return tuple((1 - t) * south[i][k] + t * north[i][k] + (1 - s) * west[j][k] + s * east[j][k]
+                     - (1 - s) * (1 - t) * south[0][k] - s * (1 - t) * south[-1][k]
+                     - s * t * north[-1][k] - (1 - s) * t * north[0][k] for k in range(2)) + (-draft,)
+
+    for i in range(side_x):
+        for j in range(side_y):
+            mesh.add_panel([bottom(i, j), bottom(i, j + 1), bottom(i + 1, j + 1), bottom(i + 1, j)])
+    return mesh, rings[0]
+
+
 def polygon_moments(polygon):
     """Area and second moments int y^2 dA, int x^2 dA of a counter-clockwise polygon centred on the origin."""
     area = ixx = iyy = 0.0
@@ -272,9 +348,10 @@ def polygon_moments(polygon):
     return area, ixx, iyy
 
 
-def hydrostatics(polygon, draft, scale=lambda z: 1.0, steps=1):
+def hydrostatics(polygon, draft, scale=lambda z: 1.0, steps=1, section=None):
     """Mass and restoring matrices about the waterplane centre of a uniform solid floating at its draft, whose sections
-    are the waterline polygon scaled by scale(z). The default is a prism, for which one step of the rule is exact."""
+    are the waterline polygon scaled by scale(z), or the polygon section(z) if that is given. The default is a prism, for
+    which one step of the rule is exact."""
     area, ixx, iyy = polygon_moments(polygon)
     vol = zmoment = i44 = i55 = i66 = 0.0
     dz = draft / steps
@@ -283,11 +360,12 @@ def hydrostatics(polygon, draft, scale=lambda z: 1.0, steps=1):
         z = -(step + 0.5) * dz
         f = scale(z)
         z2 = z * z + dz * dz / 12.0
-        vol += f ** 2 * area * dz
-        zmoment += f ** 2 * area * z * dz
-        i44 += RHO * (f ** 4 * ixx + f ** 2 * area * z2) * dz
-        i55 += RHO * (f ** 4 * iyy + f ** 2 * area * z2) * dz
-        i66 += RHO * f ** 4 * (ixx + iyy) * dz
+        a, xx, yy = polygon_moments(section(z)) if section else (area, ixx, iyy)
+        vol += f ** 2 * a * dz
+        zmoment += f ** 2 * a * z * dz
+        i44 += RHO * (f ** 4 * xx + f ** 2 * a * z2) * dz
+        i55 += RHO * (f ** 4 * yy + f ** 2 * a * z2) * dz
+        i66 += RHO * f ** 4 * (xx + yy) * dz
     mass = RHO * vol
     zg = zb = zmoment / vol
 
@@ -323,6 +401,18 @@ def write_mesh(path, mesh, isy=0, title="Hull Mesh File"):
         f.write("    --------------End %s---------------\n" % title)
 
 
+def write_nemoh_mesh(path, mesh, isym=0):
+    """Write a mesh in the format of Nemoh v3. A triangle has its last node repeated."""
+    with open(path, "w") as f:
+        f.write("2 %d\n" % isym)
+        for number, (x, y, z) in enumerate(mesh.nodes, start=1):
+            f.write("%d " % number + " ".join(NODE_FORMAT % c for c in (x, y, z)) + "\n")
+        f.write("0 0. 0. 0.\n")
+        for panel in mesh.panels:
+            f.write(" ".join("%d" % i for i in (panel + panel[-1:])[:4]) + "\n")
+        f.write("0 0 0 0\n")
+
+
 def write_matrix(f, matrix):
     for row in matrix:
         f.write("".join("  %12.5E" % value for value in row) + "\n")
@@ -349,7 +439,7 @@ def write_hydrostatic(path, hydro, x0, y0, external_restoring=None):
         write_matrix(f, external)
 
 
-def write_body(mesh, polygon, draft, x0, y0, half_y, mesh_path, hydro_path, external_restoring=None):
+def write_body(mesh, polygon, draft, x0, y0, half_y, mesh_path, hydro_path, external_restoring=None, mesh_format="hams"):
     """Check and write a mesh centred on the origin, and its hydrostatics. Returns the written mesh and hydrostatics."""
     if half_y:
         if y0 != 0.0:
@@ -358,7 +448,10 @@ def write_body(mesh, polygon, draft, x0, y0, half_y, mesh_path, hydro_path, exte
     mesh = mesh.shifted(x0, y0)
     check_normals(mesh, (x0, y0 + (draft / 2.0 if half_y else 0.0), -draft / 2.0))
     hydro = hydrostatics(polygon, draft)
-    write_mesh(mesh_path, mesh, 1 if half_y else 0)
+    if mesh_format == "nemoh":
+        write_nemoh_mesh(mesh_path, mesh, 1 if half_y else 0)
+    else:
+        write_mesh(mesh_path, mesh, 1 if half_y else 0)
     write_hydrostatic(hydro_path, hydro, x0, y0, external_restoring)
     return mesh, hydro
 
@@ -395,6 +488,20 @@ def write_box(mesh_path, hydro_path, lx, ly, draft, nx, ny, nz, x0=0.0, y0=0.0):
     """Write the mesh and hydrostatics of a box. Returns the written mesh."""
     mesh, polygon = box(lx, ly, draft, nx, ny, nz)
     return write_body(mesh, polygon, draft, x0, y0, False, mesh_path, hydro_path)[0]
+
+
+def write_rounded_box(mesh_path, hydro_path, lx, ly, draft, corner_radius, bilge_radius, nx, ny, ncorner, nz, narc):
+    """Write the mesh and hydrostatics of a box with rounded corners. Returns the written mesh."""
+    mesh, polygon = rounded_box(lx, ly, draft, corner_radius, bilge_radius, nx, ny, ncorner, nz, narc)
+
+    def section(z):
+        inset = bilge_radius - rounded_radius(bilge_radius, draft, bilge_radius, z) if bilge_radius > 0.0 else 0.0
+        return rounded_rectangle(lx, ly, corner_radius, nx, ny, ncorner, inset)
+
+    check_normals(mesh, (0.0, 0.0, -draft / 2.0))
+    write_mesh(mesh_path, mesh)
+    write_hydrostatic(hydro_path, hydrostatics(polygon, draft, steps=HYDROSTATIC_STEPS, section=section), 0.0, 0.0)
+    return mesh
 
 
 def write_waterplane(path, radius, ntheta, nr, graded=False, x0=0.0, y0=0.0):
@@ -459,6 +566,7 @@ def main():
         p.add_argument("--y0", type=float, default=0.0)
         p.add_argument("--half-y", action="store_true", help="keep y > 0 and set the y symmetry flag")
         p.add_argument("--out", required=True, help="path of the HullMesh file")
+        p.add_argument("--format", choices=("hams", "nemoh"), default="hams", help="format of the mesh file")
         p.add_argument("--hydro-out", help="path of the hydrostatic file (default: Hydrostatic.in next to --out)")
 
     args = parser.parse_args()
@@ -467,7 +575,8 @@ def main():
     else:
         mesh, polygon = box(args.lx, args.ly, args.draft, args.nx, args.ny, args.nz)
     hydro_path = args.hydro_out or os.path.join(os.path.dirname(args.out), "Hydrostatic.in")
-    mesh, hydro = write_body(mesh, polygon, args.draft, args.x0, args.y0, args.half_y, args.out, hydro_path)
+    mesh, hydro = write_body(mesh, polygon, args.draft, args.x0, args.y0, args.half_y, args.out, hydro_path,
+                             mesh_format=args.format)
 
     print("%d panels, %d nodes, normals checked" % (len(mesh.panels), len(mesh.nodes)))
     if args.shape == "cylinder" and args.waterplane_out:
