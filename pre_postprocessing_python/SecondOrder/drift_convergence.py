@@ -86,6 +86,10 @@ CPUS = 32
 MEMORY_GB = 64
 CHARGED_CPUS = 48
 SBU_PER_JOB_HOUR = 72.0
+# ifx 2024.2 with -heap-arrays 0 stops with SIGSEGV when it frees the temporary of an array constructor of a type with allocatable
+# parts, as in far_field_pair. A small program with no HAMS code does the same. So the jobs leave that flag out, and give the
+# threads a large stack instead. A stack overflow stops the run, so it cannot change a number silently.
+IFX_FLAGS = "-qmkl -qopenmp"
 
 
 class Case:
@@ -808,6 +812,7 @@ SBATCH_HEAD = """#!/bin/bash
 module load intel/2024a
 ulimit -s unlimited
 export OMP_NUM_THREADS={cpus}
+export OMP_STACKSIZE=1G
 """
 
 
@@ -833,7 +838,7 @@ def write_slurm(args):
     order = " ".join(fortran_files_in_order([src]))
     with open(os.path.join(out, "build.sbatch"), "w", newline="\n") as f:
         f.write(SBATCH_HEAD.format(name="drift_build", limit="0:30:00", log="build_%j.log", **head))
-        f.write("set -e\nFLAGS=\"-qmkl -qopenmp -heap-arrays 0\"\nLIST=\"%s HAMS_Prog.f90\"\n" % order)
+        f.write("set -e\nFLAGS=\"%s\"\nLIST=\"%s HAMS_Prog.f90\"\n" % (IFX_FLAGS, order))
         f.write("# GRN_KIND is a compile-time constant, so the second build changes it in a copy of the source\n")
         f.write("for kind in 4 8; do\n  d=%s/build_grn$kind; rm -rf $d; mkdir -p $d; cp %s/src/*.f90 $d/; cd $d\n" % (root, args.repo))
         f.write("  sed -i \"s/GRN_KIND = 4/GRN_KIND = $kind/\" WavDynMods.f90\n")
@@ -844,10 +849,11 @@ def write_slurm(args):
         f.write(SBATCH_HEAD.format(name="drift_tests", limit="1:00:00", log="tests_%j.log", **head))
         f.write("# Unit and integration tests under ifx on Linux, for the thin margins of the fixtures and the suite time\n")
         f.write("# TESTDRIVE is the folder of the test-drive source files, testdrive.F90 and testdrive_version.f90\n")
-        f.write("TESTDRIVE=${TESTDRIVE:?set TESTDRIVE}\nFLAGS=\"-qmkl -qopenmp -heap-arrays 0\"\n")
+        f.write("TESTDRIVE=${TESTDRIVE:?set TESTDRIVE}\nFLAGS=\"%s\"\n" % IFX_FLAGS)
         test_folder = os.path.join(os.path.dirname(src), "test")
         files = [name for name in fortran_files_in_order([src, test_folder])]
-        f.write("d=%s/build_tests; rm -rf $d; mkdir -p $d; cd $d\n" % root)
+        # The testers find test/data three folders above themselves, as under fpm
+        f.write("d=%s/build/ifx/test; rm -rf $d; mkdir -p $d; cd $d\n" % args.repo)
         f.write("cp %s/src/*.f90 %s/test/*.f90 $TESTDRIVE/testdrive_version.f90 $TESTDRIVE/testdrive.F90 .\n" % (args.repo, args.repo))
         f.write("OBJ=\"\"\nfor file in testdrive_version.f90 testdrive.F90 %s; do\n" % " ".join(files))
         f.write("  ifx $FLAGS -fpp -c $file || exit 1; OBJ=\"$OBJ ${file%.*}.o\"\ndone\n")
