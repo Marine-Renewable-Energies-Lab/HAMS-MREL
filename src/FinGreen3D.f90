@@ -165,6 +165,7 @@
         REAL*8,INTENT(IN)::ZF,ZP,V,WVN(1:NK),H
         COMPLEX*16,INTENT(OUT):: GRN(3)
         COMPLEX*16 FG(3)
+        REAL*8,PARAMETER:: RLIN=0.02D0, VHLIN=50.D0                              ! Limits of R/h and nu*h for LINTON, see below
 
         DATA  G,PI4 /9.807D0,12.56637061435917D0/
          
@@ -180,7 +181,12 @@
 ! based on the value of RHP (R/h)                                                                   ! This is the domain decomposition
 !  
         RHP=DABS(RR/H)                                                           ! RR - Horizontal distance between the source point and the field point, H - Depth
-         IF (RHP.LT.0.0005D0) THEN
+! LINTON is used up to R/h = RLIN when nu*h <= VHLIN. Below R/h of about 0.02 the 100 terms
+! of PIDCOCK have not started to decay, and the epsilon algorithm (Limes) picks a table entry
+! that jumps when R moves by rounding size: dG/dR*h^2 then scatters by up to 1e4. From
+! R/h = 0.02 upward PIDCOCK is the more accurate of the two. Above nu*h = 51 the Ewald
+! parameter in LINTON is clamped (A*k*h = 5), and its errors grow quickly, so PIDCOCK is kept there.
+         IF (RHP.LT.0.0005D0.OR.(RHP.LT.RLIN.AND.V*H.LE.VHLIN)) THEN
           CALL LINTON(RR,ZF,ZP,V,WK,WVN,NK,H,FG)
         ELSEIF (RHP.GE.0.0005D0.AND.RHP.LT.0.05D0) THEN
           CALL PIDCOCK(RR,ZF,ZP,V,WK,WVN,NK,H,FG)
@@ -364,7 +370,7 @@
 ! ==================================================================================
 !       Purpose: This program computes Green function and its derivatives 
 !                using series expansion, with epsilon algorithm, in the region 
-!                R/H.GT.0.01 and R/H.LT.0.5. The terms needed is 10~80 to  
+!                R/H.GE.0.05 and R/H.LT.0.5. The terms needed is 10~80 to  
 !                10^-5 accuracy, with a maximum number of term 80.
 !
 !  License:
@@ -509,7 +515,8 @@
 ! ==================================================================================
 !       Purpose: This program computes Green function and its derivatives 
 !                using Pidcock's method, with epsilon algorithm, in the region 
-!                R/H.GT.0.0005 and R/H.LT.0.01. The terms needed is 50~100 to 
+!                R/H.GE.0.0005 and R/H.LT.0.05 (from R/H = 0.02 when nu*h <= 50,
+!                where LINTON is used below). The terms needed is 50~100 to 
 !                10^-4 accuracy, with a maximum number of term 100.
 ! 
 !  License:
@@ -663,7 +670,7 @@
 ! ==================================================================================
 !       Purpose: This program computes Green function and its derivatives 
 !                using Linton's method, with epsilon algorithm, in the region 
-!                R/H.LT.0.0005. The terms needed is about 3~10 to 
+!                R/H.LT.0.0005, and R/H.LT.0.02 when nu*h <= 50. The terms needed is about 3~10 to 
 !                10^-6 accuracy, with a maximum number of term 10.
 ! 
 !  License:
