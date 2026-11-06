@@ -183,11 +183,12 @@
         RHP=DABS(RR/H)                                                           ! RR - Horizontal distance between the source point and the field point, H - Depth
 ! LINTON is used up to R/h = RLIN when nu*h <= VHLIN. Below R/h of about 0.02 the 100 terms
 ! of PIDCOCK have not started to decay, and the epsilon algorithm (Limes) picks a table entry
-! that jumps when R moves by rounding size: dG/dR*h^2 then scatters by up to 1e4. From
-! R/h = 0.02 upward PIDCOCK is the more accurate of the two. Above nu*h = 51 the Ewald
-! parameter in LINTON is clamped (A*k*h = 5), and its errors grow quickly, so PIDCOCK is kept there.
+! that jumps when R moves by rounding size: dG/dR*h^2 then scatters by up to 1e5. Around
+! R/h = 0.02 the two are about equally accurate. Above nu*h = 50 the errors of LINTON grow
+! quickly (dG/dz*h^2 of 1.5 at nu*h = 80, 12 at 100), likely because its Ewald parameter
+! is clamped at A*k*h = 5 from nu*h = 51, so PIDCOCK is kept there.
          IF (RHP.LT.0.0005D0.OR.(RHP.LT.RLIN.AND.V*H.LE.VHLIN)) THEN
-          CALL LINTON(RR,ZF,ZP,V,WK,WVN,NK,H,FG)
+          CALL LINTON_SCALED(RR,ZF,ZP,V,WVN,NK,H,FG)
         ELSEIF (RHP.GE.0.0005D0.AND.RHP.LT.0.05D0) THEN
           CALL PIDCOCK(RR,ZF,ZP,V,WK,WVN,NK,H,FG)
          ELSEIF (RHP.GE.0.05D0.AND.RHP.LT.0.5D0) THEN
@@ -230,6 +231,31 @@
 
         RETURN
         END SUBROUTINE FINGREEN3D_R
+
+!!-------------------------------------------------------------------------------!!
+!       LINTON run in units of the depth                                          !
+!!-------------------------------------------------------------------------------!!
+! The tolerances in LINTON (EPS = 1E-6 in its series, AQUADF and AQUAD) are absolute,
+! so in metres its errors in G*h grow with h: up to 1 at h = 1000, against 3e-5 at h = 10.
+! Run in units of h (h = 1, lengths over h, nu*h, k*h) and scaled back, G*h, dG/dR*h^2 and
+! dG/dz*h^2 are the same at every depth, within 3e-5, 4e-4 and 1.1e-3 of a direct sum of
+! the eigenfunction series up to nu*h = 50.
+
+      SUBROUTINE LINTON_SCALED(RR,ZF,ZP,V,WVN,NK,H,GRN)
+
+        IMPLICIT NONE
+        INTEGER,INTENT(IN):: NK
+        REAL*8,INTENT(IN):: RR,ZF,ZP,V,WVN(NK),H
+        COMPLEX*16,INTENT(OUT):: GRN(3)
+        REAL*8 WVNH(NK)
+
+        WVNH=WVN*H
+        CALL LINTON(RR/H,ZF/H,ZP/H,V*H,WVNH(1),WVNH,NK,1.D0,GRN)
+        GRN(1)=GRN(1)/H
+        GRN(2)=GRN(2)/H**2
+        GRN(3)=GRN(3)/H**2
+
+      END SUBROUTINE LINTON_SCALED
 
 !!-------------------------------------------------------------------------------!!
 !                Belows are Level-2 (intermediate-level) subroutines              !
