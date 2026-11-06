@@ -35,6 +35,8 @@ MODULE FieldVelocity
    ! which FINGREEN3D and INFGREEN3D do not give. All stencil points of a point take the near-or-far decision of its centre
    ! (x_decide of field_influence_row), so that no jump between the two panel integrals enters a difference. They also take
    ! the centre's choice of the FINGREEN3D series, which do not agree exactly where FINGREEN3D_R switches between them.
+   ! And they take field_mode: FINGREEN3D then sums its series directly, since Limes in EIGENE and PIDCOCK returns
+   ! isolated outliers, which a difference takes over 2 delta (FinGreen3D.f90, FINGREEN3D_R).
    ! The rows of one stencil point serve every state before the next point, and no row is stored: the rows of all points
    ! would take gigabytes (memory estimate from section 4.3 of the spec).
    !
@@ -93,7 +95,7 @@ CONTAINS
 
          phi_c = (0D0, 0D0)
          IF (with_centre) THEN
-            CALL field_influence_row(mesh, x0, is_multi, row_g, row_dg, x0)
+            CALL field_influence_row(mesh, x0, is_multi, row_g, row_dg, x0, field_mode=.TRUE.)
             DO ist = 1, nst
                phi_c(ist) = field_potential(mesh, states(ist), row_g, row_dg)
             END DO
@@ -102,12 +104,12 @@ CONTAINS
          DO c = 1, ncomp
             xs = x0
             xs(c) = x0(c) + delta
-            CALL field_influence_row(mesh, xs, is_multi, row_g, row_dg, x0)
+            CALL field_influence_row(mesh, xs, is_multi, row_g, row_dg, x0, field_mode=.TRUE.)
             DO ist = 1, nst
                phi_plus(ist) = field_potential(mesh, states(ist), row_g, row_dg)
             END DO
             xs(c) = x0(c) - delta
-            CALL field_influence_row(mesh, xs, is_multi, row_g, row_dg, x0)
+            CALL field_influence_row(mesh, xs, is_multi, row_g, row_dg, x0, field_mode=.TRUE.)
             DO ist = 1, nst
                dphi(c, ist) = (phi_plus(ist) - field_potential(mesh, states(ist), row_g, row_dg))/(2D0*delta)
             END DO

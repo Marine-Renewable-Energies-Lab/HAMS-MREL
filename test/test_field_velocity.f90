@@ -47,6 +47,7 @@ contains
     testsuite = [ &
       new_unittest("x_decide_sets_the_flag", test_x_decide), &
       new_unittest("stencil_takes_one_green_series", test_one_series), &
+      new_unittest("field_green_is_smooth_in_z", test_green_smooth_in_z), &
       new_unittest("field_rows_match_analytic_gradient", test_rows_gradient), &
       new_unittest("incident_stencil", test_incident_stencil), &
       new_unittest("maccamy_fuchs_field_consistent", test_maccamy_fuchs_field), &
@@ -93,13 +94,17 @@ contains
 
   !> FINGREEN3D picks its series by R/h (FINGREEN3D_R), and the series do not agree exactly at a switch. A central
   !> difference whose two points straddle a switch then takes the mismatch over 2 delta. With RR_DECIDE at the centre both
-  !> points take the centre's series, and the difference matches dG/dx at the centre. Shown at R/h = 0.5, h = 50,
-  !> omega = 0.4: the case of the box at m2 that failed the drift gate. The switch at R/h = 0.05 is not shown: there the
-  !> Limes noise of EIGENE gives 2.8e-2 even with one series (measured).
+  !> points take the centre's series, and the difference matches dG/dx at the centre. Shown at R/h = 0.5 and 0.05,
+  !> h = 50, omega = 0.4: the case of the box at m2 that failed the drift gate. The calls take FIELD, as the stencil points
+  !> of field_influence_row do. Without FIELD the 0.05 case fails: the Limes noise of EIGENE just above R/h = 0.05 gives
+  !> 2.8e-2 with one series (measured). With FIELD the jumps are smaller (2.6e-8 and 5e-9 of G, measured), so the check
+  !> that the test sees them asks for the error with two series to be 10 times that with one, not above the limit.
   subroutine test_one_series(error)
     type(error_type), allocatable, intent(out) :: error
 
     call series_case(0.5d0, error)
+    if (allocated(error)) return
+    call series_case(0.05d0, error)
   end subroutine test_one_series
 
   subroutine series_case(r_over_h, error)
@@ -116,15 +121,15 @@ contains
     nu = om**2/g_disp
     call DISPERSION(wvn_local, nk_local, om, depth)
     r0 = r_over_h*depth
-    call FINGREEN3D(r0, 0d0, 0d0, 0d0, zq, zs, nu, wvn_local, nk_local, depth, g0, 1)
+    call FINGREEN3D(r0, 0d0, 0d0, 0d0, zq, zs, nu, wvn_local, nk_local, depth, g0, 1, FIELD=.true.)
     ! The series of the centre at both points
-    call FINGREEN3D(r0 + delta, 0d0, 0d0, 0d0, zq, zs, nu, wvn_local, nk_local, depth, gp, 1, RR_DECIDE=r0)
-    call FINGREEN3D(r0 - delta, 0d0, 0d0, 0d0, zq, zs, nu, wvn_local, nk_local, depth, gm, 1, RR_DECIDE=r0)
+    call FINGREEN3D(r0 + delta, 0d0, 0d0, 0d0, zq, zs, nu, wvn_local, nk_local, depth, gp, 1, RR_DECIDE=r0, FIELD=.true.)
+    call FINGREEN3D(r0 - delta, 0d0, 0d0, 0d0, zq, zs, nu, wvn_local, nk_local, depth, gm, 1, RR_DECIDE=r0, FIELD=.true.)
     one = (gp(1) - gm(1))/(2d0*delta)
     rel_one = abs(one - g0(2))/abs(g0(2))
     ! Each point its own series
-    call FINGREEN3D(r0 + delta, 0d0, 0d0, 0d0, zq, zs, nu, wvn_local, nk_local, depth, gp, 1)
-    call FINGREEN3D(r0 - delta, 0d0, 0d0, 0d0, zq, zs, nu, wvn_local, nk_local, depth, gm, 1)
+    call FINGREEN3D(r0 + delta, 0d0, 0d0, 0d0, zq, zs, nu, wvn_local, nk_local, depth, gp, 1, FIELD=.true.)
+    call FINGREEN3D(r0 - delta, 0d0, 0d0, 0d0, zq, zs, nu, wvn_local, nk_local, depth, gm, 1, FIELD=.true.)
     free = (gp(1) - gm(1))/(2d0*delta)
     rel_free = abs(free - g0(2))/abs(g0(2))
     print '(4x,a,f5.2,a,es10.2,a,2es10.2)', "series switch at R/h = ", r_over_h, ": jump in G ", &
@@ -133,9 +138,88 @@ contains
       rel_one, rel_free
     call check(error, rel_one <= series_limit, trim(info))
     if (allocated(error)) return
-    ! Without the forced choice the difference must fail, or the test would not show the fix matters
-    call check(error, rel_free > series_limit, "No jump seen: "//trim(info))
+    ! Without the forced choice the difference must be much worse, or the test would not show the fix matters
+    call check(error, rel_free > 10d0*rel_one, "No jump seen: "//trim(info))
   end subroutine series_case
+
+  !> The epsilon algorithm (Limes) in EIGENE returns isolated outliers: at h = 50, omega = 0.4, dG/dz_q of a bottom panel of
+  !> the m1 box (centroid 296, R/h = 0.061 from control-surface point 867) jumps from 6.12e-3 to 7.37e-3 over 5e-6 m in z
+  !> (measured). A difference stencil that lands on one takes it over 2 delta. With FIELD the series is summed directly. GRN(4)
+  !> is scanned over +-0.01 m around the point in 2001 steps: its second difference must stay below 1e-8 of |GRN(4)|, while
+  !> the default route shows the spike. The default route must also stay as it was, bit for bit, at five points that cover
+  !> LINTON, PIDCOCK, EIGENE (twice, one on the spike) and EIGEN (values from the code before FIELD).
+  subroutine test_green_smooth_in_z(error)
+    type(error_type), allocatable, intent(out) :: error
+    integer, parameter :: nk_local = 200, nscan = 2000
+    real(8), parameter :: depth = 50d0, om = 0.4d0, g_disp = 9.807d0, half_width = 0.01d0, smooth_limit = 1d-8
+    real(8), parameter :: q(3) = [-4.5d0, 0.5d0, -5d0], p0(3) = [-1.702359704562689d0, -0.7631552924796104d0, -10d0]
+    real(8) :: wvn_local(nk_local), nu, rr, z, worst_field, worst_default
+    complex(8) :: g(4), gz_field(0:nscan), gz_default(0:nscan)
+    integer :: k
+    character(len=160) :: info
+    external :: DISPERSION
+
+    nu = om**2/g_disp
+    call DISPERSION(wvn_local, nk_local, om, depth)
+    rr = sqrt((q(1) - p0(1))**2 + (q(2) - p0(2))**2)
+    do k = 0, nscan
+      z = p0(3) - half_width + k*(2d0*half_width/nscan)
+      call FINGREEN3D(q(1), p0(1), q(2), p0(2), q(3), z, nu, wvn_local, nk_local, depth, g, 1, RR_DECIDE=rr, FIELD=.true.)
+      gz_field(k) = g(4)
+      call FINGREEN3D(q(1), p0(1), q(2), p0(2), q(3), z, nu, wvn_local, nk_local, depth, g, 1, RR_DECIDE=rr)
+      gz_default(k) = g(4)
+    end do
+    worst_field = 0d0
+    worst_default = 0d0
+    do k = 1, nscan - 1
+      worst_field = max(worst_field, abs(gz_field(k + 1) - 2d0*gz_field(k) + gz_field(k - 1))/abs(gz_field(k)))
+      worst_default = max(worst_default, abs(gz_default(k + 1) - 2d0*gz_default(k) + gz_default(k - 1))/abs(gz_default(k)))
+    end do
+    print '(4x,a,2es10.2)', "largest second difference of dG/dz_q over |dG/dz_q|, field and default route: ", &
+      worst_field, worst_default
+    write (info, '(a,es10.3)') "dG/dz_q is not smooth in z with FIELD: largest relative second difference ", worst_field
+    call check(error, worst_field <= smooth_limit, trim(info))
+    if (allocated(error)) return
+    ! Without FIELD the spike must show, or the scan would not test the fix
+    call check(error, worst_default > smooth_limit, "No spike seen on the default route")
+    if (allocated(error)) return
+    call check_default_route(wvn_local, nu, error)
+  end subroutine test_green_smooth_in_z
+
+  subroutine check_default_route(wvn_local, nu, error)
+    real(8), intent(in) :: wvn_local(:), nu
+    type(error_type), allocatable, intent(out) :: error
+    real(8), parameter :: depth = 50d0
+    ! Panel q and field point p of each sample, and Re, Im of GRN(1:4) from the code before FIELD
+    real(8), parameter :: q(3, 5) = reshape([0.5d0, 0d0, -3d0, 1.5d0, 0d0, -3d0, -4.5d0, 0.5d0, -5d0, 15d0, 0d0, -3d0, &
+      40d0, 0d0, -3d0], [3, 5])
+    real(8), parameter :: p(3, 5) = reshape([0d0, 0d0, -8d0, 0d0, 0d0, -8d0, &
+      -1.702359704562689d0, -0.7631552924796104d0, -10.00422d0, 0d0, 0d0, -8d0, 0d0, 0d0, -8d0], [3, 5])
+    real(8), parameter :: before(8, 5) = reshape([ &
+      9.25266101066840874d-002, 9.29525227078842192d-002, -4.56357227742748713d-004, -1.01637852617775650d-005, &
+      0.00000000000000000d+000, 0.00000000000000000d+000, 1.12007766434191365d-002, 1.46638253745496705d-003, &
+      9.16220409919376588d-002, 9.29321962493177972d-002, -1.33919685829752091d-003, -3.04880218954885826d-005, &
+      0.00000000000000000d+000, 0.00000000000000000d+000, 1.09740218534911289d-002, 1.46606187521771065d-003, &
+      5.69473667994984528d-002, 8.74261263947343076d-002, 1.03443110685737553d-003, 5.35149698859913403d-005, &
+      -4.67053298261200503d-004, -2.41624048483368242d-005, 7.36706485289481683d-003, 1.34518738883298498d-003, &
+      4.30195128038764821d-002, 9.06822078938584741d-002, -3.54496613176616794d-003, -3.01182276470973818d-004, &
+      0.00000000000000000d+000, 0.00000000000000000d+000, 3.26219296111452273d-003, 1.43056694148373112d-003, &
+      -1.51596673435841420d-002, 7.73903715617725030d-002, -1.55335636902876164d-003, -7.44031633373910643d-004, &
+      0.00000000000000000d+000, 0.00000000000000000d+000, 2.90773069836218977d-004, 1.22088014525407779d-003 &
+      ], [8, 5])
+    complex(8) :: g(4)
+    real(8) :: now(8)
+    integer :: k, m
+    character(len=200) :: info
+
+    do k = 1, 5
+      call FINGREEN3D(q(1, k), p(1, k), q(2, k), p(2, k), q(3, k), p(3, k), nu, wvn_local, size(wvn_local), depth, g, 1)
+      now = [(real(g(m), 8), aimag(g(m)), m = 1, 4)]
+      write (info, '(a,i0,a,8es9.1)') "default route changed at sample ", k, ": ", now - before(:, k)
+      call check(error, all(now == before(:, k)), trim(info))
+      if (allocated(error)) return
+    end do
+  end subroutine check_default_route
 
   !> The central difference of row_g, with the near-or-far flag decided at the centre, against grad_int of
   !> source_panel_integrals for the same panel, image and flag. The gradient of G(M x, q) in x is M grad_p G.
@@ -189,9 +273,9 @@ contains
         do c = 1, 3
           xs = x0
           xs(c) = x0(c) + delta
-          call field_influence_row(mesh, xs, .false., row_plus, unused, x0)
+          call field_influence_row(mesh, xs, .false., row_plus, unused, x0, field_mode=.true.)
           xs(c) = x0(c) - delta
-          call field_influence_row(mesh, xs, .false., row_minus, unused, x0)
+          call field_influence_row(mesh, xs, .false., row_minus, unused, x0, field_mode=.true.)
           difference(:, :, c) = (row_plus - row_minus)/(2d0*delta)
         end do
         do is = 1, mesh%nsys
