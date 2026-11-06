@@ -77,6 +77,16 @@ def lid_file(nodes, panels, isx=0, isy=0):
     return EOL.join(lines)
 
 
+def repeat_vertex(lid_text):
+    """The lid text with the third vertex of panel 1 replaced by its second, a repeated node."""
+    lines = lid_text.split(EOL)
+    k = lines.index("    # Start Definition of Node Relations   ! panel_number  number_of_vertices   Vertex1_ID ...") + 1
+    f = [int(v) for v in lines[k].split()]
+    f[4] = f[3]
+    lines[k] = "%10d%5d" % (f[0], f[1]) + "".join("%8d" % v for v in f[2:])
+    return EOL.join(lines)
+
+
 def wall(a, h, nt, nz):
     """The vertical wall r = a from z = 0 to the sea bed z = -h, with no bottom: nt around, nz rows at
     z = -(h/2)(1 - cos(pi i/nz)), as the rows of image_cos. Node and vertex order as in image_cos, so the normals point the same
@@ -394,6 +404,8 @@ def main():
     write_case("lid_stop_symmetry", annulus(**outside, isy=1))
     write_case("lid_stop_gmres", annulus(**outside), solver=2)
     write_case("lid_stop_inside", annulus(0.0, 2.5, 12, 2))
+    write_case("lid_stop_value", annulus(**outside), lid_flag=2)
+    write_case("lid_stop_repeated", repeat_vertex(annulus(**outside)))
     write_case("lid_flag_off", annulus(**outside), lid_flag=0)
 
     # Single-body solves (test_integration_lid.f90). Annulus r = 6 to 10 unless said.

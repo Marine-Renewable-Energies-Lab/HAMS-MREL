@@ -86,6 +86,8 @@ contains
             new_unittest("stops_lid_symmetry", stops_lid_symmetry), &
             new_unittest("stops_lid_gmres", stops_lid_gmres), &
             new_unittest("stops_lid_inside", stops_lid_inside), &
+            new_unittest("stops_lid_value", stops_lid_value), &
+            new_unittest("stops_lid_repeated", stops_lid_repeated), &
             new_unittest("flag_off_matches_no_lid", flag_off_matches_no_lid), &
             new_unittest("lid_runs", lid_runs), &
             new_unittest("lid_damping_nonnegative", lid_damping_nonnegative), &
@@ -270,6 +272,18 @@ contains
         type(error_type), allocatable, intent(out) :: error
         call run_case_expect_stop("lid_stop_inside", "lid panel inside a hull", error)
     end subroutine stops_lid_inside
+
+    !> Damping_lid 2: only 0 and 1 are allowed.
+    subroutine stops_lid_value(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case_expect_stop("lid_stop_value", "Damping_lid must be 0 or 1", error)
+    end subroutine stops_lid_value
+
+    !> Panel 1 of the lid has a repeated vertex.
+    subroutine stops_lid_repeated(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case_expect_stop("lid_stop_repeated", "lid panel in DampingLid.pnl has a repeated vertex", error)
+    end subroutine stops_lid_repeated
 
     !> A lid disc inside the second of two bodies: the multi-body branch of HULL_SOLID_ANGLE.
     subroutine stops_lid_inside_two(error)
@@ -629,7 +643,7 @@ contains
             if (n == 7) then
                 read (line, *) row(1:7)
                 ip = nint(row(3))
-                if (ip > size(dif)) dif = [dif, (cmplx(0d0, 0d0, kind=8), stat = size(dif) + 1, ip)]
+                if (ip > size(dif)) dif = [dif, (cmplx(0d0, 0d0, kind=8), m = size(dif) + 1, ip)]
                 dif(ip) = cmplx(row(6), row(7), kind=8)
             else if (n == 14) then
                 read (line, *) row(1:14)
@@ -892,7 +906,7 @@ contains
             if (n == 5) then
                 read (line, *) row(1:5)
                 ip = nint(row(3))
-                if (ip > size(dif)) dif = [dif, (cmplx(0d0, 0d0, kind=8), stat = size(dif) + 1, ip)]
+                if (ip > size(dif)) dif = [dif, (cmplx(0d0, 0d0, kind=8), m = size(dif) + 1, ip)]
                 dif(ip) = cmplx(row(4), row(5), kind=8)
             else if (n == 14) then
                 read (line, *) row(1:14)

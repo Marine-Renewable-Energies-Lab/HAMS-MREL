@@ -213,15 +213,11 @@ module IO
             I = scan(line(IPOS:ICOM-1), "+-0123456789")
             err = 1
             if (I > 0) read(line(IPOS+I-1:ICOM-1), *, IOSTAT=err) LIDON
-            if (err /= 0) then
-                print*, 'Warning: could not read Damping_lid value. Using default (0 = no lid).'
-                LIDON = 0
+            if (err /= 0 .or. LIDON < 0 .or. LIDON > 1) then
+                print*, 'Error: Damping_lid must be 0 or 1. Line read: ', trim(line)
+                stop 1
             end if
             err = 0
-            if (LIDON < 0 .or. LIDON > 1) then
-                print*, 'Warning: Damping_lid must be 0 or 1. Using default (0 = no lid).'
-                LIDON = 0
-            end if
         else
             if (err == 0) backspace(1)
         end if
