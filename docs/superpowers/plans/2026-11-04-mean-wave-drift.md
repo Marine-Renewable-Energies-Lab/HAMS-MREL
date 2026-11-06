@@ -271,7 +271,7 @@ Use `bessel_jn`, `bessel_yn` with H'_n(x) = H_{n−1}(x) − (n/x)H_n(x), H₋�
   - `derivative_fd`: `da` matches FD of `a`.
   - `conjugate_symmetry`: F(β₁,β₂) = conj F(β₂,β₁) to 1e-10.
   - `diagonal_consistent`: `far_field_pair(s,s)` is real to 1e-12 and equals the single-heading form.
-  - `reference_shift`: translate mesh by d with phases adjusted (state for shifted body, incident phase e^{ik d·e_β}): F unchanged, M_z changes by −(d×F)_z, to 1e-6 relative to F·|d|.
+  - `reference_shift`: translate mesh by d with phases adjusted (state for shifted body, incident phase e^{ik d·e_β}): F unchanged, M_z about the global origin changes by +(d×F)_z, to 1e-6 relative to F·|d|. Off-diagonal: F₁₂ and M₁₂ + (d×F₁₂)_z are multiplied by e^{ik d·(e_β₁ − e_β₂)}.
   - `group_ratio_limits`: ½ deep, 1 as kh → 0.
 
 - [ ] **Step 2: Run.** Expected: compile failure.

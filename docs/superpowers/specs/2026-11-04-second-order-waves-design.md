@@ -344,6 +344,14 @@ Avoid differentiating the direct BIE for velocity. That needs second derivatives
 - Project offsets into the panel's plane, and fit a 2D linear function with distance weighting.
 - If a panel has too few neighbours, fall back to the normal component only and report a count in the log.
 
+**Decision (2026-11-06): default T, S opt-in.** Both are implemented. The convergence study is in [mean_drift.md](../../mean_drift.md#convergence-study). Measured:
+
+- Phase 2 gate met by T: on the free rounded cylinder at 7680 panels, near-field is within 0.24% of far-field from 0.70 to 1.80 rad/s. T is closer than S on rounded hulls at every frequency from 0.60 rad/s.
+- S converges slowly on rounded hulls: its error falls with refinement, local order about 0.4 to 0.6, and reaching zero is not shown.
+- On the sharp cylinder S is closer up to 1.20 rad/s (ka about 1.5), and T from 1.40 rad/s. This rests on one radius, and on the sharp box S is closer at all three frequencies run, so there is no switch of method by frequency.
+- S costs +98% run time at 7680 panels, cannot use `IRSP=1`, and is off by 32% to 198% at the two irregular frequencies tested.
+- On the sharp box neither is reliable for F_y and M_z (+12.5% F_y with S at 7040 panels). Rounding the corners and the bilge brings T to 0.41%.
+
 ### D3. Waterline elevation
 
 | Option | Method | Cost |
@@ -354,6 +362,8 @@ Avoid differentiating the direct BIE for velocity. That needs second derivatives
 **Recommendation: implement both**, with E first since it is free. Reference solvers show this is delicate: Nemoh's documentation warns about sensitivity to its offset, and WAMIT warns about values within a panel dimension of the body. Expose the offset as a parameter and run a sensitivity study before fixing a default.
 
 Add a `FieldInfluenceRow` routine that computes G and ∂G/∂n once per point and applies them to all modes. This avoids the repeated Green evaluations in `CalPotentialMulti`.
+
+**Decision (2026-11-06): default E, B opt-in.** Both are implemented, with offset 0.01 of the segment length. Measured: B is first order and E second order on MacCamy-Fuchs, and E is closer on every mesh. On the free rounded cylinder at 1920 panels E is closer at all 11 frequencies. In finite depth B can jump with the mesh or the offset (term I -11.40% against about -2% at neighbouring offsets). A separate measurement on commit 36d1733, not reproduced on the drift branch, found that a direct eigenfunction sum for G takes that value to -1.96%. A fix is planned on a separate branch. B stays opt-in with a logged warning in finite depth. See [mean_drift.md](../../mean_drift.md#limits).
 
 ### D4. Rotation term
 

@@ -55,6 +55,16 @@ A hull panel with its centroid on z = 0 has no usable image term: the distance f
 
 The triangle routines (`SGLINTBD_TRI`, `SGLINTBD_TRI2` and their multi-body copies) work from `ALFA`, the projection of side 1-3 on side 1-2, in units of side 1-2. Until this change they integrated over the wrong shape when `ALFA > 1`, an obtuse angle at node 2, so the result depended on the node order. This affected the direct term 1/r as well as the image term, in every earlier version. Results now change on any mesh with such a triangle as a hull panel. Lid panels are never sources, so their node order does not matter. Quadrilaterals were not affected. See [test_panel_integrals.f90](../test/test_panel_integrals.f90).
 
+### Mean drift tests
+
+The mean drift code (`SecondOrder*.f90`, `FarFieldDrift.f90`, `NearFieldDrift.f90`, `SurfaceVelocity.f90`, `SurfaceGeometry.f90`, `WaterlineField.f90`, `FirstOrderState.f90`) is covered by unit tests in `test/test_*.f90` and by integration cases in `test/test_integration_drift.f90`, whose fixtures and measured values are in [test/data/drift_cyl/README.md](../test/data/drift_cyl/README.md). The method choice and the convergence study behind the defaults are in [mean_drift.md](mean_drift.md).
+
+At commit dff7a32 the unit tester has 133 tests and the integration tester 118, all passing with ifort 2022.1 on Windows and with ifx 2024.2 on Linux. Measured run time: the integration tests take 148 s with ifort on a laptop with 8 logical cores and 177 s with ifx at 32 threads on Snellius; the unit tests take 19 s with ifx. All cases stay in CI. The time on the GitHub runners is not measured here; GitHub's default job limit is 6 hours.
+
+Two limits have thin margins: `source_two_body_total` measures 4.69% against 5% on both compilers, and `source_near_far_low_frequency` 4.10% (ifx) and 4.11% (ifort) against 5%. If one of them fails after a compiler or flag change, look at the printed value before changing the limit.
+
+Do not pass an array constructor of a derived type with allocatable components, such as `[s1, s2]` of `first_order_state`, as an argument. Under ifx 2024.2 with `-heap-arrays 0` it crashes at run time; copy the values into a named array first, as `far_field_pair` does. With that change both testers pass under ifx 2024.2 with `-heap-arrays 0` on Linux (Snellius job 28933784, 133 unit and 118 integration tests).
+
 After executing these commands you should see the following output (or similar):
 
 <img width="557" height="280" alt="hams-tests" src="https://github.com/user-attachments/assets/1bb39a74-593d-498b-8a6d-40f20fcc36f9" />

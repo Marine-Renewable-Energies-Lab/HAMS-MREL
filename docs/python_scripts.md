@@ -25,7 +25,8 @@ HAMS_to_WECSim/
 generalized_modes.py
 SecondOrder/
 ├── make_mesh.py
-└── make_drift_fixtures.py
+├── make_drift_fixtures.py
+└── drift_convergence.py
 ```
 
 Dependencies: `numpy`, `matplotlib`, `shapely`. The WEC-Sim conversion scripts additionally use `cmath`, `os`, and `datetime` (all standard library).
@@ -173,3 +174,5 @@ python make_mesh.py box --lx 20 --ly 10 --draft 5 --nx 10 --ny 5 --nz 4 --out Hu
 - The hydrostatics are those of a freely floating, uniform solid prism on the discretized waterplane polygon: mass $\rho V$, centre of gravity and of buoyancy at half draft, about the point $(x_0, y_0, 0)$. Give that point as the rotation centre in `ControlFile.in`. External damping and stiffness are zero. These are whole-body values, also with `--half-y`. The script stops if a metacentric height is not positive, and prints the values it writes.
 
 **`SecondOrder/make_drift_fixtures.py`** regenerates all the `test/data/drift_*` inputs, including `ControlFile.in` and `SecondOrder.in`. See `test/data/drift_cyl/README.md`.
+
+**`SecondOrder/drift_convergence.py`** generates and runs the mean drift convergence study of [Mean Drift](mean_drift.md#convergence-study) (HAMS-MREL, and Nemoh as a separate program), writes Slurm scripts for it, and collects the results into a table. Run it with `list` to see the cases. Its `collect` step needs `scipy`, for the MacCamy-Fuchs value.

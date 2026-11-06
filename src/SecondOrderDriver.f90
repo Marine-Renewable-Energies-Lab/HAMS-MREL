@@ -141,9 +141,9 @@ CONTAINS
             ALLOCATE (rows_g(mesh%nbase, mesh%nsys, geom%nwl), rows_dg(mesh%nbase, mesh%nsys, geom%nwl))
             IF (H >= 0D0) THEN
                WRITE (*, '(a)') 'Mean drift warning: with waterline_method = field in finite depth, term I'
-               WRITE (*, '(a)') 'has been seen to jump with the mesh or the offset. The Green function is'
-               WRITE (*, '(a)') 'also seen to scatter near the free surface at a small horizontal distance.'
-               WRITE (*, '(a)') 'A link between the two is not shown.'
+               WRITE (*, '(a)') 'has been seen to jump with the mesh or the offset. A separate measurement,'
+               WRITE (*, '(a)') 'not reproduced on this branch, found the jump goes away when the Green'
+               WRITE (*, '(a)') 'function is a direct eigenfunction sum. See docs/mean_drift.md.'
             END IF
          END IF
          OPEN (NEWUNIT=unit_near, FILE=outputdir//'/Wamit_format/MeanDriftPressure.9', STATUS='REPLACE', ACTION='WRITE')
