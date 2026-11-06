@@ -167,6 +167,20 @@ A few notes:
 | next `NTND` lines | free | `M`, `NCN_MULTI(bodyID,nodeID)` and `NCON_MULTI(bodyID,nodeID,1:numvertices)`| Panel definitions. Each line contains: panel number, number of vertices and (vertex1, vertex2, ...)
 
 
+## CSMesh.pnl (only with `cs_shape = file`)
+
+With the control-surface mean drift and `cs_shape = file`, the control surface C of body `b` is read from `CSMesh_{b}.pnl` in the input directory. There is one file per body, numbered `1 … numberofbodies` without leading zeros, also for a single body (`CSMesh_1.pnl`). If a file is missing, the run stops with `cs_shape = file needs CSMesh_<b>.pnl in the input directory.`
+
+The file has exactly the structure of `HullMesh.pnl` (see above), with these rules:
+- `ISX = ISY = 0`. C is always given in full.
+- Panels have 3 or 4 vertices.
+- The coordinates are global, not body-local.
+- **The panel normals must point towards the body.** HAMS takes the normal of a quadrilateral as (x4 - x2) x (x3 - x1) and of a triangle as (x1 - x2) x (x3 - x2), so the node order sets the direction. The run checks the sign of the sum over the panels of n . (x_c - x_b) A, with x_b the centre of the waterplane bounding box of the body; if it is not negative, the run stops with `CSMesh_<b>.pnl: the panel normals must point towards the body.`
+- **Containment is the user's job.** C must enclose the body and no other body,. The run does not test this for a file. It only checks that no point of C lies within one panel size of a hull panel centroid.
+- C must cut the free surface z = 0 in a closed line. Gaps in that waterline are reported as warnings.
+
+`write_control_surface` writes the generated C in this format, so a generated file can be edited and read back.
+
 ## WaterPlaneMesh.pnl
 
 Node and element data on the inner water plane for multiple bodies are specified in the `WaterPlaneMesh[_i].pnl` files. There is one file per body.

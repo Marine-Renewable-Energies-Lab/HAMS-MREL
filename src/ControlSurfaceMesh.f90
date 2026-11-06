@@ -34,7 +34,7 @@ MODULE ControlSurfaceMesh
    PRIVATE
 
    PUBLIC :: cylinder_surface, box_surface, add_surface_points, build_control_surface, check_control_surface, &
-             write_control_surface
+             write_control_surface, read_control_mesh
 
    REAL(8), PARAMETER :: PI = 3.141592653589793D0
    REAL(8), PARAMETER :: WL_TOL = 1D-6        ! waterline tolerance for Gamma_c, relative to the size of C
@@ -390,7 +390,8 @@ CONTAINS
 
    SUBROUTINE build_control_surface(mesh, geom, opts, h, inputdir, pts, cms, ok, msg)
       ! Generates C for every body and turns it into evaluation points (spec 5.1 defaults). h < 0 is deep water.
-      ! inputdir is for cs_shape = 3 (C from a file), which is not available yet.
+      ! cs_shape = 3 reads C of body b from inputdir/CSMesh_<b>.pnl and checks that its normals point towards the body.
+      ! For a file C, ok stays .true. when build_surface_geom only warns, and the warnings are returned in msg.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       TYPE(so_options), INTENT(IN) :: opts
@@ -406,14 +407,11 @@ CONTAINS
       LOGICAL :: ok1
       CHARACTER(LEN=:), ALLOCATABLE :: msg1
       CHARACTER(LEN=200) :: line
+      CHARACTER(LEN=16) :: istr
 
       ok = .TRUE.
       msg = ''
-      IF (opts%cs_shape == 3) THEN
-         ok = .FALSE.
-         msg = 'cs_shape = 3 (control surface from a file) is not yet available; use 1 (cylinder) or 2 (box)'
-         RETURN
-      ELSE IF (opts%cs_shape /= 1 .AND. opts%cs_shape /= 2) THEN
+      IF (opts%cs_shape /= 1 .AND. opts%cs_shape /= 2 .AND. opts%cs_shape /= 3) THEN
          ok = .FALSE.
          WRITE (line, '(a,i0,a)') 'cs_shape = ', opts%cs_shape, ' is not known; use 1 (cylinder) or 2 (box)'
          msg = TRIM(line)
@@ -438,6 +436,31 @@ CONTAINS
             RETURN
          END IF
          c = 0.5D0*(lo + hi)
+         IF (opts%cs_shape == 3) THEN
+            ! C from the file CSMesh_<b>.pnl. The warnings of build_surface_geom (gaps in the waterline of C) are
+            ! appended to msg, with ok still .true.; the user's file can have such gaps.
+            WRITE (istr, '(i0)') b
+            CALL read_file_surface(TRIM(inputdir)//'/CSMesh_'//TRIM(istr)//'.pnl', 'CSMesh_'//TRIM(istr)//'.pnl', c, cms(b), &
+                                   ok1, msg1)
+            IF (.NOT. ok1) THEN
+               ok = .FALSE.
+               msg = msg1
+               RETURN
+            END IF
+            CALL add_surface_points(cms(b), b, pts, ok1, msg1)
+            IF (.NOT. ok1) THEN
+               ok = .FALSE.
+               WRITE (line, '(a,i0,a)') 'control surface of body ', b, ': '
+               msg = TRIM(line)//msg1
+               RETURN
+            END IF
+            IF (LEN(msg1) > 0) THEN
+               WRITE (line, '(a,i0,a)') 'Warning, control surface of body ', b, ': '
+               IF (LEN(msg) > 0) msg = msg//NEW_LINE('a')
+               msg = msg//TRIM(line)//msg1
+            END IF
+            CYCLE
+         END IF
          ! Median panel size of the body, deepest node and largest horizontal extent from c.
          psz = PACK(mesh%psize, mesh%body == b)
          med = median(psz)
@@ -475,6 +498,132 @@ CONTAINS
          END IF
       END DO
    END SUBROUTINE build_control_surface
+
+   ! ------------------------------------------------------------------------------------------------ file
+
+   SUBROUTINE read_control_mesh(path, cm, ok, msg)
+      ! Reads C from a file in the HullMesh.pnl format (same reading sequence as HAMS_Prog). C is always full, so the
+      ! symmetry flags ISX and ISY must be 0. Centroids, areas, sizes and normals come from add_panel, as for a
+      ! generated C. xr is set to the origin: build_control_surface moves it to the body centre.
+      CHARACTER(LEN=*), INTENT(IN) :: path
+      TYPE(panel_mesh), INTENT(OUT) :: cm
+      LOGICAL, INTENT(OUT) :: ok
+      CHARACTER(LEN=:), ALLOCATABLE, INTENT(OUT) :: msg
+      INTEGER :: u, ios, k, np, nn, isx, isy, idx, nv, v(4), ip
+      REAL(8) :: x(3), d1(3), d2(3)
+      CHARACTER(LEN=512) :: rec
+      CHARACTER(LEN=300) :: line
+
+      ok = .FALSE.
+      msg = ''
+      OPEN (NEWUNIT=u, FILE=path, STATUS='old', ACTION='read', IOSTAT=ios)
+      IF (ios /= 0) THEN
+         msg = 'cannot open '//path
+         RETURN
+      END IF
+      DO k = 1, 3
+         READ (u, *, IOSTAT=ios)
+         IF (ios /= 0) GO TO 900
+      END DO
+      READ (u, *, IOSTAT=ios) np, nn, isx, isy
+      IF (ios /= 0) GO TO 900
+      IF (isx /= 0 .OR. isy /= 0 .OR. np < 1 .OR. nn < 3) THEN
+         WRITE (line, '(a,a,4(1x,i0))') TRIM(path), ': C must be a full surface (ISX = ISY = 0) with panels and nodes; found', &
+            np, nn, isx, isy
+         msg = TRIM(line)
+         CLOSE (u)
+         RETURN
+      END IF
+      CALL allocate_mesh(cm, np, nn, [0D0, 0D0, 0D0])
+      DO k = 1, 2
+         READ (u, *, IOSTAT=ios)
+         IF (ios /= 0) GO TO 900
+      END DO
+      DO k = 1, nn
+         READ (u, *, IOSTAT=ios) idx, x
+         IF (ios /= 0) GO TO 900
+         cm%xnode(:, k) = x
+      END DO
+      DO k = 1, 3
+         READ (u, *, IOSTAT=ios)
+         IF (ios /= 0) GO TO 900
+      END DO
+      DO ip = 1, np
+         READ (u, '(a)', IOSTAT=ios) rec
+         IF (ios /= 0) GO TO 900
+         READ (rec, *, IOSTAT=ios) idx, nv
+         IF (ios /= 0) GO TO 900
+         IF (nv /= 3 .AND. nv /= 4) THEN
+            WRITE (line, '(a,a,i0,a,i0,a)') TRIM(path), ': panel ', ip, ' has ', nv, ' vertices; use 3 or 4'
+            msg = TRIM(line)
+            CLOSE (u)
+            RETURN
+         END IF
+         v = 0
+         READ (rec, *, IOSTAT=ios) idx, nv, v(1:nv)
+         IF (ios /= 0) GO TO 900
+         IF (ANY(v(1:nv) < 1) .OR. ANY(v(1:nv) > nn)) THEN
+            WRITE (line, '(a,a,i0,a)') TRIM(path), ': panel ', ip, ' refers to a node that does not exist'
+            msg = TRIM(line)
+            CLOSE (u)
+            RETURN
+         END IF
+         d1 = cm%xnode(:, v(3)) - cm%xnode(:, v(1))
+         d2 = cm%xnode(:, v(2)) - cm%xnode(:, v(1))
+         IF (nv == 4) d2 = cm%xnode(:, v(4)) - cm%xnode(:, v(2))
+         IF (SUM(cross(d1, d2)**2) <= 0D0) THEN
+            WRITE (line, '(a,a,i0,a)') TRIM(path), ': panel ', ip, ' has zero area'
+            msg = TRIM(line)
+            CLOSE (u)
+            RETURN
+         END IF
+         k = ip - 1
+         CALL add_panel(cm, k, v(1:nv))
+      END DO
+      CLOSE (u)
+      ok = .TRUE.
+      RETURN
+
+900   CONTINUE
+      CLOSE (u)
+      msg = 'cannot read '//path//' as a HullMesh.pnl file'
+   END SUBROUTINE read_control_mesh
+
+   SUBROUTINE read_file_surface(path, name, c, cm, ok, msg)
+      ! C of one body from the file path (called name in messages). c is the centre of the waterplane bounding box of
+      ! the body. The panel normals must point towards the body: S = sum dot(n_i, xc_i - c) A_i must be negative. This
+      ! is a cheap sign test, not a containment test; containment is the user's job.
+      CHARACTER(LEN=*), INTENT(IN) :: path, name
+      REAL(8), INTENT(IN) :: c(2)
+      TYPE(panel_mesh), INTENT(OUT) :: cm
+      LOGICAL, INTENT(OUT) :: ok
+      CHARACTER(LEN=:), ALLOCATABLE, INTENT(OUT) :: msg
+      LOGICAL :: exists
+      REAL(8) :: s, x(3)
+      INTEGER :: i
+
+      ok = .FALSE.
+      INQUIRE (FILE=path, EXIST=exists)
+      IF (.NOT. exists) THEN
+         msg = 'cs_shape = file needs CSMesh_'//name(8:LEN(name) - 4)//'.pnl in the input directory.'
+         RETURN
+      END IF
+      CALL read_control_mesh(path, cm, ok, msg)
+      IF (.NOT. ok) RETURN
+      cm%xr(:, 1) = [c(1), c(2), 0D0]
+      s = 0D0
+      DO i = 1, cm%n
+         x = cm%xc(:, i) - cm%xr(:, 1)
+         s = s + DOT_PRODUCT(cm%nrm(:, i), x)*cm%area(i)
+         cm%nj(4, i) = x(2)*cm%nrm(3, i) - x(3)*cm%nrm(2, i)
+         cm%nj(5, i) = x(3)*cm%nrm(1, i) - x(1)*cm%nrm(3, i)
+         cm%nj(6, i) = x(1)*cm%nrm(2, i) - x(2)*cm%nrm(1, i)
+      END DO
+      IF (.NOT. s < 0D0) THEN
+         ok = .FALSE.
+         msg = name//': the panel normals must point towards the body.'
+      END IF
+   END SUBROUTINE read_file_surface
 
    REAL(8) FUNCTION median(a)
       ! Median by sorting a copy with a shell sort.
@@ -625,7 +774,7 @@ CONTAINS
          WRITE (u, '(a)') ' '
          WRITE (u, '(a)') '    # Start Definition of Node Coordinates     ! node_number   x   y   z'
          DO i = 1, cms(b)%nnode
-            WRITE (u, '(i5,3f18.8)') i, cms(b)%xnode(:, i)
+            WRITE (u, '(i5,3f20.12)') i, cms(b)%xnode(:, i)
          END DO
          WRITE (u, '(a)') '    # End Definition of Node Coordinates'
          WRITE (u, '(a)') ' '

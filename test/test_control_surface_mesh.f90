@@ -4,7 +4,7 @@ module test_control_surface_mesh
   use SecondOrderTypes, only : panel_mesh, surface_geom, so_options, cs_points, CS_WALL, CS_LINE
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use ControlSurfaceMesh, only : cylinder_surface, box_surface, add_surface_points, build_control_surface, &
-                                 check_control_surface, write_control_surface
+                                 check_control_surface, write_control_surface, read_control_mesh
   use second_order_fixtures, only : make_cylinder
   implicit none
   private
@@ -27,7 +27,9 @@ subroutine collect_control_surface_mesh(testsuite)
     new_unittest("separate_bodies_accepted", test_separate_bodies_accepted), &
     new_unittest("close_c_rejected_by_distance", test_close_c_rejected_by_distance), &
     new_unittest("box_built_for_each_body", test_box_built_for_each_body), &
-    new_unittest("file_shape_not_yet_available", test_file_shape_not_yet_available), &
+    new_unittest("file_c_missing_file_stops", test_file_c_missing_file_stops), &
+    new_unittest("file_c_round_trip", test_file_c_round_trip), &
+    new_unittest("file_c_wrong_orientation_stops", test_file_c_wrong_orientation_stops), &
     new_unittest("written_mesh_has_hull_format", test_written_mesh_has_hull_format) &
     ]
 end subroutine collect_control_surface_mesh
@@ -280,7 +282,7 @@ subroutine test_box_built_for_each_body(error)
   call check(error, maxval(cms(1)%xnode(1, :)) > 10.9d0 .and. maxval(cms(1)%xnode(1, :)) < 11.1d0, "half length plus margin")
 end subroutine test_box_built_for_each_body
 
-subroutine test_file_shape_not_yet_available(error)
+subroutine test_file_c_missing_file_stops(error)
   type(error_type), allocatable, intent(out) :: error
   type(panel_mesh) :: mesh
   type(so_options) :: opts
@@ -292,8 +294,82 @@ subroutine test_file_shape_not_yet_available(error)
   call make_cylinder(5d0, 3d0, 16, 2, 2, mesh, .true.)
   opts%cs_shape = 3
   call build_and_check(mesh, opts, .false., pts, cms, okb, okc, msg)
-  call check(error, .not. okb .and. len(msg) > 0, "file shape reports that it is not available")
-end subroutine test_file_shape_not_yet_available
+  call check(error, .not. okb, "missing file stops")
+  if (allocated(error)) return
+  call check(error, msg == 'cs_shape = file needs CSMesh_1.pnl in the input directory.', "message: "//msg)
+end subroutine test_file_c_missing_file_stops
+
+!> A generated cylinder C, written and read back as a file C: nodes and areas agree, and Gamma_c is found.
+subroutine test_file_c_round_trip(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh, cm0(1)
+  type(panel_mesh), allocatable :: cms(:)
+  type(so_options) :: opts
+  type(cs_points) :: pts
+  logical :: okb, okc
+  character(len=:), allocatable :: msg
+  integer :: i
+
+  call make_cylinder(5d0, 3d0, 16, 2, 2, mesh, .true.)
+  call cylinder_surface([0d0, 0d0], 11d0, 8d0, 2d0, -1d0, cm0(1))
+  call write_control_surface('.', cm0)
+  opts%cs_shape = 3
+  call build_and_check(mesh, opts, .false., pts, cms, okb, okc, msg)
+  call check(error, okb, "file C read: "//msg)
+  if (allocated(error)) then
+    call remove_cs_file()
+    return
+  end if
+  call check(error, okc, "distance check passes: "//msg)
+  if (.not. allocated(error)) call check(error, cms(1)%n == cm0(1)%n .and. cms(1)%nnode == cm0(1)%nnode, "counts")
+  if (.not. allocated(error)) then
+    ! the file has 12 digits after the point
+    call check(error, maxval(abs(cms(1)%xnode - cm0(1)%xnode)) < 1d-9, "node coordinates")
+  end if
+  if (.not. allocated(error)) then
+    do i = 1, cm0(1)%n
+      if (abs(cms(1)%area(i) - cm0(1)%area(i)) > 1d-7*cm0(1)%area(i)) then
+        call check(error, .false., "panel area")
+        exit
+      end if
+    end do
+  end if
+  if (.not. allocated(error)) call check(error, any(pts%kind == CS_LINE) .and. count(pts%kind == CS_WALL) == cm0(1)%n, &
+                                         "points of the file C")
+  call remove_cs_file()
+end subroutine test_file_c_round_trip
+
+!> The same file with every panel's node order reversed has normals pointing away from the body.
+subroutine test_file_c_wrong_orientation_stops(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh, cm0(1)
+  type(panel_mesh), allocatable :: cms(:)
+  type(so_options) :: opts
+  type(cs_points) :: pts
+  logical :: okb, okc
+  character(len=:), allocatable :: msg
+  integer :: i, nv
+
+  call make_cylinder(5d0, 3d0, 16, 2, 2, mesh, .true.)
+  call cylinder_surface([0d0, 0d0], 11d0, 8d0, 2d0, -1d0, cm0(1))
+  do i = 1, cm0(1)%n
+    nv = cm0(1)%ncn(i)
+    cm0(1)%ncon(1:nv, i) = cm0(1)%ncon(nv:1:-1, i)
+  end do
+  call write_control_surface('.', cm0)
+  opts%cs_shape = 3
+  call build_and_check(mesh, opts, .false., pts, cms, okb, okc, msg)
+  call remove_cs_file()
+  call check(error, .not. okb, "reversed normals stop")
+  if (allocated(error)) return
+  call check(error, msg == 'CSMesh_1.pnl: the panel normals must point towards the body.', "message: "//msg)
+end subroutine test_file_c_wrong_orientation_stops
+
+subroutine remove_cs_file()
+  integer :: u, ios
+  open (newunit=u, file='./CSMesh_1.pnl', status='old', iostat=ios)
+  if (ios == 0) close (u, status='delete')
+end subroutine remove_cs_file
 
 subroutine test_written_mesh_has_hull_format(error)
   type(error_type), allocatable, intent(out) :: error

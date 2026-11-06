@@ -69,7 +69,8 @@ program unit_tester
                                      .and. testsuites(is)%name /= "panel_integrals" &
                                      .and. testsuites(is)%name /= "first_order_state_serial" &
                                      .and. testsuites(is)%name /= "waterline_field" &
-                                     .and. testsuites(is)%name /= "source_velocity"))
+                                     .and. testsuites(is)%name /= "source_velocity" &
+                                     .and. testsuites(is)%name /= "control_surface_mesh"))
     end do
 
     if (stat > 0) then
