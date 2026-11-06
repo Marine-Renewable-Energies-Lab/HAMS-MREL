@@ -73,6 +73,30 @@ AmssDamp.1 (opened in src/InputFiles.f90), the rows OUFR, i, j, AMAS(i, j)/RHO, 
 A/(rho L**k) and B/(rho omega L**k) with L = 1 (it never divides by REFL; the study's ControlFile has REFL = 1.0 anyway).
 added_mass_damping returns Re and Im of int phi_j n_i dS, moments about the origin, the XR of the study.
 
+Free body and motions. body_matrices applies the formulas of make_mesh.hydrostatics, the rule that wrote the study's
+Hydrostatic.in (a uniform solid prism at its draft, z_G = z_B = -d/2, mass and restoring about the waterplane centre, here
+the origin), to the exact circle. HAMS reads MATX and CRS from Hydrostatic.in (ReadHydroStatic in src/HydroStatic.f90;
+BLNR, BQDR and KSTF are zero in the study) and SolveMotion (src/SolveMotion.f90, called from src/HAMS_Prog.f90 after EFORCE)
+solves [-omega**2 (MATX + AMAS) + i omega (BDMP + BLNR) + CRS + KSTF] DSPL = -Im EXFC - i Re EXFC = -i conj(EXFC), with AMAS
+and BDMP dimensional and EXFC = X = i omega rho int phi n dS, AMP = 1 (Initialisation in src/HydroStatic.f90). That is the
+conjugate of [-omega**2 (M + A) - i omega B + C] xi = X, the equation of motion in exp(-i omega t), times i: DSPL =
+conj(i xi) = conj(xi/eta_I(0)), the convention of ExcForce.3. It writes to unit 63, Motion.4 (opened in src/InputFiles.f90),
+MOD = abs(DSPL)/NFAC, NREL + i NIMG = DSPL/NFAC, NFAC = AMP/REFL**MEXP = 1 (REFL = 1). (PrintOutput.f90 writes only the
+headers of the .rao files; the rows come from SolveMotion.) motions returns xi itself, per unit wave amplitude, rotations in
+rad/m, in this module's convention, as total_solution and the near-field terms need it; hams_motion converts to Motion.4's
+complex value, and abs(xi) is Motion.4's MOD. total_solution adds sum_j (-i omega xi_j) phi_j, phi_j per unit velocity.
+
+Far-field drift. far_field_fx is Maruo's formula, F_x/(rho g A**2) = (1/2)(C_g/C_p) int abs(a)**2 (1 - cos theta) dtheta,
+heading 0, with a(theta) the outgoing elevation amplitude of far_field_amplitude (spec section 5.3 of
+docs/superpowers/specs/2026-11-04-second-order-waves-design.md, "Far-field."; there a(theta) is the same amplitude, in
+exp(-i omega t)). That spec's general form, (1/2)(C_g/C_p)[X - int abs(a)**2 cos theta dtheta] with the optical term
+X = -sqrt(8 pi/k) Re(e^(3 i pi/4) a(0)) for this module's a and eta_I = -i e^(i k x), is the form HAMS evaluates
+(pair_core in src/FarFieldDrift.f90, with its own Kochin amplitude); the two are equal when no energy is lost,
+X = int abs(a)**2 dtheta, which scattering_energy checks for the fixed body and free_energy for the free one. HAMS writes
+it to MeanDriftMomentum.8 (write_far_rows in src/SecondOrderDriver.f90, write_drift_row and output_value in
+src/SecondOrderOutput.f90) as conj(F)/(rho g REFL), REFL = 1, so the Re column is F_x/(rho g A**2) itself (F_x is real),
+positive along +x, the direction the wave travels at heading 0: F e_x with e_x the unit vector of +x.
+
 Convergence. The exterior and interior series of dphi/dr at r = a are expansions of a velocity that is singular at the
 corner and jumps there, so their pointwise value converges slowly in N, about N**(-2/3) a few metres from the corner; phi
 converges about as N**(-1.6), and so do the excitation forces, the added mass and the damping. The truncation in N of the
@@ -107,7 +131,7 @@ The script exits with 1 if one fails. What each covers, and what it does not:
   checked against the same quad values, which tests the nodes, the weights and the reflection. It covers the closed form,
   the reflection and the mode normalisation. It does not test that u_p is the right basis for the corner; the matching
   check does.
-- bottom_limit_x1: gap 1e-3 h (BOTTOM_GAP), CHECK_RESOLUTION, every WIDE_FREQUENCIES: X_1 against MacCamy-Fuchs,
+- bottom_limit_x1: gap 1e-3 h (BOTTOM_GAP), LIGHT_RESOLUTION, every WIDE_FREQUENCIES: X_1 against MacCamy-Fuchs,
   4 tanh(kh)/(k**2 conj(H_1'(ka))), to 1e-3 in modulus and as a complex number (which tests the conjugation). The gap
   itself changes X_1 by O(g/h): 1.2e-3 at 0.40 rad/s, linear in g from g = 1 m down to 1 mm, converged in N and P. So X_1 is
   extrapolated to g = 0 from g and 2g, 2 X(g) - X(2g), and that is compared; the message also prints the difference at
@@ -123,7 +147,7 @@ The script exits with 1 if one fails. What each covers, and what it does not:
   value, falls monotonically for P = 10, 20, 40. N is tied to P, N = 200 P (MATCHING_MODES_PER_P): the velocity is matched by
   construction, so its pointwise mismatch is the N truncation of the two series, and at fixed N the mismatch of phi stops
   falling with P (see Convergence). It covers the matching and the corner basis. It does not measure the error at the corner.
-- scattering_energy: fixed body, default cylinder, CHECK_RESOLUTION, every WIDE_FREQUENCIES: the scattered energy flux
+- scattering_energy: fixed body, default cylinder, LIGHT_RESOLUTION, every WIDE_FREQUENCIES: the scattered energy flux
   2 pi sum_m abs(a_m)**2 equals the optical-theorem term -sqrt(8 pi/k) Re(e^(3 i pi/4) a(0)), a(0) = sum_m a_m, from
   far_field_amplitude, to 1e-6. Energy is conserved order by order, so it tests each order's propagating coefficient and the
   far-field normalisation, not the convergence in M, N or P.
@@ -135,6 +159,32 @@ The script exits with 1 if one fails. What each covers, and what it does not:
 - radiation_energy: same resolution and extrapolation: B11, B33 and B55 from the body pressure equal
   radiated_energy_damping, the energy flux at infinity, to 1e-6. It tests the flux formula and the sign and normalisation of
   B, and for heave and pitch the particular solutions. Neither radiation check bounds the error of A, B or X themselves.
+- particular_bottom: _Particular.bottom, closed form, equals quad of fields(r, -d) r**(m+1) over 0 < r < a to 1e-12, heave
+  and pitch, gaps 90 m and 0.1 m. The bottom term is real and enters only Re A33 and Re A55 (and so the heave and pitch
+  RAOs), which neither radiation check sees. It does not test fields; the radiation checks do, through the gap.
+- bottom_limit_drift: gap 1e-3 h, fixed, LIGHT_RESOLUTION, every WIDE_FREQUENCIES: far_field_fx against
+  drift_convergence.maccamy_fuchs_fx to 1e-3, after the same extrapolation in the gap as bottom_limit_x1, 2 F(g) - F(2g)
+  (the gap itself changes F_x by 8.7e-4 at 0.40 rad/s, linear in g, so the raw value is mostly the gap's physical
+  effect, not an error); the message prints the raw difference at g = 1e-3 h too. Like bottom_limit_x1 it asserts
+  abs(F(2g) - MF)/abs(F(g) - MF) in [1.8, 2.2] (measured 1.95) where abs(F(g) - MF) is above 1e-13 abs(MF); from about
+  1.2 rad/s the gap's effect is round-off and the ratio is not tested there. The extrapolated value is blind to errors of
+  the interior and gap terms, which enter F_x at O(g), and the extrapolation removes O(g); the ratio and the raw value see
+  them. It covers far_field_amplitude summed over orders 0 ... 15, Maruo's formula, C_g/C_p and the normalisation over
+  rho g A**2. It does not cover the radiated waves (free body), nor a deep gap; free_energy covers the free body's
+  outgoing wave, not its drift.
+- body_matrices: body_matrices(cyl) against make_mesh.hydrostatics on a 4096-sided polygon of the same radius, to 1e-5
+  relative in every nonzero entry, with the same zero pattern (the polygon's area error is about 4e-7). It covers the
+  transcription of the rule, not the rule itself.
+- free_energy: free body, default cylinder, LIGHT_RESOLUTION, every WIDE_FREQUENCIES: for the total outgoing wave of
+  total_solution with the motions, the optical-theorem term equals the energy flux 2 pi sum_m abs(a_m)**2 to 1e-10 of
+  the fixed body's flux (the free body's own flux is 1.5e-5 at 0.40 rad/s, where it nearly follows the wave, and the
+  difference of two O(1) sums has round-off 1e-16 against it). Measured to round-off at N = 1000 and 4000: a free body
+  with real M, A and C does no mean work, so the outgoing wave carries the energy the body takes out of the incident
+  wave. It tests the sign and phase of X against the radiation
+  waves, the normalisation of B, the velocity factor -i omega and the combination in total_solution (a sign flip of xi
+  gives 0.6, conj(xi) 0.16, 1.01 xi 7e-3). It cannot see an error in A, M or C, which change xi but keep the body
+  lossless; body_matrices and particular_bottom cover M, C and the bottom term of A, and the rest of A only the
+  near-field against far-field F_x of the free body (to come) will test.
 """
 import argparse
 import functools
@@ -159,10 +209,14 @@ GAUSS_JACOBI_NODES = 96   # default size of the Gauss-Jacobi rule: exact for pol
 # Resolution of the root and inner product checks
 CHECK_P = 10
 CHECK_N = 20
-# Resolution of the solution checks: N exterior and interior modes, corner basis size P, orders 0 ... M. N = 400 P, above the
+# Resolution of the radiation checks: N exterior and interior modes, corner basis size P, orders 0 ... M. N = 400 P, above the
 # N >= 100 P rule (Convergence); the radiation checks extrapolate from N and 2 N (RICHARDSON_EXPONENT).
 CHECK_RESOLUTION = dict(n_modes=8000, p_max=20, orders=15)
 RICHARDSON_EXPONENT = 5.0 / 3.0   # the radiation identities' residual falls as N**(-5/3); see check_reciprocity
+# Resolution of the checks that need no convergence in N: scattering_energy (an identity that holds order by order at any
+# truncation) and the bottom-limit checks (1e-3 against MacCamy-Fuchs; their extrapolated error is the O(g**2) remainder,
+# the same at N = 500 and 8000). N = 100 P, the rule of Convergence.
+LIGHT_RESOLUTION = dict(n_modes=1000, p_max=10, orders=15)
 
 
 @dataclass
@@ -644,6 +698,131 @@ def far_field_amplitude(sol):
     return out
 
 
+def body_matrices(cyl):
+    """(M, C), 6 x 6, about the origin (the waterplane centre at the still waterline): make_mesh.hydrostatics's formulas
+    for a uniform solid prism at its draft (steps = 1, exact for a prism), applied to the exact circle, area pi a**2 and
+    second moments int x**2 dA = int y**2 dA = pi a**4/4. Mass rho pi a**2 d, z_G = z_B = -d/2, M15 = m z_G, M24 = -m z_G,
+    M44 = M55 = rho d (pi a**4/4 + pi a**2 d**2/3), M66 = rho d pi a**4/2; C33 = rho g pi a**2,
+    C44 = C55 = rho g (pi a**4/4 + V z_B) - m g z_G = rho g pi a**4/4. SI units, as in Hydrostatic.in."""
+    a, d = cyl.radius, cyl.draft
+    rho, g = make_mesh.RHO, make_mesh.G
+    area, second = math.pi * a ** 2, math.pi * a ** 4 / 4.0
+    vol = area * d
+    mass = rho * vol
+    zg = zb = -0.5 * d
+    z2 = d ** 2 / 3.0                                  # (1/d) int_-d^0 z**2 dz
+    m = np.zeros((6, 6))
+    m[0, 0] = m[1, 1] = m[2, 2] = mass
+    m[0, 4] = m[4, 0] = mass * zg
+    m[1, 3] = m[3, 1] = -mass * zg
+    m[3, 3] = m[4, 4] = rho * (second + area * z2) * d
+    m[5, 5] = rho * 2.0 * second * d
+    c = np.zeros((6, 6))
+    c[2, 2] = rho * g * area
+    c[3, 3] = c[4, 4] = rho * g * (second + vol * zb) - mass * g * zg
+    return m, c
+
+
+MOTION_MODES = (1, 3, 5)
+_MODE_INDEX = [j - 1 for j in MOTION_MODES]
+
+
+def _same_problem(name, cyl, omega, sol):
+    if sol.cyl != cyl or sol.omega != omega:
+        raise ValueError("%s: a solution was solved for another cylinder or frequency" % name)
+
+
+def motions(cyl, omega, diff, rads, motion="free"):
+    """xi_j, j = 1, 3, 5: the complex motion amplitudes per unit wave amplitude, time factor exp(-i omega t), rotations in
+    rad per m (L = 1), about the origin, from [-omega**2 (M + A) - i omega B + C] xi = X with the dimensional A, B
+    (added_mass_damping times rho and rho omega), X = i omega rho int phi n dS of the diffraction solution diff and
+    (M, C) = body_matrices. motion "fixed" gives zeros (rads is not used). This is HAMS's equation of motion
+    (SolveMotion in src/SolveMotion.f90, no external damping or stiffness) in the module's time convention; hams_motion
+    gives the complex value Motion.4 writes, and the modulus abs(xi_j) is Motion.4's MOD."""
+    if motion == "fixed":
+        return {j: 0j for j in MOTION_MODES}
+    if motion != "free":
+        raise ValueError("motions: motion is 'fixed' or 'free', got %r" % (motion,))
+    _same_problem("motions", cyl, omega, diff)
+    if set(rads) != set(MOTION_MODES):
+        raise ValueError("motions: rads needs the modes 1, 3 and 5")
+    a, b = added_mass_damping(cyl, omega, rads)
+    integrals = _body_integrals(cyl, diff)
+    force = np.array([1j * omega * make_mesh.RHO * integrals[j] for j in MOTION_MODES])
+    mass, restoring = body_matrices(cyl)
+    rho = make_mesh.RHO
+    lhs = -omega ** 2 * (mass + rho * a) - 1j * omega * (rho * omega * b) + restoring
+    xi = np.linalg.solve(lhs[np.ix_(_MODE_INDEX, _MODE_INDEX)], force)
+    return {j: complex(x) for j, x in zip(MOTION_MODES, xi)}
+
+
+def hams_motion(xi):
+    """Motion.4's NREL + i NIMG of a motion amplitude xi (exp(-i omega t), per unit wave amplitude): conj(xi/eta_I(0)),
+    eta_I(0) = -i, the convention of ExcForce.3 (module docstring)."""
+    return complex(np.conj(xi / -1j))
+
+
+class _Combination:
+    """A linear combination sum c_i p_i of particular solutions (the hook of Solution), for total_solution."""
+
+    def __init__(self, terms):
+        self.terms = terms
+        self.potential_gap = sum(c * np.asarray(p.potential_gap) for c, p in terms)
+        self.flux_gap = sum(c * np.asarray(p.flux_gap) for c, p in terms)
+        self.bottom = sum(c * p.bottom for c, p in terms)
+
+    def fields(self, r, z):
+        parts = [(c, p.fields(r, z)) for c, p in self.terms]
+        return tuple(sum(c * f[i] for c, f in parts) for i in range(3))
+
+
+def total_solution(diff, rads, xi):
+    """phi_I + phi_D + sum_j (-i omega xi_j) phi_j: the total first-order potential of the free body, per unit wave
+    amplitude, as a Solution with the orders of diff. The radiation potentials are per unit velocity and the velocity is
+    -i omega xi in exp(-i omega t). xi from motions; if every xi_j is zero (fixed), rads may be None and diff is returned.
+    rads must have the cylinder, frequency, N and P of diff."""
+    velocity = {j: -1j * diff.omega * xi[j] for j in MOTION_MODES if xi.get(j, 0.0) != 0.0}
+    if not velocity:
+        return diff
+    for j in velocity:
+        rad = rads[j]
+        _same_problem("total_solution", diff.cyl, diff.omega, rad)
+        if rad.p_max != diff.p_max or not np.array_equal(rad.kn, diff.kn):
+            raise ValueError("total_solution: rads[%s] has another N or P than diff" % j)
+    orders = {}
+    for m, o in diff.orders.items():
+        parts = [(v, rads[j].orders[m]) for j, v in velocity.items() if RADIATION_ORDER[j] == m]
+        if not parts:
+            orders[m] = o
+            continue
+        particular = [(v, r.particular) for v, r in parts if r.particular is not None]
+        orders[m] = Order(m, o.incident, o.scattered + sum(v * r.scattered for v, r in parts),
+                          o.evanescent + sum(v * r.evanescent for v, r in parts),
+                          o.interior + sum(v * r.interior for v, r in parts),
+                          o.gap + sum(v * r.gap for v, r in parts),
+                          _Combination(particular) if particular else None)
+    return Solution(diff.cyl, diff.omega, diff.k, diff.kn, diff.p_max, orders)
+
+
+def group_ratio(k, depth):
+    """C_g/C_p = (1 + 2 k h/sinh(2 k h))/2, safe at large k h (as group_ratio in src/FarFieldDrift.f90)."""
+    x = 2.0 * k * depth
+    return 0.5 * (1.0 + 2.0 * x * math.exp(-x) / (1.0 - math.exp(-2.0 * x)))
+
+
+def far_field_fx(cyl, omega, total):
+    """Mean surge drift F_x/(rho g A**2) by Maruo's formula, (1/2)(C_g/C_p) int_0^2pi abs(a)**2 (1 - cos theta) dtheta,
+    a(theta) = sum_m a_m e^(i m theta) from far_field_amplitude of the total solution (the scattered and radiated waves),
+    heading 0. Positive along +x, the wave direction, as MeanDriftMomentum.8 (module docstring). With a_-m = a_m the
+    integral is 2 pi [sum_m abs(a_m)**2 - Re sum_m a_m conj(a_(m+1))], m = -M ... M."""
+    _same_problem("far_field_fx", cyl, omega, total)
+    a = far_field_amplitude(total)
+    full = np.concatenate([a[:0:-1], a])                     # a_m, m = -M ... M
+    energy = np.sum(np.abs(full) ** 2)
+    cross = np.real(np.sum(full[:-1] * np.conj(full[1:])))
+    return float(0.5 * group_ratio(total.k, cyl.depth) * 2.0 * math.pi * (energy - cross))
+
+
 def check_roots():
     """Residuals and brackets of wave_numbers; see the module docstring."""
     cyl = Cylinder()
@@ -716,9 +895,10 @@ LINEARITY_FLOOR = 1e-13  # |X(g) - MF|/|MF| below which the gap's effect is roun
 
 def check_bottom_limit_x1():
     """Gap 1e-3 h: X_1 against MacCamy-Fuchs, after extrapolation in the gap, and the linearity of X_1 - MF in the gap;
-    see the module docstring."""
+    see the module docstring. At LIGHT_RESOLUTION: the extrapolated error (5.5e-5) and the ratio are the same at N = 500,
+    P = 10 and N = 8000, P = 20, so the finer resolution only costs time."""
     h = Cylinder().depth
-    res = CHECK_RESOLUTION
+    res = LIGHT_RESOLUTION
     worst_raw = worst_mod = worst_complex = 0.0
     ratios, skipped = [], []
     for omega in drift_convergence.WIDE_FREQUENCIES:
@@ -772,9 +952,11 @@ def check_matching():
 
 
 def check_scattering_energy():
-    """Fixed body: scattered energy flux against the optical theorem; see the module docstring."""
+    """Fixed body: scattered energy flux against the optical theorem; see the module docstring. At LIGHT_RESOLUTION: the
+    identity holds order by order at any truncation (1e-14 at N = 500 and 8000), so the finer resolution only costs
+    time."""
     cyl = Cylinder()
-    res = CHECK_RESOLUTION
+    res = LIGHT_RESOLUTION
     worst = 0.0
     for omega in drift_convergence.WIDE_FREQUENCIES:
         sol = solve_diffraction(cyl, omega, res["orders"], res["n_modes"], res["p_max"])
@@ -827,9 +1009,11 @@ def check_reciprocity():
     identities is the tail of its cosine projection (coefficients n**-2) against that of the corner-singular gap velocity
     (n**-2/3), so it falls as N**(-5/3): measured exponent 1.68 to 1.73 for N = 1000 ... 8000, 1.3e-7 for A15 = A51 still at
     N = 32000. One Richardson step with p = 5/3 removes that term; what remains falls about as N**-2.9 (2e-8 at N = 4000,
-    8000). So A15 = A51, B15 = B51 and Haskind for modes 3 and 5 test the particular solutions, their gap projections and
-    bottom integrals, and the pitch wall term. They do not bound the error of A, B or X themselves, which converge as about
-    N**-1.6 (Convergence)."""
+    8000). So A15 = A51, B15 = B51 and Haskind for modes 3 and 5 test the particular solutions through their gap
+    projections (potential_gap, flux_gap) and the pitch wall term. They do not test _Particular.bottom: the bottom
+    integral of phi_p is real and enters only the diagonal Re A33 and Re A55, which no identity here contains;
+    check_particular_bottom tests it against quad. They do not bound the error of A, B or X themselves, which converge as
+    about N**-1.6 (Convergence)."""
     worst_sym = worst_haskind = raw_sym = raw_haskind = 0.0
     for omega in drift_convergence.WIDE_FREQUENCIES:
         q, hi = _first_order_extrapolated(omega)
@@ -860,9 +1044,97 @@ def check_radiation_energy():
                           % (worst, 2 * CHECK_RESOLUTION["n_modes"], raw))
 
 
+def check_particular_bottom():
+    """_Particular.bottom, the closed-form int_0^a phi_p(r, -d) r**(m+1) dr, equals scipy.integrate.quad of
+    fields(r, -d)[0] r**(m+1) to 1e-12 relative, heave and pitch, default cylinder and a gap of 1e-3 h. It is the only
+    test of the bottom term: it is real, so it enters Re A33 and Re A55 only, which no identity check sees (module
+    docstring). It does not test fields itself; reciprocity and radiation_energy do, through the gap projections."""
+    worst = 0.0
+    h = Cylinder().depth
+    basis = gegenbauer_basis(2)
+    for cyl in (Cylinder(), Cylinder(draft=h - BOTTOM_GAP * h)):
+        for mode in (3, 5):
+            p = _Particular(cyl, mode, basis, 4)
+            m = RADIATION_ORDER[mode]
+            ref, _ = quad(lambda r: float(p.fields(r, -cyl.draft)[0]) * r ** (m + 1), 0.0, cyl.radius,
+                          epsabs=0.0, epsrel=1e-13)
+            worst = max(worst, abs(p.bottom - ref) / abs(ref))
+    return worst < 1e-12, "max |bottom - quad|/|quad| %.1e, heave and pitch, gaps 90 m and 0.1 m" % worst
+
+
+def check_bottom_limit_drift():
+    """Gap 1e-3 h, fixed: far_field_fx against drift_convergence.maccamy_fuchs_fx, after extrapolation in the gap,
+    2 F(g) - F(2g), to 1e-3; see the module docstring."""
+    h = Cylinder().depth
+    res = LIGHT_RESOLUTION
+    worst = worst_raw = 0.0
+    ratios, skipped = [], []
+    for omega in drift_convergence.WIDE_FREQUENCIES:
+        f = []
+        for gap in (BOTTOM_GAP * h, 2.0 * BOTTOM_GAP * h):
+            cyl = Cylinder(draft=h - gap)
+            diff = solve_diffraction(cyl, omega, res["orders"], res["n_modes"], res["p_max"])
+            f.append(far_field_fx(cyl, omega, diff))
+        ref = drift_convergence.maccamy_fuchs_fx(omega, Cylinder().radius, h)
+        worst = max(worst, abs(2.0 * f[0] - f[1] - ref) / abs(ref))
+        worst_raw = max(worst_raw, abs(f[0] - ref) / abs(ref))
+        if abs(f[0] - ref) > LINEARITY_FLOOR * abs(ref):
+            ratios.append(abs(f[1] - ref) / abs(f[0] - ref))
+        else:
+            skipped.append(omega)
+    linear = bool(ratios) and all(LINEARITY_RATIO[0] <= q <= LINEARITY_RATIO[1] for q in ratios)
+    return worst < 1e-3 and linear, (
+        "extrapolated to g = 0: max |Fx - MF|/|MF| %.1e; at g = 1e-3 h itself %.1e; |F(2g) - MF|/|F(g) - MF| %s%s"
+        % (worst, worst_raw, "%.3f ... %.3f" % (min(ratios), max(ratios)) if ratios else "not tested anywhere",
+           ", not tested at %s rad/s (below the round-off floor)" % ", ".join("%.2f" % w for w in skipped)
+           if skipped else ""))
+
+
+def check_free_energy():
+    """Free body, default cylinder, LIGHT_RESOLUTION, every WIDE_FREQUENCIES: the optical-theorem term of the total
+    outgoing wave equals its energy flux, 2 pi sum_m abs(a_m)**2, to 1e-10 of the fixed body's flux; see the module
+    docstring."""
+    cyl = Cylinder()
+    res = LIGHT_RESOLUTION
+    worst = 0.0
+    for omega in drift_convergence.WIDE_FREQUENCIES:
+        diff = solve_diffraction(cyl, omega, res["orders"], res["n_modes"], res["p_max"])
+        rads = {j: solve_radiation(cyl, omega, j, res["n_modes"], res["p_max"]) for j in MOTION_MODES}
+        total = total_solution(diff, rads, motions(cyl, omega, diff, rads))
+        a = far_field_amplitude(total)
+        full = np.concatenate([a[:0:-1], a])
+        flux = 2.0 * math.pi * np.sum(np.abs(full) ** 2)
+        optical = -math.sqrt(8.0 * math.pi / total.k) * np.real(np.exp(0.75j * math.pi) * np.sum(full))
+        fixed = 2.0 * math.pi * np.sum(np.abs(far_field_amplitude(diff)) ** 2 * np.where(np.arange(len(a)), 2.0, 1.0))
+        worst = max(worst, abs(flux - optical) / fixed)
+    return worst < 1e-10, "max |flux - optical|/(flux of the fixed body) %.1e, free body" % worst
+
+
+BODY_MATRICES_SIDES = 4096
+
+
+def check_body_matrices():
+    """body_matrices against make_mesh.hydrostatics on a BODY_MATRICES_SIDES-sided polygon of the same radius, 1e-5;
+    see the module docstring."""
+    cyl = Cylinder()
+    theta = 2.0 * math.pi * np.arange(BODY_MATRICES_SIDES) / BODY_MATRICES_SIDES
+    polygon = [(cyl.radius * math.cos(t), cyl.radius * math.sin(t)) for t in theta]
+    hydro = make_mesh.hydrostatics(polygon, cyl.draft)
+    mass, restoring = body_matrices(cyl)
+    worst = 0.0
+    for mine, ref in ((mass, np.array(hydro["mass"])), (restoring, np.array(hydro["restoring"]))):
+        nonzero = ref != 0.0
+        if np.any((mine != 0.0) != nonzero):
+            return False, "the zero pattern differs from make_mesh.hydrostatics"
+        worst = max(worst, np.max(np.abs(mine[nonzero] - ref[nonzero]) / np.abs(ref[nonzero])))
+    return worst < 1e-5, "max relative difference per nonzero entry %.1e (zero pattern equal)" % worst
+
+
 CHECKS = {"roots": check_roots, "inner_products": check_inner_products, "bottom_limit_x1": check_bottom_limit_x1,
           "matching": check_matching, "scattering_energy": check_scattering_energy, "reciprocity": check_reciprocity,
-          "radiation_energy": check_radiation_energy}
+          "radiation_energy": check_radiation_energy, "particular_bottom": check_particular_bottom,
+          "bottom_limit_drift": check_bottom_limit_drift, "body_matrices": check_body_matrices,
+          "free_energy": check_free_energy}
 
 
 def main(argv=None):
