@@ -91,6 +91,12 @@ CONTAINS
       ELSE IF (opts%waterline_offset <= 0D0) THEN
          ok = .FALSE.
          msg = 'waterline_offset must be positive in SecondOrder.in.'
+      ELSE IF (opts%far_tolerance <= 0D0) THEN
+         ok = .FALSE.
+         msg = 'far_tolerance must be positive in SecondOrder.in.'
+      ELSE IF (opts%wl_z_tolerance <= 0D0) THEN
+         ok = .FALSE.
+         msg = 'wl_z_tolerance must be positive in SecondOrder.in.'
       END IF
       IF (.NOT. ok) RETURN
 

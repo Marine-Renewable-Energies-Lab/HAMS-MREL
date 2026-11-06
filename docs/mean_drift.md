@@ -37,7 +37,7 @@ When both methods run, the log prints their relative difference for F_x, F_y and
 | `velocity_method` | `differencing`: tangential velocity from the potential on neighbouring panels | `source`: velocity from an extra source solve |
 | `waterline_method` | `extrapolate`: waterline potential from the adjacent panel and its gradient | `field`: boundary integral formula at a point just off the waterline |
 
-The defaults were kept after the convergence study below. `differencing` meets the gate of the plan (near-field and far-field agree and converge on a free body), and on the rounded truncated cylinder (7680 panels, from 0.60 rad/s up) and the rounded box (all frequencies run) it is closer to far-field than `source`. On the bottom-mounted cylinder, which also has no sharp edge, `source` is the closer at 0.40 to 0.80 rad/s at 4096 panels, with both within 0.06% of the exact value there. There is no switch of method by frequency.
+The defaults were kept after the convergence study below. `differencing` meets the gate of the plan (near-field and far-field agree and converge on a free body), and on the rounded truncated cylinder (7680 panels, from 0.60 rad/s up) it is closer to far-field than `source`. On the finest rounded-box meshes it is closer in the force vector at every frequency run, except a near tie at 1.60 rad/s free (0.56% against 0.54%). In F_x alone `source` is closer at 1.00 rad/s on the 8000-panel fixed mesh (-0.039% against -0.130%), and at 0.80, 0.95, 1.00, 1.10 and 1.60 rad/s at 2000 panels fixed. On the bottom-mounted cylinder, which also has no sharp edge, `source` is the closer at 0.40 to 0.80 rad/s at 4096 panels, with both within 0.06% of the exact value there. There is no switch of method by frequency.
 
 ## Which method to use
 
@@ -191,7 +191,7 @@ The difference falls with the mesh in all columns. The largest rounded RAO diffe
 
 - On the rounded free hull the worst value is at the heave resonance, 0.80 rad/s, where Nemoh itself moves from 0.86 to 1.45 of ρg between 480 and 1920 panels.
 - The sharp free hull matches the near-against-far result: `differencing` carries the sharp-edge error, `source` does not.
-- Bidirectional pair, rounded free, headings 0 and 30, 1920 panels: HAMS near-field is 6.5% to 6.7% above Nemoh at 0.70 rad/s, 0.85% to 0.90% below at 0.95, and 0.50% to 0.69% above at 1.10, over all four heading pairs, F_x and F_y. Informative only. Nemoh's documentation states its QTFs are untested for multi-body problems, and no pair ran at 4320 panels.
+- Bidirectional pair, rounded free, headings 0 and 30, 1920 panels: HAMS near-field is 6.5% to 6.7% above Nemoh at 0.70 rad/s, 0.85% to 0.90% below at 0.95, and 0.50% to 0.69% above at 1.10, over all four heading pairs, F_x and F_y (F_y of the (0, 0) pair is zero by symmetry and is excluded from these ranges). Informative only. Nemoh's documentation states its QTFs are untested for multi-body problems, and no pair ran at 4320 panels.
 
 ## Tests
 

@@ -346,7 +346,7 @@ Avoid differentiating the direct BIE for velocity. That needs second derivatives
 
 **Decision (2026-11-06): default T, S opt-in.** Both are implemented. The convergence study is in [mean_drift.md](../../mean_drift.md#convergence-study). Measured:
 
-- Phase 2 gate met by T: on the free rounded cylinder at 7680 panels, near-field is within 0.24% of far-field from 0.70 to 1.80 rad/s. T is closer than S on the rounded cylinder at every frequency from 0.60 rad/s, and on the rounded box. On the bottom-mounted cylinder S is closer at 0.40 to 0.80 rad/s, with both within 0.06%.
+- Phase 2 gate met by T: on the free rounded cylinder at 7680 panels, near-field is within 0.24% of far-field from 0.70 to 1.80 rad/s. T is closer than S on the rounded cylinder at every frequency from 0.60 rad/s. On the finest rounded-box meshes T is closer in the force vector at every frequency run, except a near tie at 1.60 rad/s free (0.56% against 0.54%); in F_x alone S is closer at 1.00 rad/s on the 8000-panel fixed mesh (-0.039% against -0.130%), and at 0.80, 0.95, 1.00, 1.10 and 1.60 rad/s at 2000 panels fixed. On the bottom-mounted cylinder S is closer at 0.40 to 0.80 rad/s, with both within 0.06%.
 - S converges slowly on the rounded cylinder: its error falls with refinement, local order about 0.4 to 0.6, and reaching zero is not shown.
 - On the sharp cylinder S is closer up to 1.20 rad/s (ka about 1.5), and T from 1.40 rad/s. This rests on one radius, and on the sharp box S is closer at all three frequencies run, so there is no switch of method by frequency.
 - S costs +98% run time at 7680 panels, cannot use `IRSP=1`, and is off by 32% to 198% at the two irregular frequencies tested.

@@ -31,15 +31,13 @@ MODULE SecondOrderDriver
    ! docs/output_files.md.
 
    USE Const_mod, ONLY: G, RHO
-   USE HAMS_mod, ONLY: IRSP
    USE WaveDyn_mod, ONLY: AMP, BETA, BLNR, H, NBETA, NBODY, OUFR, TP, V, W1, WK, WVHD, AMAS, BDMP, EXFC, DSPL, &
                           AMAS_MULTI_COMB, BDMP_MULTI_COMB, BLNR_MULTI, EXFC_MULTI_COMB, DSPL_MULTI_COMB
    USE Body_mod, ONLY: CRS, KSTF, MATX, REFL, XR, XR_MULTI, CRS_MULTI, KSTF_MULTI, MATX_MULTI
    USE PanelMesh_mod, ONLY: DS, DXYZ_P, GEONRM_P, GEONRM_MULTI_COMB, ISX, ISY, NCN, NCON, NELEM, NSYS, PNSZ, XYZ, XYZ_P, &
                             DS_MULTI_COMB, DXYZ_MULTI_COMB, NCN_MULTI_COMB, NCON_MULTI_COMB, NELEM_MULTI, NTND_MULTI, &
-                            PNSZ_MULTI_COMB, XYZ_GLOBAL_MULTI_COMB, XYZ_GLOBAL_MULTI_COMB_P, iXYZ_GLOBAL_MULTI_COMB, &
-                            iNCN_MULTI_COMB, iNCON_MULTI_COMB
-   USE Inerfs_mod, ONLY: NELEM_PE, iXYZ, iNCN, iNCON
+                            PNSZ_MULTI_COMB, XYZ_GLOBAL_MULTI_COMB, XYZ_GLOBAL_MULTI_COMB_P
+   USE Inerfs_mod, ONLY: NELEM_PE
    USE Potentials_mod, ONLY: MXPOT, MXPOT_MULTI_COMB
    USE IO, ONLY: CreateDirectory
    USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom
