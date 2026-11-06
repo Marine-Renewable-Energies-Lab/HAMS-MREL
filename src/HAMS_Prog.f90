@@ -265,6 +265,7 @@ program HAMS_MREL
             ELSEIF (INFT.EQ.5) THEN
                 WRITE(6,1050) INFR
             ENDIF
+            CALL WarnLargeKH()
          
             ! Solving the radiation problem
             IF (IRSP.EQ.0) THEN                     
@@ -300,6 +301,7 @@ program HAMS_MREL
                 CALL SolveMotion(W1,TP,OUFR,BETA,AMP,AMAS(KK,:,:),BDMP(KK,:,:),BLNR,BQDR,EXFC(KK,II,:),DSPL(KK,II,:))           ! Has to be implemented for multi-bodies
                 CALL OutputPressureElevation_Diffraction(640)                  ! Has to be implemented for multi-bodies
             ENDDO
+            CALL CheckFiniteResults(AMAS(KK,:,:),BDMP(KK,:,:),EXFC(KK,:,:))
         
         ENDDO
        
@@ -340,9 +342,7 @@ program HAMS_MREL
             DEALLOCATE(CMAT,DRMAT,DDMAT,DGRN,PKBN,iPNSZ)
         ENDIF
        
-        write(*,*) 
-        write(*,*) ' Congratulations! Your computation completes successfully.'
-        write(*,*)
+        CALL ReportCompletion()
 
         !====================================================================================
         1600   FORMAT(//, ' Total CPU Time of computation was',F12.3, '  seconds')
@@ -623,6 +623,7 @@ program HAMS_MREL
             ELSEIF (INFT.EQ.5) THEN
                 WRITE(6,1050) INFR
             ENDIF
+            CALL WarnLargeKH()
          
             ! Solving the radiation problem
             IF (IRSP.EQ.0) THEN
@@ -730,6 +731,7 @@ program HAMS_MREL
                 CALL OutputPressureElevation_IncidenceMulti(66,NBODY)
          
             ENDDO
+            CALL CheckFiniteResults(AMAS_MULTI_COMB(KK,:,:),BDMP_MULTI_COMB(KK,:,:),EXFC_MULTI_COMB(KK,:,:))
         ENDDO
         CLOSE(61)
         CALL ReorderAmssDamp(trim(outputdir)//'/Wamit_format/AmssDamp.1', NPER, 6*NBODY) !Reorder the WAMIT format .1 file
@@ -764,10 +766,26 @@ program HAMS_MREL
             DEALLOCATE(iNELEM_MULTI,iNTND_MULTI)
         ENDIF
 
-        write(*,*)
-        write(*,*) ' Congratulations! Your computation completes successfully.'
-        write(*,*)
+        CALL ReportCompletion()
     end if
+
+contains
+
+    ! Report the end of the run. Output files are written either way; a run with NaN or Inf results
+    ! ends with exit code 1 instead of the message of success.
+    subroutine ReportCompletion()
+        write(*,*)
+        if (NONFINITE_FREQS .eq. 0) then
+            write(*,*) ' Congratulations! Your computation completes successfully.'
+            write(*,*)
+        else
+            write(*,'(a,i0,a,f9.3,a)') '  Error: frequencies with NaN or Inf results: ', NONFINITE_FREQS, &
+                ', the first at ', FIRST_NONFINITE_FREQ, ' rad/s.'
+            write(*,*) ' The output files are written but are not valid at those frequencies.'
+            write(*,*)
+            stop 1
+        end if
+    end subroutine ReportCompletion
 
 end program HAMS_MREL
       
