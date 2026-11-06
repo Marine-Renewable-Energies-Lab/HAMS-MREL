@@ -3,7 +3,7 @@
 !
 !    Damping lid on the free surface: input, geometry and the checks that stop a run on a bad lid.
 !    The lid is a list of panels on z = 0, in global coordinates, with the dissipative condition p/rho = epsilon dphi/dz of the
-!    WAMIT damping lid (docs/input_files.md, docs/superpowers/specs/2026-11-06-epsilon-damping-lid-design.md).
+!    WAMIT damping lid (docs/input_files.md, docs/developer_documentation.md, Damping lid).
 !
 !  License:
 !
@@ -800,7 +800,7 @@ CONTAINS
 !FUNCTION LID_ALPHA
 
 !   !   alpha = i omega epsilon nu / (g - i omega epsilon), with q = dphi/dz - nu phi = alpha phi on a lid panel of epsilon EPS
-!   !   (m/s), from p/rho = epsilon dphi/dz and the time factor e^{-i omega t} (spec, Formulation). 0 at zero frequency (V = 0)
+!   !   (m/s), from p/rho = epsilon dphi/dz and the time factor e^{-i omega t} (developer_documentation.md, Damping lid). 0 at zero frequency (V = 0)
 !   !   and at infinite frequency (V = -1), where the lid is not solved.
 
       COMPLEX*16 FUNCTION LID_ALPHA(EPS)
@@ -915,7 +915,7 @@ CONTAINS
 
 !   !   The left-hand side of the single-body problem with a lid, for each symmetry class IP, once per frequency. Unknowns are
 !   !   the hull phi and the lid phi. Green's identity in the fluid, with the normal out of the fluid, gives for a field point x
-!   !   (docs/superpowers/specs/2026-11-06-epsilon-damping-lid-design.md, Formulation):
+!   !   (docs/developer_documentation.md, Damping lid, Formulation):
 !   !     c phi(x) + sum_j D_xj phi_j - sum_l S_xl q_l = sum_j S_xj V_j,    c = 2 pi on the hull, 4 pi on the lid, 0 inside
 !   !   since dG/dz = nu G on z = 0 leaves the free-surface integral -int G q on the lid only, and on the lid
 !   !   q = dphi/dz - nu phi = alpha_l phi_l (LID_ALPHA, epsilon of panel l). The rows:
@@ -1135,7 +1135,7 @@ CONTAINS
 !   !   ASSB_DBC. Lid and interior rows: -sum_j S_xj dphi_I/dn_j, as DBC_IRR. phi_I satisfies dphi_I/dz = nu phi_I on z = 0, so
 !   !   the scattered q is alpha_l (phi_S + phi_I) on the lid, and every row, hull, lid and interior, gains
 !   !   + sum_l alpha_l LCOL(x,l,IP) U_I(l,IP), with U_I(l,IP) = sum_J RXY(IP,J) phi_I(centroid l reflected for J), the class
-!   !   component of phi_I in the scaling of the unknowns (spec, Symmetry). Left out at zero frequency, where alpha = 0.
+!   !   component of phi_I in the scaling of the unknowns (developer_documentation.md, Damping lid). Left out at zero frequency, where alpha = 0.
 !   !   Fills MXPOT(:,7,:) and MXLPOT(:,7,:).
 
       SUBROUTINE LID_DIFFRACTION(NELEM,NSYS)

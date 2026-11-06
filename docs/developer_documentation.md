@@ -128,11 +128,11 @@ Small multi-body test cases with `ISOLV = 2` can be added to `test/integration_t
 
 The damping lid is the dissipative lid of WAMIT (WAMIT User Manual v7.5, Section 12.8 and eqs. 15.91 to 15.93, `IDAMPER = 1`) on a user-given set of panels on the free surface z = 0 (`DampingLid.pnl`, see [input_files.md](input_files.md#dampinglidpnl)). Design: [the spec](superpowers/specs/2026-11-06-epsilon-damping-lid-design.md). Measurements: [test/data/damping_lid/README.md](../test/data/damping_lid/README.md). Code: `src/DampingLid.f90` (one body), `src/DampingLidMulti.f90` (several bodies), the field terms in `src/PressureElevation.f90` and `src/PressureElevationMulti.f90`. Each claim below is marked measured (source in the README) or derived.
 
-This section replaces the one on the lid that held phi = 0 on its panels ([its spec](superpowers/specs/2026-11-05-damping-lid-design.md), superseded). Derived (spec, "Why the phi = 0 lid is replaced"): phi = 0 makes the mean energy flux through the lid, proportional to Im(phi* dphi/dz), zero, so that lid reflected the wave and absorbed nothing. The phi = 0 measurements are in the git history of this file and of the README (commit 27cb37e and earlier); the panel-integral and hull measurements below do not depend on the lid condition and are kept.
+This section replaces the one on the lid that held phi = 0 on its panels. Derived: phi = 0 makes the mean energy flux through the lid, proportional to Im(phi* dphi/dz), zero, so that lid reflected the wave and absorbed nothing. The phi = 0 measurements are in the git history of this file and of the README (commit 27cb37e and earlier); the panel-integral and hull measurements below do not depend on the lid condition and are kept.
 
 ### What the lid does
 
-Derived (spec, "Formulation"). On the lid the free surface carries the pressure p/rho = epsilon dphi/dz, epsilon in m/s. With the time factor e^{-i omega t} and nu = omega**2/g, the dynamic and kinematic conditions give
+Derived. On the lid the free surface carries the pressure p/rho = epsilon dphi/dz, epsilon in m/s. With the time factor e^{-i omega t} and nu = omega**2/g, the dynamic and kinematic conditions give
 
     dphi/dz = beta phi,    beta = nu g/(g - i omega epsilon)
 
@@ -147,7 +147,7 @@ Measured (README, "Single-body solve with a lid", `lid_ann_*`: cylinder r = 5, d
 
 ### Formulation
 
-Derived (spec, "Formulation"). The wave Green function obeys dG/dz = nu G on z = 0, so the free-surface integral of Green's identity leaves only the lid, with q = dphi/dz - nu phi = alpha phi and
+Derived. The wave Green function obeys dG/dz = nu G on z = 0, so the free-surface integral of Green's identity leaves only the lid, with q = dphi/dz - nu phi = alpha phi and
 
     alpha = beta - nu = i omega epsilon nu/(g - i omega epsilon)
 
@@ -170,7 +170,7 @@ Sign of alpha, measured (README, "Independent reference"): HAMS-MREL at 1 m/s is
 
 Derived: `IRSP` adds rows and no unknowns. Inside a body the rows state the null-field identity, which the solution satisfies. On open water the same rows state 4 pi phi(p) = 0, which the hull solution does not satisfy. The lid needs its own unknowns and lid term.
 
-Measured (spec of the phi = 0 lid, "Why the IRSP rows cannot be reused unchanged"; binary from 0a77224, not a build of main): `IRSP = 1` with an open-water annulus r 6 to 10 as the waterplane mesh; cylinder r = 5, draft 5, depth 50, 1.35 rad/s.
+Measured (with the phi = 0 lid; binary from 0a77224, not a build of main): `IRSP = 1` with an open-water annulus r 6 to 10 as the waterplane mesh; cylinder r = 5, draft 5, depth 50, 1.35 rad/s.
 
 | Lid panels | A11 | B11 | A33 | B33 |
 | ---: | ---: | ---: | ---: | ---: |
@@ -183,7 +183,7 @@ The results do not converge with refinement, B11 is negative, and the runs gave 
 
 ### Self term and its accuracy
 
-Derived (spec of the phi = 0 lid, "Panel integrals"; unchanged by the epsilon lid): the Rankine and image parts are exact panel integrals. For panels apart the wave term is one point at the centroid. For a field point inside the panel, the deep-water wave term is integrated by a Duffy rule after splitting the panel at the field point, and the finite-depth remainder G_finite - G_deep is added as a smooth term sampled at R/h of at least 0.03.
+Derived (unchanged by the epsilon lid): the Rankine and image parts are exact panel integrals. For panels apart the wave term is one point at the centroid. For a field point inside the panel, the deep-water wave term is integrated by a Duffy rule after splitting the panel at the field point, and the finite-depth remainder G_finite - G_deep is added as a smooth term sampled at R/h of at least 0.03.
 
 Measured (README, "Single-layer integral of G over a lid panel"):
 
