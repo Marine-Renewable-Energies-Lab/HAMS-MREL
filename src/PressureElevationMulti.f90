@@ -38,7 +38,7 @@ MODULE PressureElevationMulti
    USE SingularIntgrMulti
    USE PatcVelct
    USE FieldOutput_mod
-   USE Lid_mod, ONLY: LIDON,LNELEM,MXQ
+   USE Lid_mod, ONLY: LIDON,LNELEM,MXLPOT
    USE DampingLid, ONLY: LID_SINGLE_LAYER
 
    IMPLICIT NONE
@@ -201,7 +201,7 @@ CONTAINS
       ENDDO
 
       ! Damping lid: 4 pi phi(p) = sum_hull (S V - D phi) + sum_lid S q, as in CalPotential. The q of radiation mode MD of body
-      ! PHIDOF is in column 6*(PHIDOF-1)+MD of MXQ, that of diffraction in column 6*NBODY+1 (DampingLidMulti.f90).
+      ! PHIDOF is in column 6*(PHIDOF-1)+MD of MXLPOT, that of diffraction in column 6*NBODY+1 (DampingLidMulti.f90).
       IF (LIDON.EQ.1) THEN
        IF (MD.EQ.(6*NBODY+1)) THEN
         MDQ=MD
@@ -220,7 +220,7 @@ CONTAINS
         ENDIF
         DO LEL=1, LNELEM
          CALL LID_SINGLE_LAYER(XP,LEL,SLID)
-         POT=POT+SLID*MXQ(LEL,MDQ,IS)
+         POT=POT+SLID*MXLPOT(LEL,MDQ,IS)
         ENDDO
        ENDDO
       ENDIF

@@ -87,7 +87,7 @@ program HAMS_MREL
     use PressureElevation
     use PressureElevationMulti
     use FieldOutput_mod
-    use Lid_mod, only : LIDON, LNELEM, MXQ
+    use Lid_mod, only : LIDON, LNELEM, MXLPOT
     use DampingLid, only : READ_LID_MESH, LID_GEOMETRY, CHECK_LID, ALLOCATE_LID_UNKNOWNS, LID_ASSEMBLE, LID_RADIATION, &
                            LID_DIFFRACTION
     use DampingLidMulti, only : LID_ASSEMBLE_MULTI, LID_RADIATION_MULTI, LID_DIFFRACTION_MULTI
@@ -282,6 +282,12 @@ program HAMS_MREL
          
             ! Solving the radiation problem. With a lid, at infinite frequency phi is zero on the whole free surface already,
             ! so the lid is skipped there and the hull is solved alone.
+            ! A zero frequency in the frequency list stops a lid run. The zero limit that 0_inf_frequency_limits adds (KK = 1)
+            ! is not in the list and goes on, as before.
+            IF (LIDON.EQ.1 .AND. ABS(V).LT.1.D-8 .AND. .NOT.(SYBO.EQ.1 .AND. KK.EQ.1)) THEN
+                PRINT *,' Error: zero frequency with a damping lid: frequency No.',KK-2*SYBO,' of the list is 0.'
+                STOP 1
+            ENDIF
             LIDSOLVE = LIDON.EQ.1 .AND. ABS(V+1.D0).GE.1.D-8
             IF (LIDSOLVE) THEN
                 CALL CALGREEN                                               ! the hull block; LID_ASSEMBLE builds the interior rows
@@ -298,7 +304,7 @@ program HAMS_MREL
                 CALL ASSB_RBC_IRR(BRMAT,DRMAT,AMAT,NELEM,TNELEM,NSYS)
                 CALL RADIATION_SOLVER_IRR(CMAT,DRMAT,IPIV,MXPOT,NELEM,NSYS)
             ENDIF
-            IF (LIDON.EQ.1 .AND. .NOT.LIDSOLVE) MXQ=(0.D0,0.D0)
+            IF (LIDON.EQ.1 .AND. .NOT.LIDSOLVE) MXLPOT=(0.D0,0.D0)
 
             CALL RFORCE(WK,W1,TP,AMAS(KK,:,:),BDMP(KK,:,:))
             CALL OutputPressureElevation_Radiation(640)                ! This needs to be implemented for multi-bodies
@@ -658,6 +664,12 @@ program HAMS_MREL
          
             ! Solving the radiation problem. With a lid, at infinite frequency phi is zero on the whole free surface already,
             ! so the lid is skipped there and the hulls are solved alone. CHECK_LID stops a lid with IRSP = 1.
+            ! A zero frequency in the frequency list stops a lid run. The zero limit that 0_inf_frequency_limits adds (KK = 1)
+            ! is not in the list and goes on, as before.
+            IF (LIDON.EQ.1 .AND. ABS(V).LT.1.D-8 .AND. .NOT.(SYBO.EQ.1 .AND. KK.EQ.1)) THEN
+                PRINT *,' Error: zero frequency with a damping lid: frequency No.',KK-2*SYBO,' of the list is 0.'
+                STOP 1
+            ENDIF
             LIDSOLVE = LIDON.EQ.1 .AND. ABS(V+1.D0).GE.1.D-8
             IF (LIDSOLVE) THEN
                 CALL CALGREEN_MULTI                                         ! the hull block
@@ -697,7 +709,7 @@ program HAMS_MREL
                 ENDDO
                 CALL RADIATION_SOLVER_MULTI(CMAT_MULTI,DRMAT_MULTI,IPIV_MULTI_COMB,MXPOT_MULTI_COMB,NELEM_TOTAL,NSYS)
             ENDIF
-            IF (LIDON.EQ.1 .AND. .NOT.LIDSOLVE) MXQ=(0.D0,0.D0)
+            IF (LIDON.EQ.1 .AND. .NOT.LIDSOLVE) MXLPOT=(0.D0,0.D0)
          
          
             ! Filling the total element number matrix to be used for deriving the radiation forces

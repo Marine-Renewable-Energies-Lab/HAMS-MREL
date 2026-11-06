@@ -15,13 +15,14 @@ TARGET = os.path.join(ROOT, "test", "data", "damping_lid")
 EOL = "\r\n"
 
 
-def annulus(r0, r1, nt, nr, tri=False, reverse=False, z=0.0, isx=0, isy=0, z_node=None, sectors=None, centre=(0.0, 0.0)):
+def annulus(r0, r1, nt, nr, tri=False, reverse=False, z=0.0, isx=0, isy=0, z_node=None, sectors=None, centre=(0.0, 0.0),
+            dampers=None):
     """Panels of the annulus r0 <= r <= r1 about centre on z = z, nt around and nr radial.
 
     r0 = 0 gives a disc: the first row is nt triangles about a centre node. tri splits every quad in two. reverse flips the
     vertex order of every panel. z_node = (index, z) moves one node off the plane. sectors = [(a0, a1), ...] in degrees keeps
-    only the panels whose middle angle lies in one of them; the other nodes stay in the file, unused. Returns the text of a
-    .pnl file.
+    only the panels whose middle angle lies in one of them; the other nodes stay in the file, unused. dampers as in lid_file.
+    Returns the text of a .pnl file.
     """
     radii = [r0 + (r1 - r0) * i / nr for i in range(nr + 1)]
     nodes = []
@@ -58,11 +59,14 @@ def annulus(r0, r1, nt, nr, tri=False, reverse=False, z=0.0, isx=0, isy=0, z_nod
         index, zz = z_node
         x, y, _ = nodes[index - 1]
         nodes[index - 1] = (x, y, zz)
-    return lid_file(nodes, panels, isx, isy)
+    return lid_file(nodes, panels, isx, isy, dampers)
 
 
-def lid_file(nodes, panels, isx=0, isy=0):
-    """The text of a DampingLid.pnl file with these nodes and panels (lists of 1-based node numbers)."""
+def lid_file(nodes, panels, isx=0, isy=0, dampers=None):
+    """The text of a DampingLid.pnl file with these nodes and panels (lists of 1-based node numbers).
+
+    dampers is a list of (ip1, ip2, eps), or (ip1, ip2, "text") to write an unreadable value; the default is one damper over
+    all panels with eps = 0.2 m/s. The string "none" omits the block. A damper count of 0 is written by an empty list."""
     lines = ["    --------------Damping Lid Mesh File---------------", "",
              "    # Number of Panels, Nodes, X-Symmetry and Y-Symmetry",
              "%11d%10d%10d%10d" % (len(panels), len(nodes), isx, isy), "",
@@ -73,7 +77,19 @@ def lid_file(nodes, panels, isx=0, isy=0):
               "    # Start Definition of Node Relations   ! panel_number  number_of_vertices   Vertex1_ID ..."]
     for n, p in enumerate(panels, 1):
         lines.append("%10d%5d" % (n, len(p)) + "".join("%8d" % v for v in p))
-    lines += ["    # End Definition of Node Relations", "", "    --------------End Damping Lid Mesh File---------------", ""]
+    lines += ["    # End Definition of Node Relations", ""]
+    if isinstance(dampers, str) and dampers == "none":
+        pass
+    else:
+        if dampers is None:
+            dampers = [(1, len(panels), 0.2)]
+        lines += ["    # Start Definition of Damping   ! number of dampers, then: first panel  last panel  epsilon (m/s)",
+                  "%10d" % len(dampers)]
+        for ip1, ip2, eps in dampers:
+            value = eps if isinstance(eps, str) else "%.10f" % eps
+            lines.append("%10d%10d%16s" % (ip1, ip2, value))
+        lines += ["    # End Definition of Damping", ""]
+    lines += ["    --------------End Damping Lid Mesh File---------------", ""]
     return EOL.join(lines)
 
 
@@ -144,7 +160,7 @@ def wall_hydrostatics(a, h, rho=1000.0, g=9.80665):
     return EOL.join(lines) + EOL
 
 
-def rectangle(x0, x1, y0, y1, nx, ny):
+def rectangle(x0, x1, y0, y1, nx, ny, dampers=None):
     """The lid x0 <= x <= x1, y0 <= y <= y1 on z = 0, nx by ny quads. Returns the text of a .pnl file."""
     nodes = [(x0 + (x1 - x0) * i / nx, y0 + (y1 - y0) * j / ny, 0.0) for j in range(ny + 1) for i in range(nx + 1)]
 
@@ -152,7 +168,7 @@ def rectangle(x0, x1, y0, y1, nx, ny):
         return j * (nx + 1) + i + 1
 
     panels = [[node(i, j), node(i + 1, j), node(i + 1, j + 1), node(i, j + 1)] for j in range(ny) for i in range(nx)]
-    return lid_file(nodes, panels)
+    return lid_file(nodes, panels, dampers=dampers)
 
 
 def box(length, width, draft, nx, ny, nz):
@@ -326,10 +342,10 @@ def off_centroid_points(lid_text):
             + [(0.0, 8.0, 0.0), (20.0, 0.0, 0.0)])
 
 
-def control_text(lid, solver=None, depth=None, limits=None, points=None, irsp=0, wave_number=None):
+def control_text(lid, solver=None, depth=None, limits=None, points=None, irsp=0, wave_number=None, zero_frequency=False):
     """The image_cos control file with Damping_lid inserted after 'Number of threads', and Solver_type when given. depth
     replaces the water depth, limits the 0_inf_frequency_limits switch, points the field points, and wave_number the frequency
-    by a wave number (Input_frequency_type 2)."""
+    by a wave number (Input_frequency_type 2). zero_frequency puts 0 before the frequency (two frequencies)."""
     with open(os.path.join(SOURCE, "ControlFile.in"), "rb") as f:
         text = f.read().decode("ascii")
     out = []
@@ -350,6 +366,10 @@ def control_text(lid, solver=None, depth=None, limits=None, points=None, irsp=0,
         if wave_number is not None and line.strip() == "1.3500":
             line = "  %.4f" % wave_number
             replaced += 1
+        if zero_frequency and "Number_of_frequencies" in line:
+            line = "    Number_of_frequencies      2"
+        if zero_frequency and line.strip() == "1.3500":
+            line = "  0.0000  1.3500"
         if irsp and "If_remove_irr_freq" in line:
             line = "    If_remove_irr_freq       %d" % irsp
         if points is not None and "Number_of_field_points" in line:
@@ -369,7 +389,7 @@ def control_text(lid, solver=None, depth=None, limits=None, points=None, irsp=0,
 
 
 def write_case(name, lid_text, lid_flag=1, solver=None, depth=None, limits=None, points=None, hull=None, water_plane=None,
-               irsp=0, wave_number=None, hull_files=None):
+               irsp=0, wave_number=None, hull_files=None, zero_frequency=False):
     """hull replaces the folder of the hull and hydrostatics (default image_cos), water_plane is the path of a WaterPlaneMesh.pnl
     to copy, used with irsp = 1. hull_files = (mesh text, hydrostatics text) writes them in place of the copies."""
     folder = os.path.join(TARGET, name, "input")
@@ -385,7 +405,7 @@ def write_case(name, lid_text, lid_flag=1, solver=None, depth=None, limits=None,
     if water_plane is not None:
         shutil.copy(water_plane, os.path.join(folder, "WaterPlaneMesh.pnl"))
     with open(os.path.join(folder, "ControlFile.in"), "wb") as f:
-        f.write(control_text(lid_flag, solver, depth, limits, points, irsp, wave_number).encode("ascii"))
+        f.write(control_text(lid_flag, solver, depth, limits, points, irsp, wave_number, zero_frequency).encode("ascii"))
     if lid_text is not None:
         with open(os.path.join(folder, "DampingLid.pnl"), "wb") as f:
             f.write(lid_text.encode("ascii"))
@@ -407,6 +427,17 @@ def main():
     write_case("lid_stop_value", annulus(**outside), lid_flag=2)
     write_case("lid_stop_repeated", repeat_vertex(annulus(**outside)))
     write_case("lid_flag_off", annulus(**outside), lid_flag=0)
+
+    # Stops of the damping block, on the 40-panel annulus; each message names the line or panel (README).
+    write_case("lid_stop_damp_missing", annulus(**outside, dampers="none"))
+    write_case("lid_stop_damp_count", annulus(**outside, dampers=[]))
+    write_case("lid_stop_damp_range", annulus(**outside, dampers=[(1, 41, 0.2)]))
+    write_case("lid_stop_damp_order", annulus(**outside, dampers=[(30, 10, 0.2)]))
+    write_case("lid_stop_damp_overlap", annulus(**outside, dampers=[(1, 25, 0.2), (20, 40, 0.1)]))
+    write_case("lid_stop_damp_gap", annulus(**outside, dampers=[(1, 20, 0.2), (25, 40, 0.1)]))
+    write_case("lid_stop_damp_negative", annulus(**outside, dampers=[(1, 40, -0.1)]))
+    write_case("lid_stop_damp_value", annulus(**outside, dampers=[(1, 40, "abc")]))
+    write_case("lid_stop_zero_frequency", annulus(**outside), zero_frequency=True)
 
     # Single-body solves (test_integration_lid.f90). Annulus r = 6 to 10 unless said.
     write_solve_case("lid_ann_40", annulus(6.0, 10.0, 20, 2))

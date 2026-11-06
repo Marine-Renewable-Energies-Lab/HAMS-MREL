@@ -181,7 +181,10 @@
 !---------------------------------------------------------------------------------------------
 !        Data module for the damping lid: panels on z = 0 where the potential is held at zero (docs/input_files.md)
 !        LNELEM, LNTND, LNCN, LNCON and LXYZ are read from DampingLid.pnl. LXYZ_P, LDS and LPNSZ are the centroids, areas and
-!        chart lengths. MXQ holds q = dphi/dz - nu*phi on the lid for the 6*NBODY radiation modes and the diffraction problem.
+!        chart lengths. MXLPOT is the lid potential phi on the lid panels for the 6*NBODY radiation modes and the diffraction
+!        problem. Until the epsilon lid is in (docs/superpowers/plans), it still holds q = dphi/dz - nu*phi, the phi = 0 lid unknown.
+!        NDAMP dampers, panels IDAMP(k,1) to IDAMP(k,2) with epsilon EDAMP(k) (m/s), read from the damping block of DampingLid.pnl;
+!        LEPS(l) is the epsilon of lid panel l.
 !---------------------------------------------------------------------------------------------
 !
         MODULE Lid_mod
@@ -192,7 +195,10 @@
         INTEGER,ALLOCATABLE,PUBLIC:: LNCN(:),LNCON(:,:)
         REAL*8,ALLOCATABLE,PUBLIC:: LXYZ(:,:),LXYZ_P(:,:)
         REAL*8,ALLOCATABLE,PUBLIC:: LDS(:),LPNSZ(:)
-        COMPLEX*16,ALLOCATABLE,PUBLIC:: MXQ(:,:,:)
+        COMPLEX*16,ALLOCATABLE,PUBLIC:: MXLPOT(:,:,:)
+        INTEGER,PUBLIC:: NDAMP=0
+        INTEGER,ALLOCATABLE,PUBLIC:: IDAMP(:,:)
+        REAL*8,ALLOCATABLE,PUBLIC:: EDAMP(:),LEPS(:)
 !
         END MODULE Lid_mod
     
