@@ -61,7 +61,7 @@ HAMS-MREL requires a set of input files to run. These files contain the general 
 
 **A full description of each inout file is provided in [docs/input_files.md](docs/input_files.md)**.
 
-Optional damping lid: `Damping_lid 1` in `ControlFile.in` reads `DampingLid.pnl`, panels on the free surface where the potential is held at zero. The lid reflects waves and absorbs no energy. See [DampingLid.pnl](docs/input_files.md#dampinglidpnl).
+Optional damping lid: `Damping_lid 1` in `ControlFile.in` reads `DampingLid.pnl`, panels on the free surface with a damping coefficient epsilon (m/s) each. The lid is the dissipative lid of WAMIT (WAMIT User Manual v7.5, Section 12.8): a pressure p/rho = epsilon dphi/dz on the lid absorbs wave energy, for example to damp the resonance in a gap or moonpool. epsilon has no default and must be calibrated against model tests or CFD. See [DampingLid.pnl](docs/input_files.md#dampinglidpnl).
 
 
 ### Output
