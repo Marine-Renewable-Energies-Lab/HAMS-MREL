@@ -248,92 +248,122 @@ Derived: the half lid with `ISY = 1` matches the full lid with the epsilon of ea
 
 ## Independent reference: bottom-mounted cylinder with an annular lid
 
-With the epsilon lid, `mm_lid_matches_reference` and its reference values are removed: they are those of the phi = 0 lid. An epsilon version of the reference and its test follows. Until then only `mm_cyl_nolid` runs and `mm_nolid_matches_maccamy_fuchs` is kept; `mm_cyl_lid_a`, `_b` and `_c` stay as fixtures, not run. The measurements below are those of the phi = 0 lid.
+This section is for the epsilon lid. It replaces the phi = 0 measurements that were here before (reference values, HAMS-MREL errors, limits and the scratch runs): they belong to the removed phi = 0 lid and are no longer valid.
 
 Cases (`make_lid_fixtures.py`, `wall()` and `wall_hydrostatics()`): a vertical cylinder of radius a = 2 m standing on the sea bed in h = 10 m of water, wave number k = 0.15 given directly (`Input_frequency_type 2`, kh = 1.5, omega = 1.1538937638 rad/s), heading 0, field points (0, 8, 0) and (8, 0, 0).
 
-| Case | Hull | Lid |
-| :--- | :--- | :--- |
-| `mm_cyl_nolid` | wall 24 around x 10 rows, 240 panels | none, `Damping_lid 0` |
-| `mm_cyl_lid_a` | the same | r 2 to 4, 24 x 2 |
-| `mm_cyl_lid_b` | the same | r 2 to 4, 48 x 4 |
-| `mm_cyl_lid_c` | the same | r 2 to 4, 48 x 8 |
+| Case | Hull | Lid | epsilon (m/s) | Field points |
+| :--- | :--- | :--- | ---: | :--- |
+| `mm_cyl_nolid` | wall 24 around x 10 rows, 240 panels | none, `Damping_lid 0` | | the two |
+| `mm_cyl_lid_a` | the same | r 2 to 4, 24 x 2 | 0.2 | the two |
+| `mm_cyl_lid_b` | the same | r 2 to 4, 48 x 4 | 0.2 | the two |
+| `mm_cyl_lid_c` | the same | r 2 to 4, 48 x 8 (384 panels) | 0.2 | the two, then the 384 lid centroids |
+| `mm_cyl_lid_c_eps1` | the same | the same | 1 | the same |
+| `mm_cyl_lid_c_rigid` | the same | the same | 1e6 | the same |
 
-The hull is the wall only, from z = 0 to z = -h, with no bottom panel: the sea bed closes it. Rows are at z = -(h/2)(1 - cos(pi i/10)) as in `image_cos`, node and vertex order as in `image_cos`. The hull's waterline nodes, every 15 degrees, are nodes of every lid's inner ring. The 48-around lids have one more inner node between each pair, on the circle r = 2, so their inner edge lies just outside the hull's chords (by up to 0.017 m, at the extra nodes). The first and last rows are 0.245 m high, 0.0245 h, below the 0.03 h asked for: ten cosine rows do not allow it. The lid panels next to the hull are 0.26 m (48 around) and 0.52 m (24 around) wide, the first below 0.03 h too. No centroid lies on z = 0 (the top row centroids are at z = -0.122).
+The hull is the wall only, from z = 0 to z = -h, with no bottom panel: the sea bed closes it. Rows are at z = -(h/2)(1 - cos(pi i/10)) as in `image_cos`, node and vertex order as in `image_cos`. The hull's waterline nodes, every 15 degrees, are nodes of every lid's inner ring. The 48-around lids have one more inner node between each pair, on the circle r = 2, so their inner edge lies just outside the hull's chords (by up to 0.017 m, at the extra nodes). The first and last rows are 0.245 m high, 0.0245 h, below the 0.03 h asked for: ten cosine rows do not allow it. The lid panels next to the hull are 0.26 m (48 around) and 0.52 m (24 around) wide, the first below 0.03 h too. No hull centroid lies on z = 0 (the top row centroids are at z = -0.122).
 
 `Hydrostatic.in` affects only the motions, not the excitation, and the motions are not compared. It is that of a free-floating column of the same shape: mass rho pi a**2 h = 125664 kg (rho = 1000 of `src/WavDynMods.f90`), centre of gravity at the centre of buoyancy (0, 0, -5), inertia of a solid column about the origin, restoring C33 = rho g pi a**2 and C44 = C55 = rho g pi a**4/4 (the rho g V z_B and -m g z_G terms cancel), no external matrices.
 
 ### The reference and what its checks cover
 
-The reference is `pre_postprocessing_python/DampingLid/annular_lid_reference.py`: eigenfunction matching, no BEM, no Green function, method in its docstring. The reference values project both matching conditions on the lid modes. Measured self-checks (the script exits 1 if one fails), each with what it covers and what it does not:
+The reference is `pre_postprocessing_python/DampingLid/annular_lid_reference.py`: eigenfunction matching, no BEM, no Green function, method in its docstring. In the lid region the vertical modes satisfy k tanh(kh) = K, K = nu g/(g - i omega E), with complex roots found by Newton iteration from the open-water roots and continued in 2000 steps from E = 0. `--conjugate` uses K' = nu g/(g + i omega E), the lid with Im(alpha) flipped. The reference values project both matching conditions on the lid modes. Measured self-checks (the script exits 1 if one fails):
 
 | Check | Measured | Covers | Does not cover |
 | :--- | :--- | :--- | :--- |
-| 1. b = a against MacCamy-Fuchs | 4.5e-16 or less, all four projections | outer modes, beta, incident term, force and elevation sums, output convention | M, lid radial functions, gamma, lid force: with gamma = 0 the system reduces to a_0 = -dinc_0/beta_0 and the force takes the outer branch |
-| 2. thin lid b = a (1 + eps), X1 through the lid force branch, against MacCamy-Fuchs | N = 80: 2.0e-1, 9.9e-2, 2.4e-2, 6.4e-3, 4.4e-3, 4.2e-3 for eps = 1e-1 to 1e-6; N = 320: 2.1e-1 to 1.1e-3; N = 1280: 2.1e-1 to 6.3e-4; each falling with eps | M, lid radial functions, gamma and the lid force sum together | the strength of the lid, since the limit is no lid |
-| 3. pointwise mismatch of phi and dphi/dr at r = b, z = -1, -2.5, -5, -7.5, -9, orders 0, 1, 2, 5, relative to the largest outer value | phi 6.4e-2, 8.0e-3, 9.6e-4; dphi/dr 4.7e-1, 2.5e-1, 1.3e-1 at N = 20, 80, 320 | M, gamma, beta and the incident terms against the matching conditions at the real lid | the lid force sum, and dphi/dr = 0 at r = a, which the radial functions meet by construction |
-| 4. energy: abs(1 + 2 a_0/(eps_m i**m H_m(kb))) = 1 for every order | 7e-16 or less | that the system is assembled with real lid quantities and the outgoing condition | a wrong sign or value of M or gamma: any real ones pass |
-| 5. orders 0..29 against 0..59 at the two points, without and with the lid (N = 80) | 0 | truncation in m | |
+| 1. b = a against MacCamy-Fuchs | 1.1e-16 or less, all four projections | outer modes, incident term, force and elevation sums, output convention | the lid modes |
+| 2. E = 0 with the lid b = 4 against MacCamy-Fuchs, through the lid modes | 3.0e-16 or less at N = 20, 80, 320, all four projections | lid roots, M, lid radial functions, gamma and the lid force sum at the real lid, with K = nu | a complex K |
+| 3. lid roots, N = 320 | residual of k tanh(kh) - K 1.3e-11 or less; smallest gap between roots 0.29; at 1e6 m/s every p_j h within 3.7e-6 of j pi | the complex roots and the branch they follow | |
+| 4. E = 1e6 against the rigid lid E = infinity (p_0 = 0, its own radial functions), N = 80 | 1.2e-6 (g/(omega E) = 8.5e-6) | complex roots and radial functions at small K, against a separate code path | |
+| 5. pointwise mismatch of phi and dphi/dr at r = b, z = -1 to -9, orders 0, 1, 2, 5, E = 1 | phi 1.2e-4, 4.2e-6, 2.0e-7; dphi/dr 1.5e-4, 7.0e-6, 4.2e-7 at N = 20, 80, 320 | M, gamma, beta and the incident terms against the matching conditions | the lid force sum |
+| 6. energy balance, diffraction form (below) | 1.1e-11 (0.2 m/s), 2.6e-10 (1 m/s) at N = 320 | the sign and size of the lid absorption, the lid-region solution | |
+| 7. orders 0..29 against 0..59, E = 1, N = 80 | 0 | truncation in m | |
 
-Derived from check 2: at fixed N the difference falls monotonically with eps. It stops at a floor set by the lid modes, which vanish at z = 0 and cannot follow the wall potential in a strip narrower than about h/N, and that floor falls with N. At eps = 1e-3 and 1e-4 the difference grows with N: the finer expansion resolves the strip, and a phi = 0 strip acts like a conductor whose effect fades only slowly with its width (also seen on `lid_shrink_*`).
+Energy balance (ruling: the reference has no radiation solution, so the diffraction form is used). The net power into a control cylinder r = 1000 m, from the incident plus scattered propagating wave, must equal the power absorbed on the lid, 1/2 rho E int abs(dphi/dz)**2 dA, integrated over the lid from the lid-region modes (graded Gauss-Legendre in r, the orders 0..29 in theta). Measured, W for an incident amplitude of 1 m and rho = 1000:
 
-Derived from check 3: phi converges as about N**-1.5 and dphi/dr as about N**-0.5, the rate expected of the r**-1/2 singularity at the lid edge. With both conditions projected on the outer modes instead, the phi mismatch falls (1.6e-1, 3.7e-2, 8.9e-3) but the dphi/dr mismatch stays at 1.3 for N = 20, 80, 320: its lid coefficients c_j gamma_j do not decay with j, and the lid side's dphi/dr at z = -5 even has the wrong sign. Its force and elevations still converge to the same limit (8.3e-6 from the lid projection). That is why the lid projection is used for the reference values. The two mixed projections fall in both, more slowly (dphi/dr 0.75 to 0.34).
+| E (m/s) | N | Into r = 1000 | Lid | Relative residual |
+| ---: | ---: | ---: | ---: | ---: |
+| 0.2 | 80 | 5268.4142955 | 5268.4142985 | 5.6e-10 |
+| 0.2 | 320 | 5268.4144552 | 5268.4144553 | 1.1e-11 |
+| 1 | 80 | 24729.614578 | 24729.614916 | 1.4e-8 |
+| 1 | 320 | 24729.632346 | 24729.632353 | 2.6e-10 |
+| 1, conjugate | 320 | -27345.407701 | +27345.407708 | 2.0 |
+
+The lossless lids, E = 0 and E = infinity, keep abs(1 + 2 a_0/(eps_m i**m H_m(kb))) = 1 to 1.1e-16. Derived: with the conjugate lid the far field shows a net power out of the cylinder equal to the lid power, that is the lid makes energy. So the energy balance tells the two signs apart, and the reference has the absorbing sign.
+
+Derived: the epsilon reference converges much faster than the phi = 0 one (spread 1e-7 against 8e-5 before): the lid condition is close to the open-water one, so the edge at (b, 0) is only weakly singular.
 
 ### Reference values
 
-Measured, the lid projection (X1 over rho g A, elevations over A, in the convention of `ExcForce.3` and `PressureElevation.6p`):
+Measured, the lid projection, extrapolated in 1/N from N = 160, 320 (X1 over rho g A, elevations over A, in the convention of `ExcForce.3` and `PressureElevation.6p`). Spread: the largest relative difference to the extrapolation from N = 40, 80 and to the other three projections.
 
-| N | abs(X1) | abs(eta(0, 8, 0)) | abs(eta(8, 0, 0)) |
-| ---: | ---: | ---: | ---: |
-| 20 | 12.966054 | 0.874605 | 0.474657 |
-| 40 | 12.875781 | 0.870410 | 0.468541 |
-| 80 | 12.830344 | 0.868332 | 0.465542 |
-| 160 | 12.807550 | 0.867298 | 0.464057 |
-| 320 | 12.796135 | 0.866782 | 0.463319 |
-| linear in 1/N from 20, 40 | 12.785584 | 0.866233 | 0.462425 |
-| linear in 1/N from 40, 80 | 12.784925 | 0.866259 | 0.462544 |
-| linear in 1/N from 160, 320 (used) | 12.784720 | 0.866267 | 0.462580 |
-| the same, projected on the outer modes | 12.784614 | 0.866268 | 0.462580 |
-| the same, phi on lid modes, dphi/dr on outer modes | 12.784853 | 0.866274 | 0.462585 |
-| the same, phi on outer modes, dphi/dr on lid modes | 12.784470 | 0.866259 | 0.462570 |
-| MacCamy-Fuchs (no lid) | 23.479391 | 1.014827 | 1.014165 |
+| E (m/s) | X1 | eta(0, 8, 0) | eta(8, 0, 0) | Spread | Lid power (W) |
+| ---: | :--- | :--- | :--- | ---: | ---: |
+| 0.2 | 1.73472971 + 23.39194867i (23.456184, 85.759 deg) | 1.00952678 + 0.04447564i (1.010506) | 0.29053829 - 0.96832198i (1.010970) | 6.0e-9 | 5268.414 |
+| 1 | 2.02520747 + 23.23109427i (23.319203, 85.018 deg) | 0.99339102 + 0.04910955i (0.994604) | 0.27074161 - 0.95859350i (0.996094) | 1.4e-7 | 24729.64 |
+| 1e6 | 0.87716703 + 20.84072211i (20.859174, 87.590 deg) | 0.99990858 + 0.17835860i (1.015691) | 0.31664285 - 0.79760753i (0.858161) | 7.7e-6 | 1.0213 |
+| 1, conjugate | 1.24207194 + 23.48921293i (23.522029, 86.973 deg) | 1.03631036 + 0.04551342i (1.037309) | 0.32493007 - 0.97294067i (1.025765) | 1.5e-7 | 27345.41 |
+| no lid (MacCamy-Fuchs) | 1.65550518 + 23.42095485i (23.479391) | 1.01387576 + 0.04392707i (1.014827) | 0.29600397 - 0.97000684i (1.014165) | | |
 
-The phases of the reference: X1 93.32 deg, eta(0, 8, 0) 28.15 deg, eta(8, 0, 0) -65.43 deg (MacCamy-Fuchs: 85.96, 2.48, -73.03). Spread (largest relative difference to the extrapolation from 40, 80 and to the other projections): 2.1e-5 (X1), 3.7e-5, 7.9e-5.
+The lid-power spread is 5.9e-8 (0.2 m/s), 1.4e-6 (1 m/s), 8.9e-5 (1e6 m/s). Derived: the true and the conjugate reference at 1 m/s differ by 3.5e-2 (X1), 4.3e-2 and 5.6e-2 (the elevations), complex relative. At 0.2 m/s the lid is weak (omega E/g = 0.024; X1 0.9990 of the bare cylinder) and the two differ by about 1e-2.
 
 ### HAMS-MREL against the reference
 
-Measured, relative differences to the reference as complex numbers, with the magnitude and phase parts:
+Measured, relative differences to the reference as complex numbers. The lid effect is the change the lid makes in HAMS-MREL (lid case minus `mm_cyl_nolid`) against the change it makes in the reference (reference minus MacCamy-Fuchs), relative to the reference change.
 
-| Case | abs(X1) | X1 | eta(0, 8, 0) | eta(8, 0, 0) |
-| :--- | ---: | :--- | :--- | :--- |
-| `mm_cyl_nolid`, against MacCamy-Fuchs | 23.2801 | 0.85% (-0.85%, +0.03 deg) | 0.07% (-0.02%, -0.04 deg) | 0.09% (-0.01%, +0.05 deg) |
-| `mm_cyl_lid_a` | 13.1528 | 3.14% (+2.88%, -0.71 deg) | 3.27% (+2.37%, -1.27 deg) | 6.54% (+6.54%, +0.04 deg) |
-| `mm_cyl_lid_b` | 12.9038 | 1.07% (+0.93%, -0.30 deg) | 1.50% (+1.11%, -0.57 deg) | 2.95% (+2.94%, +0.07 deg) |
-| `mm_cyl_lid_c` | 12.8025 | 0.28% (+0.14%, -0.14 deg) | 0.76% (+0.58%, -0.28 deg) | 1.48% (+1.48%, +0.05 deg) |
+| Case | E | X1 | eta(0, 8, 0) | eta(8, 0, 0) | Lid effect: X1, eta(0, 8, 0), eta(8, 0, 0) |
+| :--- | ---: | ---: | ---: | ---: | :--- |
+| `mm_cyl_nolid`, against MacCamy-Fuchs | | 8.50e-3 | 6.53e-4 | 8.90e-4 | |
+| `mm_cyl_lid_a` | 0.2 | 8.47e-3 | 6.40e-4 | 9.45e-4 | 3.70e-2, 6.78e-3, 1.44e-2 |
+| `mm_cyl_lid_b` | 0.2 | 8.49e-3 | 6.46e-4 | 9.09e-4 | 2.28e-2, 2.43e-3, 4.58e-3 |
+| `mm_cyl_lid_c` | 0.2 | 8.49e-3 | 6.46e-4 | 9.10e-4 | 2.21e-2, 2.46e-3, 4.44e-3 |
+| `mm_cyl_lid_c_eps1` | 1 | 8.42e-3 | 6.19e-4 | 9.79e-4 | 2.20e-2, 2.41e-3, 4.45e-3 |
+| `mm_cyl_lid_c_rigid` | 1e6 | 7.07e-3 | 6.75e-4 | 7.83e-4 | 1.97e-2, 2.62e-3, 3.41e-3 |
 
-Scratch runs, not fixtures (same generator, outside the repository):
+The sign of alpha (ruling 1). `mm_cyl_lid_c_eps1` against the conjugate reference at 1 m/s: 3.72e-2 (X1), 4.16e-2, 5.38e-2; worst 5.38e-2, against 8.42e-3 from the true reference. At 0.2 m/s (`mm_cyl_lid_c`): 1.21e-2 from the conjugate, 8.49e-3 from the true. Lid effect against the conjugate reference at 1 m/s: 1.95 of the conjugate lid effect. A binary built with Im(alpha) flipped (alpha and the lid elevation both conjugated; scratch build, not committed) gives:
 
-| Hull | Lid | X1 | eta(0, 8, 0) | eta(8, 0, 0) |
-| :--- | :--- | ---: | ---: | ---: |
-| 48 x 20, no lid, against MacCamy-Fuchs | none | 0.21% | 0.02% | 0.02% |
-| 24 x 10 | 96 x 8 | 0.22% | 0.68% | 1.32% |
-| 48 x 20 | 48 x 4 | 1.61% | 1.55% | 3.07% |
-| 48 x 20 | 96 x 8 | 0.68% | 0.73% | 1.44% |
+| Case | Worst against the reference | Worst lid effect | Lid power against the reference |
+| :--- | ---: | ---: | ---: |
+| `mm_cyl_lid_c`, flipped | 1.21e-2 | 2.01 | +1.66e-2 |
+| `mm_cyl_lid_c_eps1`, flipped | 5.69e-2 | 2.04 | +1.01e-1 |
+| `mm_cyl_lid_c_rigid`, flipped | 7.07e-3 | 1.97e-2 | |
 
-Run times, one thread: 1.1 s (`mm_cyl_nolid`), 1.2 s (`mm_cyl_lid_a`), 2.1 s (`mm_cyl_lid_b`), 4.4 s (`mm_cyl_lid_c`, measured while the suite ran); the reference script 9 s. The integration suite took 2 min 10 s (unit suite included) against 1 min 54 s without `mm_cyl_lid_c`.
+Lid power (ruling 3). From the diffraction elevations at the 384 lid centroids of `mm_cyl_lid_c`, P = 1/2 rho omega**2 sum_l eps_l abs(eta_l)**2 A_l per unit incident amplitude:
+
+| Case | HAMS-MREL (W) | Reference (W) | Relative | Conjugate reference (W) |
+| :--- | ---: | ---: | ---: | ---: |
+| `mm_cyl_lid_c`, 0.2 m/s | 5246.598 | 5268.414 | -4.14e-3 | 5378.090 (+2.08e-2) |
+| `mm_cyl_lid_c_eps1`, 1 m/s | 24627.66 | 24729.64 | -4.12e-3 | 27345.41 (+1.06e-1) |
+
+Scratch evaluations, not tests: the reference elevations evaluated at the same 384 centroids and summed with the same panel areas give 5252.548 W (-3.01e-3 from the reference) and 24653.90 W (-3.06e-3). The panel areas sum to 37.5915 m**2 against pi (b**2 - a**2) = 37.6991 (-2.85e-3). HAMS-MREL against that sampled sum: -1.13e-3 and -1.06e-3; centroid elevations against the reference elevations: 3.2e-3 rms, 6.3e-3 largest (relative to the largest).
+
+Scratch runs, not fixtures (same generator, outside the repository), at 1 m/s:
+
+| Hull | Lid | X1 | eta(0, 8, 0) | eta(8, 0, 0) | Lid effect: X1, eta(0, 8, 0), eta(8, 0, 0) |
+| :--- | :--- | ---: | ---: | ---: | :--- |
+| 24 x 10 | 24 x 2 | 8.30e-3 | 6.04e-4 | 1.17e-3 | 3.69e-2, 7.02e-3, 1.43e-2 |
+| 24 x 10 | 48 x 4 | 8.41e-3 | 6.14e-4 | 9.77e-4 | 2.27e-2, 2.50e-3, 4.60e-3 |
+| 48 x 20, no lid, against MacCamy-Fuchs | none | 2.13e-3 | 1.65e-4 | 2.27e-4 | |
+| 48 x 20 | 48 x 4 | 2.08e-3 | 1.52e-4 | 2.97e-4 | 8.88e-3, 1.77e-3, 3.59e-3 |
+| 48 x 20 | 48 x 8 | 2.09e-3 | 1.58e-4 | 2.97e-4 | 8.10e-3, 2.07e-3, 3.44e-3 |
+
+Run times: the six `mm_cyl_*` cases take a few seconds each, and the integration suite 3 min 15 s; the reference script 7 min 12 s for the three lids (15 min for the conjugate run, measured while other jobs ran).
 
 | Test | Limit | Measured |
 | :--- | ---: | ---: |
 | `mm_nolid_matches_maccamy_fuchs`, worst of X1 and the two elevations of `mm_cyl_nolid`, complex | 2e-2 | 8.5e-3 (X1; elevations 6.5e-4, 8.9e-4) |
-| `mm_lid_matches_reference`, worst of X1 and the two elevations of `mm_cyl_lid_c`, complex | 3e-2 | 1.48e-2 (eta(8, 0, 0)) |
-| the same, each falling from `mm_cyl_lid_a` to `_b` to `_c` | | X1 3.14e-2, 1.07e-2, 2.8e-3; eta(0, 8, 0) 3.27e-2, 1.50e-2, 7.6e-3; eta(8, 0, 0) 6.54e-2, 2.95e-2, 1.48e-2 |
+| `mm_lid_matches_reference`, worst of X1 and the two elevations of `mm_cyl_lid_c`, `_c_eps1`, `_c_rigid`, complex | 1.2e-2 | 8.49e-3, 8.42e-3, 7.07e-3 (conjugate at 1 m/s 5.38e-2; flipped binary 5.69e-2) |
+| the same, worst lid effect | 3e-2 | 2.21e-2, 2.20e-2, 1.97e-2 (flipped binary 2.01, 2.04) |
+| `mm_lid_converges`, worst lid effect at 0.2 m/s, falling from `_a` to `_b` to `_c` | must fall | 3.70e-2, 2.28e-2, 2.21e-2 |
+| `mm_lid_power_matches`, lid power of `mm_cyl_lid_c` and `_c_eps1` against the reference | 8e-3 | -4.14e-3, -4.12e-3 (conjugate +2.08e-2, +1.06e-1; flipped binary +1.66e-2, +1.01e-1) |
 
 Derived from these:
 
-- The reference converges as 1/N (the change halves when N doubles: 0.090, 0.045, 0.023, 0.011 in abs(X1)), as expected of the edge singularity at (b, 0). The extrapolations and projections agree to 8e-5, far below the differences above.
-- The bare cylinder on the sea bed matches MacCamy-Fuchs in force and elevation, and its force error falls from 0.85% to 0.21% when the hull is refined twice each way. So the hull reaching the sea bed works, and the output convention (time factor, normalisation, phase) is the one the script assumes.
-- With the lid, HAMS-MREL converges to the reference, and the error is set by the number of lid rings: eta(8, 0, 0) is 6.5%, 2.9% and 1.5% at 2, 4 and 8 rings, halving with each doubling. The number around matters little (48 x 8 and 96 x 8 differ by 0.16% or less). This is the first-order convergence in the ring width seen on `lid_ann_*`. The finer hull moves X1 the other way (1.07% to 1.61% at lid 48 x 4): the hull error of X1 (-0.85% at 24 x 10) partly cancels the lid error (positive), and it shrinks with the finer hull.
-- The lid's strength is confirmed: the reference gives abs(X1) 0.5445 of the bare cylinder, eta(8, 0, 0) 0.4561 and eta(0, 8, 0) 0.8536, and HAMS-MREL gives 0.5499, 0.4629 and 0.8587 at 48 x 8. The phase shifts the lid causes (X1 +7.4 deg, eta(0, 8, 0) +25.7 deg) are reproduced to 0.3 deg at 48 x 8. The factor 100 on B11 of `lid_ann_*` is another geometry (r 6 to 10 around a draft 5 cylinder in 50 m) and is not checked here.
+- The error against the reference (0.85% in X1) is the hull error of the bare cylinder: `mm_cyl_nolid` has the same 8.5e-3, and it does not change with the lid mesh. It falls to 2.1e-3 with the 48 x 20 hull. So the reference error cannot show lid convergence; the lid effect does, since the hull error drops out of it to first order.
+- The lid effect converges with the rings from 2 to 4 (3.7e-2 to 2.3e-2 in X1) and then stops at about 2.2e-2. The floor is set by the hull: with the 48 x 20 hull it is 8.1e-3 to 8.9e-3. So the lid itself is resolved at 4 to 8 rings to better than 1% of its effect, and what remains is how the 24-around hull wall meets the lid. The lid-effect error is about the same fraction of the effect at 0.2, 1 and 1e6 m/s.
+- The sign of alpha is pinned: HAMS-MREL is 6.4 times closer to the true than to the conjugate reference at 1 m/s (8.4e-3 against 5.4e-2), and with the hull error removed about 90 times (2.2e-2 against 1.95 of the lid effect). With the flipped binary the integration suite fails 5 tests: `mm_lid_matches_reference` (5.69e-2 against 1.2e-2), `mm_lid_power_matches` (1.01e-1 against 8e-3), `mm_lid_converges` (lid-effect error 2.01 at every mesh), and `lid_gap_damping_nonnegative` and `lid_gap_damps` of the two-body section. At 0.2 m/s alone the first check would not separate the signs (8.5e-3 against 1.2e-2): the lid-effect check does.
+- The lid power of HAMS-MREL is 0.41% low. About 0.29% of that is the polygonal lid area (the one-point sum of the exact elevations is 0.30% low), and 0.11% is the elevation error at the centroids.
+- At 1e6 m/s HAMS-MREL gives the rigid-lid reference: X1 0.8884 of the bare cylinder in the reference, 0.8897 in HAMS-MREL (derived from the tables).
 
 ## Several bodies
 

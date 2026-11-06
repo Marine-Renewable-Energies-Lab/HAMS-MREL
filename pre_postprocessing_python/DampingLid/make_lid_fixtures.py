@@ -480,14 +480,20 @@ def main():
     write_solve_case("lid_ann_160_irsp", full, irsp=1, water_plane=plane)
 
     # Independent reference (test_integration_lid.f90, pre_postprocessing_python/DampingLid/annular_lid_reference.py): a
-    # cylinder of radius 2 standing on the sea bed in 10 m of water, kh = 1.5, the lid r 2 to 4 at two meshes.
+    # cylinder of radius 2 standing on the sea bed in 10 m of water, kh = 1.5, the lid r 2 to 4 at three meshes, epsilon
+    # 0.2 m/s, and the finest mesh also at 1 and 1e6 m/s. The 48 x 8 cases have the 384 lid centroids as field points after
+    # the two far points, for the lid power.
     cylinder = (wall(2.0, 10.0, 24, 10), wall_hydrostatics(2.0, 10.0))
     far = [(0.0, 8.0, 0.0), (8.0, 0.0, 0.0)]
-    reference = dict(depth=10.0, wave_number=0.15, points=far, hull_files=cylinder)
-    write_case("mm_cyl_nolid", None, lid_flag=0, **reference)
-    write_case("mm_cyl_lid_a", annulus(2.0, 4.0, 24, 2), **reference)
-    write_case("mm_cyl_lid_b", annulus(2.0, 4.0, 48, 4), **reference)
-    write_case("mm_cyl_lid_c", annulus(2.0, 4.0, 48, 8), **reference)
+    reference = dict(depth=10.0, wave_number=0.15, hull_files=cylinder)
+    write_case("mm_cyl_nolid", None, lid_flag=0, points=far, **reference)
+    write_case("mm_cyl_lid_a", annulus(2.0, 4.0, 24, 2), points=far, **reference)
+    write_case("mm_cyl_lid_b", annulus(2.0, 4.0, 48, 4), points=far, **reference)
+    lid_c = annulus(2.0, 4.0, 48, 8)
+    points_c = far + centroids(lid_c, 384)
+    write_case("mm_cyl_lid_c", lid_c, points=points_c, **reference)
+    write_case("mm_cyl_lid_c_eps1", annulus(2.0, 4.0, 48, 8, dampers=[(1, 384, 1.0)]), points=points_c, **reference)
+    write_case("mm_cyl_lid_c_rigid", annulus(2.0, 4.0, 48, 8, dampers=[(1, 384, 1.0e6)]), points=points_c, **reference)
 
     # Two bodies (test_integration_lid.f90). lid_two_far: the hulls of image_cos_two, the second 5 km away along y, with the lid
     # and field points of lid_ann_160 about the first. The stops: a lid disc inside the second body, and IRSP. lid_gap: two
