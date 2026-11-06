@@ -1135,8 +1135,10 @@ contains
     end subroutine mm_lid_matches_reference
 
     !> The lid-effect error at 0.2 m/s falls from mm_cyl_lid_a (2 rings) to _b (4), and does not rise again at _c (8): measured
-    !> 3.70e-2, 2.28e-2, 2.21e-2. From 4 rings on it levels off at a floor set by the 24 x 10 hull and the 48 panels around, not by the rings: with the
-    !> 48 x 20 hull it is 8.15e-3 at 8 rings and 7.90e-3 at 32 (README, "Lid convergence with the 48 x 20 hull"). So
+    !> 3.70e-2, 2.28e-2, 2.21e-2. From 4 rings on it levels off at a floor that does not come from the rings: with the
+    !> 48 x 20 hull it is 8.15e-3 at 8 rings and 7.90e-3 at 32, and it falls with finer hull and circumferential
+    !> resolution; the rate and the split between the two are not determined (README, "Lid convergence with the 48 x 20
+    !> hull"). So
     !> the test asks e(c) <= e(b) (1 + converge_tol) and not a strict fall from b to c (spec item 5, deviation accepted). The
     !> error against the reference itself does not fall: the hull error sets it (README).
     subroutine mm_lid_converges(error)

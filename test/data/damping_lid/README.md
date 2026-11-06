@@ -166,7 +166,7 @@ The lid is the dissipative WAMIT lid, p/rho = epsilon dphi/dz (`docs/superpowers
 | `lid_shrink_2` | 40 | 0.2 | 252.72 | 210.21 | 206.11 | 21.838 | 66.144 | 15.295 |
 | `lid_deep` | 160 | 0.2 | 246.88 | 210.94 | 199.76 | 21.316 | 63.618 | 14.780 |
 
-Other measurements, from the test output: the Haskind heave residual is 2.07e-3 with no lid and with epsilon 0, and 4.6e-2 with epsilon 0.2. The lid power at the 160 centroids of `lid_ann_160`, 1/2 rho omega**2 sum_l epsilon_l abs(eta_l)**2 A_l with the one-point rule per panel, is 4.84e4 W per m**2 of incident amplitude in diffraction (lid area 200.24 m**2), and in radiation 4.8% (surge) and 4.5% (heave) of the power the body radiates, 1/2 omega**2 B_jj per unit motion. The integration suite took 4 min 20 s, one thread per run.
+Other measurements, from the test output: the Haskind heave residual is 2.07e-3 with no lid and with epsilon 0, and 4.6e-2 with epsilon 0.2. The lid power at the 160 centroids of `lid_ann_160`, 1/2 rho omega**2 sum_l epsilon_l abs(eta_l)**2 A_l with the one-point rule per panel, is 4.84e4 W per m**2 of incident amplitude in diffraction (lid area 200.24 m**2), and in radiation 4.8% (surge) and 4.5% (heave) of the power the body radiates, 1/2 omega**2 B_jj per unit motion. The integration suite took 4 min 20 s, one thread per run, at that commit; with the fixtures of the documentation commit (45db010) the integration suite took 5 min 43 s, measured on 2026-11-06.
 
 Derived from these:
 
@@ -349,7 +349,7 @@ Scratch runs, not fixtures (same generator, outside the repository), at 1 m/s:
 | 48 x 20 | 48 x 4 | 2.08e-3 | 1.52e-4 | 2.97e-4 | 8.88e-3, 1.77e-3, 3.59e-3 |
 | 48 x 20 | 48 x 8 | 2.09e-3 | 1.58e-4 | 2.97e-4 | 8.10e-3, 2.07e-3, 3.44e-3 |
 
-Run times: the six `mm_cyl_*` cases take a few seconds each, and the integration suite 3 min 15 s; the reference script 7 min 12 s for the three lids (15 min for the conjugate run, measured while other jobs ran).
+Run times: the six `mm_cyl_*` cases take a few seconds each, and the integration suite 3 min 15 s at that commit (5 min 43 s at 45db010, with the three `lid_gap_res*` runs added); the reference script 7 min 12 s for the three lids (15 min for the conjugate run, measured while other jobs ran).
 
 | Test | Limit | Measured |
 | :--- | ---: | ---: |
@@ -360,7 +360,7 @@ Run times: the six `mm_cyl_*` cases take a few seconds each, and the integration
 | `mm_lid_converges`, worst lid effect at 0.2 m/s: falls from `_a` to `_b`, and `_c` at most 5% above `_b` | e(a) > e(b), e(c) <= 1.05 e(b) | 3.70e-2, 2.28e-2, 2.21e-2 (c is 3.1% below b) |
 | `mm_lid_power_matches`, lid power of `mm_cyl_lid_c` and `_c_eps1` against the reference | 8e-3 | -4.14e-3, -4.12e-3 (conjugate +2.08e-2, +1.06e-1; flipped binary +1.66e-2, +1.01e-1) |
 
-The sign pin keeps the raw check able to tell the signs apart if `mm_reference_limit` is ever raised: the test fails when the limit reaches the distance to the conjugate reference. The `power > 0` check of `mm_lid_power_matches` guards only against an all-zero read, since the power is a sum of non-negative terms. `mm_lid_converges` does not ask a strict fall from 4 to 8 rings: the lid-effect error levels off there at the floor of the 24 x 10 hull (below, "Lid convergence with the 48 x 20 hull"), and a strict fall of 3% would be a fragile test (spec item 5, deviation accepted).
+The sign pin is a limit-consistency guard, not a further detection of the sign: it keeps the raw check able to tell the signs apart if `mm_reference_limit` is ever raised, since the test fails when the limit reaches the distance to the conjugate reference. A binary close to the conjugate reference already fails the raw check. The `power > 0` check of `mm_lid_power_matches` guards only against an all-zero read, since the power is a sum of non-negative terms. `mm_lid_converges` does not ask a strict fall from 4 to 8 rings: the lid-effect error levels off there at a floor that does not come from the rings (below, "Lid convergence with the 48 x 20 hull"), and a strict fall of 3% would be a fragile test (spec item 5, deviation accepted).
 
 Derived from these:
 
@@ -374,7 +374,7 @@ Derived from these:
 
 Measured on 2026-11-06 with the build of commit 2638193 (no solver change since), by `pre_postprocessing_python/DampingLid/lid_convergence_study.py`, outside the test suite. The cases are those of `mm_cyl_*` with a finer wall and finer lids, written to a scratch folder and not kept (the 48 x 32 lid case alone has 1536 lid panels). Errors are complex relative errors against the reference values above, lid effect as defined above, lid power as in `mm_lid_power_matches` (one-point rule per panel). Run times on the laptop, 4 threads (48 x 20 hull) or 6 threads (other hulls), with other runs at the same time for some of them.
 
-| Hull | epsilon (m/s) | Lid | Lid panels | X1 | eta(0, 8, 0) | eta(8, 0, 0) | Lid effect: X1, eta(0, 8, 0), eta(8, 0, 0) | Lid power | Run (s) |
+| Hull | epsilon (m/s) | Lid | Lid panels | X1 | eta(0, 8, 0) | eta(8, 0, 0) | Lid effect: X1, eta(0, 8, 0), eta(8, 0, 0) | Lid power, relative error | Run (s) |
 | :--- | ---: | :--- | ---: | ---: | ---: | ---: | :--- | ---: | ---: |
 | 48 x 20, no lid, against MacCamy-Fuchs | | | 0 | 2.13e-3 | 1.65e-4 | 2.27e-4 | | | 4 |
 | 48 x 20 | 0.2 | 48 x 8 | 384 | 2.12e-3 | 1.61e-4 | 2.42e-4 | 8.15e-3, 2.09e-3, 3.47e-3 | -3.28e-3 | 33 |
@@ -396,8 +396,8 @@ Derived from these:
 
 - The ring count is resolved at 8 rings: from 8 to 32 rings the worst lid effect falls from 8.15e-3 to 7.90e-3 (3% of itself) at 0.2 m/s and from 8.10e-3 to 7.88e-3 at 1 m/s, and the raw error does not change in the printed digits. The raw error is the bare-hull error to within 1%.
 - What remains is set by the panels around and by the hull rows, not by the rings: 96 lid panels around in place of 48, same hull, take the worst lid effect from 8.15e-3 to 5.81e-3; the 96-around hull as well, to 5.24e-3; the 72 x 30 hull with a 72-around lid, to 3.71e-3. The 72 x 30 case beats the 96 x 20 one with fewer panels around, so the hull rows near the waterline matter (the top row is 0.245, 0.062 and 0.027 m high at 10, 20 and 30 rows, from the cosine spacing), which fits the lid-hull junction as the source. Not separated further.
-- The worst lid effect falls by 2.7 from the 24 x 10 to the 48 x 20 hull and by 2.2 from 48 x 20 to 72 x 30 (48 x 8 and 72 x 8 lids), about as the square of the panel count around (2 and 1.5 per step, squares 4 and 2.25).
-- The lid power error follows the area deficit of the polygonal lid, 1 - sin(x)/x with x = 2 pi / (panels around): 2.86e-3 (48), 1.27e-3 (72), 7.1e-4 (96) against -3.2e-3, -1.5e-3, -1.1e-3 measured.
+- The floor falls with finer circumferential and hull resolution: the worst lid effect falls by 2.7 from the 24 x 10 to the 48 x 20 hull and by 2.2 from 48 x 20 to 72 x 30 (48 x 8 and 72 x 8 lids), steps in which the hull rows and the panels around change together. Doubling the panels around alone (48 to 96, lid only or lid and hull) gives a factor of 1.4 to 1.6. The rate, and the split between the hull rows and the panels around, are not determined by these runs.
+- The lid power error is of the order of the area deficit of the polygonal lid, 1 - sin(x)/x with x = 2 pi / (panels around): 2.86e-3 (48), 1.27e-3 (72), 7.1e-4 (96) against -3.2e-3, -1.5e-3, -1.1e-3 measured. The deficit accounts for most of it at 48 and 72 around (within about 15%), less of it at 96 around, where 4e-4 remains.
 - So the spec target of 1% at 8 rings holds for the lid effect with the 48 x 20 hull (0.82%) and is missed with the 24 x 10 hull of the fixtures (2.2%), and the in-suite test `mm_lid_converges` cannot show convergence past 4 rings. Every run here took less than 7 minutes.
 
 ## Several bodies

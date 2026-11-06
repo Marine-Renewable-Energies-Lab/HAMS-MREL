@@ -243,9 +243,9 @@ Finite depth: every integral over a lid panel takes the finite-depth part as a s
 
 `If_remove_irr_freq 1` with a single-body lid is experimental. The system then has more rows than unknowns and is solved by least squares (`ZGELS`). Measured for `lid_ann_160` at epsilon 0.2 m/s: the worst change of A11, A33, B11, B33 and abs(X1) against the same run without `If_remove_irr_freq` is 0.32% (B11). With the phi = 0 lid it was 1.1%, and the cause was not found; that study was not repeated with the epsilon lid ([README](../test/data/damping_lid/README.md), "Symmetry and IRSP").
 
-Zero frequency: a zero in the frequency list stops a run with the lid on, as in WAMIT. The zero frequency that `0_inf_frequency_limits 1` adds is exempt: there, and at the infinite frequency, the lid is skipped and the hull is solved alone. Derived: at omega = 0 the lid term alpha = i omega epsilon nu/(g - i omega epsilon) is 0, so the lid has no effect there.
+Zero frequency: a zero in the frequency list stops a run with the lid on, as in WAMIT (WAMIT User Manual v7.5, Section 12.8). The zero frequency that `0_inf_frequency_limits 1` adds is exempt: there, and at the infinite frequency, the lid is skipped and the hull is solved alone. Derived: at omega = 0 the lid term alpha = i omega epsilon nu/(g - i omega epsilon) is 0, so the lid has no effect there.
 
-Output with a lid. No file format changes. A, B, the excitation and the RAOs are integrated over the hull only, as in WAMIT. Field points:
+Output with a lid. No file format changes. A, B, the excitation and the RAOs are integrated over the hull only, as in WAMIT (WAMIT User Manual v7.5, Section 12.8). Field points:
 
 - The field potential includes the lid term, a single layer of strength alpha_l (phi_l + phi_I,l) on each lid panel, with phi_I,l the incident potential in diffraction only.
 - On z = 0 inside or on the edge of a lid panel of epsilon > 0, the elevation is eta = i omega phi/(g - i omega epsilon), with phi the total potential; elsewhere it is i omega phi/g, as without a lid. The pressure in the fluid has its usual form.
