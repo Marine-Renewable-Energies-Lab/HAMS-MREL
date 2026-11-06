@@ -27,6 +27,14 @@ module test_integration_lid
     real(8), parameter :: collocation_limit = 1d-6    ! force from the field pressures against ExcForce.3; measured 7.2e-8, printed to 7 digits
     real(8), parameter :: maccamy_fuchs_limit = 2d-2  ! worst of X1 and two elevations of mm_cyl_nolid, complex; measured 8.5e-3
     real(8), parameter :: reference_limit = 3d-2      ! the same against the eigenfunction reference, mm_cyl_lid_c; measured 1.5e-2
+    real(8), parameter :: two_far_limit = 1d-3        ! body 1 of lid_two_far against lid_ann_160, the limit of multi_matches_single;
+                                                      ! measured 5.0e-4
+    real(8), parameter :: gap_symmetry_limit = 1d-2   ! abs(A_ij - A_ji) / max(abs(A)), the same for B, 12 x 12, lid_gap; measured
+                                                      ! 9.0e-3, 8.6e-3 without the lid
+    real(8), parameter :: gap_damping_floor = 1d-4    ! eigenvalues of B of lid_gap >= -gap_damping_floor * max(abs(B)); measured
+                                                      ! 5.5e-5, 2.3e-5 without the lid, falling with the hull mesh (README)
+    real(8), parameter :: gap_centroid_limit = 1d-12  ! elevation at the 80 gap lid centroids, diffraction and radiation; measured
+                                                      ! 9.4e-15 and 1.8e-14
 
     !> The bottom-mounted cylinder of the reference cases (mm_cyl_*): radius 2, depth 10, k = 0.15 given as a wave number, so
     !> omega = sqrt(g k tanh(kh)), heading 0, field points (0, 8, 0) and (8, 0, 0).
@@ -48,6 +56,9 @@ module test_integration_lid
         "lid_limits_off", "lid_hull_160", "lid_field_off_centroid", &
         "lid_ann_160_pts", "lid_ann_160_half", "lid_ann_160_irsp"]
 
+    !> The two-body cases that solve with a lid, run by setup_lid.
+    character(len=12), parameter :: two_cases(2) = [character(len=12) :: "lid_two_far", "lid_gap"]
+
     !> A, B and X at one frequency: the full 6 x 6 matrices and the six forces of heading 0.
     type :: coefficients
         real(8) :: a(6,6), b(6,6)
@@ -62,7 +73,8 @@ contains
             new_unittest("run_lid_flag_off", run_lid_flag_off), &
             new_unittest("run_lid_reference", run_lid_reference), &
             new_unittest("run_lid_solves", run_lid_solves), &
-            new_unittest("run_lid_mm", run_lid_mm) &
+            new_unittest("run_lid_mm", run_lid_mm), &
+            new_unittest("run_lid_two", run_lid_two) &
             ]
     end subroutine setup_lid
 
@@ -90,7 +102,13 @@ contains
             new_unittest("lid_half_matches_full", lid_half_matches_full), &
             new_unittest("lid_irsp_matches", lid_irsp_matches), &
             new_unittest("mm_nolid_matches_maccamy_fuchs", mm_nolid_matches_maccamy_fuchs), &
-            new_unittest("mm_lid_matches_reference", mm_lid_matches_reference) &
+            new_unittest("mm_lid_matches_reference", mm_lid_matches_reference), &
+            new_unittest("stops_lid_inside_two", stops_lid_inside_two), &
+            new_unittest("stops_lid_irsp_two", stops_lid_irsp_two), &
+            new_unittest("lid_multi_matches_single", lid_multi_matches_single), &
+            new_unittest("lid_gap_symmetric_ab", lid_gap_symmetric_ab), &
+            new_unittest("lid_gap_damping_nonnegative", lid_gap_damping_nonnegative), &
+            new_unittest("lid_gap_elevation_zero", lid_gap_elevation_zero) &
             ]
     end subroutine collect_tests_lid
 
@@ -208,6 +226,24 @@ contains
         call check(error, len_trim(failed) == 0, "HAMS failed for"//trim(failed))
     end subroutine run_lid_mm
 
+    !> The two-body cases with a lid, whether or not the first failed.
+    subroutine run_lid_two(error)
+        type(error_type), allocatable, intent(out) :: error
+        type(error_type), allocatable :: one
+        character(len=128) :: failed
+        integer :: k
+
+        failed = ""
+        do k = 1, size(two_cases)
+            call run_case("damping_lid", trim(two_cases(k)), one)
+            if (allocated(one)) then
+                failed = trim(failed)//" "//trim(two_cases(k))
+                deallocate (one)
+            end if
+        end do
+        call check(error, len_trim(failed) == 0, "HAMS failed for"//trim(failed))
+    end subroutine run_lid_two
+
     ! -------------------------------------------------------------------------------------------- tests
 
     subroutine stops_lid_missing(error)
@@ -234,6 +270,18 @@ contains
         type(error_type), allocatable, intent(out) :: error
         call run_case_expect_stop("lid_stop_inside", "lid panel inside a hull", error)
     end subroutine stops_lid_inside
+
+    !> A lid disc inside the second of two bodies: the multi-body branch of HULL_SOLID_ANGLE.
+    subroutine stops_lid_inside_two(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case_expect_stop("lid_stop_inside_two", "lid panel inside a hull", error)
+    end subroutine stops_lid_inside_two
+
+    !> The multi-body lid has no interior rows (README).
+    subroutine stops_lid_irsp_two(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case_expect_stop("lid_stop_irsp_two", "damping lid with several bodies needs If_remove_irr_freq 0", error)
+    end subroutine stops_lid_irsp_two
 
     !> Damping_lid 0 with a lid file present gives the added mass, damping and excitation of the run without the line, to the
     !> last printed digit.
@@ -783,6 +831,202 @@ contains
             if (allocated(error)) return
         end do
     end subroutine mm_lid_matches_reference
+
+    ! -------------------------------------------------------------------------------------------- two bodies
+
+    !> A and B of AmssDamp.1 of a two-body case at frequency freq, 12 x 12.
+    subroutine read_ab_two(name, freq, a, b, error)
+        character(len=*), intent(in) :: name
+        real(8), intent(in) :: freq
+        real(8), intent(out) :: a(12,12), b(12,12)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=512) :: line
+        real(8) :: f, v(2)
+        integer :: unit, stat, i, j, n
+
+        a = 0d0
+        b = 0d0
+        n = 0
+        open (newunit=unit, file=output_dir(name)//"Wamit_format/AmssDamp.1", status="old", action="read", iostat=stat)
+        if (stat /= 0) then
+            call test_failed(error, "No AmssDamp.1 for "//name)
+            return
+        end if
+        do
+            read (unit, '(a)', iostat=stat) line
+            if (stat /= 0) exit
+            if (columns(line) /= 5) cycle
+            read (line, *) f, i, j, v
+            if (abs(f - freq) > 1d-6 .or. i > 12 .or. j > 12) cycle
+            a(i, j) = v(1)
+            b(i, j) = v(2)
+            n = n + 1
+        end do
+        close (unit)
+        call check(error, n == 144, name//": AmssDamp.1 has not 144 entries at the frequency")
+    end subroutine read_ab_two
+
+    !> The rows of PressureElevation.6p of a two-body case: dif(ip) the diffraction value of point ip (5 columns, value in the
+    !> last two), rad(ip, m) the radiation value of mode m = 1 to 12, mode 6(k - 1) + j of body k: a row of 14 columns, point
+    !> number second and the 6 values of body 1, then a row of 12 columns with the 6 values of body 2.
+    subroutine read_field_two(name, dif, rad, error)
+        character(len=*), intent(in) :: name
+        complex(8), allocatable, intent(out) :: dif(:), rad(:,:)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=512) :: line
+        real(8) :: row(14)
+        complex(8), allocatable :: bigger(:,:)
+        integer :: unit, stat, n, ip, m, last
+
+        allocate (dif(0), rad(0, 12))
+        last = 0
+        open (newunit=unit, file=output_dir(name)//"Wamit_format/PressureElevation.6p", status="old", action="read", iostat=stat)
+        if (stat /= 0) then
+            call test_failed(error, "No PressureElevation.6p for "//name)
+            return
+        end if
+        do
+            read (unit, '(a)', iostat=stat) line
+            if (stat /= 0) exit
+            n = columns(line)
+            if (n == 5) then
+                read (line, *) row(1:5)
+                ip = nint(row(3))
+                if (ip > size(dif)) dif = [dif, (cmplx(0d0, 0d0, kind=8), stat = size(dif) + 1, ip)]
+                dif(ip) = cmplx(row(4), row(5), kind=8)
+            else if (n == 14) then
+                read (line, *) row(1:14)
+                ip = nint(row(2))
+                if (ip > size(rad, 1)) then
+                    allocate (bigger(ip, 12))
+                    bigger = (0d0, 0d0)
+                    bigger(1:size(rad, 1), :) = rad
+                    call move_alloc(bigger, rad)
+                end if
+                do m = 1, 6
+                    rad(ip, m) = cmplx(row(2*m + 1), row(2*m + 2), kind=8)
+                end do
+                last = ip
+            else if (n == 12 .and. last > 0) then
+                read (line, *) row(1:12)
+                do m = 1, 6
+                    rad(last, 6 + m) = cmplx(row(2*m - 1), row(2*m), kind=8)
+                end do
+                last = 0
+            end if
+        end do
+        close (unit)
+    end subroutine read_field_two
+
+    !> Eigenvalues of the symmetric matrix s, by cyclic Jacobi rotations.
+    function symmetric_eigenvalues(s) result(w)
+        real(8), intent(in) :: s(:,:)
+        real(8) :: w(size(s, 1))
+        real(8) :: m(size(s, 1), size(s, 1)), off, theta, t, c, sn, tau, apq
+        integer :: n, p, q, r, sweep
+
+        n = size(s, 1)
+        m = s
+        do sweep = 1, 100
+            off = 0d0
+            do p = 1, n - 1
+                do q = p + 1, n
+                    off = off + m(p, q)**2
+                end do
+            end do
+            if (off <= 1d-30*sum(m**2)) exit
+            do p = 1, n - 1
+                do q = p + 1, n
+                    apq = m(p, q)
+                    if (apq == 0d0) cycle
+                    theta = (m(q, q) - m(p, p))/(2d0*apq)
+                    t = sign(1d0, theta)/(abs(theta) + sqrt(theta*theta + 1d0))
+                    c = 1d0/sqrt(t*t + 1d0)
+                    sn = t*c
+                    tau = sn/(1d0 + c)
+                    do r = 1, n
+                        if (r == p .or. r == q) cycle
+                        t = m(r, p)
+                        m(r, p) = t - sn*(m(r, q) + tau*t)
+                        m(p, r) = m(r, p)
+                        m(r, q) = m(r, q) + sn*(t - tau*m(r, q))
+                        m(q, r) = m(r, q)
+                    end do
+                    t = sn/c*apq
+                    m(p, p) = m(p, p) - t
+                    m(q, q) = m(q, q) + t
+                    m(p, q) = 0d0
+                    m(q, p) = 0d0
+                end do
+            end do
+        end do
+        do p = 1, n
+            w(p) = m(p, p)
+        end do
+    end function symmetric_eigenvalues
+
+    !> A lid with a second body 5 km away gives the A, B and X of body 1 of the single-body run with the same lid, in the five
+    !> key values, within the limit of multi_matches_single. The far body still radiates into this one: B22 and B44, which
+    !> radiate towards it, differ by 1.1e-3, and the difference falls by 10 with the body at 20 km (README).
+    subroutine lid_multi_matches_single(error)
+        type(error_type), allocatable, intent(out) :: error
+        type(coefficients) :: single, multi
+
+        call read_coefficients("lid_ann_160", omega, single, error)
+        if (allocated(error)) return
+        call read_coefficients("lid_two_far", omega, multi, error)
+        if (allocated(error)) return
+        call check_below(error, "lid_multi_matches_single", &
+                         maxval(abs(key_values(multi) - key_values(single))/abs(key_values(single))), two_far_limit)
+    end subroutine lid_multi_matches_single
+
+    !> The 12 x 12 A and B of two boxes with a lid in the gap are symmetric, by reciprocity.
+    subroutine lid_gap_symmetric_ab(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: a(12,12), b(12,12), worst_a, worst_b
+
+        call read_ab_two("lid_gap", omega, a, b, error)
+        if (allocated(error)) return
+        worst_a = maxval(abs(a - transpose(a)))/maxval(abs(a))
+        worst_b = maxval(abs(b - transpose(b)))/maxval(abs(b))
+        write (*, '(4x, "lid_gap: A ", es10.3, ", B ", es10.3)') worst_a, worst_b
+        call check_below(error, "lid_gap_symmetric_ab", max(worst_a, worst_b), gap_symmetry_limit)
+    end subroutine lid_gap_symmetric_ab
+
+    !> The lid absorbs no energy, so the 12 x 12 B of the two boxes, symmetric part, has no negative eigenvalue beyond the hull
+    !> discretisation: the two boxes without the lid have -2.3e-5 at this mesh, and both fall with the hull mesh (README).
+    subroutine lid_gap_damping_nonnegative(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: a(12,12), b(12,12), w(12)
+
+        call read_ab_two("lid_gap", omega, a, b, error)
+        if (allocated(error)) return
+        w = symmetric_eigenvalues(0.5d0*(b + transpose(b)))
+        write (*, '(4x, "lid_gap: eigenvalues of B over max(abs(B)): ", 12es10.2)') w/maxval(abs(b))
+        call check_below(error, "lid_gap_damping_nonnegative: -min eigenvalue/max(abs(B))", -minval(w)/maxval(abs(b)), &
+                         gap_damping_floor)
+    end subroutine lid_gap_damping_nonnegative
+
+    !> The elevation is zero at the 80 centroids of the gap lid: the total field in diffraction, over the incident amplitude, and
+    !> each of the 12 radiation modes, over the largest radiation value at the three points off the lid.
+    subroutine lid_gap_elevation_zero(error)
+        type(error_type), allocatable, intent(out) :: error
+        complex(8), allocatable :: dif(:), rad(:,:)
+        real(8) :: big
+
+        call read_field_two("lid_gap", dif, rad, error)
+        if (allocated(error)) return
+        call check(error, size(dif) == 83 .and. size(rad, 1) == 83, "lid_gap_elevation_zero: not 83 points in each")
+        if (allocated(error)) return
+        big = maxval(abs(rad(81:83, :)))
+        write (*, '(4x, "lid_gap: |diffraction| off the lid ", 3es10.3, ", largest radiation there ", es10.3)') &
+            abs(dif(81:83)), big
+        call check(error, maxval(abs(dif(81:83))) > 0.1d0 .and. big > 0d0, "lid_gap_elevation_zero: no wave off the lid")
+        if (allocated(error)) return
+        call check_below(error, "lid_gap_elevation_zero: diffraction", maxval(abs(dif(1:80))), gap_centroid_limit)
+        if (allocated(error)) return
+        call check_below(error, "lid_gap_elevation_zero: radiation", maxval(abs(rad(1:80, :)))/big, gap_centroid_limit)
+    end subroutine lid_gap_elevation_zero
 
     !> Panel centroids, areas and unit normals out of the body, from the hull of the cylinder of the image term cases (copied
     !> from test_integration_image, whose own copy is private).

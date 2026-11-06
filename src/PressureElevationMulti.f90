@@ -38,6 +38,8 @@ MODULE PressureElevationMulti
    USE SingularIntgrMulti
    USE PatcVelct
    USE FieldOutput_mod
+   USE Lid_mod, ONLY: LIDON,LNELEM,MXQ
+   USE DampingLid, ONLY: LID_SINGLE_LAYER
 
    IMPLICIT NONE
 
@@ -64,6 +66,8 @@ CONTAINS
       REAL*8   XQ(3),XP(3),XT(3),DIST,EAR,RKN(4),ENV(3),ENT(3),SLD
       REAL*8   XPB(3),EN3(3),EV(3),WV(3),CX3,CY3,CZ3,SVAL,SMIN,SMAX,DPLN,TOLP,TOLA
       LOGICAL  ONBODY
+      INTEGER  LEL,MDQ
+      COMPLEX*16  SLID
       COMPLEX*16  F0,DPOX,DPOY,DPOZ,DINCP,TERM1,TERM2,GRN(4),DUM(2)
       COMPLEX*16, ALLOCATABLE:: XPOT(:)
 
@@ -195,6 +199,31 @@ CONTAINS
       DO JEL=1,NELEM_PE
        POT=POT+XPOT(JEL)
       ENDDO
+
+      ! Damping lid: 4 pi phi(p) = sum_hull (S V - D phi) + sum_lid S q, as in CalPotential. The q of radiation mode MD of body
+      ! PHIDOF is in column 6*(PHIDOF-1)+MD of MXQ, that of diffraction in column 6*NBODY+1 (DampingLidMulti.f90).
+      IF (LIDON.EQ.1) THEN
+       IF (MD.EQ.(6*NBODY+1)) THEN
+        MDQ=MD
+       ELSE
+        MDQ=6*(PHIDOF-1)+MD
+       ENDIF
+       DO IS=1, NSYS
+        IF (ISX.EQ.1.AND.ISY.EQ.0) THEN
+         XP(1)=SY_MULTI(IS,1)*XET(1)
+         XP(2)=SX_MULTI(IS,1)*XET(2)
+         XP(3)=         XET(3)
+        ELSE
+         XP(1)=SX_MULTI(IS,1)*XET(1)
+         XP(2)=SY_MULTI(IS,1)*XET(2)
+         XP(3)=         XET(3)
+        ENDIF
+        DO LEL=1, LNELEM
+         CALL LID_SINGLE_LAYER(XP,LEL,SLID)
+         POT=POT+SLID*MXQ(LEL,MDQ,IS)
+        ENDDO
+       ENDDO
+      ENDIF
 
 
       ! ---- Free-term (solid-angle) factor -------------------------------------

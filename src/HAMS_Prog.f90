@@ -90,6 +90,7 @@ program HAMS_MREL
     use Lid_mod, only : LIDON, LNELEM, MXQ
     use DampingLid, only : READ_LID_MESH, LID_GEOMETRY, CHECK_LID, ALLOCATE_LID_UNKNOWNS, LID_ASSEMBLE, LID_RADIATION, &
                            LID_DIFFRACTION
+    use DampingLidMulti, only : LID_ASSEMBLE_MULTI, LID_RADIATION_MULTI, LID_DIFFRACTION_MULTI
     use omp_lib
 
     implicit none  
@@ -655,8 +656,14 @@ program HAMS_MREL
                 WRITE(6,1050) INFR
             ENDIF
          
-            ! Solving the radiation problem
-            IF (IRSP.EQ.0) THEN
+            ! Solving the radiation problem. With a lid, at infinite frequency phi is zero on the whole free surface already,
+            ! so the lid is skipped there and the hulls are solved alone. CHECK_LID stops a lid with IRSP = 1.
+            LIDSOLVE = LIDON.EQ.1 .AND. ABS(V+1.D0).GE.1.D-8
+            IF (LIDSOLVE) THEN
+                CALL CALGREEN_MULTI                                         ! the hull block
+                CALL LID_ASSEMBLE_MULTI(TNELEM,NSYS)
+                CALL LID_RADIATION_MULTI(TNELEM,NSYS)
+            ELSEIF (IRSP.EQ.0) THEN
                 CALL CALGREEN_MULTI
                 CALL ASSB_LEFT_MULTI(AMAT_MULTI,IPIV_MULTI_COMB,TNELEM,NSYS)                 ! Should AMAT_MULTI be symmetric?
                 NELEM_GLOBAL=0
@@ -690,6 +697,7 @@ program HAMS_MREL
                 ENDDO
                 CALL RADIATION_SOLVER_MULTI(CMAT_MULTI,DRMAT_MULTI,IPIV_MULTI_COMB,MXPOT_MULTI_COMB,NELEM_TOTAL,NSYS)
             ENDIF
+            IF (LIDON.EQ.1 .AND. .NOT.LIDSOLVE) MXQ=(0.D0,0.D0)
          
          
             ! Filling the total element number matrix to be used for deriving the radiation forces
@@ -727,7 +735,9 @@ program HAMS_MREL
                 BETA=WVHD(II)*PI/180.0D0
                 WRITE(6,3000) WVHD(II)
          
-                IF (IRSP.EQ.0) THEN
+                IF (LIDSOLVE) THEN
+                    CALL LID_DIFFRACTION_MULTI(TNELEM,NSYS)
+                ELSEIF (IRSP.EQ.0) THEN
                     CALL ASSB_DBC_MULTI(BDMAT_MULTI,TNELEM,NSYS)
                     CALL DIFFRACTION_SOLVER_MULTI(AMAT_MULTI,BDMAT_MULTI,IPIV_MULTI_COMB,MXPOT_MULTI_COMB,TNELEM,NSYS)
                 ELSEIF (IRSP.EQ.1) THEN
