@@ -82,6 +82,7 @@
 		<File RelativePath=".\src\FirstOrderState.f90"/>
 		<File RelativePath=".\src\SurfaceGeometry.f90"/>
 		<File RelativePath=".\src\SurfaceVelocity.f90"/>
+		<File RelativePath=".\src\ControlSurfaceMesh.f90"/>
 		<File RelativePath=".\src\FarFieldDrift.f90"/>
 		<File RelativePath=".\src\NearFieldDrift.f90"/>
 		<File RelativePath=".\src\WaterlineField.f90"/>

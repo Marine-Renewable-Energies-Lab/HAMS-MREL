@@ -23,6 +23,7 @@ program unit_tester
     use test_second_order_output, only : collect_second_order_output
     use test_waterline_field, only : collect_waterline_field
     use test_source_velocity, only : collect_source_velocity
+    use test_control_surface_mesh, only : collect_control_surface_mesh
 
     implicit none
     integer :: stat, is
@@ -53,7 +54,8 @@ program unit_tester
         new_testsuite("near_field", collect_near_field), &
         new_testsuite("second_order_output", collect_second_order_output), &
         new_testsuite("waterline_field", collect_waterline_field), &
-        new_testsuite("source_velocity", collect_source_velocity) &
+        new_testsuite("source_velocity", collect_source_velocity), &
+        new_testsuite("control_surface_mesh", collect_control_surface_mesh) &
     ]
 
     stat = 0

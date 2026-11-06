@@ -26,7 +26,10 @@ MODULE SecondOrderTypes
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: so_options, panel_mesh, first_order_state, surface_geom
+   PUBLIC :: so_options, panel_mesh, first_order_state, surface_geom, cs_points
+   PUBLIC :: CS_WALL, CS_LINE, CS_FREE
+
+   INTEGER, PARAMETER :: CS_WALL = 1, CS_LINE = 2, CS_FREE = 3   ! C panel, Gamma_c segment midpoint, F panel
 
    TYPE :: so_options
       LOGICAL :: active = .FALSE.
@@ -81,5 +84,13 @@ MODULE SecondOrderTypes
       REAL(8), ALLOCATABLE :: awp(:), xf(:), yf(:), l11(:), l12(:), l22(:), vol(:), xb(:), yb(:), zb(:)   ! (nbody)
       INTEGER, ALLOCATABLE :: n_wl_gaps(:)            ! (nbody)
    END TYPE surface_geom
+
+   TYPE :: cs_points
+      ! Evaluation points of the control-surface method, all bodies together. w is the panel area or segment length.
+      ! On CS_LINE points nrm holds n-bar (horizontal, into F); on CS_FREE points it holds (0, 0, -1).
+      INTEGER :: n = 0
+      REAL(8), ALLOCATABLE :: x(:,:), nrm(:,:), w(:), psize(:)   ! (3,n), (3,n), (n), (n)
+      INTEGER, ALLOCATABLE :: kind(:), body(:)                   ! (n), (n)
+   END TYPE cs_points
 
 END MODULE SecondOrderTypes
