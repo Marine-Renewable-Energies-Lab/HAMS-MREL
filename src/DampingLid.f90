@@ -52,6 +52,8 @@ MODULE DampingLid
    PUBLIC :: LID_ASSEMBLE
    PUBLIC :: LID_RADIATION
    PUBLIC :: LID_DIFFRACTION
+   PUBLIC :: SYM_SIGNS
+   PUBLIC :: REFLECTED
 
    INTEGER,PRIVATE:: NBODY_LID=1                                    ! set by CHECK_LID: selects the single or multi-body hull arrays
    INTEGER,PARAMETER,PRIVATE:: NGAUSS=6                             ! Gauss-Legendre points per direction of the wave term rules
@@ -231,8 +233,8 @@ CONTAINS
 !=======================================================================
 !SUBROUTINE CHECK_LID
 
-!   !   The stops that need the hull: the solver type, and a lid panel inside a hull. The file and node checks are made
-!   !   in the control file read and in READ_LID_MESH. Call after the hull normals and LID_GEOMETRY.
+!   !   The stops that need the hull: the solver type, IRSP with several bodies, and a lid panel inside a hull. The file and
+!   !   node checks are made in the control file read and in READ_LID_MESH. Call after the hull normals and LID_GEOMETRY.
 
       SUBROUTINE CHECK_LID(NBODYIN)
       IMPLICIT   NONE
@@ -245,6 +247,13 @@ CONTAINS
 
       IF (ISOLV.EQ.2) THEN
        PRINT *,' Error: damping lid needs Solver_type 1 (direct LU). The iterative solver has no lid rows.'
+       STOP 1
+      ENDIF
+
+      IF (NBODYIN.GT.1.AND.IRSP.EQ.1) THEN
+       PRINT *,' Error: damping lid with several bodies needs If_remove_irr_freq 0.'
+       PRINT *,' The interior rows of the multi-body irregular frequency removal are not combined with the lid'
+       PRINT *,' (test/data/damping_lid/README.md). Use one body, or no irregular frequency removal.'
        STOP 1
       ENDIF
 

@@ -10,12 +10,13 @@ import shutil
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 SOURCE = os.path.join(ROOT, "test", "data", "image_term", "image_cos", "input")
+SOURCE_TWO = os.path.join(ROOT, "test", "data", "image_term", "image_cos_two", "input")
 TARGET = os.path.join(ROOT, "test", "data", "damping_lid")
 EOL = "\r\n"
 
 
-def annulus(r0, r1, nt, nr, tri=False, reverse=False, z=0.0, isx=0, isy=0, z_node=None, sectors=None):
-    """Panels of the annulus r0 <= r <= r1 on z = z, nt around and nr radial.
+def annulus(r0, r1, nt, nr, tri=False, reverse=False, z=0.0, isx=0, isy=0, z_node=None, sectors=None, centre=(0.0, 0.0)):
+    """Panels of the annulus r0 <= r <= r1 about centre on z = z, nt around and nr radial.
 
     r0 = 0 gives a disc: the first row is nt triangles about a centre node. tri splits every quad in two. reverse flips the
     vertex order of every panel. z_node = (index, z) moves one node off the plane. sectors = [(a0, a1), ...] in degrees keeps
@@ -27,13 +28,13 @@ def annulus(r0, r1, nt, nr, tri=False, reverse=False, z=0.0, isx=0, isy=0, z_nod
     ring = []  # ring[i][j] is the node number of ring i at angle j, 1-based
     for i, r in enumerate(radii):
         if i == 0 and r0 == 0.0:
-            nodes.append((0.0, 0.0, z))
+            nodes.append((centre[0], centre[1], z))
             ring.append([len(nodes)] * nt)
             continue
         row = []
         for j in range(nt):
             a = 2.0 * math.pi * j / nt
-            nodes.append((r * math.cos(a), r * math.sin(a), z))
+            nodes.append((centre[0] + r * math.cos(a), centre[1] + r * math.sin(a), z))
             row.append(len(nodes))
         ring.append(row)
     panels = []
@@ -57,7 +58,11 @@ def annulus(r0, r1, nt, nr, tri=False, reverse=False, z=0.0, isx=0, isy=0, z_nod
         index, zz = z_node
         x, y, _ = nodes[index - 1]
         nodes[index - 1] = (x, y, zz)
+    return lid_file(nodes, panels, isx, isy)
 
+
+def lid_file(nodes, panels, isx=0, isy=0):
+    """The text of a DampingLid.pnl file with these nodes and panels (lists of 1-based node numbers)."""
     lines = ["    --------------Damping Lid Mesh File---------------", "",
              "    # Number of Panels, Nodes, X-Symmetry and Y-Symmetry",
              "%11d%10d%10d%10d" % (len(panels), len(nodes), isx, isy), "",
@@ -127,6 +132,160 @@ def wall_hydrostatics(a, h, rho=1000.0, g=9.80665):
     lines += block("External Quadratic Damping Matrix:", zero) + block("Hydrostatic Restoring Matrix:", restoring)
     lines += block("External Restoring Matrix:", zero)
     return EOL.join(lines) + EOL
+
+
+def rectangle(x0, x1, y0, y1, nx, ny):
+    """The lid x0 <= x <= x1, y0 <= y <= y1 on z = 0, nx by ny quads. Returns the text of a .pnl file."""
+    nodes = [(x0 + (x1 - x0) * i / nx, y0 + (y1 - y0) * j / ny, 0.0) for j in range(ny + 1) for i in range(nx + 1)]
+
+    def node(i, j):
+        return j * (nx + 1) + i + 1
+
+    panels = [[node(i, j), node(i + 1, j), node(i + 1, j + 1), node(i, j + 1)] for j in range(ny) for i in range(nx)]
+    return lid_file(nodes, panels)
+
+
+def box(length, width, draft, nx, ny, nz):
+    """The wetted surface of the box |x| <= length/2, |y| <= width/2, -draft <= z <= 0, open at z = 0: nx, ny, nz panels along
+    x, y, z. The vertex order of every panel makes (p3 - p1) x (p4 - p2) point out of the body, as in image_cos. Returns the
+    text of HullMesh.pnl."""
+    a, b = length / 2.0, width / 2.0
+    xs = [-a + length * i / nx for i in range(nx + 1)]
+    ys = [-b + width * j / ny for j in range(ny + 1)]
+    zs = [-draft * k / nz for k in range(nz + 1)]
+    nodes = []
+    index = {}
+
+    def node(p):
+        key = tuple(round(c, 9) for c in p)
+        if key not in index:
+            nodes.append(p)
+            index[key] = len(nodes)
+        return index[key]
+
+    quads = []  # (corners, outward normal)
+    for i in range(nx):
+        for j in range(ny):
+            quads.append(([(xs[i], ys[j], -draft), (xs[i + 1], ys[j], -draft), (xs[i + 1], ys[j + 1], -draft),
+                           (xs[i], ys[j + 1], -draft)], (0.0, 0.0, -1.0)))
+    for k in range(nz):
+        for i in range(nx):
+            for y, s in ((-b, -1.0), (b, 1.0)):
+                quads.append(([(xs[i], y, zs[k]), (xs[i + 1], y, zs[k]), (xs[i + 1], y, zs[k + 1]), (xs[i], y, zs[k + 1])],
+                              (0.0, s, 0.0)))
+        for j in range(ny):
+            for x, s in ((-a, -1.0), (a, 1.0)):
+                quads.append(([(x, ys[j], zs[k]), (x, ys[j + 1], zs[k]), (x, ys[j + 1], zs[k + 1]), (x, ys[j], zs[k + 1])],
+                              (s, 0.0, 0.0)))
+    panels = []
+    for corners, outward in quads:
+        d1 = [corners[2][c] - corners[0][c] for c in range(3)]
+        d2 = [corners[3][c] - corners[1][c] for c in range(3)]
+        n = (d1[1] * d2[2] - d1[2] * d2[1], d1[2] * d2[0] - d1[0] * d2[2], d1[0] * d2[1] - d1[1] * d2[0])
+        if sum(n[c] * outward[c] for c in range(3)) < 0.0:
+            corners = corners[::-1]
+        panels.append([node(p) for p in corners])
+    lines = ["    --------------Hull Mesh File---------------", "",
+             "    # Number of Panels, Nodes, X-Symmetry and Y-Symmetry",
+             "%12d%10d%10d%10d" % (len(panels), len(nodes), 0, 0), "",
+             "    # Start Definition of Node Coordinates     ! node_number   x   y   z"]
+    for n, (x, y, z) in enumerate(nodes, 1):
+        lines.append("%10d%20.10f%20.10f%20.10f" % (n, x, y, z))
+    lines += ["    # End Definition of Node Coordinates", "",
+              "    # Start Definition of Node Relations   ! panel_number  number_of_vertices   Vertex1_ID ..."]
+    for n, p in enumerate(panels, 1):
+        lines.append("%10d%5d" % (n, len(p)) + "".join("%8d" % v for v in p))
+    lines += ["    # End Definition of Node Relations", "", "    --------------End Hull Mesh File---------------", ""]
+    return EOL.join(lines)
+
+
+def box_hydrostatics(length, width, draft, rho=1000.0, g=9.80665):
+    """Hydrostatic.in of the floating box, as wall_hydrostatics: mass rho L B T, centre of gravity at the centre of buoyancy
+    z = -T/2, inertia of a solid box about the origin, C33 = rho g L B, C44 = rho g L B**3/12, C55 = rho g B L**3/12 (the
+    rho g V z_B and -m g z_G terms cancel)."""
+    m = rho * length * width * draft
+    zg = -draft / 2.0
+    ixx = m * (width ** 2 + draft ** 2) / 12.0 + m * zg * zg
+    iyy = m * (length ** 2 + draft ** 2) / 12.0 + m * zg * zg
+    izz = m * (length ** 2 + width ** 2) / 12.0
+    mass = [[m, 0, 0, 0, m * zg, 0], [0, m, 0, -m * zg, 0, 0], [0, 0, m, 0, 0, 0], [0, -m * zg, 0, ixx, 0, 0],
+            [m * zg, 0, 0, 0, iyy, 0], [0, 0, 0, 0, 0, izz]]
+    restoring = [[0.0] * 6 for _ in range(6)]
+    restoring[2][2] = rho * g * length * width
+    restoring[3][3] = rho * g * length * width ** 3 / 12.0
+    restoring[4][4] = rho * g * width * length ** 3 / 12.0
+    zero = [[0.0] * 6 for _ in range(6)]
+
+    def block(title, mat):
+        return [" " + title] + ["".join("%14.5E" % v for v in row) for row in mat]
+
+    lines = [" Center of Gravity:", "  %.12E  %.12E  %.12E" % (0.0, 0.0, zg)]
+    lines += block("Body Mass Matrix:", mass) + block("External Linear Damping Matrix:", zero)
+    lines += block("External Quadratic Damping Matrix:", zero) + block("Hydrostatic Restoring Matrix:", restoring)
+    lines += block("External Restoring Matrix:", zero)
+    return EOL.join(lines) + EOL
+
+
+def control_text_two(points, irsp=0, origins=None, heading=None):
+    """The image_cos_two control file (two bodies, the second 5 km away along y) with Damping_lid 1 inserted after 'Number of
+    threads' and the field points replaced. origins = [(x, y), (x, y)] moves the local frames and the reference centres of the
+    two bodies, heading replaces the wave heading."""
+    with open(os.path.join(SOURCE_TWO, "ControlFile.in"), "rb") as f:
+        text = f.read().decode("ascii")
+    out = []
+    skip = False
+    heading_next = False
+    for line in text.split(EOL):
+        if skip:
+            if "#End Definition of Pressure" in line:
+                skip = False
+            else:
+                continue
+        if heading_next:
+            line = "  %.4f" % heading
+            heading_next = False
+        if heading is not None and "Number_of_headings" in line:
+            heading_next = True
+        if origins is not None:
+            for k, (x, y) in enumerate(origins, 1):
+                if line.strip().startswith("LCS_%d " % k):
+                    line = line[:26] + "%12.3f%12.3f%12.3f%12.3f" % (x, y, 0.0, 0.0)
+                if line.strip().startswith("Reference_body_center_%d " % k):
+                    line = line[:28] + "%12.3f%12.3f%12.3f" % (x, y, 0.0)
+        if irsp and "If_remove_irr_freq" in line:
+            line = "    If_remove_irr_freq       %d" % irsp
+        if "Number_of_field_points" in line:
+            out.append("    Number_of_field_points     %d" % len(points))
+            out.extend("    %.12f  %.12f  %.12f" % p for p in points)
+            skip = True
+            continue
+        out.append(line)
+        if "Number of threads" in line:
+            out.append("    Damping_lid              1")
+    return EOL.join(out).replace("generated by pre_postprocessing_python/SecondOrder/make_drift_fixtures.py",
+                                 "generated by pre_postprocessing_python/DampingLid/make_lid_fixtures.py")
+
+
+def write_case_two(name, lid_text, points, hulls=None, water_plane=None, irsp=0, origins=None, heading=None):
+    """A two-body case with a lid. hulls = [(mesh text, hydrostatics text)] * 2 replaces the hulls of image_cos_two,
+    water_plane is the path of a WaterPlaneMesh.pnl copied for both bodies, used with irsp = 1."""
+    folder = os.path.join(TARGET, name, "input")
+    if os.path.isdir(folder):
+        shutil.rmtree(folder)
+    os.makedirs(folder)
+    for k in (1, 2):
+        for m, f in enumerate(("HullMesh_%d.pnl" % k, "Hydrostatic_%d.in" % k)):
+            if hulls is not None:
+                with open(os.path.join(folder, f), "wb") as out:
+                    out.write(hulls[k - 1][m].encode("ascii"))
+            else:
+                shutil.copy(os.path.join(SOURCE_TWO, f), os.path.join(folder, f))
+        if water_plane is not None:
+            shutil.copy(water_plane, os.path.join(folder, "WaterPlaneMesh_%d.pnl" % k))
+    with open(os.path.join(folder, "ControlFile.in"), "wb") as f:
+        f.write(control_text_two(points, irsp, origins, heading).encode("ascii"))
+    with open(os.path.join(folder, "DampingLid.pnl"), "wb") as f:
+        f.write(lid_text.encode("ascii"))
 
 
 def centroids(lid_text, count):
@@ -277,6 +436,18 @@ def main():
     write_case("mm_cyl_lid_a", annulus(2.0, 4.0, 24, 2), **reference)
     write_case("mm_cyl_lid_b", annulus(2.0, 4.0, 48, 4), **reference)
     write_case("mm_cyl_lid_c", annulus(2.0, 4.0, 48, 8), **reference)
+
+    # Two bodies (test_integration_lid.f90). lid_two_far: the hulls of image_cos_two, the second 5 km away along y, with the lid
+    # and field points of lid_ann_160 about the first. The stops: a lid disc inside the second body, and IRSP. lid_gap: two
+    # boxes 20 x 8 x 4 m with 1 m panels, side by side 4 m apart (centres at y = -6 and 6), heading 90 degrees, with the lid on
+    # the whole gap, 20 x 4 panels; field points at the 80 lid centroids, then three off the lid.
+    write_case_two("lid_two_far", ann, centroids(ann, 10))
+    write_case_two("lid_stop_inside_two", annulus(0.0, 2.5, 12, 2, centre=(0.0, 5000.0)), centroids(ann, 10))
+    write_case_two("lid_stop_irsp_two", annulus(**outside), centroids(ann, 10), irsp=1, water_plane=plane)
+    gap = rectangle(-10.0, 10.0, -2.0, 2.0, 20, 4)
+    hull = (box(20.0, 8.0, 4.0, 20, 8, 4), box_hydrostatics(20.0, 8.0, 4.0))
+    write_case_two("lid_gap", gap, centroids(gap, 80) + [(0.0, -15.0, 0.0), (0.0, 15.0, 0.0), (15.0, 0.0, 0.0)],
+                   hulls=[hull, hull], origins=[(0.0, -6.0), (0.0, 6.0)], heading=90.0)
 
 
 if __name__ == "__main__":
