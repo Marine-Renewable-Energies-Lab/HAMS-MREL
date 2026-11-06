@@ -87,8 +87,9 @@ program HAMS_MREL
     use PressureElevation
     use PressureElevationMulti
     use FieldOutput_mod
-    use Lid_mod, only : LIDON, LNELEM
-    use DampingLid, only : READ_LID_MESH, LID_GEOMETRY, CHECK_LID, ALLOCATE_LID_UNKNOWNS
+    use Lid_mod, only : LIDON, LNELEM, MXQ
+    use DampingLid, only : READ_LID_MESH, LID_GEOMETRY, CHECK_LID, ALLOCATE_LID_UNKNOWNS, LID_ASSEMBLE, LID_RADIATION, &
+                           LID_DIFFRACTION
     use omp_lib
 
     implicit none  
@@ -99,6 +100,7 @@ program HAMS_MREL
     character(len=300) :: MESH_MULTI,HYDROSTATIC_MULTI, WATERPLANEMESH_MULTI ! Full file paths — must be > inputdir length + filename
     character(len=260) :: inputdir, outputdir ! 260 is the max lengths for paths on Windows
     logical :: success
+    logical :: LIDSOLVE                                                     ! a lid is on, and this is not the infinite frequency
 
     print*
     write(*,'(80A)') ' ------------------------HAMS-MREL (Hydrodynamic Analysis of Marine Structures - Marine Renewable Energies Lab)---------------------'
@@ -277,8 +279,14 @@ program HAMS_MREL
                 WRITE(6,1050) INFR
             ENDIF
          
-            ! Solving the radiation problem
-            IF (IRSP.EQ.0) THEN                     
+            ! Solving the radiation problem. With a lid, at infinite frequency phi is zero on the whole free surface already,
+            ! so the lid is skipped there and the hull is solved alone.
+            LIDSOLVE = LIDON.EQ.1 .AND. ABS(V+1.D0).GE.1.D-8
+            IF (LIDSOLVE) THEN
+                CALL CALGREEN                                               ! the hull block; LID_ASSEMBLE builds the interior rows
+                CALL LID_ASSEMBLE(NELEM,NSYS)
+                CALL LID_RADIATION(NELEM,NSYS)
+            ELSEIF (IRSP.EQ.0) THEN                     
                 CALL CALGREEN
                 CALL ASSB_LEFT(AMAT,IPIV,NELEM,NSYS)
                 CALL ASSB_RBC(BRMAT,NELEM,NSYS)
@@ -289,6 +297,7 @@ program HAMS_MREL
                 CALL ASSB_RBC_IRR(BRMAT,DRMAT,AMAT,NELEM,TNELEM,NSYS)
                 CALL RADIATION_SOLVER_IRR(CMAT,DRMAT,IPIV,MXPOT,NELEM,NSYS)
             ENDIF
+            IF (LIDON.EQ.1 .AND. .NOT.LIDSOLVE) MXQ=(0.D0,0.D0)
 
             CALL RFORCE(WK,W1,TP,AMAS(KK,:,:),BDMP(KK,:,:))
             CALL OutputPressureElevation_Radiation(640)                ! This needs to be implemented for multi-bodies
@@ -299,7 +308,9 @@ program HAMS_MREL
                 BETA=WVHD(II)*PI/180.0D0
                 WRITE(6,3000) WVHD(II)
          
-                IF (IRSP.EQ.0) THEN
+                IF (LIDSOLVE) THEN
+                    CALL LID_DIFFRACTION(NELEM,NSYS)
+                ELSEIF (IRSP.EQ.0) THEN
                     CALL ASSB_DBC(BDMAT,NELEM,NSYS)
                     CALL DIFFRACTION_SOLVER(AMAT,BDMAT,IPIV,MXPOT,NELEM,NSYS)
                 ELSEIF (IRSP.EQ.1) THEN
