@@ -100,7 +100,9 @@ small-epsilon conversion from Chen's form, epsilon ~ g epsilon_Chen / omega, for
 
 ## Outputs
 
-No file format changes. A, B, excitation and RAOs are integrated over the hull only, as now and as in WAMIT. Field points
+No file format changes, with one exception: a single-body lid run also writes the radiation elevation rows of field
+points at z = 0 to `PressureElevation.6p`, which a no-lid run does not write (no-lid output is unchanged). A, B,
+excitation and RAOs are integrated over the hull only, as now and as in WAMIT. Field points
 on z = 0 inside a lid panel use the lid elevation; others as now. Pressure in the fluid is unchanged in form. One log line
 per damper at start: range, number of panels, epsilon. No absorbed-power output.
 
