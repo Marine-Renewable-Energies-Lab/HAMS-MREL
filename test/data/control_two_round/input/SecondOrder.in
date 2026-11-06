@@ -3,3 +3,4 @@ mean_drift = 1
 drift_methods = far near control
 write_terms = 0
 motion_state = free
+cs_panel_size = 0.75

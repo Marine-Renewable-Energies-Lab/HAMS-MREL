@@ -380,9 +380,10 @@ def write_control_physics(data):
         ("control_bottom", "drift_field_0p01", hull, dict(depth=BOTTOM_MOUNTED_MESH["draft"],
                                                           frequencies=BOTTOM_MOUNTED_FREQUENCIES, headings=(0.0,)), fixed),
         ("control_box", "drift_box", hull, dict(depth=50.0, frequencies=OBLIQUE_FREQUENCIES, headings=(30.0,)), fixed),
+        # C at half the default panel size: with the default, the sum over the bodies is 2.28% from far-field, with this 0.58%
         ("control_two_round", "drift_two_round", two_hulls,
          dict(depth=50.0, frequencies=(1.35,), body_origins=[(0.0, 0.0), (0.0, 30.0)]),
-         dict(free, drift_methods="far near control")),
+         dict(free, drift_methods="far near control", cs_panel_size=0.75)),
         ("control_far_apart", "drift_far_apart", two_hulls,
          dict(depth=50.0, frequencies=(FAR_APART_FREQUENCY,), headings=(0.0,),
               body_origins=[(0.0, 0.0), (0.0, FAR_APART_SEPARATION)]), free),

@@ -7,7 +7,7 @@ module test_integration_drift
     use testdrive, only : new_unittest, unittest_type, error_type, check, test_failed
     use testing_utilities
     use NearFieldDrift, only : T_WATERLINE, T_FLARE, T_VELOCITY, T_HYDROSTATIC
-    use second_order_fixtures, only : maccamy_fuchs_waterline
+    use second_order_fixtures, only : maccamy_fuchs_waterline, maccamy_fuchs_drift
 
     implicit none
     private
@@ -79,6 +79,61 @@ module test_integration_drift
                                                       "drift_field_0p05", "drift_field_0p1"]
     real(8), parameter :: offsets(4) = [0.005d0, 0.01d0, 0.05d0, 0.1d0]
 
+    ! Control-surface fixtures of the physics tests, run by run_control_cases. Each test names the values measured when its
+    ! limit was set, and test/data/drift_cyl/README.md has them all
+    character(len=*), parameter :: control_cases(20) = [character(len=18) :: "control_cyl_free", "control_cyl_wide", &
+        "control_cyl_box", "control_bottom", "control_box", "control_two_round", "control_far_apart", "control_isolated", &
+        "control_irsp", "control_irsp_ref", "control_half", "control_gmres", "control_pairs", "control_source", &
+        "control_source_ref", "control_deep", "control_step_0p005", "control_step_0p01", "control_step_0p05", &
+        "control_step_0p1"]
+    ! The finite-difference steps of the control_step_* fixtures, then 0.02 (control_cyl), and the frequency they run at
+    character(len=*), parameter :: step_cases(5) = [character(len=18) :: "control_step_0p005", "control_step_0p01", &
+        "control_cyl", "control_step_0p05", "control_step_0p1"]
+    real(8), parameter :: steps(5) = [0.005d0, 0.01d0, 0.02d0, 0.05d0, 0.1d0]
+    real(8), parameter :: control_omega = 0.95d0
+
+    ! Control-surface limits. "2x measured" limits are twice the value measured when the check was written, rounded up to two
+    ! digits, and capped as the plan sets (3%, or 2% for MacCamy-Fuchs)
+    ! F_x against far, worst over control_cyl (fixed, 0.379%) and control_cyl_free (free, 1.433% at 1.10 rad/s): 2x measured
+    real(8), parameter :: control_far_sharp_limit = 2.9d-2
+    ! C 30 m out (0.754% measured) and C a box (0.255%) against the default C: the plan's 1%
+    real(8), parameter :: control_shape_limit = 1d-2
+    ! F_x against MacCamy-Fuchs, 0.137% measured at 1.6 rad/s: 2x measured. F_y and M_z over F_x, 2.0e-8 measured: the plan's 1e-4
+    real(8), parameter :: control_maccamy_fuchs_limit = 2.8d-3
+    real(8), parameter :: control_maccamy_lateral_limit = 1d-4
+    ! The box at heading 30, worst over 0.8 and 1.0 rad/s, measured F_x 0.220%, F_y 0.324%, M_z 0.216%: 2x measured
+    real(8), parameter :: control_box_fx_limit = 4.4d-3
+    real(8), parameter :: control_box_fy_limit = 6.5d-3
+    real(8), parameter :: control_box_mz_limit = 4.4d-3
+    ! The plan's 2%, for the sum over the bodies against far, with C at half the default panel size (0.58% and 0.51% measured).
+    ! Each body's force vector against its near-field has near_far_limit, the near-against-far limit of this hull in
+    ! drift_two_round, since near-field at 220 panels per body is not a 2% reference
+    real(8), parameter :: control_two_body_limit = 2d-2
+    ! M_z of each body about its own axis, over |F| a. Not zero for the 20-sided hull, and it does not change when C is refined
+    ! (measured), so it is a property of the hull; 1.46e-3 measured: 2x measured
+    real(8), parameter :: control_own_mz_limit = 3d-3
+    ! Bodies 50 wavelengths apart against one alone, 0.475% measured: the plan's 0.5%
+    real(8), parameter :: control_far_apart_limit = 5d-3
+    ! IRSP = 1 against IRSP = 0 (0.179% measured), and at 1.548 rad/s against far, both IRSP = 1 (2.40% measured): the plan's
+    real(8), parameter :: control_irsp_limit = 5d-3
+    real(8), parameter :: control_irsp_far_limit = 3d-2
+    ! The half mesh and GMRES against the whole mesh and the direct solver: the plan's limits, or 5 x the far-field difference of
+    ! the same two runs if larger. The first-order solver paths differ at that level (far-field F_x 3.5e-7 for the half mesh,
+    ! 2.2e-5 for GMRES, measured), and control, like far, is quadratic in the field
+    real(8), parameter :: control_half_limit = 1d-6
+    real(8), parameter :: control_gmres_limit = 1d-5
+    real(8), parameter :: solver_path_factor = 5d0
+    ! The same computation by another path: the diagonal pairs and the near-field rows with cs_velocity = source
+    real(8), parameter :: control_exact_limit = 1d-10
+    ! cs_velocity = source against far, a recorded regression, not an accuracy claim: 1.25 x the F_x difference measured at
+    ! 0.70, 0.95, 1.10 rad/s (18.9%, 0.636%, 3.74%), rounded up to two digits
+    real(8), parameter :: control_source_omegas(3) = [0.70d0, 0.95d0, 1.10d0]
+    real(8), parameter :: control_source_limits(3) = [2.4d-1, 8.0d-3, 4.7d-2]
+    ! Deep water against far, 0.340% measured: 2x measured
+    real(8), parameter :: control_deep_limit = 6.8d-3
+    ! The spread of F_x over cs_fd_step 0.01 to 0.05 over F_x, 2.2e-5 measured: the plan's 0.2%
+    real(8), parameter :: control_step_limit = 2d-3
+
 contains
 
     subroutine setup_drift(testsuite)
@@ -122,7 +177,8 @@ contains
             new_unittest("run_drift_source_deep", run_drift_source_deep), &
             new_unittest("run_drift_source_two_round", run_drift_source_two_round), &
             new_unittest("run_control_cyl", run_control_cyl), &
-            new_unittest("run_control_cyl_sybo", run_control_cyl_sybo) &
+            new_unittest("run_control_cyl_sybo", run_control_cyl_sybo), &
+            new_unittest("run_control_cases", run_control_cases) &
         ]
     end subroutine setup_drift
 
@@ -177,7 +233,22 @@ contains
             new_unittest("source_leaves_far_field", source_leaves_far_field), &
             new_unittest("source_sharp_recorded", source_sharp_recorded), &
             new_unittest("control_runs", control_runs), &
-            new_unittest("control_skips_limits", control_skips_limits) &
+            new_unittest("control_skips_limits", control_skips_limits), &
+            new_unittest("control_far_sharp", control_far_sharp), &
+            new_unittest("control_independent_of_c", control_independent_of_c), &
+            new_unittest("control_cylinder_box", control_cylinder_box), &
+            new_unittest("control_maccamy_fuchs", control_maccamy_fuchs), &
+            new_unittest("control_far_box", control_far_box), &
+            new_unittest("control_two_body_total", control_two_body_total), &
+            new_unittest("control_far_apart_isolated", control_far_apart_isolated), &
+            new_unittest("control_irsp_stable", control_irsp_stable), &
+            new_unittest("control_half_matches_full", control_half_matches_full), &
+            new_unittest("control_gmres_agrees", control_gmres_agrees), &
+            new_unittest("control_pairs_match_unidirectional", control_pairs_match_unidirectional), &
+            new_unittest("control_source_far", control_source_far), &
+            new_unittest("control_source_leaves_near", control_source_leaves_near), &
+            new_unittest("control_deep_far", control_deep_far), &
+            new_unittest("control_step_plateau", control_step_plateau) &
         ]
     end subroutine collect_tests_drift
 
@@ -410,6 +481,29 @@ contains
         type(error_type), allocatable, intent(out) :: error
         call run_case("control_cyl_sybo", [character(len=40) :: far_file, near_file, control_file], error)
     end subroutine run_control_cyl_sybo
+
+    !> The fixtures of the control-surface physics tests, in one setup test: each writes the control-surface file, and
+    !> those with near or far the files of those methods.
+    subroutine run_control_cases(error)
+        type(error_type), allocatable, intent(out) :: error
+        type(error_type), allocatable :: one
+        character(:), allocatable :: failed
+        integer :: c
+
+        failed = ""
+        do c = 1, size(control_cases)
+            if (control_cases(c) == "control_source_ref") then
+                call run_case(trim(control_cases(c)), [character(len=40) :: far_file, near_file], one)
+            else
+                call run_case(trim(control_cases(c)), [character(len=40) :: far_file, control_file], one)
+            end if
+            if (allocated(one)) then
+                failed = failed//" "//trim(control_cases(c))//": "//one%message//";"
+                deallocate (one)
+            end if
+        end do
+        call check(error, len(failed) == 0, "Control-surface fixtures failed:"//failed)
+    end subroutine run_control_cases
 
     subroutine run_drift_field_two(error)
         type(error_type), allocatable, intent(out) :: error
@@ -1758,6 +1852,479 @@ contains
         if (allocated(error)) return
         call check(error, all(rows(:,1) > 0.5d0), "A limit frequency has rows in the control-surface file")
     end subroutine control_skips_limits
+
+    ! ------------------------------------------------------------------------------- control-surface physics checks
+    ! The limits follow the rules of the plan (task 8): where a limit is "2x measured, capped", the measured value is in the
+    ! comment, and test/data/drift_cyl/README.md has every measured value.
+
+    !> F_x against far-field on the sharp cylinder of drift_cyl, held fixed (control_cyl) and free (control_cyl_free), at
+    !> each frequency and heading.
+    subroutine control_far_sharp(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: fixed_fx, free_fx, worst_f, worst_mz
+
+        call control_against_far("control_cyl", origins_at_zero(1), fixed_fx, worst_f, worst_mz, error)
+        if (allocated(error)) return
+        call control_against_far("control_cyl_free", origins_at_zero(1), free_fx, worst_f, worst_mz, error)
+        if (allocated(error)) return
+        call report("control_far_sharp fixed", fixed_fx)
+        call report("control_far_sharp free", free_fx)
+        call check_below(error, "control_far_sharp", max(fixed_fx, free_fx), control_far_sharp_limit)
+    end subroutine control_far_sharp
+
+    !> Gauss's theorem makes the exact result independent of C: C 30 m from the hull against the default of 4 panel sizes.
+    subroutine control_independent_of_c(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst
+
+        call rows_against("control_independent_of_c", output_dir("control_cyl_wide")//control_file, &
+                          output_dir("control_cyl")//control_file, [1], worst, error)
+        if (allocated(error)) return
+        call check_below(error, "control_independent_of_c", worst, control_shape_limit)
+    end subroutine control_independent_of_c
+
+    !> The same with C a box instead of a cylinder.
+    subroutine control_cylinder_box(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst
+
+        call rows_against("control_cylinder_box", output_dir("control_cyl_box")//control_file, &
+                          output_dir("control_cyl")//control_file, [1], worst, error)
+        if (allocated(error)) return
+        call check_below(error, "control_cylinder_box", worst, control_shape_limit)
+    end subroutine control_cylinder_box
+
+    !> The bottom-mounted cylinder of drift_field_0p01, a = 5, h = 10: F_x against the MacCamy-Fuchs series, and F_y and M_z
+    !> zero by symmetry.
+    subroutine control_maccamy_fuchs(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), parameter :: a_rad = 5d0, h = 10d0
+        real(8), allocatable :: rows(:,:)
+        real(8) :: k, exact, worst, lateral
+        integer :: r, done
+
+        call read_drift(output_dir("control_bottom")//control_file, rows, error)
+        if (allocated(error)) return
+        worst = 0d0
+        lateral = 0d0
+        done = 0
+        do r = 1, size(rows, 1) - 2, 3
+            k = wave_number(rows(r,1), h)
+            ! Per rho g, as the file is: kappa = (rho g/2) C_g/C_p
+            exact = maccamy_fuchs_drift(a_rad, k, 0.5d0*group_ratio(k, h), 720)
+            print '(4x,"control_maccamy_fuchs w=",F5.3,": control ",ES12.5," exact ",ES12.5," F_y ",ES10.3," M_z ",ES10.3)', &
+                rows(r,1), rows(r,7), exact, rows(r+1,7), rows(r+2,7)
+            worst = max(worst, abs(rows(r,7) - exact)/exact)
+            lateral = max(lateral, abs(cmplx(rows(r+1,7), rows(r+1,8), kind=8))/abs(rows(r,7)), &
+                          abs(cmplx(rows(r+2,7), rows(r+2,8), kind=8))/abs(rows(r,7)))
+            done = done + 1
+        end do
+        call check(error, done == 2, "Expected 2 frequencies of control_bottom")
+        if (allocated(error)) return
+        call report("control_maccamy_fuchs F_x", worst)
+        call report("control_maccamy_fuchs F_y and M_z over F_x", lateral)
+        call check_below(error, "control_maccamy_fuchs F_x", worst, control_maccamy_fuchs_limit)
+        if (allocated(error)) return
+        call check_below(error, "control_maccamy_fuchs F_y and M_z over F_x", lateral, control_maccamy_lateral_limit)
+    end subroutine control_maccamy_fuchs
+
+    !> The sharp box of drift_box at heading 30: F_x, F_y and M_z against far-field.
+    subroutine control_far_box(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst_fx, worst_f, worst_mz, worst_fy
+
+        call control_against_far("control_box", origins_at_zero(1), worst_fx, worst_f, worst_mz, error, worst_fy=worst_fy)
+        if (allocated(error)) return
+        call check_below(error, "control_far_box F_x", worst_fx, control_box_fx_limit)
+        if (allocated(error)) return
+        call check_below(error, "control_far_box F_y", worst_fy, control_box_fy_limit)
+        if (allocated(error)) return
+        call check_below(error, "control_far_box M_z", worst_mz, control_box_mz_limit)
+    end subroutine control_far_box
+
+    !> Two cylinders with rounded bilges, with C at half the default panel size: the sum over the bodies against far-field,
+    !> each body's force vector (F_x, F_y) against its near-field, and each body's M_z about its own axis, which is zero for a
+    !> body of revolution.
+    subroutine control_two_body_total(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), parameter :: a_rad = 5d0
+        real(8), allocatable :: rows(:,:)
+        real(8) :: worst_fx, worst_f, worst_mz, worst_near, worst_own, fmag
+        integer :: r, b
+
+        call read_drift(output_dir("control_two_round")//control_file, rows, error)
+        if (allocated(error)) return
+        call check(error, size(rows, 1) == 2*2*3, "Expected 2 headings x 2 bodies x 3 rows")
+        if (allocated(error)) return
+        call check(error, all(nint(rows(4:6,4)) == [7, 8, 12]), "The rows of body 2 are not I = 7, 8, 12")
+        if (allocated(error)) return
+        call control_against_far("control_two_round", reshape([0d0, 0d0, 0d0, 30d0], [2, 2]), worst_fx, worst_f, worst_mz, error)
+        if (allocated(error)) return
+        call body_force_against_near("control_two_round", worst_near, error)
+        if (allocated(error)) return
+        worst_own = 0d0
+        do r = 1, size(rows, 1) - 2, 3
+            b = (nint(rows(r,4)) - 1)/6 + 1
+            fmag = sqrt(rows(r,5)**2 + rows(r+1,5)**2)
+            print '(4x,"control_two_body_total body ",I1," beta=",F5.1,": M_z ",ES10.3," |F| a ",ES10.3)', b, rows(r,2), &
+                rows(r+2,7), fmag*a_rad
+            worst_own = max(worst_own, rows(r+2,5)/(fmag*a_rad))
+        end do
+        call report("control_two_body_total M_z about own axis over |F| a", worst_own)
+        call check_below(error, "control_two_body_total", worst_f, control_two_body_limit)
+        if (allocated(error)) return
+        call check_below(error, "control_two_body_total each body against near", worst_near, near_far_limit)
+        if (allocated(error)) return
+        call check_below(error, "control_two_body_total M_z about own axis", worst_own, control_own_mz_limit)
+        if (allocated(error)) return
+        ! M_z about the origin is mostly the moment of the forces about it
+        call check_below(error, "control_two_body_total M_z about the origin", worst_mz, control_two_body_limit)
+    end subroutine control_two_body_total
+
+    !> The largest |F_control - F_near|/|F_near| of the force vector (F_x, F_y) of each body, over the frequencies and headings.
+    subroutine body_force_against_near(name, worst, error)
+        character(len=*), intent(in) :: name
+        real(8), intent(out) :: worst
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: control(:,:), near(:,:)
+        complex(8) :: fc(2), fn(2)
+        real(8) :: err
+        integer :: r, q, used, base, k
+
+        worst = 0d0
+        used = 0
+        call read_drift(output_dir(name)//control_file, control, error)
+        if (allocated(error)) return
+        call read_drift(output_dir(name)//near_file, near, error)
+        if (allocated(error)) return
+        do r = 1, size(control, 1) - 1
+            if (mod(nint(control(r,4)) - 1, 6) /= 0) cycle
+            base = nint(control(r,4))
+            fc = cmplx(control(r:r+1,7), control(r:r+1,8), kind=8)
+            fn = (0d0, 0d0)
+            k = 0
+            do q = 1, size(near, 1)
+                if (.not. (same(near(q,1), control(r,1)) .and. near(q,2) == control(r,2) .and. near(q,3) == control(r,3))) cycle
+                if (nint(near(q,4)) == base) then
+                    fn(1) = cmplx(near(q,7), near(q,8), kind=8)
+                    k = k + 1
+                else if (nint(near(q,4)) == base + 1) then
+                    fn(2) = cmplx(near(q,7), near(q,8), kind=8)
+                    k = k + 1
+                end if
+            end do
+            call check(error, k == 2, name//": a body has no near-field force")
+            if (allocated(error)) return
+            err = sqrt(sum(abs(fc - fn)**2))/sqrt(sum(abs(fn)**2))
+            print '(4x,a," w=",F5.3," beta=",F5.1," body ",I1,": control ",2ES13.5," near ",2ES13.5," diff ",ES10.3)', &
+                name, control(r,1), control(r,2), (base - 1)/6 + 1, real(fc, 8), real(fn, 8), err
+            worst = max(worst, err)
+            used = used + 1
+        end do
+        call check(error, used > 0, name//": no body compared")
+        if (allocated(error)) return
+        call report(name//" each body against near", worst)
+    end subroutine body_force_against_near
+
+    !> Two cylinders 50 wavelengths apart: each has the F_x of one alone.
+    subroutine control_far_apart_isolated(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: pair(:,:), alone(:,:)
+        real(8) :: worst
+        integer :: r
+
+        call read_drift(output_dir("control_far_apart")//control_file, pair, error)
+        if (allocated(error)) return
+        call read_drift(output_dir("control_isolated")//control_file, alone, error)
+        if (allocated(error)) return
+        call check(error, size(pair, 1) == 6 .and. size(alone, 1) == 3, "Expected 3 rows per body")
+        if (allocated(error)) return
+        worst = 0d0
+        do r = 1, size(pair, 1)
+            if (nint(pair(r,4)) /= 1 .and. nint(pair(r,4)) /= 7) cycle
+            print '(4x,"control_far_apart_isolated I=",I1,": ",ES13.6," alone ",ES13.6)', nint(pair(r,4)), pair(r,7), alone(1,7)
+            worst = max(worst, abs(pair(r,7) - alone(1,7))/abs(alone(1,7)))
+        end do
+        call report("control_far_apart_isolated", worst)
+        call check_below(error, "control_far_apart_isolated", worst, control_far_apart_limit)
+    end subroutine control_far_apart_isolated
+
+    !> IRSP = 1 against IRSP = 0 away from the irregular frequency, and at it, control against far-field, both with IRSP = 1.
+    subroutine control_irsp_stable(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), parameter :: irregular = 1.548d0
+        real(8) :: worst, at_irregular, worst_f, worst_mz
+
+        call irsp_difference("control", "control_irsp", "control_irsp_ref", control_file, irregular, worst, error)
+        if (allocated(error)) return
+        call control_against_far("control_irsp", origins_at_zero(1), at_irregular, worst_f, worst_mz, error, only_omega=irregular)
+        if (allocated(error)) return
+        call report("control_irsp_stable IRSP 1 vs 0", worst)
+        call report("control_irsp_stable at the irregular frequency, against far", at_irregular)
+        call check_below(error, "control_irsp_stable IRSP 1 vs 0", worst, control_irsp_limit)
+        if (allocated(error)) return
+        call check_below(error, "control_irsp_stable at the irregular frequency", at_irregular, control_irsp_far_limit)
+    end subroutine control_irsp_stable
+
+    !> The half mesh with ISY = 1 goes through the image expansion of the fields: the same values as the whole mesh, to the
+    !> plan's 1e-6 or to 5 x the far-field difference of the same two runs, whichever is larger. The first-order solver paths
+    !> differ at that level, and control is quadratic in the field, as far is.
+    subroutine control_half_matches_full(error)
+        type(error_type), allocatable, intent(out) :: error
+        call control_same_solution("control_half_matches_full", "control_half", control_half_limit, error)
+    end subroutine control_half_matches_full
+
+    !> ISOLV = 2 against the direct solver, with the rule of control_half_matches_full and the plan's 1e-5.
+    subroutine control_gmres_agrees(error)
+        type(error_type), allocatable, intent(out) :: error
+        call control_same_solution("control_gmres_agrees", "control_gmres", control_gmres_limit, error)
+    end subroutine control_gmres_agrees
+
+    !> F_x and F_y of the control-surface file of a case against control_cyl_free, with the limit max(table_limit,
+    !> solver_path_factor x the same difference of their far-field files).
+    subroutine control_same_solution(tag, name, table_limit, error)
+        character(len=*), intent(in) :: tag, name
+        real(8), intent(in) :: table_limit
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst, worst_far, limit
+
+        call rows_against(tag//" far", output_dir(name)//far_file, output_dir("control_cyl_free")//far_file, [1, 2], &
+                          worst_far, error)
+        if (allocated(error)) return
+        call rows_against(tag, output_dir(name)//control_file, output_dir("control_cyl_free")//control_file, [1, 2], worst, &
+                          error)
+        if (allocated(error)) return
+        limit = max(table_limit, solver_path_factor*worst_far)
+        print '(4x,a,": control ",ES10.3,", far ",ES10.3,", limit ",ES10.3)', tag, worst, worst_far, limit
+        call check_below(error, tag, worst, limit)
+    end subroutine control_same_solution
+
+    !> mean_drift = 2: the diagonal heading pairs are the mean_drift = 1 values, and F(b2, b1) = conj F(b1, b2).
+    subroutine control_pairs_match_unidirectional(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: pairs(:,:)
+        real(8) :: worst, worst_sym, scale_row
+        integer :: p, q, matched
+
+        call rows_against("control_pairs diagonal", output_dir("control_pairs")//control_file, &
+                          output_dir("control_cyl_free")//control_file, [1, 2, 6], worst, error, skip_small=.false.)
+        if (allocated(error)) return
+        call read_drift(output_dir("control_pairs")//control_file, pairs, error)
+        if (allocated(error)) return
+        call check(error, size(pairs, 1) == (2*2)*3, "Expected 4 heading pairs x 3 rows")
+        if (allocated(error)) return
+        worst_sym = 0d0
+        matched = 0
+        do p = 1, size(pairs, 1)
+            scale_row = maxval(pairs(:,5), mask=nint(pairs(:,4)) == nint(pairs(p,4)))
+            do q = 1, size(pairs, 1)
+                if (pairs(q,2) == pairs(p,3) .and. pairs(q,3) == pairs(p,2) .and. pairs(q,4) == pairs(p,4)) then
+                    worst_sym = max(worst_sym, (abs(pairs(q,7) - pairs(p,7)) + abs(pairs(q,8) + pairs(p,8)))/scale_row)
+                    matched = matched + 1
+                end if
+            end do
+        end do
+        call check(error, matched == size(pairs, 1), "A heading pair has no transposed pair")
+        if (allocated(error)) return
+        call report("control_pairs conjugate symmetry", worst_sym)
+        call check_below(error, "control_pairs diagonal", worst, control_exact_limit)
+        if (allocated(error)) return
+        call check_below(error, "control_pairs conjugate symmetry", worst_sym, control_exact_limit)
+    end subroutine control_pairs_match_unidirectional
+
+    !> cs_velocity = source on the free sharp cylinder: F_x against far-field, as a recorded regression, not an accuracy claim.
+    !> The optional source route is 0.6% to 3.7% from far-field at 448 panels (18.9% at 0.70 rad/s, where far-field F_x is
+    !> small, 0.119 rho g A^2), against 0.2% to 1.4% for the green route on the same hulls. The Snellius study measures its
+    !> convergence.
+    subroutine control_source_far(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst_fx, worst_f, worst_mz
+        integer :: i
+
+        call check(error, log_has("control_source", "source solve"), "The source solve did not run")
+        if (allocated(error)) return
+        do i = 1, size(control_source_omegas)
+            call control_against_far("control_source", origins_at_zero(1), worst_fx, worst_f, worst_mz, error, &
+                                     only_omega=control_source_omegas(i))
+            if (allocated(error)) return
+            call check_below(error, "control_source_far (regression)", worst_fx, control_source_limits(i))
+            if (allocated(error)) return
+        end do
+    end subroutine control_source_far
+
+    !> The source solve of cs_velocity = source runs on a copy of the state, so the near-field rows by differencing are those
+    !> of the same case without control.
+    subroutine control_source_leaves_near(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst
+
+        call rows_against("control_source_leaves_near", output_dir("control_source")//near_file, &
+                          output_dir("control_source_ref")//near_file, [1, 2, 3, 4, 5, 6], worst, error, skip_small=.false.)
+        if (allocated(error)) return
+        call check_below(error, "control_source_leaves_near", worst, control_exact_limit)
+    end subroutine control_source_leaves_near
+
+    !> Deep water, where the Green function goes by INFGREEN3D: F_x against far-field.
+    subroutine control_deep_far(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst_fx, worst_f, worst_mz
+
+        call control_against_far("control_deep", origins_at_zero(1), worst_fx, worst_f, worst_mz, error)
+        if (allocated(error)) return
+        call check_below(error, "control_deep_far", worst_fx, control_deep_limit)
+    end subroutine control_deep_far
+
+    !> F_x against the finite-difference step cs_fd_step of the green route: the spread over 0.01 to 0.05 is small next to
+    !> F_x. All five steps are printed.
+    subroutine control_step_plateau(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: rows(:,:)
+        real(8) :: fx(5, 2), reference(2), spread
+        integer :: c, r, found
+
+        fx = 0d0
+        do c = 1, size(step_cases)
+            call read_drift(output_dir(trim(step_cases(c)))//control_file, rows, error)
+            if (allocated(error)) return
+            found = 0
+            do r = 1, size(rows, 1)
+                if (.not. same(rows(r,1), control_omega) .or. nint(rows(r,4)) /= 1) cycle
+                found = found + 1
+                if (found <= 2) fx(c, found) = rows(r,7)
+            end do
+            call check(error, found == 2, "Expected F_x at 2 headings in "//trim(step_cases(c)))
+            if (allocated(error)) return
+        end do
+        reference = fx(3,:)
+        do c = 1, size(step_cases)
+            print '(4x,"control_step_plateau step ",F6.3,": F_x ",2ES14.6," against 0.02 ",2ES10.2)', steps(c), fx(c,:), &
+                (fx(c,:) - reference)/reference
+        end do
+        spread = maxval((maxval(fx(2:4,:), dim=1) - minval(fx(2:4,:), dim=1))/abs(reference))
+        call report("control_step_plateau spread over 0.01 to 0.05", spread)
+        call check_below(error, "control_step_plateau", spread, control_step_limit)
+    end subroutine control_step_plateau
+
+    !> As near_against_far, for the control-surface file: per body I = 1, 2, 6 about XR of the body, summed over the bodies
+    !> and moved to the origin, against far-field. worst_fy is the F_y difference, with the same rule for zero components.
+    subroutine control_against_far(name, xr, worst_fx, worst_f, worst_mz, error, only_omega, worst_fy)
+        character(len=*), intent(in) :: name
+        real(8), intent(in) :: xr(:,:)
+        real(8), intent(out) :: worst_fx, worst_f, worst_mz
+        type(error_type), allocatable, intent(out) :: error
+        real(8), intent(in), optional :: only_omega
+        real(8), intent(out), optional :: worst_fy
+        real(8), allocatable :: far(:,:), control(:,:)
+        complex(8) :: f_far(3), f_control(3)
+        real(8) :: fmag, err_x, err_y, err_f, err_m, arm
+        integer :: r, used
+
+        used = 0
+        worst_fx = 0d0
+        worst_f = 0d0
+        worst_mz = 0d0
+        if (present(worst_fy)) worst_fy = 0d0
+        call read_drift(output_dir(name)//far_file, far, error)
+        if (allocated(error)) return
+        call read_drift(output_dir(name)//control_file, control, error)
+        if (allocated(error)) return
+        call check(error, size(control, 1) == size(far, 1)*size(xr, 2), "Expected 3 control-surface rows per body")
+        if (allocated(error)) return
+        arm = max(1d0, maxval(sqrt(sum(xr**2, dim=1))))
+        do r = 1, size(far, 1) - 2, 3
+            f_far = cmplx(far(r:r+2,7), far(r:r+2,8), kind=8)
+            call sum_near(control, xr, far(r,1), far(r,2), far(r,3), f_control)
+            fmag = sqrt(abs(f_far(1))**2 + abs(f_far(2))**2)
+            err_f = sqrt(abs(f_control(1) - f_far(1))**2 + abs(f_control(2) - f_far(2))**2)/fmag
+            err_x = -1d0
+            err_y = -1d0
+            err_m = -1d0
+            if (abs(f_far(1)) > 1d-3*fmag) err_x = abs(f_control(1) - f_far(1))/abs(f_far(1))
+            if (abs(f_far(2)) > 1d-3*fmag) err_y = abs(f_control(2) - f_far(2))/abs(f_far(2))
+            if (abs(f_far(3)) > 1d-3*fmag*arm) err_m = abs(f_control(3) - f_far(3))/abs(f_far(3))
+            print '(4x,a," w=",F5.3," b1=",F5.1," b2=",F5.1,": far ",3ES12.4," control ",3ES12.4,&
+                       &" err x ",ES9.2," y ",ES9.2," F ",ES9.2," z ",ES9.2)', &
+                name, far(r,1), far(r,2), far(r,3), real(f_far, 8), real(f_control, 8), err_x, err_y, err_f, err_m
+            if (present(only_omega)) then
+                if (.not. same(far(r,1), only_omega)) cycle
+            end if
+            used = used + 1
+            worst_fx = max(worst_fx, err_x)
+            if (present(worst_fy)) worst_fy = max(worst_fy, err_y)
+            worst_f = max(worst_f, err_f)
+            worst_mz = max(worst_mz, err_m)
+        end do
+        call check(error, used > 0, "No row of "//name//" was compared")
+    end subroutine control_against_far
+
+    !> The largest relative difference |a - b|/|b| of the rows of the loads I in the file a from the rows of b with the same
+    !> frequency, heading pair and I. Every such row of a must be in b. Unless skip_small is false, a row is skipped where |b|
+    !> is below 1e-3 of the force (I = 1, 2 of that body) of b, as zero by symmetry. Prints every row compared.
+    subroutine rows_against(tag, path_a, path_b, loads, worst, error, skip_small)
+        character(len=*), intent(in) :: tag, path_a, path_b
+        integer, intent(in) :: loads(:)
+        real(8), intent(out) :: worst
+        type(error_type), allocatable, intent(out) :: error
+        logical, intent(in), optional :: skip_small
+        real(8), allocatable :: a(:,:), b(:,:)
+        complex(8) :: va, vb
+        real(8) :: fmag, err
+        integer :: r, q, used, first
+        logical :: skip, found
+
+        skip = .true.
+        if (present(skip_small)) skip = skip_small
+        worst = 0d0
+        used = 0
+        call read_drift(path_a, a, error)
+        if (allocated(error)) return
+        call read_drift(path_b, b, error)
+        if (allocated(error)) return
+        do r = 1, size(a, 1)
+            if (.not. any(loads == nint(a(r,4)))) cycle
+            found = .false.
+            do q = 1, size(b, 1)
+                if (same(b(q,1), a(r,1)) .and. b(q,2) == a(r,2) .and. b(q,3) == a(r,3) .and. b(q,4) == a(r,4)) then
+                    found = .true.
+                    exit
+                end if
+            end do
+            if (.not. found) then
+                ! Off-diagonal heading pairs have no row in a run of single headings
+                if (a(r,2) /= a(r,3)) cycle
+                call test_failed(error, tag//": a row is missing from "//path_b)
+                return
+            end if
+            va = cmplx(a(r,7), a(r,8), kind=8)
+            vb = cmplx(b(q,7), b(q,8), kind=8)
+            first = 6*((nint(b(q,4)) - 1)/6) + 1
+            fmag = sqrt(sum(b(:,5)**2, mask=same_case(b, b(q,:)) .and. (nint(b(:,4)) == first .or. nint(b(:,4)) == first + 1)))
+            if (skip .and. abs(vb) < 1d-3*fmag) cycle
+            if (abs(vb) > 0d0) then
+                err = abs(va - vb)/abs(vb)
+            else
+                err = abs(va)
+            end if
+            print '(4x,a," w=",F5.3," b1=",F5.1," b2=",F5.1," I=",I2,": ",2ES14.6," against ",2ES14.6," diff ",ES10.3)', &
+                tag, a(r,1), a(r,2), a(r,3), nint(a(r,4)), va, vb, err
+            worst = max(worst, err)
+            used = used + 1
+        end do
+        call check(error, used > 0, tag//": no row compared")
+        if (allocated(error)) return
+        call report(tag, worst)
+    end subroutine rows_against
+
+    !> The rows of a drift file with the frequency and heading pair of row.
+    function same_case(rows, row) result(mask)
+        real(8), intent(in) :: rows(:,:), row(:)
+        logical :: mask(size(rows, 1))
+        integer :: r
+
+        do r = 1, size(rows, 1)
+            mask(r) = same(rows(r,1), row(1)) .and. rows(r,2) == row(2) .and. rows(r,3) == row(3)
+        end do
+    end function same_case
 
     !> Far-only runs have no near-field output, write_terms = 0 has no terms file, and runs with both methods log the
     !> difference, with M_z moved to the origin by the driver as this test does it.
