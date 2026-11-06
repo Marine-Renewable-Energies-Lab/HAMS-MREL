@@ -89,7 +89,7 @@ program HAMS_MREL
     use FieldOutput_mod
     use Lid_mod, only : LIDON, LNELEM, MXLPOT
     use DampingLid, only : READ_LID_MESH, LID_GEOMETRY, CHECK_LID, ALLOCATE_LID_UNKNOWNS, LID_ASSEMBLE, LID_RADIATION, &
-                           LID_DIFFRACTION
+                           LID_DIFFRACTION, CHECK_LID_FREQUENCIES
     use DampingLidMulti, only : LID_ASSEMBLE_MULTI, LID_RADIATION_MULTI, LID_DIFFRACTION_MULTI
     use omp_lib
 
@@ -252,6 +252,7 @@ program HAMS_MREL
         IF (LIDON.EQ.1) THEN
             CALL LID_GEOMETRY
             CALL CHECK_LID(1)
+            CALL CHECK_LID_FREQUENCIES                                  ! a zero in the list stops before any frequency
             CALL ALLOCATE_LID_UNKNOWNS(1)
         ENDIF
 
@@ -608,6 +609,7 @@ program HAMS_MREL
             CALL READ_LID_MESH(TRIM(inputdir))
             CALL LID_GEOMETRY
             CALL CHECK_LID(NBODY)
+            CALL CHECK_LID_FREQUENCIES                                  ! a zero in the list stops before any frequency
             CALL ALLOCATE_LID_UNKNOWNS(NBODY)
         ENDIF
 
