@@ -23,8 +23,10 @@ Out of scope: the rounded bilge, several bodies, headings other than 0 (the body
 Truncated vertical cylinder, radius a, draft d, in water of depth h, sharp bilge. Defaults are the study's sharp hull: a = 10 m,
 d = 10 m, h = 100 m (`DRIFT_CYL_MESH` and `HULLS["sharp"]` in `drift_convergence.py`). ρ and g are HAMS's values. Linear
 potential flow, time factor e^(-iωt), plane incident wave of unit amplitude along +x. Mass, centre of gravity, inertia and
-hydrostatic stiffness of the free body are read from the `Hydrostatic.in` that `make_mesh.write_cylinder` writes for that hull,
-so the free case is the same body HAMS ran. Rotation centre and `XR` are at the origin, at the still waterline, as in the study.
+hydrostatic stiffness of the free body follow `make_mesh.hydrostatics`, the rule that wrote HAMS's `Hydrostatic.in` (a uniform
+solid at its draft, z_G = z_B = -d/2), applied to the exact circle. HAMS's hull is a polygon of 32 × multiple sides, so its
+mass differs by the polygon's area error, which the comparison prints per mesh; that is part of HAMS's discretization error. The study's result
+folders keep only the output, so the input files are not read. Rotation centre and `XR` are at the origin, at the still waterline, as in the study.
 
 The conversion to HAMS's output normalisation (WAMIT format, ρgA, ρgA²L^k, phases) is taken from the HAMS source and stated in
 the script's docstring, as `annular_lid_reference.py` on `feature/damping-lid` does.
