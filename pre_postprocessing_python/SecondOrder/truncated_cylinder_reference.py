@@ -293,8 +293,10 @@ The script exits with 1 if one fails. What each covers, and what it does not:
   M_y(xr) = M_y(0) - (xr x F)_y and F_x unchanged, to 1e-10. The motions are re-expressed about xr (xi' = xi + alpha x xr),
   so it tests that every moment arm, the IV moment (alpha x H + xi' x G) and M_S transform as a rigid shift. F_z is not
   compared: F_S,z depends on Z_o (Near field).
-- pair_symmetry: free body, omega_i = 0.70, omega_j = 0.95: T-_ij = conj(T-_ji) for every term and component, to 1e-12. It
-  tests that each state's frequency, motion and conjugation enter the kernel symmetrically, not the values.
+- pair_symmetry: free body, omega_i = 0.70, omega_j = 0.95: T-_ij = conj(T-_ji) for every term and component, and
+  T+_ij = T+_ji under the sum-frequency kernel _pair_sum, (f_i g_j + f_j g_i)/4, each to 1e-12. It tests that each
+  state's frequency, motion and conjugation enter the kernels symmetrically, not the values; T+ is otherwise unused
+  here (only i = j, the mean drift, is computed and checked).
 - polylog: _polylog against direct sums, 1e-10, for s = 1 and the orders of the corner tails, real mu from -0.05 to -60
   and complex mu off the unit circle; and that it raises for Re mu > 0. Measured 1.4e-14. Its docstring says what it
   does not cover (the unit circle itself).
@@ -323,8 +325,11 @@ The script exits with 1 if one fails. What each covers, and what it does not:
   to the 1.548 and 1.939 of drift_convergence.IRREGULAR_FREQUENCIES. Every complex value is written with the phase
   FIXTURE_PHASE = 0.6 rad, Re = MOD cos(phase), Im = MOD sin(phase), so a reader that takes the wrong column fails
   (measured: MOD instead of Re for the drift files, Re instead of MOD for ExcForce.3, Im instead of Re for
-  MeanDriftTerms.txt, each FAIL). It tests the readers, the indices, the floor and the flags, not HAMS.
-- compare_signs (in SLOW_CHECKS): see "Comparison with HAMS".
+  MeanDriftTerms.txt, each FAIL). The LIGHT_RESOLUTION rows carry no stated uncertainty (every *_unc nan), and compare's
+  q_unc comes from the row: nan everywhere except FIXTURE_UNCERTAINTY, set on one row before compare. It tests the
+  readers, the indices, the floor, the flags and the uncertainty passing, not HAMS.
+- compare_signs (in SLOW_CHECKS): see "Comparison with HAMS". Without the study's results it prints SKIP and counts as
+  neither passed nor failed.
 
 Reference values. python -I truncated_cylinder_reference.py reference [--out CSV] writes, at DEFAULT_RESOLUTION
 (N = 64000, gap basis (20, 4, 4), orders 0 ... 15) and every WIDE_FREQUENCIES, the fixed and the free rows of reference
@@ -345,8 +350,14 @@ reference's docstring), then the convergence table, then runs every check; exit 
   spread against N = 64000 with (20, 4, 4) (fixed F_z at 1.40 rad/s, 1.3e-4), and the free body needs the three
   families and N = 64000 for fx_identity (Gap basis; at N = 32000 (10, 2, 2) passes it at 0.70 rad/s only because it is
   not converged in N: -3.4e-4, and -5.1e-4 at N = 128000).
-- Uncertainty, stated per row (uncertainty(): KNOWN_UNCERTAINTY, else DEFAULT_UNCERTAINTY = 1e-4 relative; the CSV
-  columns Fx_far_unc, Fx_near_unc, Fz_unc, My_unc). Evidence for the default 1e-4:
+- Scope. DEFAULT_RESOLUTION and the stated uncertainties below are measured for the default hull only (Cylinder():
+  a 10, d 10, h 100, h/a = 10) at the frequencies of WIDE_FREQUENCIES. The N needed grows with h/a (measured, free F_z at
+  0.90 rad/s, gap basis (20, 4, 4), N = 4000 against 16000: 4.9 % for a 10, d 10, h 500; 0.8 % for a 5, d 8, h 40), so
+  uncertainty() returns nan (not measured) for any other cylinder, resolution or frequency (omega matched to
+  WIDE_FREQUENCIES to 1e-9 relative), and a new geometry needs the convergence and fx_identity measurements repeated
+  for it (convergence_table takes the cylinder; fx_identity's near against far F_x) before its values carry one.
+- Uncertainty, stated per row (uncertainty(): KNOWN_UNCERTAINTY, else DEFAULT_UNCERTAINTY = 1e-4 relative, within the
+  scope above; the CSV columns Fx_far_unc, Fx_near_unc, Fz_unc, My_unc). Evidence for the default 1e-4:
   - Fixed body: spread of the default against N = 128000 with (30, 6, 6), measured at every WIDE_FREQUENCIES for F_z
     and M_y (outside the check, once): F_z 6e-7 to 6.6e-6 up to 1.20 rad/s, 1.6e-5 at 1.40, 3.1e-5 at 1.60, 4.8e-5 at
     1.80 (F_z falls to -0.025 there); M_y below 1.5e-6. fx_identity below 2.4e-6. F_x far and B11 far below.
@@ -354,7 +365,8 @@ reference's docstring), then the convergence table, then runs every check; exit 
     2e-4 (7e-6 at 0.95 rad/s). Not measured for F_z and M_y at 0.40, 1.00 ... 1.20, 1.60, 1.80 beyond fx_identity.
   - Free body at 0.60 to 0.80 rad/s: near-field F_x settles about 4.2e-4 of far F_x from it as N grows, systematically,
     pitch only (a rho**2 log rho corner term, which no power family represents, is a plausible cause, Gap basis), and
-    does not fall with the gap basis: Fx_near is stated at 5e-4 there (far F_x is exact to 1e-7). F_z and M_y are not
+    does not fall with the gap basis: Fx_near is stated at 5e-4 there (far F_x changes by less than 1.2e-7 over the
+    resolutions of convergence; its stated uncertainty stays 1e-4). F_z and M_y are not
     covered by that identity, and their spreads understate their error. check_uncertainty (drift_uncertainty) fits F_z
     and M_y against the F_x residual r over the gap bases (10, 2, 2), (20, 4, 4), (30, 6, 6) at N = 128000:
       r = -2.56e-4, -1.68e-4, -2.09e-4 (0.60 rad/s); -5.11e-4, -4.17e-4, -4.46e-4 (0.70); +4.94e-4, +4.24e-4,
@@ -369,10 +381,11 @@ reference's docstring), then the convergence table, then runs every check; exit 
   - Free body at 1.40 to 1.80 rad/s: near-field F_x is -1.11e-4, -1.29e-4, -1.26e-4 from far F_x (fx_identity), so
     KNOWN_UNCERTAINTY states 2e-4 for it there. F_z and M_y there have no separate estimate (check_uncertainty covers
     0.60 to 0.80 rad/s only); they carry DEFAULT_UNCERTAINTY.
-- Run time, laptop, measured once each: check (the 20 checks without SLOW_CHECKS) 4 min 49 s, most of it convergence
-  (146 s) and fx_identity (94 s, the 22 reference rows). reference --out 7 min 2 s for all 22 checks: the rows 92 s,
-  convergence 136 s, uncertainty 134 s (the rows at N = 128000 that no other check computes); compare_signs takes 0 s
-  there, since the rows are cached, and about 3 min alone. A row pair (fixed and free) at the default costs about
+- Run time, laptop, measured once each (November 2026): check (the 20 checks without SLOW_CHECKS) 5 min 4 s, most of
+  it convergence (146 s) and fx_identity (93 s, the 22 reference rows). reference --out 7 min 11 s for all 22 checks: the
+  rows 92 s, convergence 135 s, uncertainty 137 s (the rows at N = 128000 that no other check computes); compare_signs
+  takes 0 s there, since the rows are cached, and alone about the 92 s of the rows (an estimate, not measured). compare
+  93 s computing the rows, under 1 s with --reference. A row pair (fixed and free) at the default costs about
   6 s: they share the solves (_solved), the inner products and radial ratios (_modes) and the solution-independent
   part of the body series (_series_context).
 
@@ -384,14 +397,17 @@ by symmetry), abs(X), abs(RAO) (both motions against the free body: HAMS writes 
 and far, F_z, M_y, each near-field term, and the control-surface F_x of MeanDriftControlSurface.7 against the far-field
 reference, "missing" where a file is absent. Only moduli and real drift values are compared, so the factor i between
 HAMS's phases and this module's (eta_I(0) = 1 against -i) plays no part. Each drift percentage is followed by the
-reference's stated uncertainty (uncertainty()). Each block is headed by the panels and the area error of the waterline,
-a ntheta-sided inscribed polygon (polygon_area_error: -6.4e-3 at 32 sides, -4.0e-4 at 128). A percentage is empty where
+stated uncertainty the reference row carries (its *_unc column, computed or read from the CSV; [n/m], not measured,
+where it is nan: rows that are not the default hull at DEFAULT_RESOLUTION), and the header prints the rows'
+resolution. A HAMS frequency is matched to a reference row within a relative FREQUENCY_MATCH = 1e-6, else the row is
+flagged "no reference"; the files' frequencies are matched to each other the same way. Each block is headed by the
+panels and the area error of the waterline, a ntheta-sided inscribed polygon (polygon_area_error: -6.4e-3 at 32 sides, -4.0e-4 at 128). A percentage is empty where
 abs(reference) is below drift_convergence.percent's floor, 1e-4 of the largest abs(reference) of the quantity and motion
 over the reference rows (for a term, of the term and its total). Rows within 5 % of an irregular frequency of the hull
 (irregular_frequencies: 1.5483 and 1.9394 rad/s, the only two below the top of the scan, which compare asserts; the 1.60
 rows) are marked "irregular", not counted as HAMS errors. An a_sharp_ folder that is not a case of
 drift_convergence.study_cases, or that has no output/Wamit_format, is skipped with a printed note. The
-reference rows are computed at DEFAULT_RESOLUTION (cached; about 4 min) or read from a CSV of the reference subcommand.
+reference rows are computed at DEFAULT_RESOLUTION (cached; 93 s) or read from a CSV of the reference subcommand (under 1 s).
 compare_signs, at the finest source mesh (7168 panels), tests the sign of every near-field term and of far-field F_x
 above the floor, and of the near-field totals where they are at least SIGN_CANCELLATION = 5 % of their largest term: the
 free F_z at 0.70 and 0.80 rad/s (1.4 and 1.0 % of their terms) and the free F_x at 0.60 and 0.70 rad/s are near
@@ -1707,16 +1723,23 @@ def _surface_state(cyl, omega, sol, xi, quad, xr):
 
 
 def _pair(fi, gi, fj, gj):
-    """The difference-frequency kernel: (fi conj(gj) + conj(fj) gi)/4, elementwise; for i = j, Re(f conj(g))/2, the time
-    average of the product of two harmonic quantities f and g."""
+    """The difference-frequency kernel T-: (fi conj(gj) + conj(fj) gi)/4, elementwise; for i = j, Re(f conj(g))/2,
+    the time average of the product of two harmonic quantities f and g."""
     return 0.25 * (fi * np.conj(gj) + np.conj(fj) * gi)
 
 
-def _pair_cross(ai, bi, aj, bj):
+def _pair_sum(fi, gi, fj, gj):
+    """The sum-frequency kernel T+: (fi gj + fj gi)/4, elementwise, with the normalisation of _pair: the products
+    f g exp(-i (omega_i + omega_j) t), no conjugate, so symmetric in i and j. Only check_pair_symmetry uses it (that
+    symmetry through near_field_terms); its values are for the QTF work and are not tested here."""
+    return 0.25 * (fi * gj + fj * gi)
+
+
+def _pair_cross(ai, bi, aj, bj, kernel=_pair):
     """(a x b) under the kernel: component l = sum eps_lmn pair(a_m, b_n), 3-vectors."""
     out = np.zeros(3, complex)
     for l, m, n in ((0, 1, 2), (1, 2, 0), (2, 0, 1)):
-        out[l] = _pair(ai[m], bi[n], aj[m], bj[n]) - _pair(ai[n], bi[m], aj[n], bj[m])
+        out[l] = kernel(ai[m], bi[n], aj[m], bj[n]) - kernel(ai[n], bi[m], aj[n], bj[m])
     return out
 
 
@@ -1726,8 +1749,10 @@ def _load(vector, x):
     return np.concatenate([vector, np.cross(x, vector, axis=0)])
 
 
-def near_field_terms(cyl, omega_i, sol_i, xi_i, omega_j, sol_j, xi_j, quad, xr=(0.0, 0.0, 0.0)):
-    """T-_ij of each near-field term (WAMIT v7.5 user manual, eqs. 15.54 to 15.57, under the kernel _pair),
+def near_field_terms(cyl, omega_i, sol_i, xi_i, omega_j, sol_j, xi_j, quad, xr=(0.0, 0.0, 0.0),
+                     kernel=_pair):
+    """T-_ij of each near-field term (WAMIT v7.5 user manual, eqs. 15.54 to 15.57, under the kernel _pair; T+_ij with
+    kernel=_pair_sum),
     over rho g, per unit wave amplitudes, as (6,) complex arrays (F_x, F_y, F_z, M_x, M_y, M_z, moments about xr), components
     1, 3, 5 filled; for i = j the real part is the mean load over rho g A**2. xi_i, xi_j: the motions (module convention,
     about the origin); xr in the x-z plane. See the module docstring for the terms as coded."""
@@ -1750,7 +1775,7 @@ def near_field_terms(cyl, omega_i, sol_i, xi_i, omega_j, sol_j, xi_j, quad, xr=(
     n_wl = np.array([-ct, -st, 0.0 * ct])                     # unit horizontal normal into the body
     x_wl = np.array([a * ct, a * st, 0.0 * ct]) - xr[:, None]
     zi, zj = 1j * omega_i / grav * si.phi_wl, 1j * omega_j / grav * sj.phi_wl
-    bracket = _pair(zi, zi, zj, zj) - 2.0 * _pair(zi, si.disp3_wl, zj, sj.disp3_wl)
+    bracket = kernel(zi, zi, zj, zj) - 2.0 * kernel(zi, si.disp3_wl, zj, sj.disp3_wl)
     terms["I"] = 0.5 * np.sum(_load(n_wl * bracket, x_wl), axis=1) * a * dth
     # Ia: (1/2) int_WL k n_z/sqrt(1 - n_z**2) P(zeta - X3, zeta - X3) dl is zero: the wall is vertical at the waterline
 
@@ -1762,10 +1787,10 @@ def near_field_terms(cyl, omega_i, sol_i, xi_i, omega_j, sol_j, xi_j, quad, xr=(
         w = fi["face"].w[:, None] * dth
         n, x = fi["normal"], fi["x"]
         # II: -(1/g) int r (1/2) sum_k P(d_k phi, d_k phi) dS
-        q = 0.5 * np.sum(_pair(fi["grad"], fi["grad"], fj["grad"], fj["grad"]), axis=0)
+        q = 0.5 * np.sum(kernel(fi["grad"], fi["grad"], fj["grad"], fj["grad"]), axis=0)
         terms["II"] += -np.sum(_load(n * q, x) * w, axis=(1, 2)) / grav
         # III: -(1/g) int r sum_k P(X_k, d_k phi_t) dS
-        q = np.sum(_pair(fi["disp"], gi_t[f], fj["disp"], gj_t[f]), axis=0)
+        q = np.sum(kernel(fi["disp"], gi_t[f], fj["disp"], gj_t[f]), axis=0)
         terms["III"] += -np.sum(_load(n * q, x) * w, axis=(1, 2)) / grav
         for s, (state, omega) in enumerate(((fi, omega_i), (fj, omega_j))):
             dens = _load(n * (-1j * omega * state["phi"]), x)
@@ -1773,16 +1798,16 @@ def near_field_terms(cyl, omega_i, sol_i, xi_i, omega_j, sol_j, xi_j, quad, xr=(
             big_g[s] += total[:3]
             big_h[s] += total[3:]
     # IV: force alpha x G; moment alpha x H + xi x G (xi the translation of xr)
-    terms["IV"][:3] = _pair_cross(si.alpha, big_g[0], sj.alpha, big_g[1])
-    terms["IV"][3:] = (_pair_cross(si.alpha, big_h[0], sj.alpha, big_h[1])
-                       + _pair_cross(si.xi, big_g[0], sj.xi, big_g[1]))
-    terms["V"] = _hydrostatic_term(cyl, si, sj, xr)
+    terms["IV"][:3] = _pair_cross(si.alpha, big_g[0], sj.alpha, big_g[1], kernel)
+    terms["IV"][3:] = (_pair_cross(si.alpha, big_h[0], sj.alpha, big_h[1], kernel)
+                       + _pair_cross(si.xi, big_g[0], sj.xi, big_g[1], kernel))
+    terms["V"] = _hydrostatic_term(cyl, si, sj, xr, kernel)
     for key in terms:                                          # components 2, 4, 6 vanish by symmetry
         terms[key][[1, 3, 5]] = 0.0
     return terms
 
 
-def _hydrostatic_term(cyl, si, sj, xr):
+def _hydrostatic_term(cyl, si, sj, xr, kernel=_pair):
     """V: F_S and M_S of the WAMIT v7.5 user manual, eqs. (15.56) and (15.57), the formula HAMS-MREL uses, over
     rho g, under the kernel, with xi = translation of xr, alpha = rotation, waterplane and buoyancy quantities relative to
     xr: area A, centre (x_f, y_f), L_ij = int (x - xr)_i (x - xr)_j dA, volume V, centre of buoyancy (x_b, y_b),
@@ -1799,7 +1824,7 @@ def _hydrostatic_term(cyl, si, sj, xr):
     al1, al2, al3 = ((si.alpha[k], sj.alpha[k]) for k in range(3))
 
     def pp(u, v):   # P(u, v) with u from state i, j: (u_i, u_j), (v_i, v_j)
-        return _pair(u[0], v[0], u[1], v[1])
+        return kernel(u[0], v[0], u[1], v[1])
 
     out = np.zeros(6, complex)
     out[2] = -area * (pp(al1, al3) * xf + pp(al2, al3) * yf + 0.5 * (pp(al1, al1) + pp(al2, al2)) * zo)
@@ -1928,11 +1953,12 @@ def check_bottom_limit_x1():
             ratios.append(abs(x[1] - ref) / abs(x[0] - ref))
         else:
             skipped.append(omega)
-    linear = all(LINEARITY_RATIO[0] <= q <= LINEARITY_RATIO[1] for q in ratios)
+    linear = bool(ratios) and all(LINEARITY_RATIO[0] <= q <= LINEARITY_RATIO[1] for q in ratios)
     ok = worst_mod < 1e-3 and worst_complex < 1e-3 and linear
     return ok, ("extrapolated to g = 0: max ||X1| - |MF||/|MF| %.1e, max |X1 - MF|/|MF| %.1e; at g = 1e-3 h itself "
-                "max ||X1| - |MF||/|MF| %.1e; |X(2g) - MF|/|X(g) - MF| %.3f ... %.3f%s"
-                % (worst_mod, worst_complex, worst_raw, min(ratios), max(ratios),
+                "max ||X1| - |MF||/|MF| %.1e; |X(2g) - MF|/|X(g) - MF| %s%s"
+                % (worst_mod, worst_complex, worst_raw,
+                   "%.3f ... %.3f" % (min(ratios), max(ratios)) if ratios else "not tested anywhere",
                    ", not tested at %s rad/s (below the round-off floor)" % ", ".join("%.2f" % w for w in skipped)
                    if skipped else ""))
 
@@ -2033,7 +2059,7 @@ def check_reciprocity():
     projections (potential_gap, flux_gap) and the pitch wall term. They do not test _Particular.bottom: the bottom
     integral of phi_p is real and enters only the diagonal Re A33 and Re A55, which no identity here contains;
     check_particular_bottom tests it against quad. They do not bound the error of A, B or X themselves, which converge as
-    about N**-1.6 (Convergence)."""
+    N**(-5/3) with MATRIX_TAIL (about N**(-1.6) without it; Convergence)."""
     worst_sym = worst_haskind = raw_sym = raw_haskind = 0.0
     for omega in drift_convergence.WIDE_FREQUENCIES:
         q, hi = _first_order_extrapolated(omega)
@@ -2211,17 +2237,34 @@ CONVERGENCE_FLOOR = 1e-4
 # against far F_x (which changes by less than 1.2e-7 over the resolutions) is -1.11e-4, -1.29e-4, -1.26e-4 (fx_identity);
 # free F_z and M_y there have no separate estimate (check_uncertainty covers 0.60 to 0.80 rad/s only). convergence passes
 # a row named here against this value instead of the gate, and prints it as a known exceedance. Every other row of the
-# CSV carries DEFAULT_UNCERTAINTY.
+# default hull at DEFAULT_RESOLUTION and WIDE_FREQUENCIES carries DEFAULT_UNCERTAINTY; any other row nan (not measured).
 DEFAULT_UNCERTAINTY = 1e-4
 KNOWN_UNCERTAINTY = {("free", "Fx_near", 0.60): 5e-4, ("free", "Fx_near", 0.70): 5e-4, ("free", "Fx_near", 0.80): 5e-4,
                      ("free", "Fx_near", 1.40): 2e-4, ("free", "Fx_near", 1.60): 2e-4, ("free", "Fx_near", 1.80): 2e-4,
                      ("free", "Fz", 0.70): 3e-3, ("free", "Fz", 0.80): 4e-3}
 UNCERTAIN_QUANTITIES = ("Fx_far", "Fx_near", "Fz", "My")   # the quantities with an uncertainty column in the CSV
+UNCERTAINTY_FREQUENCY_MATCH = 1e-9   # uncertainty: omega is a WIDE_FREQUENCIES entry if within this relative distance
 
 
-def uncertainty(motion, quantity, omega):
-    """The stated relative uncertainty of a reference value (KNOWN_UNCERTAINTY, else DEFAULT_UNCERTAINTY)."""
-    return KNOWN_UNCERTAINTY.get((motion, quantity, round(float(omega), 2)), DEFAULT_UNCERTAINTY)
+def _is_default_resolution(n_modes, p_max, orders):
+    res = DEFAULT_RESOLUTION
+    return ((int(n_modes), _spec_key(p_max), _orders_key(orders))
+            == (res["n_modes"], _spec_key(res["p_max"]), _orders_key(res["orders"])))
+
+
+def uncertainty(motion, quantity, omega, cyl, n_modes, p_max, orders):
+    """The stated relative uncertainty of a reference value: KNOWN_UNCERTAINTY, else DEFAULT_UNCERTAINTY, for the
+    default hull (cyl == Cylinder(), h/a = 10) at DEFAULT_RESOLUTION and an omega of WIDE_FREQUENCIES (to a relative
+    UNCERTAINTY_FREQUENCY_MATCH), the only rows the evidence of "Reference values" measures; else nan (not measured).
+    The N needed grows with h/a (measured, free F_z at 0.90 rad/s, gap basis (20, 4, 4), between N = 4000 and 16000:
+    a 10, d 10, h 500 changes by 4.9 %; a 5, d 8, h 40 by 0.8 %), so a new geometry needs convergence and fx_identity
+    re-run before any uncertainty is stated for it."""
+    if cyl != Cylinder() or not _is_default_resolution(n_modes, p_max, orders):
+        return float("nan")
+    for w in drift_convergence.WIDE_FREQUENCIES:
+        if abs(float(omega) - w) <= UNCERTAINTY_FREQUENCY_MATCH * w:
+            return KNOWN_UNCERTAINTY.get((motion, quantity, w), DEFAULT_UNCERTAINTY)
+    return float("nan")
 
 
 FREE_BODY_UNCERTAINTY = (
@@ -2260,7 +2303,7 @@ def _reference_row(cyl, omega, motion, n_modes, p_max, orders):
         for key in NEAR_FIELD_TERMS:
             row["%s_%s" % (name, key)] = float(terms[key][index])
     for quantity in UNCERTAIN_QUANTITIES:
-        row["%s_unc" % quantity] = uncertainty(motion, quantity, omega)
+        row["%s_unc" % quantity] = uncertainty(motion, quantity, omega, cyl, n_modes, p_max, orders)
     return row
 
 
@@ -2271,7 +2314,8 @@ def reference(cyl, frequencies, motion, n_modes, p_max, orders):
     RAO1, RAO3, RAO5, nan for the fixed body); Fx_far (MeanDriftMomentum.8), Fx_near, Fz, My (MeanDriftPressure.9, over
     rho g A**2, moments in m about the origin) and each near-field term of them, Fx_I ... Fx_V, Fz_.., My_..
     (MeanDriftTerms.txt); and Fx_far_unc, Fx_near_unc, Fz_unc, My_unc, the stated relative uncertainty of each
-    (uncertainty: KNOWN_UNCERTAINTY or DEFAULT_UNCERTAINTY). p_max is the key of _spec_key, a tuple for the three
+    (uncertainty: KNOWN_UNCERTAINTY or DEFAULT_UNCERTAINTY for the default hull at DEFAULT_RESOLUTION and
+    WIDE_FREQUENCIES, else nan, not measured). p_max is the key of _spec_key, a tuple for the three
     families; the CSV writes it space-separated ("20 4 4"). See the module docstring, "Reference values"."""
     if motion not in ("fixed", "free"):
         raise ValueError("reference: motion is 'fixed' or 'free', got %r" % (motion,))
@@ -2324,8 +2368,8 @@ def check_reference_point():
 
 
 def check_pair_symmetry():
-    """T-_ij = conj(T-_ji) for omega_i = 0.70, omega_j = 0.95, free body, every term and component, to 1e-12 of the
-    largest abs(T-_ij) of the term; see the module docstring."""
+    """T-_ij = conj(T-_ji) and T+_ij = T+_ji (kernel _pair_sum) for omega_i = 0.70, omega_j = 0.95, free body, every
+    term and component, to 1e-12 of the largest abs(T_ij) of the term; see the module docstring."""
     cyl = Cylinder()
     res = LIGHT_RESOLUTION
     quad = body_quadrature(cyl, NEAR_QUADRATURE["n_corner"], NEAR_QUADRATURE["n_far"])
@@ -2333,12 +2377,17 @@ def check_pair_symmetry():
                               for w in (0.70, 0.95))
     tij = near_field_terms(cyl, 0.70, si, xi_i, 0.95, sj, xi_j, quad)
     tji = near_field_terms(cyl, 0.95, sj, xi_j, 0.70, si, xi_i, quad)
-    worst = 0.0
+    sij = near_field_terms(cyl, 0.70, si, xi_i, 0.95, sj, xi_j, quad, kernel=_pair_sum)
+    sji = near_field_terms(cyl, 0.95, sj, xi_j, 0.70, si, xi_i, quad, kernel=_pair_sum)
+    worst = worst_sum = 0.0
     for key in NEAR_FIELD_TERMS:
-        scale = np.max(np.abs(tij[key]))
+        scale, scale_sum = np.max(np.abs(tij[key])), np.max(np.abs(sij[key]))
         if scale > 0.0:
             worst = max(worst, np.max(np.abs(tij[key] - np.conj(tji[key]))) / scale)
-    return worst < 1e-12, "max |T_ij - conj(T_ji)|/max |T_ij| over the terms %.1e" % worst
+        if scale_sum > 0.0:
+            worst_sum = max(worst_sum, np.max(np.abs(sij[key] - sji[key])) / scale_sum)
+    return max(worst, worst_sum) < 1e-12, ("max |T-_ij - conj(T-_ji)|/max |T-_ij| over the terms %.1e; "
+                                           "max |T+_ij - T+_ji|/max |T+_ij| %.1e" % (worst, worst_sum))
 
 
 LONG_WAVE_OMEGA = 0.05
@@ -2484,8 +2533,8 @@ def convergence_table(cyl=None):
     CONVERGENCE_LADDER and at DEFAULT_RESOLUTION with twice its orders, and the spreads of the default against the
     finest of the ladder and against 2M, each over max(abs(default value), floor), floor = CONVERGENCE_FLOOR times the
     largest abs(default value) of the quantity and motion over the frequencies (near-zero values only); "allowed" is the
-    larger of CONVERGENCE_SPREAD and the row's stated uncertainty (uncertainty). A list of dicts, one per (motion,
-    quantity, omega)."""
+    larger of CONVERGENCE_SPREAD and the default row's stated uncertainty (its *_unc, uncertainty). A list of dicts,
+    one per (motion, quantity, omega)."""
     cyl = Cylinder() if cyl is None else cyl
     resolutions = list(CONVERGENCE_LADDER) + [convergence_orders()]
     values = {}
@@ -2504,7 +2553,8 @@ def convergence_table(cyl=None):
                 ref, floor = v[default], CONVERGENCE_FLOOR * scale
                 spread_n = abs(v[finest] - ref) / max(abs(ref), floor)
                 spread_m = abs(v[-1] - ref) / max(abs(ref), floor)
-                allowed = max(CONVERGENCE_SPREAD, uncertainty(motion, quantity, omega))
+                stated = values[omega, motion, default].get("%s_unc" % quantity, float("nan"))
+                allowed = CONVERGENCE_SPREAD if math.isnan(stated) else max(CONVERGENCE_SPREAD, stated)
                 out.append(dict(omega=omega, motion=motion, quantity=quantity, values=v, spread_n=spread_n,
                                 spread_m=spread_m, floored=abs(ref) < floor, allowed=allowed,
                                 known=max(spread_n, spread_m) >= CONVERGENCE_SPREAD and allowed > CONVERGENCE_SPREAD,
@@ -2593,7 +2643,8 @@ def check_uncertainty():
     the estimate is below 1e-5). It reproduces KNOWN_UNCERTAINTY; it does not test the zero-intercept assumption."""
     ok, lines = True, []
     for e in drift_uncertainty():
-        stated = uncertainty("free", e["quantity"], e["omega"])
+        res = DEFAULT_RESOLUTION
+        stated = uncertainty("free", e["quantity"], e["omega"], Cylinder(), res["n_modes"], res["p_max"], res["orders"])
         linear = e["fit"] <= max(UNCERTAINTY_LINEARITY * e["estimate"], 1e-6) * abs(e["value"])
         ok &= e["estimate"] <= stated and linear
         lines.append("%.2f %-7s residuals %s slope %s intercept %.7g fit %.1e estimate %.1e (stated %.0e)%s"
@@ -2621,6 +2672,14 @@ COMPARE_DRIFT = ["Fx_near", "Fx_far", "Fz", "My", "Fx_cs"]
 COMPARE_TERMS = ["%s_%s" % (name, key) for name in ("Fx", "Fz", "My") for key in NEAR_FIELD_TERMS]
 COMPARE_QUANTITIES = COMPARE_FIRST + COMPARE_DRIFT + COMPARE_TERMS
 _UNCERTAINTY_OF = {"Fx_near": "Fx_near", "Fx_far": "Fx_far", "Fz": "Fz", "My": "My", "Fx_cs": "Fx_far"}
+# compare: two frequencies are the same if within this relative distance (HAMS writes omega with 7 digits, %14.6E)
+FREQUENCY_MATCH = 1e-6
+
+
+def _match_frequency(omega, candidates):
+    """The candidate nearest omega if within FREQUENCY_MATCH of it (relative), else None."""
+    best = min(candidates, key=lambda w: abs(w - omega), default=None)
+    return best if best is not None and abs(best - omega) <= FREQUENCY_MATCH * abs(omega) else None
 _TOTAL_OF = {"Fx": "Fx_near", "Fz": "Fz", "My": "My"}
 
 
@@ -2679,29 +2738,37 @@ def _read_hams_case(folder):
     drift = {name: drift_convergence.read_drift(os.path.join(out, name)) if exists(name) else None
              for name in ("MeanDriftMomentum.8", "MeanDriftPressure.9", "MeanDriftControlSurface.7")}
     terms = _read_drift_terms(os.path.join(out, "MeanDriftTerms.txt"))
-    beta = round(COMPARE_HEADING, 3)
-    omegas = set()
-    for table in drift.values():
-        omegas |= {key[0] for key in (table or {}) if key[1] == beta and key[2] == beta}
-    omegas |= {key[0] for key in x if key[1] == round(COMPARE_HEADING, 1)}
+    beta, beta1 = round(COMPARE_HEADING, 3), round(COMPARE_HEADING, 1)
+    # The first-order reader keys omega to 2 decimals, the drift readers to 4: each file's value is taken at its
+    # frequency within FREQUENCY_MATCH of the row's (_match_frequency), MISSING if it has none
+    x_omegas = {key[0] for key in x if key[1] == beta1}
+    first_omegas = x_omegas | {key[0] for key in a} | {key[0] for key in rao if key[1] == beta1}
+    drift_omegas = {name: {key[0] for key in (table or {}) if key[1] == beta and key[2] == beta}
+                    for name, table in drift.items()}
+    terms_omegas = {key[0] for key in (terms or {}) if key[1] == beta and key[2] == beta}
+    omegas = []                       # the frequencies of ExcForce.3 and the drift files, merged within FREQUENCY_MATCH
+    for omega in sorted(x_omegas.union(*drift_omegas.values())):
+        if _match_frequency(omega, omegas) is None:
+            omegas.append(omega)
     values = {}
-    for omega in sorted(omegas):
-        w2 = round(omega, 2)
+    for omega in omegas:
+        w1 = _match_frequency(omega, first_omegas)
         v = {}
         for ij in COMPARE_PAIRS:
             i, j = divmod(ij, 10)
-            v["A%d" % ij] = a.get((w2, i, j), MISSING) if first else MISSING
-            v["B%d" % ij] = b.get((w2, i, j), MISSING) if first else MISSING
+            v["A%d" % ij] = a.get((w1, i, j), MISSING) if first else MISSING
+            v["B%d" % ij] = b.get((w1, i, j), MISSING) if first else MISSING
         for j in MOTION_MODES:
-            v["X%d" % j] = x.get((w2, round(COMPARE_HEADING, 1), j), MISSING)
-            v["RAO%d" % j] = rao.get((w2, round(COMPARE_HEADING, 1), j), MISSING)
+            v["X%d" % j] = x.get((w1, beta1, j), MISSING)
+            v["RAO%d" % j] = rao.get((w1, beta1, j), MISSING)
         for q, name, index in (("Fx_far", "MeanDriftMomentum.8", 1), ("Fx_near", "MeanDriftPressure.9", 1),
                                ("Fz", "MeanDriftPressure.9", 3), ("My", "MeanDriftPressure.9", 5),
                                ("Fx_cs", "MeanDriftControlSurface.7", 1)):
-            table = drift[name]
-            v[q] = MISSING if table is None else table.get((omega, beta, beta, index), MISSING)
+            table, wd = drift[name], _match_frequency(omega, drift_omegas[name])
+            v[q] = MISSING if table is None else table.get((wd, beta, beta, index), MISSING)
+        wt = _match_frequency(omega, terms_omegas)
         for name, index in (("Fx", 1), ("Fz", 3), ("My", 5)):
-            row = None if terms is None else terms.get((omega, beta, beta, index))
+            row = None if terms is None else terms.get((wt, beta, beta, index))
             for number, key in enumerate(NEAR_FIELD_TERMS, start=1):
                 v["%s_%s" % (name, key)] = MISSING if row is None or number not in row else row[number]
         values[omega] = v
@@ -2750,13 +2817,15 @@ def compare(results, reference_rows, names=None):
     folders names), against the reference rows (reference's dicts, fixed and free, any frequencies; the RAOs of both
     motions are compared with the free rows, since HAMS writes Motion.4 for the fixed body too). Keys: case, motion,
     velocity, multiple, panels (drift_convergence.panels_of), ntheta, area_error (polygon_area_error), omega, flag
-    ("irregular" within IRREGULAR_MARGIN of irregular_frequencies, "no reference" if the reference has no row at omega,
-    else ""), and for each q of COMPARE_QUANTITIES: q (HAMS value or MISSING), q_ref, q_rel ((HAMS - reference)/
-    abs(reference), None below the floor, MISSING), and for COMPARE_DRIFT q_unc (the reference's stated relative
-    uncertainty, uncertainty()). Cases are sorted by motion, velocity, multiple. A COMPARE_PREFIX folder that is not a case of
-    drift_convergence.study_cases, or has no output/Wamit_format, is skipped with a printed note."""
+    ("irregular" within IRREGULAR_MARGIN of irregular_frequencies, "no reference" if the reference has no row within
+    FREQUENCY_MATCH of omega, else ""), and for each q of COMPARE_QUANTITIES: q (HAMS value or MISSING), q_ref, q_rel
+    ((HAMS - reference)/abs(reference), None below the floor, MISSING), and for COMPARE_DRIFT q_unc (the stated relative
+    uncertainty that the reference row carries, its *_unc column; nan, not measured, unless the rows are the default
+    hull at DEFAULT_RESOLUTION). Cases are sorted by motion, velocity, multiple. A COMPARE_PREFIX folder that is not a
+    case of drift_convergence.study_cases, or has no output/Wamit_format, is skipped with a printed note."""
     cyl = Cylinder()
-    by = {(r["motion"], round(r["omega"], 2)): r for r in reference_rows}
+    by = {(r["motion"], r["omega"]): r for r in reference_rows}
+    ref_omegas = {motion: [w for (m, w) in by if m == motion] for motion in ("fixed", "free")}
     scales = _floor_scales(by)
     cases = _sharp_cases()
     folders = []
@@ -2779,14 +2848,13 @@ def compare(results, reference_rows, names=None):
         case = cases[name]
         ntheta = drift_convergence.scaled(drift_convergence.fixtures.DRIFT_CYL_MESH, ("ntheta",), case.multiple)["ntheta"]
         for omega, values in _read_hams_case(os.path.join(results, name)).items():
-            w2 = round(omega, 2)
             row = dict(case=name, motion=case.motion, velocity=case.velocity, multiple=case.multiple,
                        panels=drift_convergence.panels_of(case), ntheta=ntheta, area_error=polygon_area_error(ntheta),
-                       omega=w2, flag="")
+                       omega=omega, flag="")
             if any(abs(omega - w) <= IRREGULAR_MARGIN * w for w in irregular):
                 row["flag"] = "irregular"
-            ref = by.get((case.motion, w2))
-            free = by.get(("free", w2))
+            ref = by.get((case.motion, _match_frequency(omega, ref_omegas[case.motion])))
+            free = by.get(("free", _match_frequency(omega, ref_omegas["free"])))
             if ref is None or free is None:
                 row["flag"] = "no reference"
             for q in COMPARE_QUANTITIES:
@@ -2797,8 +2865,9 @@ def compare(results, reference_rows, names=None):
                 else:
                     row[q + "_ref"] = source[_reference_of(q)]
                     row[q + "_rel"] = _compare_relative(values[q], row[q + "_ref"], scales[case.motion, q])
-                if q in COMPARE_DRIFT:
-                    row[q + "_unc"] = uncertainty(case.motion, _UNCERTAINTY_OF[q], w2)
+                if q in COMPARE_DRIFT:   # the stated uncertainty of the reference row itself (nan: not measured)
+                    row[q + "_unc"] = (float("nan") if ref is None
+                                       else ref.get(_UNCERTAINTY_OF[q] + "_unc", float("nan")))
             table.append(row)
     return table
 
@@ -2811,7 +2880,8 @@ def _pct_text(rel):
 
 def format_compare(table):
     """The comparison as text: one block per case, headed by its panels and polygon area error, with three tables, each a
-    row per omega: first order, drift (each percentage followed by the reference's stated uncertainty in percent, [u]),
+    row per omega: first order, drift (each percentage followed by the reference's stated uncertainty in percent, [u],
+    or [n/m] where the reference row states none),
     and the near-field terms (Ia, zero on the vertical wall in both, is left out here; it is in the CSV)."""
     lines = []
     shown_terms = [q for q in COMPARE_TERMS if not q.endswith("_Ia")]
@@ -2833,7 +2903,9 @@ def format_compare(table):
             cells = []
             for q in COMPARE_DRIFT:
                 text = _pct_text(r[q + "_rel"])
-                cells.append("%17s" % (text if text in ("", MISSING) else "%s [%.2f]" % (text, 100.0 * r[q + "_unc"])))
+                unc = r[q + "_unc"]
+                cells.append("%17s" % (text if text in ("", MISSING) else "%s [%s]" % (
+                    text, "n/m" if math.isnan(unc) else "%.2f" % (100.0 * unc))))
             lines.append("  %5.2f %-9s %s" % (r["omega"], r["flag"], " ".join(cells)))
         lines.append("  near-field terms (MeanDriftTerms.txt), % difference:")
         lines.append("  %5s %-9s %s" % ("omega", "flag", " ".join("%8s" % q for q in shown_terms)))
@@ -2861,8 +2933,9 @@ def write_compare_csv(path, table):
         for r in table:
             out = []
             for c in cols:
-                if c.endswith("_unc_pct"):
-                    out.append("%.3g" % (100.0 * r[c[:-8] + "_unc"]))
+                if c.endswith("_unc_pct"):   # empty where the reference row states none (nan, not measured)
+                    unc = r[c[:-8] + "_unc"]
+                    out.append("" if math.isnan(unc) else "%.3g" % (100.0 * unc))
                 elif c.endswith("_pct"):
                     out.append(_pct_text(r[c[:-4] + "_rel"]))
                 elif c == "area_error":
@@ -2895,7 +2968,15 @@ def run_compare(results, out=None, reference_csv=None):
         source = "read from %s" % reference_csv
     else:
         rows = default_reference_rows()
-        source = "computed at DEFAULT_RESOLUTION"
+        source = "computed"
+    resolutions = sorted(set((r["n_modes"], str(r["p_max"]), r["orders"]) for r in rows))
+    source += ", resolution %s" % "; ".join("N %d, gap basis %s, orders 0 ... %d" % res for res in resolutions)
+    if not all(_is_default_resolution(r["n_modes"], r["p_max"], r["orders"]) for r in rows):
+        source += " (not DEFAULT_RESOLUTION)"
+    unstated = sum(math.isnan(r["%s_unc" % q]) for r in rows for q in UNCERTAIN_QUANTITIES)
+    if unstated:
+        source += "; %d stated uncertainties are nan (not measured: only the default hull at DEFAULT_RESOLUTION " \
+                  "has them), shown [n/m]" % unstated
     table = compare(results, rows)
     if not table:
         print("compare: no %s* case folder with results in %s" % (COMPARE_PREFIX, results))
@@ -2924,6 +3005,7 @@ def _fixture_value(value):
 # The fixture writes every complex value with this phase, so that a reader that takes the wrong column (Re or Im for MOD,
 # MOD or Im for Re) sees a relative difference of at least 1 - cos(phase) = 0.17
 FIXTURE_PHASE = 0.6   # rad
+FIXTURE_UNCERTAINTY = 0.0123   # check_compare_fixture: Fz_unc set on the free 0.70 rad/s row; compare must carry it
 
 
 def _fixture_complex(mod=None, re=None):
@@ -2992,7 +3074,9 @@ def check_compare_fixture():
     FIXTURE_PHASE, so a reader that takes the wrong column fails; an a_sharp_ folder that is not a study case and one
     without output/Wamit_format, skipped; the 1.60 rad/s rows marked "irregular" and
     the others not; free F_x near and far at 0.40 rad/s (3e-6 of 0.11) empty, below the floor of
-    drift_convergence.percent; and the irregular frequencies of irregular_frequencies equal to the 1.548 and 1.939 rad/s of
+    drift_convergence.percent; the reference rows (LIGHT_RESOLUTION, not the default) all nan in *_unc, and compare's
+    q_unc taken from the row (nan everywhere but FIXTURE_UNCERTAINTY, set on the free 0.70 rad/s row's Fz_unc); and the
+    irregular frequencies of irregular_frequencies equal to the 1.548 and 1.939 rad/s of
     drift_convergence.IRREGULAR_FREQUENCIES to 1e-3."""
     import tempfile
 
@@ -3016,6 +3100,10 @@ def check_compare_fixture():
         os.makedirs(os.path.join(results, "b_bottom_src_m1"))   # not a_sharp_: not read
         os.makedirs(os.path.join(results, "a_sharp_free_src_m9", "output", "Wamit_format"))   # not a study case: skipped
         os.makedirs(os.path.join(results, "a_sharp_free_src_m1"))   # no output/Wamit_format: skipped
+        stated = sum(not math.isnan(r["%s_unc" % q]) for r in rows for q in UNCERTAIN_QUANTITIES)
+        if stated:   # LIGHT_RESOLUTION is not the default: uncertainty states none
+            problems.append("%d stated uncertainties in the LIGHT_RESOLUTION rows" % stated)
+        by["free", 0.70]["Fz_unc"] = FIXTURE_UNCERTAINTY   # compare must carry the row's own *_unc
         table = compare(results, rows)
     cases = sorted(set(r["case"] for r in table))
     if cases != ["a_sharp_fixed_diff_m1", "a_sharp_free_src_m2"]:
@@ -3033,6 +3121,10 @@ def check_compare_fixture():
                 empty.append((r["case"], r["omega"], q))
             else:
                 worst = max(worst, abs(rel))
+        for q in COMPARE_DRIFT:
+            marked = r["case"] == "a_sharp_free_src_m2" and r["omega"] == 0.70 and q == "Fz"
+            if marked != (r[q + "_unc"] == FIXTURE_UNCERTAINTY) or not (marked or math.isnan(r[q + "_unc"])):
+                problems.append("%s %.2f %s_unc %r" % (r["case"], r["omega"], q, r[q + "_unc"]))
         flagged = r["flag"] == "irregular"
         if flagged != (r["omega"] == 1.60):
             problems.append("%s %.2f flag %r" % (r["case"], r["omega"], r["flag"]))
@@ -3063,14 +3155,14 @@ SIGN_CANCELLATION = 0.05
 
 
 def check_compare_signs():
-    """At the finest source mesh of the study (SIGN_CASES, if COMPARE_RESULTS holds a_sharp_free_src_m4; else PASS,
-    skipped), outside the irregular rows and wherever abs(reference) is above the floor of drift_convergence.percent:
-    every near-field term (MeanDriftTerms.txt) of F_x, F_z and M_y, and far-field F_x, has the reference's sign; and the
+    """At the finest source mesh of the study (SIGN_CASES, if COMPARE_RESULTS holds a_sharp_free_src_m4; else SKIP:
+    ok is None, which _run_checks prints as SKIP and counts as neither passed nor failed), outside the irregular rows
+    and wherever abs(reference) is above the floor of drift_convergence.percent: every near-field term (MeanDriftTerms.txt) of F_x, F_z and M_y, and far-field F_x, has the reference's sign; and the
     near-field totals F_x, F_z, M_y do too where abs(reference) is at least SIGN_CANCELLATION of the largest abs(term) of
     the reference (the totals below that are listed, not tested). A flipped sign or a conjugate in a conversion would
     flip whole terms. COMPARE_RESULTS is resolved from this script's folder, not the working directory."""
     if not os.path.isdir(os.path.join(COMPARE_RESULTS, SIGN_CASES[0])):
-        return True, "skipped: %s not found" % os.path.join(COMPARE_RESULTS, SIGN_CASES[0])
+        return None, "%s not found" % os.path.join(COMPARE_RESULTS, SIGN_CASES[0])
     table = compare(COMPARE_RESULTS, default_reference_rows(),
                     names=[n for n in SIGN_CASES if os.path.isdir(os.path.join(COMPARE_RESULTS, n))])
     tested, wrong, cancelling = 0, [], []
@@ -3108,7 +3200,7 @@ CHECKS = {"roots": check_roots, "inner_products": check_inner_products, "polylog
           "compare_fixture": check_compare_fixture}
 # Run by name (check uncertainty compare_signs) and by the reference subcommand, not by a bare check: uncertainty computes
 # nine rows at N = 128000 that no other check needs; compare_signs reads the study's results outside the repository and
-# computes the 22 reference rows (about 3 min)
+# computes the 22 reference rows (about 92 s)
 SLOW_CHECKS = {"uncertainty": check_uncertainty, "compare_signs": check_compare_signs}
 ALL_CHECKS = dict(CHECKS, **SLOW_CHECKS)
 
@@ -3177,16 +3269,20 @@ def format_reference(rows):
 
 
 def _run_checks(names):
-    failed = 0
+    """Run the checks; (failed, skipped). A check returns ok True (PASS), False (FAIL) or None (SKIP: it could not
+    run for want of data, as compare_signs without the study's results)."""
+    failed = skipped = 0
     for name in names:
         start = time.time()
         try:
             ok, message = ALL_CHECKS[name]()
         except Exception as exc:  # a check that cannot run has failed
             ok, message = False, "%s: %s" % (type(exc).__name__, exc)
-        failed += not ok
-        print("%s %s (%.0f s): %s" % ("PASS" if ok else "FAIL", name, time.time() - start, message), flush=True)
-    return failed
+        failed += ok is False
+        skipped += ok is None
+        status = "SKIP" if ok is None else "PASS" if ok else "FAIL"
+        print("%s %s (%.0f s): %s" % (status, name, time.time() - start, message), flush=True)
+    return failed, skipped
 
 
 def run_reference(out=None):
@@ -3209,8 +3305,8 @@ def run_reference(out=None):
         write_reference_csv(out, ordered)
         print("wrote %d rows to %s" % (len(ordered), out))
     print("reference values: %.0f s" % (time.time() - start), flush=True)
-    failed = _run_checks(["convergence"] + [name for name in ALL_CHECKS if name != "convergence"])
-    print("reference: %d check(s) failed; run time %.0f s" % (failed, time.time() - start))
+    failed, skipped = _run_checks(["convergence"] + [name for name in ALL_CHECKS if name != "convergence"])
+    print("reference: %d check(s) failed, %d skipped; run time %.0f s" % (failed, skipped, time.time() - start))
     return failed
 
 
@@ -3225,7 +3321,7 @@ def main(argv=None):
     p_cmp.add_argument("results", metavar="RESULTS", help="folder holding the case folders (a_sharp_*/output/Wamit_format)")
     p_cmp.add_argument("--out", metavar="CSV", help="write the comparison to this CSV file")
     p_cmp.add_argument("--reference", metavar="CSV", help="read the reference rows from a CSV of the reference subcommand "
-                                                          "instead of computing them (about 2 min)")
+                                                          "instead of computing them (93 s); under 1 s")
     args = parser.parse_args(argv)
     if args.command == "reference":
         return 1 if run_reference(args.out) else 0
@@ -3236,8 +3332,8 @@ def main(argv=None):
     if unknown:
         parser.error("unknown check(s) %s; known: %s" % (", ".join(unknown), ", ".join(ALL_CHECKS)))
     start = time.time()
-    failed = _run_checks(names)
-    print("check: %d of %d failed; run time %.0f s" % (failed, len(names), time.time() - start))
+    failed, skipped = _run_checks(names)
+    print("check: %d of %d failed, %d skipped; run time %.0f s" % (failed, len(names), skipped, time.time() - start))
     return 1 if failed else 0
 
 
