@@ -9,8 +9,8 @@ module test_field_velocity
   use SecondOrderTypes, only : panel_mesh, first_order_state, cs_points, cs_fields, CS_WALL, CS_LINE
   use FirstOrderState, only : image_signs, incident_phi, incident_grad, wave_gravity
   use WaterlineField, only : field_influence_row
-  use SurfaceVelocity, only : source_panel_integrals
-  use FieldVelocity, only : fields_green
+  use SurfaceVelocity, only : source_panel_integrals, source_operator, build_source_operator, velocity_source
+  use FieldVelocity, only : fields_green, fields_source
   use second_order_fixtures, only : make_cylinder, maccamy_fuchs_state, maccamy_fuchs_phi, maccamy_fuchs_field
   use test_waterline_field, only : set_wave, load_single, load_panels
   implicit none
@@ -33,6 +33,7 @@ module test_field_velocity
   real(8), parameter :: incident_grad_limit = 1d-5, incident_phi_limit = 1d-12
   real(8), parameter :: exact_phi_limit = 1d-12, exact_fd_limit = 1d-6
   real(8), parameter :: green_phi_limit = 1d-2, green_grad_limit = 2d-2
+  real(8), parameter :: source_phi_limit = 2d-2, source_grad_limit = 3d-2
   ! The size given to the test points, a typical control-surface panel
   real(8), parameter :: point_size = 0.5d0
 
@@ -45,7 +46,8 @@ contains
       new_unittest("field_rows_match_analytic_gradient", test_rows_gradient), &
       new_unittest("incident_stencil", test_incident_stencil), &
       new_unittest("maccamy_fuchs_field_consistent", test_maccamy_fuchs_field), &
-      new_unittest("green_field_matches_exact", test_green_field) &
+      new_unittest("green_field_matches_exact", test_green_field), &
+      new_unittest("source_field_matches_exact", test_source_field) &
       ]
   end subroutine collect_field_velocity
 
@@ -391,5 +393,54 @@ contains
     write (info, '(a,es10.3)') "gradient against MacCamy-Fuchs, relative to max |gradient| ", err_grad
     call check(error, err_grad <= green_grad_limit, trim(info))
   end subroutine test_green_field
+
+  !> As test_green_field, by the source route: sigma from the solve of the exact normal derivative, then fields_source.
+  !> Measured: 6.41e-3 for phi and 8.28e-3 for the gradient; the limits are those of the plan.
+  subroutine test_source_field(error)
+    type(error_type), allocatable, intent(out) :: error
+    real(8), parameter :: radius = 5d0, depth = 10d0
+    type(panel_mesh) :: full, mesh
+    type(first_order_state) :: states(1)
+    type(source_operator) :: op
+    type(cs_points) :: pts
+    type(cs_fields) :: fields(1)
+    complex(8), allocatable :: sigmas(:, :)
+    complex(8) :: phi_ref, grad_ref(3)
+    real(8) :: g_w, max_phi, max_grad, err_phi, err_grad
+    integer :: i
+    character(len=120) :: info
+
+    call set_wave(depth)
+    call make_cylinder(radius, depth, 64, 16, 1, full, .false.)
+    call load_panels(full, 0, 0, mesh)
+    g_w = wave_gravity(W1, WK, depth)
+    call maccamy_fuchs_state(mesh, radius, depth, WK, W1, 1d0, BETA, g_w, 1000d0, states(1))
+    allocate (sigmas(mesh%n, 1))
+    call build_source_operator(mesh, .false., .false., op)
+    call velocity_source(mesh, op, states(1), sigma_full=sigmas(:, 1))
+    call ring_points(10, 30, [7.5d0, 7.5d0, 7.5d0, 7.5d0], [0d0, -1d0, -4d0, -8d0], pts)
+    call fields_source(mesh, pts, states, sigmas, .false., fields)
+    max_phi = 0d0
+    max_grad = 0d0
+    err_phi = 0d0
+    err_grad = 0d0
+    do i = 1, pts%n
+      call maccamy_fuchs_field(pts%x(:, i), radius, depth, WK, W1, 1d0, BETA, g_w, phi_ref, grad_ref)
+      max_grad = max(max_grad, sqrt(sum(abs(grad_ref)**2)))
+      err_grad = max(err_grad, sqrt(sum(abs(fields(1)%grad(:, i) - grad_ref)**2)))
+      ! phi is computed at every point by this route, wall points too
+      max_phi = max(max_phi, abs(phi_ref))
+      err_phi = max(err_phi, abs(fields(1)%phi(i) - phi_ref))
+    end do
+    err_phi = err_phi/max_phi
+    err_grad = err_grad/max_grad
+    print '(4x,a,2es10.2)', "Source field against MacCamy-Fuchs: phi and gradient errors, relative to the largest ", &
+      err_phi, err_grad
+    write (info, '(a,es10.3)') "phi against MacCamy-Fuchs, relative to max |phi| ", err_phi
+    call check(error, err_phi <= source_phi_limit, trim(info))
+    if (allocated(error)) return
+    write (info, '(a,es10.3)') "gradient against MacCamy-Fuchs, relative to max |gradient| ", err_grad
+    call check(error, err_grad <= source_grad_limit, trim(info))
+  end subroutine test_source_field
 
 end module test_field_velocity
