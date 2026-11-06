@@ -58,7 +58,7 @@ CONTAINS
       ! A panel within 50 panel sizes of the point gets panel integrals of 1/r and of its image, and one further away the
       ! centroid value. x_decide, if present, is the point of that decision instead of xp. The points of one difference
       ! stencil pass its centre, so that they all take the same branch: otherwise the jump between the two would enter the
-      ! difference, divided by the step (design spec, section 4.1). For the same reason they also take the series that
+      ! difference, divided by the step (fields_green in FieldVelocity.f90). For the same reason they also take the series that
       ! FINGREEN3D picks at the centre (RR_DECIDE): the series do not agree exactly at the switches (FINGREEN3D_R).
       ! field_mode, if present and true, passes FIELD to FINGREEN3D: its Limes returns isolated outliers, which a difference
       ! takes over 2 delta. Only fields_green passes it, so the waterline rows (waterline_rows) keep the default route.

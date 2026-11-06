@@ -190,7 +190,9 @@ contains
     real(8), intent(in) :: wvn_local(:), nu
     type(error_type), allocatable, intent(out) :: error
     real(8), parameter :: depth = 50d0
-    ! Panel q and field point p of each sample, and Re, Im of GRN(1:4) from the code before FIELD
+    ! Panel q and field point p of each sample, and Re, Im of GRN(1:4) from the code before FIELD, built with the fpm flags.
+    ! Limes amplifies a 1-ulp change of the compiler output (sample 3 sits on a spike), so regenerate these values when the
+    ! compiler or its flags change.
     real(8), parameter :: q(3, 5) = reshape([0.5d0, 0d0, -3d0, 1.5d0, 0d0, -3d0, -4.5d0, 0.5d0, -5d0, 15d0, 0d0, -3d0, &
       40d0, 0d0, -3d0], [3, 5])
     real(8), parameter :: p(3, 5) = reshape([0d0, 0d0, -8d0, 0d0, 0d0, -8d0, &

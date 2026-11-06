@@ -7,6 +7,9 @@
       ! ..... Public Subroutines ...................................................................................................
 
       PUBLIC :: FINGREEN3D
+
+      ! Limit of nu*h for LINTON, shared by the ladders of FINGREEN3D_R and FIELD_SERIES, see FINGREEN3D_R
+      REAL*8,PARAMETER,PRIVATE:: VHLIN=50.D0
    
       CONTAINS
 ! ==================================================================================
@@ -170,7 +173,7 @@
         REAL*8,INTENT(IN)::ZF,ZP,V,WVN(1:NK),H
         COMPLEX*16,INTENT(OUT):: GRN(3)
         COMPLEX*16 FG(3)
-        REAL*8,PARAMETER:: RLIN=0.02D0, VHLIN=50.D0                              ! Limits of R/h and nu*h for LINTON, see below
+        REAL*8,PARAMETER:: RLIN=0.02D0                                           ! Limit of R/h for LINTON (nu*h: VHLIN), see below
 
         DATA  G,PI4 /9.807D0,12.56637061435917D0/
          
@@ -190,7 +193,8 @@
 ! difference stencil all take the series of its centre: the series is still evaluated at RR.
         IF (PRESENT(RR_DECIDE)) RHP=DABS(RR_DECIDE/H)
 ! FIELD, for the field points of a difference stencil: Limes in EIGENE and PIDCOCK returns isolated outliers, which a
-! difference takes over 2*delta. With FIELD true FIELD_SERIES picks series without Limes. Absent or false: as before.
+! difference takes over 2*delta. With FIELD true FIELD_SERIES picks series without Limes, except PIDCOCK for
+! nu*h > VHLIN, which keeps Limes (see FIELD_SERIES). Absent or false: as before.
         PLAIN=.FALSE.
         IF (PRESENT(FIELD)) PLAIN=FIELD
         IF (PLAIN) THEN
@@ -255,7 +259,9 @@
 ! over 2*delta. EIGENE_DIRECT replaces EIGENE. LINTON also takes R/h from 0.02 to 0.05 when nu*h <= VHLIN, in place of
 ! PIDCOCK: a direct PIDCOCK sum of 199 roots is 6.4e-4 off a direct sum of the series in dG/dR at R/h = 0.02 and
 ! nu*h = 25, against at most 6.5e-7 for LINTON on [0.02, 0.05] up to nu*h = 25 (measured, probe against
-! direct_sum_green of the tests). Above nu*h = 50 PIDCOCK with Limes is kept: at nu*h = 62 a direct PIDCOCK sum is off
+! direct_sum_green of the tests). For nu*h from 25 to 50 LINTON is less accurate there: 1.8e-3 in dG/dR at
+! nu*h = 49.9, against 1.4e-3 for the direct PIDCOCK sum, and the same as LINTON below R/h = 0.02 (measured the
+! same way). Above nu*h = 50 PIDCOCK with Limes is kept: at nu*h = 62 a direct PIDCOCK sum is off
 ! by up to 1e5 in dG/dR at R/h = 0.0006 and LINTON by 0.1 (measured the same way).
 ! RHP is the R/h of the choice (RR_DECIDE or RR), RR the distance at which the series is evaluated.
 
@@ -266,7 +272,7 @@
         INTEGER,INTENT(IN):: NK
         REAL*8,INTENT(IN):: RR,RHP,ZF,ZP,V,WK,WVN(1:NK),H
         COMPLEX*16,INTENT(OUT):: FG(3)
-        REAL*8,PARAMETER:: RLIN_FIELD=0.05D0, VHLIN=50.D0
+        REAL*8,PARAMETER:: RLIN_FIELD=0.05D0
 
         IF (RHP.LT.0.0005D0.OR.(RHP.LT.RLIN_FIELD.AND.V*H.LE.VHLIN)) THEN
           CALL LINTON_SCALED(RR,ZF,ZP,V,WVN,NK,H,FG)
@@ -674,7 +680,8 @@
 !       Purpose: This program computes Green function and its derivatives 
 !                using Pidcock's method, with epsilon algorithm, in the region 
 !                R/H.GE.0.0005 and R/H.LT.0.05 (from R/H = 0.02 when nu*h <= 50,
-!                where LINTON is used below). The terms needed is 50~100 to 
+!                where LINTON is used below; with FIELD, FIELD_SERIES uses it only
+!                for nu*h > 50). The terms needed is 50~100 to 
 !                10^-4 accuracy, with a maximum number of term 100.
 ! 
 !  License:
