@@ -183,6 +183,18 @@ Read only when `ControlFile.in` has `Damping_lid 1`. GMRES (`Solver_type 2`) is 
 
 The lid is a list of triangular or quadrilateral panels on the free surface z = 0, with the same file structure as `WaterPlaneMesh.pnl` (three header lines, then `NELEM NTND ISX ISY`, the nodes, the panels). There is one file for any number of bodies, because a lid belongs to no body. Its nodes are in global coordinates, not in the local frame of a body. Holes and separate patches are allowed, since the lid is only a list of panels. The vertex order of a panel does not matter, because the lid has no normal.
 
+After the panels (after the `# End Definition of Node Relations` line) the file has a damping block, in the layout of the WAMIT `.dmp` file:
+
+```
+    # Start Definition of Damping   ! number of dampers, then: first panel  last panel  epsilon (m/s)
+         2
+         1        40    0.2000000000
+        41        80    0.1000000000
+    # End Definition of Damping
+```
+
+The lines are read free-format, and a trailing `! comment` is allowed. Each damper line gives the first and last panel number of `DampingLid.pnl` and epsilon in m/s. The ranges must cover every lid panel exactly once. epsilon = 0 is allowed and has no default. One log line per damper is printed at the start of the run. In this version the block is read and checked only; the solver still holds phi = 0 on the lid (see below), so epsilon has no effect yet.
+
 The lid may touch a body or lie away from every body. The file is read by `READ_LID_MESH` in [DampingLid.f90](../src/DampingLid.f90). Unlike the `WaterPlaneMesh.pnl` read in `HAMS_Prog.f90`, it does not overwrite `ISX` and `ISY`: it compares them with the hull's.
 
 What the lid does: the potential is held at zero on it. This is the total potential, so for diffraction the scattered potential cancels the incident one there. The mean power through the free surface per unit area is proportional to Im(phi* dphi/dz), which is zero where phi = 0, so the lid absorbs no energy. It suppresses the wave on the lid by reflecting it, as a pressure-release surface does. The name is the one of the file, not of the physics.
@@ -203,6 +215,16 @@ The run stops with a message and exit code 1 when:
 | a vertex number outside 1 to the number of nodes | `a vertex of a lid panel in DampingLid.pnl is not a node number` |
 | a lid panel with a repeated vertex | `a lid panel in DampingLid.pnl has a repeated vertex` |
 | a lid panel of zero area (area below 1e-12 times the square of its size) | `a lid panel in DampingLid.pnl has zero area` |
+| no `# Start Definition of Damping` line after the panels | `no damping block` |
+| number of dampers below 1 or above the number of lid panels, or unreadable | `number of dampers` (or `cannot read the damping`), with the line number |
+| a damper range with first > last, or outside 1 to the number of lid panels | `damper panel range`, with the line number |
+| a lid panel in two dampers | `lid panel in two dampers`, with the panel number |
+| a lid panel in no damper | `lid panel in no damper`, with the panel number |
+| a negative epsilon | `negative damping`, with the line number |
+| a damper line that cannot be read | `cannot read the damping`, with the line number |
+| a zero frequency in the frequency list | `zero frequency with a damping lid`, with its number in the list |
+
+The zero frequency that `0_inf_frequency_limits 1` adds to the run is not in the list and does not stop it; the infinite-frequency limit cannot be given without it.
 
 The inside-hull check sums the hull's double-layer Rankine integrals and their images in z = 0 at each lid centroid. This is a solid angle: 4 pi in magnitude inside a closed hull and 0 outside, and the run stops above 2 pi. A lid inside a hull is what the water plane mesh with `If_remove_irr_freq` is for. Only the centroids are tested, so a panel that straddles the waterline with its centroid outside the hull passes.
 

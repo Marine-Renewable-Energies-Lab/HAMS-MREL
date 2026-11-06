@@ -75,13 +75,20 @@ CONTAINS
 
 !   !   Reads DampingLid.pnl, in the format of WaterPlaneMesh.pnl. Unlike the waterplane read in HAMS_Prog, the symmetry
 !   !   flags of the file are compared with the hull's and never stored over them. Stops on a read error, on a panel with other
-!   !   than 3 or 4 vertices, and on a vertex number outside 1 to the number of nodes.
+!   !   than 3 or 4 vertices, and on a vertex number outside 1 to the number of nodes. Then reads the damping block that follows
+!   !   the panels (docs/input_files.md): the number of dampers, and per damper the first and last panel and epsilon in m/s,
+!   !   each line read list-directed so that a trailing "! comment" is ignored. Fills NDAMP, IDAMP, EDAMP and LEPS, stops on
+!   !   a missing block, a bad count, range or value, a panel in two dampers and a panel in none, and prints one line per damper.
 
       SUBROUTINE READ_LID_MESH(INPUTDIR)
       IMPLICIT   NONE
 
       CHARACTER(LEN=*),INTENT(IN):: INPUTDIR
       INTEGER:: IU,IND,IEL,J,M,LISX,LISY,IOS
+      INTEGER:: ILINE,K,IP1,IP2
+      REAL*8:: E
+      INTEGER,ALLOCATABLE:: OWNER(:)
+      LOGICAL:: FOUND
       CHARACTER(LEN=512):: LINE
 
       OPEN(NEWUNIT=IU,FILE=TRIM(INPUTDIR)//"/DampingLid.pnl",STATUS="OLD",ACTION="READ",IOSTAT=IOS)
@@ -135,6 +142,80 @@ CONTAINS
         STOP 1
        ENDIF
       ENDDO
+
+      ! ..... The damping block. ILINE is the number of the last line read of the file: 3 header lines, the counts line, 2
+      ! header lines, the nodes, 3 header lines and the panels.
+      ILINE=3+1+2+LNTND+3+LNELEM
+      FOUND=.FALSE.
+      DO
+       READ(IU,'(A)',IOSTAT=IOS) LINE
+       IF (IOS.NE.0) EXIT
+       ILINE=ILINE+1
+       IF (INDEX(LINE,'Start Definition of Damping').GT.0) THEN
+        FOUND=.TRUE.
+        EXIT
+       ENDIF
+      ENDDO
+      IF (.NOT.FOUND) THEN
+       PRINT *,' Error: no damping block in DampingLid.pnl: the line "# Start Definition of Damping" is missing after the panels.'
+       STOP 1
+      ENDIF
+
+      READ(IU,'(A)',IOSTAT=IOS) LINE
+      ILINE=ILINE+1
+      IF (IOS.EQ.0) READ(LINE,*,IOSTAT=IOS) NDAMP
+      IF (IOS.NE.0) THEN
+       PRINT *,' Error: cannot read the damping block of DampingLid.pnl, the number of dampers on line',ILINE
+       STOP 1
+      ENDIF
+      IF (NDAMP.LT.1.OR.NDAMP.GT.LNELEM) THEN
+       PRINT *,' Error: the number of dampers must be from 1 to the number of lid panels',LNELEM,', line',ILINE,' has',NDAMP
+       STOP 1
+      ENDIF
+
+      ALLOCATE(IDAMP(NDAMP,2),EDAMP(NDAMP),LEPS(LNELEM),OWNER(LNELEM))
+      OWNER=0
+      DO K=1,NDAMP
+       E=0.D0
+       READ(IU,'(A)',IOSTAT=IOS) LINE
+       ILINE=ILINE+1
+       IF (IOS.EQ.0) READ(LINE,*,IOSTAT=IOS) IP1,IP2,E
+       IF (IOS.NE.0.OR.E.NE.E) THEN
+        PRINT *,' Error: cannot read the damping line (first panel, last panel, epsilon), line',ILINE
+        STOP 1
+       ENDIF
+       IF (IP1.GT.IP2.OR.IP1.LT.1.OR.IP2.GT.LNELEM) THEN
+        PRINT *,' Error: damper panel range must be 1 <= first <= last <=',LNELEM,', line',ILINE,' has',IP1,IP2
+        STOP 1
+       ENDIF
+       IF (E.LT.0.D0) THEN
+        PRINT *,' Error: negative damping epsilon on line',ILINE
+        STOP 1
+       ENDIF
+       DO IEL=IP1,IP2
+        IF (OWNER(IEL).NE.0) THEN
+         PRINT *,' Error: lid panel in two dampers, panel No.',IEL,' (dampers',OWNER(IEL),' and',K,'), line',ILINE
+         STOP 1
+        ENDIF
+        OWNER(IEL)=K
+        LEPS(IEL)=E
+       ENDDO
+       IDAMP(K,1)=IP1
+       IDAMP(K,2)=IP2
+       EDAMP(K)=E
+      ENDDO
+      DO IEL=1,LNELEM
+       IF (OWNER(IEL).EQ.0) THEN
+        PRINT *,' Error: lid panel in no damper, panel No.',IEL
+        STOP 1
+       ENDIF
+      ENDDO
+      DO K=1,NDAMP
+       WRITE(LINE,'(ES12.5)') EDAMP(K)
+       WRITE(*,'(A,I0,A,I0,A,I0,A,I0,A,A,A)') ' Damper ',K,': panels ',IDAMP(K,1),' to ',IDAMP(K,2),' (', &
+        IDAMP(K,2)-IDAMP(K,1)+1,' panels), epsilon = ',TRIM(ADJUSTL(LINE)),' m/s'
+      ENDDO
+      DEALLOCATE(OWNER)
 
       CLOSE(IU)
 
@@ -204,11 +285,11 @@ CONTAINS
       INTEGER,INTENT(IN):: NBODYIN
 
       IF (NBODYIN.EQ.1) THEN
-       ALLOCATE(MXQ(LNELEM,7,NSYS))
+       ALLOCATE(MXLPOT(LNELEM,7,NSYS))
       ELSE
-       ALLOCATE(MXQ(LNELEM,6*NBODYIN+1,NSYS))
+       ALLOCATE(MXLPOT(LNELEM,6*NBODYIN+1,NSYS))
       ENDIF
-      MXQ=(0.D0,0.D0)
+      MXLPOT=(0.D0,0.D0)
 
       RETURN
       END SUBROUTINE ALLOCATE_LID_UNKNOWNS
@@ -798,7 +879,7 @@ CONTAINS
 !SUBROUTINE LID_UNPACK
 
 !   !   From the solution of each symmetry class in B, the hull phi of each symmetry image into MXPOT(:,MD0+1:MD0+NRHS,:) and
-!   !   the lid q into MXQ, by the RXY recombination and the /NSYS of RADIATION_SOLVER.
+!   !   the lid q into MXLPOT, by the RXY recombination and the /NSYS of RADIATION_SOLVER.
 
       SUBROUTINE LID_UNPACK(B,NRHS,MD0,NELEM,NSYS)
       IMPLICIT   NONE
@@ -810,13 +891,13 @@ CONTAINS
       DO M=1,NRHS
        DO IP=1,NSYS
         MXPOT(:,MD0+M,IP)=(0.D0,0.D0)
-        MXQ(:,MD0+M,IP)=(0.D0,0.D0)
+        MXLPOT(:,MD0+M,IP)=(0.D0,0.D0)
         DO IS=1,NSYS
          MXPOT(:,MD0+M,IP)=MXPOT(:,MD0+M,IP)+B(1:NELEM,M,IS)*RXY(IP,IS)
-         MXQ(:,MD0+M,IP)=MXQ(:,MD0+M,IP)+B(NELEM+1:NELEM+LNELEM,M,IS)*RXY(IP,IS)
+         MXLPOT(:,MD0+M,IP)=MXLPOT(:,MD0+M,IP)+B(NELEM+1:NELEM+LNELEM,M,IS)*RXY(IP,IS)
         ENDDO
         MXPOT(:,MD0+M,IP)=MXPOT(:,MD0+M,IP)/NSYS
-        MXQ(:,MD0+M,IP)=MXQ(:,MD0+M,IP)/NSYS
+        MXLPOT(:,MD0+M,IP)=MXLPOT(:,MD0+M,IP)/NSYS
        ENDDO
       ENDDO
 
@@ -827,7 +908,7 @@ CONTAINS
 !SUBROUTINE LID_RADIATION
 
 !   !   The six radiation problems with the lid. Hull rows from ASSB_RBC. Lid and interior rows: sum_j S_xj V_j with S from
-!   !   LID_ASSEMBLE and the mode signs of RBC_IRR; on the lid phi = 0, so nothing else. Fills MXPOT(:,1:6,:) and MXQ(:,1:6,:).
+!   !   LID_ASSEMBLE and the mode signs of RBC_IRR; on the lid phi = 0, so nothing else. Fills MXPOT(:,1:6,:) and MXLPOT(:,1:6,:).
 
       SUBROUTINE LID_RADIATION(NELEM,NSYS)
       IMPLICIT   NONE
@@ -880,7 +961,7 @@ CONTAINS
 !   !   scattered one is -phi_I, and the free term 4 pi phi_S moves to the right as +4 pi phi_I(x), at x reflected for each
 !   !   image. Interior rows have no free term. q is that of the total potential as well, since phi_I satisfies the free-surface
 !   !   condition. At zero frequency the incident term is left out, as CalPotential leaves out the incident potential there.
-!   !   Fills MXPOT(:,7,:) and MXQ(:,7,:).
+!   !   Fills MXPOT(:,7,:) and MXLPOT(:,7,:).
 
       SUBROUTINE LID_DIFFRACTION(NELEM,NSYS)
       IMPLICIT   NONE

@@ -88,6 +88,15 @@ contains
             new_unittest("stops_lid_inside", stops_lid_inside), &
             new_unittest("stops_lid_value", stops_lid_value), &
             new_unittest("stops_lid_repeated", stops_lid_repeated), &
+            new_unittest("stops_lid_damp_missing", stops_lid_damp_missing), &
+            new_unittest("stops_lid_damp_count", stops_lid_damp_count), &
+            new_unittest("stops_lid_damp_range", stops_lid_damp_range), &
+            new_unittest("stops_lid_damp_order", stops_lid_damp_order), &
+            new_unittest("stops_lid_damp_overlap", stops_lid_damp_overlap), &
+            new_unittest("stops_lid_damp_gap", stops_lid_damp_gap), &
+            new_unittest("stops_lid_damp_negative", stops_lid_damp_negative), &
+            new_unittest("stops_lid_damp_value", stops_lid_damp_value), &
+            new_unittest("stops_lid_zero_frequency", stops_lid_zero_frequency), &
             new_unittest("flag_off_matches_no_lid", flag_off_matches_no_lid), &
             new_unittest("lid_runs", lid_runs), &
             new_unittest("lid_damping_nonnegative", lid_damping_nonnegative), &
@@ -284,6 +293,52 @@ contains
         type(error_type), allocatable, intent(out) :: error
         call run_case_expect_stop("lid_stop_repeated", "lid panel in DampingLid.pnl has a repeated vertex", error)
     end subroutine stops_lid_repeated
+
+    subroutine stops_lid_damp_missing(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case_expect_stop("lid_stop_damp_missing", "no damping block", error)
+    end subroutine stops_lid_damp_missing
+
+    subroutine stops_lid_damp_count(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case_expect_stop("lid_stop_damp_count", "number of dampers", error)
+    end subroutine stops_lid_damp_count
+
+    subroutine stops_lid_damp_range(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case_expect_stop("lid_stop_damp_range", "damper panel range", error)
+    end subroutine stops_lid_damp_range
+
+    subroutine stops_lid_damp_order(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case_expect_stop("lid_stop_damp_order", "damper panel range", error)
+    end subroutine stops_lid_damp_order
+
+    subroutine stops_lid_damp_overlap(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case_expect_stop("lid_stop_damp_overlap", "lid panel in two dampers", error)
+    end subroutine stops_lid_damp_overlap
+
+    subroutine stops_lid_damp_gap(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case_expect_stop("lid_stop_damp_gap", "lid panel in no damper", error)
+    end subroutine stops_lid_damp_gap
+
+    subroutine stops_lid_damp_negative(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case_expect_stop("lid_stop_damp_negative", "negative damping", error)
+    end subroutine stops_lid_damp_negative
+
+    subroutine stops_lid_damp_value(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case_expect_stop("lid_stop_damp_value", "cannot read the damping", error)
+    end subroutine stops_lid_damp_value
+
+    !> The frequency list holds 0 and 1.35 rad/s; the lid has no equation at zero frequency.
+    subroutine stops_lid_zero_frequency(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case_expect_stop("lid_stop_zero_frequency", "zero frequency with a damping lid", error)
+    end subroutine stops_lid_zero_frequency
 
     !> A lid disc inside the second of two bodies: the multi-body branch of HULL_SOLID_ANGLE.
     subroutine stops_lid_inside_two(error)

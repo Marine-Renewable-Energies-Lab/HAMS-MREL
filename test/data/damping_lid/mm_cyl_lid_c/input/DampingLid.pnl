@@ -825,4 +825,9 @@
        384    4     384     337     385     432
     # End Definition of Node Relations
 
+    # Start Definition of Damping   ! number of dampers, then: first panel  last panel  epsilon (m/s)
+         1
+         1       384    0.2000000000
+    # End Definition of Damping
+
     --------------End Damping Lid Mesh File---------------

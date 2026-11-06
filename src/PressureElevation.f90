@@ -37,7 +37,7 @@ MODULE PressureElevation
    USE SingularIntgr
    USE PatcVelct
    USE FieldOutput_mod
-   USE Lid_mod, ONLY: LIDON,LNELEM,MXQ
+   USE Lid_mod, ONLY: LIDON,LNELEM,MXLPOT
    USE DampingLid, ONLY: LID_SINGLE_LAYER
 
    IMPLICIT NONE
@@ -210,7 +210,7 @@ CONTAINS
         ENDIF
         DO LEL=1, LNELEM
          CALL LID_SINGLE_LAYER(XP,LEL,SLID)
-         POT=POT+SLID*MXQ(LEL,MD,IS)
+         POT=POT+SLID*MXLPOT(LEL,MD,IS)
         ENDDO
        ENDDO
       ENDIF

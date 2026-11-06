@@ -184,7 +184,7 @@ CONTAINS
 !SUBROUTINE LID_SOLVE_UNPACK_MULTI
 
 !   !   Solves for the NRHS columns of B(NH+LNELEM,NRHS,NSYS) by the LU factors of LID_ASSEMBLE_MULTI, then puts the hull phi of
-!   !   each symmetry image into MXPOT_MULTI_COMB(:,MD0+1:MD0+NRHS,:) and the lid q into MXQ, by the RXY_MULTI recombination and
+!   !   each symmetry image into MXPOT_MULTI_COMB(:,MD0+1:MD0+NRHS,:) and the lid q into MXLPOT, by the RXY_MULTI recombination and
 !   !   the /NSYS of RADIATION_SOLVER_MULTI.
 
       SUBROUTINE LID_SOLVE_UNPACK_MULTI(B,NRHS,MD0,NH,NSYS)
@@ -202,13 +202,13 @@ CONTAINS
       DO M=1,NRHS
        DO IP=1,NSYS
         MXPOT_MULTI_COMB(:,MD0+M,IP)=(0.D0,0.D0)
-        MXQ(:,MD0+M,IP)=(0.D0,0.D0)
+        MXLPOT(:,MD0+M,IP)=(0.D0,0.D0)
         DO IS=1,NSYS
          MXPOT_MULTI_COMB(:,MD0+M,IP)=MXPOT_MULTI_COMB(:,MD0+M,IP)+B(1:NH,M,IS)*RXY_MULTI(IP,IS)
-         MXQ(:,MD0+M,IP)=MXQ(:,MD0+M,IP)+B(NH+1:NC,M,IS)*RXY_MULTI(IP,IS)
+         MXLPOT(:,MD0+M,IP)=MXLPOT(:,MD0+M,IP)+B(NH+1:NC,M,IS)*RXY_MULTI(IP,IS)
         ENDDO
         MXPOT_MULTI_COMB(:,MD0+M,IP)=MXPOT_MULTI_COMB(:,MD0+M,IP)/NSYS
-        MXQ(:,MD0+M,IP)=MXQ(:,MD0+M,IP)/NSYS
+        MXLPOT(:,MD0+M,IP)=MXLPOT(:,MD0+M,IP)/NSYS
        ENDDO
       ENDDO
 
@@ -221,7 +221,7 @@ CONTAINS
 !   !   The 6*NBODY radiation problems with the lid. Mode MD of body M moves the panels of body M only. Hull rows from
 !   !   ASSB_RBC_MULTI over the panels of each body, as in the multi-body loop of HAMS_Prog.f90. Lid rows: sum_j S_xj V_j over
 !   !   the panels j of that body, with S from LID_ASSEMBLE_MULTI and the mode signs of RBC_MULTI_RIGHT; on the lid phi = 0, so
-!   !   nothing else. Fills MXPOT_MULTI_COMB(:,1:6*NBODY,:) and MXQ(:,1:6*NBODY,:).
+!   !   nothing else. Fills MXPOT_MULTI_COMB(:,1:6*NBODY,:) and MXLPOT(:,1:6*NBODY,:).
 
       SUBROUTINE LID_RADIATION_MULTI(NH,NSYS)
       IMPLICIT   NONE
@@ -287,7 +287,7 @@ CONTAINS
 !   !   The diffraction problem with the lid for several bodies, for the heading BETA, as LID_DIFFRACTION in DampingLid.f90:
 !   !   hull rows from ASSB_DBC_MULTI; lid rows -sum_j S_xj dphi_I/dn_j over the panels of all bodies, plus 4 pi phi_I(x), since
 !   !   the scattered potential is -phi_I on the lid. At zero frequency the incident term is left out. Fills
-!   !   MXPOT_MULTI_COMB(:,6*NBODY+1,:) and MXQ(:,6*NBODY+1,:).
+!   !   MXPOT_MULTI_COMB(:,6*NBODY+1,:) and MXLPOT(:,6*NBODY+1,:).
 
       SUBROUTINE LID_DIFFRACTION_MULTI(NH,NSYS)
       IMPLICIT   NONE
