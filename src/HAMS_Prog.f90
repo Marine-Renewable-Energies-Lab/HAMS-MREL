@@ -87,6 +87,10 @@ program HAMS_MREL
     use PressureElevation
     use PressureElevationMulti
     use FieldOutput_mod
+    use Lid_mod, only : LIDON, LNELEM, MXLPOT
+    use DampingLid, only : READ_LID_MESH, LID_GEOMETRY, CHECK_LID, ALLOCATE_LID_UNKNOWNS, LID_ASSEMBLE, LID_RADIATION, &
+                           LID_DIFFRACTION, CHECK_LID_FREQUENCIES
+    use DampingLidMulti, only : LID_ASSEMBLE_MULTI, LID_RADIATION_MULTI, LID_DIFFRACTION_MULTI
     use omp_lib
 
     implicit none  
@@ -97,6 +101,7 @@ program HAMS_MREL
     character(len=300) :: MESH_MULTI,HYDROSTATIC_MULTI, WATERPLANEMESH_MULTI ! Full file paths — must be > inputdir length + filename
     character(len=260) :: inputdir, outputdir ! 260 is the max lengths for paths on Windows
     logical :: success
+    logical :: LIDSOLVE                                                     ! a lid is on, and this is not the infinite frequency
 
     print*
     write(*,'(80A)') ' ------------------------HAMS-MREL (Hydrodynamic Analysis of Marine Structures - Marine Renewable Energies Lab)---------------------'
@@ -142,7 +147,7 @@ program HAMS_MREL
     call VerifyInputFilesExist(trim(inputdir), NBODY, IRSP, success)
     if (.not. success) then
         print*, "Input files missing. Terminating application."
-        stop
+        stop 1
     end if
 
     ! Create output files and directories
@@ -238,9 +243,18 @@ program HAMS_MREL
      
         CALL ReadHydroStatic
 
+        IF (LIDON.EQ.1) CALL READ_LID_MESH(TRIM(inputdir))                ! Needs ISX and ISY of the hull, and LNELEM for ErrorCheck.txt
+
         call CreateErrorCheckFile(trim(outputdir), NBODY)
        
         CALL CalNormals(IRSP,TRIM(inputdir))
+
+        IF (LIDON.EQ.1) THEN
+            CALL LID_GEOMETRY
+            CALL CHECK_LID(1)
+            CALL CHECK_LID_FREQUENCIES                                  ! a zero in the list stops before any frequency
+            CALL ALLOCATE_LID_UNKNOWNS(1)
+        ENDIF
 
         DO MD1=1,5
             CLOSE(MD1)
@@ -249,6 +263,7 @@ program HAMS_MREL
         write(*,*) ' Number of geometrical symmetries:',ISYS
         write(*,*) ' Number of panels on the hull:   ',NELEM
         write(*,*) ' Number of panels on waterplanes:',INELEM
+        IF (LIDON.EQ.1) write(*,*) ' Number of panels on the damping lid:',LNELEM
         PRINT*
         write(*,*) ' Radiation-diffraction computation starts...'
        
@@ -267,8 +282,20 @@ program HAMS_MREL
             ENDIF
             CALL WarnLargeKH()
          
-            ! Solving the radiation problem
-            IF (IRSP.EQ.0) THEN                     
+            ! Solving the radiation problem. With a lid, at infinite frequency phi is zero on the whole free surface already,
+            ! so the lid is skipped there and the hull is solved alone.
+            ! A zero frequency in the frequency list stops a lid run. The zero limit that 0_inf_frequency_limits adds (KK = 1)
+            ! is not in the list and goes on: there alpha = 0, so the lid is skipped and the hull solved alone, as at infinity.
+            IF (LIDON.EQ.1 .AND. ABS(V).LT.1.D-8 .AND. .NOT.(SYBO.EQ.1 .AND. KK.EQ.1)) THEN
+                PRINT *,' Error: zero frequency with a damping lid: frequency No.',KK-2*SYBO,' of the list is 0.'
+                STOP 1
+            ENDIF
+            LIDSOLVE = LIDON.EQ.1 .AND. ABS(V+1.D0).GE.1.D-8 .AND. ABS(V).GE.1.D-8
+            IF (LIDSOLVE) THEN
+                CALL CALGREEN                                               ! the hull block; LID_ASSEMBLE builds the interior rows
+                CALL LID_ASSEMBLE(NELEM,NSYS)
+                CALL LID_RADIATION(NELEM,NSYS)
+            ELSEIF (IRSP.EQ.0) THEN                     
                 CALL CALGREEN
                 CALL ASSB_LEFT(AMAT,IPIV,NELEM,NSYS)
                 CALL ASSB_RBC(BRMAT,NELEM,NSYS)
@@ -279,6 +306,7 @@ program HAMS_MREL
                 CALL ASSB_RBC_IRR(BRMAT,DRMAT,AMAT,NELEM,TNELEM,NSYS)
                 CALL RADIATION_SOLVER_IRR(CMAT,DRMAT,IPIV,MXPOT,NELEM,NSYS)
             ENDIF
+            IF (LIDON.EQ.1 .AND. .NOT.LIDSOLVE) MXLPOT=(0.D0,0.D0)
 
             CALL RFORCE(WK,W1,TP,AMAS(KK,:,:),BDMP(KK,:,:))
             CALL OutputPressureElevation_Radiation(640)                ! This needs to be implemented for multi-bodies
@@ -289,7 +317,9 @@ program HAMS_MREL
                 BETA=WVHD(II)*PI/180.0D0
                 WRITE(6,3000) WVHD(II)
          
-                IF (IRSP.EQ.0) THEN
+                IF (LIDSOLVE) THEN
+                    CALL LID_DIFFRACTION(NELEM,NSYS)
+                ELSEIF (IRSP.EQ.0) THEN
                     CALL ASSB_DBC(BDMAT,NELEM,NSYS)
                     CALL DIFFRACTION_SOLVER(AMAT,BDMAT,IPIV,MXPOT,NELEM,NSYS)
                 ELSEIF (IRSP.EQ.1) THEN
@@ -574,6 +604,15 @@ program HAMS_MREL
             DEALLOCATE(iXYZ_GLOBAL_MULTI, iXYZ_MULTI_P, iDS_MULTI, iPNSZ_MULTI, iNCN_MULTI, iNCON_MULTI, iDXYZ_MULTI_P)
         ENDIF
 
+        ! The lid is read and checked once the combined hull arrays and normals exist. It is the same lid for every body.
+        IF (LIDON.EQ.1) THEN
+            CALL READ_LID_MESH(TRIM(inputdir))
+            CALL LID_GEOMETRY
+            CALL CHECK_LID(NBODY)
+            CALL CHECK_LID_FREQUENCIES                                  ! a zero in the list stops before any frequency
+            CALL ALLOCATE_LID_UNKNOWNS(NBODY)
+        ENDIF
+
         call CreateErrorCheckFile(trim(outputdir), NBODY)
 
 
@@ -593,6 +632,7 @@ program HAMS_MREL
                 WRITE(*,'(A45,I2,A1,I10)') 'Number of panels on the water plane of body',FILE_M,':',iNELEM_MULTI(FILE_M)
             ENDDO
         ENDIF
+        IF (LIDON.EQ.1) WRITE(*,'(A38,I10)') 'Number of panels on the damping lid:',LNELEM
         PRINT*
         WRITE(*,*) ' Radiation-diffraction computation starts...'
        
@@ -625,8 +665,20 @@ program HAMS_MREL
             ENDIF
             CALL WarnLargeKH()
          
-            ! Solving the radiation problem
-            IF (IRSP.EQ.0) THEN
+            ! Solving the radiation problem. With a lid, at infinite frequency phi is zero on the whole free surface already,
+            ! so the lid is skipped there and the hulls are solved alone. CHECK_LID stops a lid with IRSP = 1.
+            ! A zero frequency in the frequency list stops a lid run. The zero limit that 0_inf_frequency_limits adds (KK = 1)
+            ! is not in the list and goes on: there alpha = 0, so the lid is skipped and the hulls solved alone, as at infinity.
+            IF (LIDON.EQ.1 .AND. ABS(V).LT.1.D-8 .AND. .NOT.(SYBO.EQ.1 .AND. KK.EQ.1)) THEN
+                PRINT *,' Error: zero frequency with a damping lid: frequency No.',KK-2*SYBO,' of the list is 0.'
+                STOP 1
+            ENDIF
+            LIDSOLVE = LIDON.EQ.1 .AND. ABS(V+1.D0).GE.1.D-8 .AND. ABS(V).GE.1.D-8
+            IF (LIDSOLVE) THEN
+                CALL CALGREEN_MULTI                                         ! the hull block
+                CALL LID_ASSEMBLE_MULTI(TNELEM,NSYS)
+                CALL LID_RADIATION_MULTI(TNELEM,NSYS)
+            ELSEIF (IRSP.EQ.0) THEN
                 CALL CALGREEN_MULTI
                 CALL ASSB_LEFT_MULTI(AMAT_MULTI,IPIV_MULTI_COMB,TNELEM,NSYS)                 ! Should AMAT_MULTI be symmetric?
                 NELEM_GLOBAL=0
@@ -660,6 +712,7 @@ program HAMS_MREL
                 ENDDO
                 CALL RADIATION_SOLVER_MULTI(CMAT_MULTI,DRMAT_MULTI,IPIV_MULTI_COMB,MXPOT_MULTI_COMB,NELEM_TOTAL,NSYS)
             ENDIF
+            IF (LIDON.EQ.1 .AND. .NOT.LIDSOLVE) MXLPOT=(0.D0,0.D0)
          
          
             ! Filling the total element number matrix to be used for deriving the radiation forces
@@ -697,7 +750,9 @@ program HAMS_MREL
                 BETA=WVHD(II)*PI/180.0D0
                 WRITE(6,3000) WVHD(II)
          
-                IF (IRSP.EQ.0) THEN
+                IF (LIDSOLVE) THEN
+                    CALL LID_DIFFRACTION_MULTI(TNELEM,NSYS)
+                ELSEIF (IRSP.EQ.0) THEN
                     CALL ASSB_DBC_MULTI(BDMAT_MULTI,TNELEM,NSYS)
                     CALL DIFFRACTION_SOLVER_MULTI(AMAT_MULTI,BDMAT_MULTI,IPIV_MULTI_COMB,MXPOT_MULTI_COMB,TNELEM,NSYS)
                 ELSEIF (IRSP.EQ.1) THEN

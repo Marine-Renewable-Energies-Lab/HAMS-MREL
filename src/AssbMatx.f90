@@ -39,6 +39,7 @@ MODULE AssbMatx
   ! ..... Public Subroutines ...................................................................................................
 
    PUBLIC :: ASSB_LEFT
+   PUBLIC :: FILL_HULL_LEFT
    PUBLIC :: ASSB_RBC
    
    PUBLIC :: ASSB_DBC
@@ -57,14 +58,40 @@ CONTAINS
       INTEGER,INTENT(OUT):: IPIV(NELEM,NSYS)
       COMPLEX*16,INTENT(OUT):: AMAT(NELEM,NELEM,NSYS)
       
-      INTEGER IEL,JEL,IS,IP,IRR,MD,FLAG,INFO
+      INTEGER IP,INFO
+
+      CALL FILL_HULL_LEFT(AMAT,NELEM,NSYS)
+
+! NSYS is 1 or 2 — let MKL's internal threading do the work in ZGETRF.
+! Only factorize when the direct-LU solver will be used; for ISOLV>1 the iterative
+! solver operates on the unfactored matrix and the factorization would be wasted.
+       IF (ISOLV .EQ. 1) THEN
+          DO IP=1, NSYS
+             CALL ZGETRF( NELEM, NELEM, AMAT(:,:,IP), NELEM, IPIV(:,IP), INFO )
+          ENDDO
+       ENDIF
+
+       RETURN
+      END SUBROUTINE ASSB_LEFT
+
+! -------------------------------------------------------------------
+!    The hull block of the left-hand side, not factorised: 2 pi on the
+!    diagonal plus the double-layer integrals, for each symmetry class
+!    IP. Needs RKBN and CGRN from CALGREEN.
+! -------------------------------------------------------------------
+      SUBROUTINE FILL_HULL_LEFT(AMAT,NELEM,NSYS)
+      IMPLICIT  NONE
+!
+      INTEGER,INTENT(IN):: NELEM,NSYS
+      COMPLEX*16,INTENT(OUT):: AMAT(NELEM,NELEM,NSYS)
+
+      INTEGER IEL,JEL,IS,IP,FLAG
       REAL*8 DIST
       COMPLEX*16 TINDP(4)
 
-      IRR=1
       AMAT=CMPLX(0.0D0,0.0D0)
 
-!$OMP PARALLEL NUM_THREADS(NTHREAD)          
+!$OMP PARALLEL NUM_THREADS(NTHREAD)
 !$OMP DO PRIVATE(IEL,JEL,IP,IS,FLAG,DIST,TINDP) SCHEDULE(DYNAMIC,16)
 ! Row-disjoint writes on the IEL axis — no REDUCTION needed.
       
@@ -103,19 +130,10 @@ CONTAINS
 !$OMP END DO NOWAIT
 !$OMP END PARALLEL
 
-! NSYS is 1 or 2 — let MKL's internal threading do the work in ZGETRF.
-! Only factorize when the direct-LU solver will be used; for ISOLV>1 the iterative
-! solver operates on the unfactored matrix and the factorization would be wasted.
-       IF (ISOLV .EQ. 1) THEN
-          DO IP=1, NSYS
-             CALL ZGETRF( NELEM, NELEM, AMAT(:,:,IP), NELEM, IPIV(:,IP), INFO )
-          ENDDO
-       ENDIF
-
        RETURN
-      END SUBROUTINE ASSB_LEFT
-      
-      
+      END SUBROUTINE FILL_HULL_LEFT
+
+
 ! ------------------------------------------------------------------- 
 !    Calculate the element contribution, assembly the right-hand
 !    side vector[B] and solve the equations

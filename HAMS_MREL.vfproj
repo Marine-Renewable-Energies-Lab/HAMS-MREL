@@ -74,6 +74,8 @@
 		<File RelativePath=".\src\PotentWavForceMulti.f90"/>
 		<File RelativePath=".\src\PressureElevation.f90"/>
 		<File RelativePath=".\src\PressureElevationMulti.f90"/>
+		<File RelativePath=".\src\DampingLid.f90"/>
+		<File RelativePath=".\src\DampingLidMulti.f90"/>
 		<File RelativePath=".\src\PrintOutput.f90"/>
 		<File RelativePath=".\src\ReadPanelMesh.f90"/>
 		<File RelativePath=".\src\ReadPanelMeshMulti.f90"/>

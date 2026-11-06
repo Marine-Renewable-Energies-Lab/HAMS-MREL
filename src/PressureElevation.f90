@@ -37,6 +37,8 @@ MODULE PressureElevation
    USE SingularIntgr
    USE PatcVelct
    USE FieldOutput_mod
+   USE Lid_mod, ONLY: LIDON,LNELEM,MXLPOT,LEPS,LXYZ_P
+   USE DampingLid, ONLY: LID_SINGLE_LAYER,LID_ALPHA,LID_EPS_AT,REFLECTED
 
    IMPLICIT NONE
 
@@ -63,6 +65,9 @@ CONTAINS
       INTEGER  NCV,KK,KA,KB
       REAL*8   XPB(3),EN3(3),EV(3),WV(3),CX3,CY3,CZ3,SVAL,SMIN,SMAX,DPLN,TOLP,TOLA
       LOGICAL  ONBODY
+      INTEGER  LEL
+      REAL*8   XL(3)
+      COMPLEX*16  SLID,ALID,PHII
       COMPLEX*16  F0,DPOX,DPOY,DPOZ,DINCP,TERM1,TERM2,GRN(4),DUM(2)
       COMPLEX*16, ALLOCATABLE:: XPOT(:)
       
@@ -190,6 +195,35 @@ CONTAINS
       DO JEL=1, NELEM
         POT=POT+XPOT(JEL)
       ENDDO
+
+      ! Damping lid: 4 pi phi(p) = sum_hull (S V - D phi) + sum_lid alpha_l S (phi_l + phi_I,l), the representation the rows of
+      ! the lid solve (DampingLid.f90) are written for; phi_I,l, the incident potential at the lid centroid of the image, only in
+      ! diffraction (MD = 7), whose MXLPOT is the scattered potential. The field point is reflected for each symmetry image as in
+      ! the hull loop. A panel with alpha = 0 (epsilon 0, zero or infinite frequency) adds nothing.
+      IF (LIDON.EQ.1) THEN
+       DO IS=1, NSYS
+        IF (ISX.EQ.1.AND.ISY.EQ.0) THEN
+         XP(1)=SY(IS,1)*XET(1)
+         XP(2)=SX(IS,1)*XET(2)
+         XP(3)=         XET(3)
+        ELSE
+         XP(1)=SX(IS,1)*XET(1)
+         XP(2)=SY(IS,1)*XET(2)
+         XP(3)=         XET(3)
+        ENDIF
+        DO LEL=1, LNELEM
+         ALID=LID_ALPHA(LEPS(LEL))
+         IF (ALID.EQ.(0.D0,0.D0)) CYCLE
+         CALL LID_SINGLE_LAYER(XP,LEL,SLID)
+         PHII=(0.D0,0.D0)
+         IF (MD.EQ.7) THEN
+          XL=REFLECTED(LXYZ_P(LEL,:),IS)
+          PHII=VINP(XL(1),XL(2),XL(3),XW(1),XW(2),BETA)
+         ENDIF
+         POT=POT+ALID*SLID*(MXLPOT(LEL,MD,IS)+PHII)
+        ENDDO
+       ENDDO
+      ENDIF
 
       ! ---- Free-term (solid-angle) factor -------------------------------------
       ! phi(x) is reconstructed from the boundary-integral representation,
@@ -321,11 +355,20 @@ CONTAINS
       CHARACTER(*),INTENT(IN)::RDFLG
       
       COMPLEX*16  XPOT
+      REAL*8   EPS
+      LOGICAL  ON
 
       CALL CalPotential(XP,RDFLG,MD,XPOT)
-      
+
+      ! On a lid panel of epsilon > 0 the dynamic condition with p/rho = epsilon dphi/dz gives
+      ! eta = i omega phi / (g - i omega epsilon) (spec, Formulation); elsewhere, and for epsilon = 0, i omega phi / g.
+      ON=.FALSE.
+      EPS=0.D0
+      IF (LIDON.EQ.1) EPS=LID_EPS_AT(XP,ON)
       IF (ABS(TP+1.D0).LT.1.E-6.OR.ABS(TP).LT.1.E-6) THEN
        ELV=XPOT
+      ELSEIF (ON.AND.EPS.NE.0.D0) THEN
+       ELV=CI*W1*XPOT/(G-CI*W1*EPS)
       ELSE
        ELV=CI*W1/G*XPOT
       ENDIF
@@ -416,7 +459,7 @@ CONTAINS
 !   ===================================================
 !    Write WAMIT-style output files
 !   
-      IF (ABS(XP(3)).GT.1.E-6) THEN
+      IF (ABS(XP(3)).GT.1.E-6.OR.LIDON.EQ.1) THEN                                    ! With a lid the elevation rows are written too
        WRITE(NFILE,1000) OUFR,IPT,(VCPX(IPT,MD),MD=1,6)
       ENDIF
       
