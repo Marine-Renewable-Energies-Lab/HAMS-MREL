@@ -11,53 +11,57 @@ module test_integration_lid
 
     real(8), parameter :: g = 9.80665d0, omega = 1.35d0, depth = 50d0
 
-    ! Limits set from the measurements in test/data/damping_lid/README.md
+    ! Limits set from the measurements in test/data/damping_lid/README.md (epsilon lid, 0.2 m/s unless the case says otherwise;
+    ! they replace the limits of the phi = 0 lid)
     real(8), parameter :: damping_floor = 1d-6        ! B_ii >= -damping_floor * max(abs(B)); measured: every B_ii > 0
-    real(8), parameter :: symmetry_limit = 1d-2       ! abs(A_ij - A_ji) / max(abs(A)), the same for B; measured 7.5e-3
-    real(8), parameter :: haskind_limit = 6d-3        ! measured 3.2e-3
-    real(8), parameter :: order_limit = 1d-9          ! relative to max(abs(A)), max(abs(B)), max(abs(X)); measured 5.8e-10
-    real(8), parameter :: tri_limit = 2d-2            ! measured 1.2e-2
-    real(8), parameter :: limits_limit = 1d-10        ! measured 0
-    real(8), parameter :: centroid_limit = 1d-6       ! diffraction elevation at lid centroids over the incident amplitude; measured 7.0e-8
-    real(8), parameter :: radiation_centroid_limit = 5d-6    ! the same for radiation, over the largest value off the lid; measured 1.9e-6
-    real(8), parameter :: off_centroid_limit = 3d-3   ! |elevation| at node, edge and inside points over the incident amplitude; measured 7.6e-4
-    real(8), parameter :: half_limit = 1d-4           ! A, B, X of half against full, relative to the largest entry; measured 1.8e-5
-    real(8), parameter :: half_field_limit = 1d-5     ! diffraction and radiation values at the same 18 points; measured 5.8e-7
-    real(8), parameter :: irsp_limit = 2d-2           ! A11, A33, B11, B33, abs(X1) with IRSP against without; measured 1.1e-2
-    real(8), parameter :: collocation_limit = 1d-6    ! force from the field pressures against ExcForce.3; measured 7.2e-8, printed to 7 digits
+    real(8), parameter :: symmetry_limit = 1d-2       ! abs(A_ij - A_ji) / max(abs(A)), the same for B; measured 6.1e-3
+    real(8), parameter :: exact_limit = 1d-12         ! cases equal by construction, printed values, relative to the largest entry
+    real(8), parameter :: haskind_factor = 2d0        ! Haskind residual of lid_ann_160_eps0 below 2 times that of no lid
+    real(8), parameter :: split_floor = 1d-3          ! lid_ann_160_split differs from lid_ann_160 in B11 by more than this; measured 7.9e-2
+    real(8), parameter :: order_limit = 1d-11         ! relative to max(abs(A)), max(abs(B)), max(abs(X)); measured 4.7e-12
+    real(8), parameter :: tri_limit = 3d-4            ! measured 1.4e-4
+    real(8), parameter :: limits_limit = 1d-10        ! measured 0 at both limits
+    real(8), parameter :: rigid_limit = 2d-5          ! diffraction elevation at the lid centroids of lid_ann_160_rigid over the incident
+                                                      ! amplitude; measured 7.3e-6
+    real(8), parameter :: off_centroid_limit = 0.25d0 ! relative difference of the elevation at node, edge, inside from that at c1;
+                                                      ! measured 0.116
+    real(8), parameter :: half_limit = 3d-6           ! A, B, X of half against full, relative to the largest entry; measured 1.4e-6
+    real(8), parameter :: half_field_limit = 1.5d-6   ! diffraction and radiation values at the same 18 points; measured 6.7e-7
+    real(8), parameter :: irsp_limit = 7d-3           ! A11, A33, B11, B33, abs(X1) with IRSP against without; measured 3.2e-3
+    real(8), parameter :: collocation_limit = 1d-6    ! force from the field pressures against ExcForce.3; measured 1.6e-7, printed to 7 digits
     real(8), parameter :: maccamy_fuchs_limit = 2d-2  ! worst of X1 and two elevations of mm_cyl_nolid, complex; measured 8.5e-3
-    real(8), parameter :: reference_limit = 3d-2      ! the same against the eigenfunction reference, mm_cyl_lid_c; measured 1.5e-2
     real(8), parameter :: two_far_limit = 1d-3        ! body 1 of lid_two_far against lid_ann_160, the limit of multi_matches_single;
-                                                      ! measured 5.0e-4
+                                                      ! measured 4.5e-4
     real(8), parameter :: gap_symmetry_limit = 1d-2   ! abs(A_ij - A_ji) / max(abs(A)), the same for B, 12 x 12, lid_gap; measured
-                                                      ! 9.0e-3, 8.6e-3 without the lid
-    real(8), parameter :: gap_damping_floor = 1d-4    ! eigenvalues of B of lid_gap >= -gap_damping_floor * max(abs(B)); measured
-                                                      ! 5.5e-5, 2.3e-5 without the lid, falling with the hull mesh (README)
-    real(8), parameter :: gap_centroid_limit = 1d-12  ! elevation at the 80 gap lid centroids, diffraction and radiation; measured
-                                                      ! 9.4e-15 and 1.8e-14
+                                                      ! 8.0e-3, 8.6e-3 without the lid
+    real(8), parameter :: gap_damping_floor = 1d-5    ! eigenvalues of B of lid_gap >= -gap_damping_floor * max(abs(B)); measured
+                                                      ! 4.6e-6, 2.3e-5 without the lid (phi = 0 lid measurement), falling with
+                                                      ! the hull mesh (README)
 
     !> The bottom-mounted cylinder of the reference cases (mm_cyl_*): radius 2, depth 10, k = 0.15 given as a wave number, so
     !> omega = sqrt(g k tanh(kh)), heading 0, field points (0, 8, 0) and (8, 0, 0).
     real(8), parameter :: mm_omega = 1.1538937638d0
     !> Reference values in the convention of ExcForce.3 and PressureElevation.6p (over rho g A and over A), from
-    !> pre_postprocessing_python/DampingLid/annular_lid_reference.py: MacCamy-Fuchs for the bare cylinder, and for the lid
-    !> r 2 to 4 the eigenfunction matching with both conditions projected on the lid modes, extrapolated linearly in 1/N from
-    !> N = 160 and 320 (spread 7.9e-5 at most, over the extrapolation from N = 40, 80 and the three other projections).
+    !> pre_postprocessing_python/DampingLid/annular_lid_reference.py: MacCamy-Fuchs for the bare cylinder. The phi = 0 lid
+    !> reference values and their test are removed with the epsilon lid; the epsilon reference follows (README).
     complex(8), parameter :: maccamy_fuchs(3) = [(1.65550518d0, 23.42095485d0), &    ! X1
                                                  (1.01387576d0, 0.04392707d0), &     ! elevation at (0, 8, 0)
                                                  (0.29600397d0, -0.97000684d0)]      ! elevation at (8, 0, 0)
-    complex(8), parameter :: reference_lid(3) = [(-0.74007911d0, 12.76328168d0), &   ! X1
-                                                 (0.76378672d0, 0.40871522d0), &     ! elevation at (0, 8, 0)
-                                                 (0.19230778d0, -0.42071135d0)]      ! elevation at (8, 0, 0)
 
-    !> The cases that solve with a lid, all run by setup_lid.
-    character(len=24), parameter :: solve_cases(17) = [character(len=24) :: "lid_ann_40", "lid_ann_160", "lid_ann_640", &
+    !> The single-body solve cases, all run by setup_lid: those with a lid and their no-lid references lid_limits_off and
+    !> lid_nolid_160.
+    character(len=24), parameter :: solve_cases(22) = [character(len=24) :: "lid_ann_40", "lid_ann_160", "lid_ann_640", &
         "lid_ann_160_rev", "lid_ann_tri", "lid_touch", "lid_patches", "lid_shrink_1", "lid_shrink_2", "lid_deep", "lid_limits", &
         "lid_limits_off", "lid_hull_160", "lid_field_off_centroid", &
-        "lid_ann_160_pts", "lid_ann_160_half", "lid_ann_160_irsp"]
+        "lid_ann_160_pts", "lid_ann_160_half", "lid_ann_160_irsp", &
+        "lid_ann_160_eps0", "lid_ann_160_rigid", "lid_ann_160_two_dampers", "lid_ann_160_split", "lid_nolid_160"]
 
-    !> The two-body cases that solve with a lid, run by setup_lid.
-    character(len=12), parameter :: two_cases(2) = [character(len=12) :: "lid_two_far", "lid_gap"]
+    !> The two-body cases, run by setup_lid: with a lid, and lid_gap_nolid without.
+    character(len=16), parameter :: two_cases(5) = [character(len=16) :: "lid_two_far", "lid_gap", "lid_gap_eps0", &
+        "lid_gap_eps1", "lid_gap_nolid"]
+
+    !> Field points of lid_ann_160 and its epsilon variants: the 160 lid centroids, then (12, 0, 0), (20, 0, 0) and (12, 0, -3).
+    integer, parameter :: n160 = 160
 
     !> A, B and X at one frequency: the full 6 x 6 matrices and the six forces of heading 0.
     type :: coefficients
@@ -102,24 +106,27 @@ contains
             new_unittest("lid_damping_nonnegative", lid_damping_nonnegative), &
             new_unittest("lid_converges", lid_converges), &
             new_unittest("lid_symmetric_ab", lid_symmetric_ab), &
-            new_unittest("lid_haskind_heave", lid_haskind_heave), &
+            new_unittest("lid_haskind_eps0", lid_haskind_eps0), &
             new_unittest("lid_order_free", lid_order_free), &
             new_unittest("lid_tri_close", lid_tri_close), &
             new_unittest("lid_shrink_to_none", lid_shrink_to_none), &
             new_unittest("lid_limits_finite", lid_limits_finite), &
-            new_unittest("lid_elevation_zero_at_centroids", lid_elevation_zero_at_centroids), &
+            new_unittest("lid_eps0_matches_no_lid", lid_eps0_matches_no_lid), &
+            new_unittest("lid_rigid_elevation_small", lid_rigid_elevation_small), &
+            new_unittest("lid_two_dampers_split", lid_two_dampers_split), &
+            new_unittest("lid_absorbs", lid_absorbs), &
             new_unittest("lid_field_off_centroid", lid_field_off_centroid), &
             new_unittest("lid_field_matches_collocation", lid_field_matches_collocation), &
             new_unittest("lid_half_matches_full", lid_half_matches_full), &
             new_unittest("lid_irsp_matches", lid_irsp_matches), &
             new_unittest("mm_nolid_matches_maccamy_fuchs", mm_nolid_matches_maccamy_fuchs), &
-            new_unittest("mm_lid_matches_reference", mm_lid_matches_reference), &
             new_unittest("stops_lid_inside_two", stops_lid_inside_two), &
             new_unittest("stops_lid_irsp_two", stops_lid_irsp_two), &
             new_unittest("lid_multi_matches_single", lid_multi_matches_single), &
             new_unittest("lid_gap_symmetric_ab", lid_gap_symmetric_ab), &
             new_unittest("lid_gap_damping_nonnegative", lid_gap_damping_nonnegative), &
-            new_unittest("lid_gap_elevation_zero", lid_gap_elevation_zero) &
+            new_unittest("lid_gap_eps0_matches_no_lid", lid_gap_eps0_matches_no_lid), &
+            new_unittest("lid_gap_damps", lid_gap_damps) &
             ]
     end subroutine collect_tests_lid
 
@@ -217,12 +224,12 @@ contains
         call check(error, len_trim(failed) == 0, "HAMS failed for"//trim(failed))
     end subroutine run_lid_solves
 
-    !> The bottom-mounted cylinder without lid and with the lid at three meshes, for the independent reference.
+    !> The bottom-mounted cylinder without lid, for the independent reference. The lid cases mm_cyl_lid_a, _b and _c are not
+    !> run until the epsilon reference is in (README).
     subroutine run_lid_mm(error)
         type(error_type), allocatable, intent(out) :: error
         type(error_type), allocatable :: one
-        character(len=12), parameter :: names(4) = [character(len=12) :: "mm_cyl_nolid", "mm_cyl_lid_a", "mm_cyl_lid_b", &
-                                                    "mm_cyl_lid_c"]
+        character(len=12), parameter :: names(1) = [character(len=12) :: "mm_cyl_nolid"]
         character(len=128) :: failed
         integer :: k
 
@@ -518,7 +525,7 @@ contains
         end do
     end subroutine lid_runs
 
-    !> The lid absorbs no energy, so B_ii >= 0, to the round-off of the printed values.
+    !> B_ii >= 0: the body radiates and the lid absorbs, both non-negative, to the round-off of the printed values.
     subroutine lid_damping_nonnegative(error)
         type(error_type), allocatable, intent(out) :: error
         type(coefficients) :: c
@@ -537,10 +544,9 @@ contains
         call check_below(error, "lid_damping_nonnegative: worst -B_ii/max(abs(B))", worst, damping_floor)
     end subroutine lid_damping_nonnegative
 
-    !> The change from 160 to 640 lid panels is smaller than that from 40 to 160, in each of A11, A33, B11 and abs(X1). All
-    !> five are printed. B33 is not checked: it changes by 0.066 and then by 0.14, since the 40-panel mesh, with two rings, is
-    !> not yet in the asymptotic range for it. With 40 around and 4, 8, 16, 32 rings the changes fall as 0.15, 0.084, 0.043
-    !> (README).
+    !> The change from 160 to 640 lid panels is smaller than that from 40 to 160, in each of A11, A33, B11, B33 and abs(X1)
+    !> (ratios 3.1, 4.0, 8.5, 4.3, 8.6 measured with epsilon 0.2; with the phi = 0 lid B33 did not converge at 40 panels and was
+    !> not checked, README).
     subroutine lid_converges(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=6), parameter :: labels(5) = [character(len=6) :: "A11", "A33", "B11", "B33", "abs X1"]
@@ -562,13 +568,12 @@ contains
             d2 = abs(v640(m) - v160(m))
             write (*, '(4x, a6, " at 40, 160, 640: ", 3es14.6, "  changes ", 2es10.3, "  ratio ", es10.3)') &
                 labels(m), v40(m), v160(m), v640(m), d1, d2, d1/max(d2, tiny(1d0))
-            if (labels(m) == "B33") cycle                  ! printed, not checked: see above
             call check(error, d2 < d1, "lid_converges: "//trim(labels(m))//" changes more from 160 to 640 than from 40 to 160")
             if (allocated(error)) return
         end do
     end subroutine lid_converges
 
-    !> A and B are symmetric, by reciprocity, which holds with a phi = 0 lid.
+    !> A and B are symmetric, by reciprocity: the lid condition is the same homogeneous condition in every problem (spec).
     subroutine lid_symmetric_ab(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=16), parameter :: names(3) = [character(len=16) :: "lid_ann_640", "lid_touch", "lid_patches"]
@@ -588,11 +593,9 @@ contains
         call check_below(error, "lid_symmetric_ab", worst, symmetry_limit)
     end subroutine lid_symmetric_ab
 
-    !> The Haskind relation for heave of an axisymmetric body, as haskind_heave of the image term suite. The annular lid keeps
-    !> the problem axisymmetric and absorbs nothing, so it still holds.
-    subroutine lid_haskind_heave(error)
-        type(error_type), allocatable, intent(out) :: error
-        type(coefficients) :: c
+    !> The relative residual of the Haskind relation for heave of an axisymmetric body, as haskind_heave of the image term suite.
+    real(8) function haskind_residual(c)
+        type(coefficients), intent(in) :: c
         real(8) :: k, vg, predicted
         integer :: i
 
@@ -601,11 +604,173 @@ contains
             k = omega*omega/(g*tanh(k*depth))
         end do
         vg = omega/(2d0*k)*(1d0 + 2d0*k*depth/sinh(2d0*k*depth))
-        call read_coefficients("lid_ann_640", omega, c, error)
-        if (allocated(error)) return
         predicted = k*g*abs(c%x(3))**2/(4d0*omega*vg)
-        call check_below(error, "lid_haskind_heave", abs(predicted - c%b(3, 3))/c%b(3, 3), haskind_limit)
-    end subroutine lid_haskind_heave
+        haskind_residual = abs(predicted - c%b(3, 3))/c%b(3, 3)
+    end function haskind_residual
+
+    !> The Haskind relation over the hull does not hold with epsilon > 0, since the lid absorbs (spec). With epsilon = 0 the lid
+    !> is no lid, so the heave residual of lid_ann_160_eps0 stays below twice that of lid_nolid_160. lid_ann_160 is printed.
+    subroutine lid_haskind_eps0(error)
+        type(error_type), allocatable, intent(out) :: error
+        type(coefficients) :: c0, bare, c
+
+        call read_coefficients("lid_ann_160_eps0", omega, c0, error)
+        if (allocated(error)) return
+        call read_coefficients("lid_nolid_160", omega, bare, error)
+        if (allocated(error)) return
+        call read_coefficients("lid_ann_160", omega, c, error)
+        if (allocated(error)) return
+        write (*, '(4x, "Haskind heave residual: no lid ", es10.3, ", epsilon 0 ", es10.3, ", epsilon 0.2 ", es10.3)') &
+            haskind_residual(bare), haskind_residual(c0), haskind_residual(c)
+        call check_below(error, "lid_haskind_eps0", haskind_residual(c0), haskind_factor*haskind_residual(bare))
+    end subroutine lid_haskind_eps0
+
+    !> The largest relative difference of A, B and X of two cases, each relative to the largest entry of that matrix in b.
+    real(8) function coefficient_difference(a, b)
+        type(coefficients), intent(in) :: a, b
+        coefficient_difference = max(maxval(abs(a%a - b%a))/maxval(abs(b%a)), maxval(abs(a%b - b%b))/maxval(abs(b%b)), &
+                                     maxval(abs(a%x - b%x))/maxval(abs(b%x)))
+    end function coefficient_difference
+
+    !> epsilon = 0 gives alpha = 0: the lid rows only evaluate the representation and do not feed the hull rows, so A, B and X
+    !> of lid_ann_160_eps0 are those of lid_nolid_160 (the same input with Damping_lid 0), and so are the diffraction values at
+    !> every field point, on the lid (whose elevation is i omega phi / g at epsilon = 0) and off it, and the radiation pressure in
+    !> the fluid at (12, 0, -3). The no-lid run writes no radiation rows for points on z = 0.
+    subroutine lid_eps0_matches_no_lid(error)
+        type(error_type), allocatable, intent(out) :: error
+        type(coefficients) :: c0, bare
+        complex(8), allocatable :: dif0(:), rad0(:,:), difb(:), radb(:,:)
+        real(8) :: worst_c, worst_f, worst_r
+
+        call read_coefficients("lid_ann_160_eps0", omega, c0, error)
+        if (allocated(error)) return
+        call read_coefficients("lid_nolid_160", omega, bare, error)
+        if (allocated(error)) return
+        worst_c = coefficient_difference(c0, bare)
+        call read_field("lid_ann_160_eps0", dif0, rad0, error)
+        if (allocated(error)) return
+        call read_field("lid_nolid_160", difb, radb, error)
+        if (allocated(error)) return
+        call check(error, size(dif0) == n160 + 3 .and. size(difb) == n160 + 3 .and. size(radb, 1) == n160 + 3, &
+                   "lid_eps0_matches_no_lid: not 163 points")
+        if (allocated(error)) return
+        worst_f = maxval(abs(dif0 - difb))/maxval(abs(difb))
+        worst_r = maxval(abs(rad0(n160 + 3, :) - radb(n160 + 3, :)))/maxval(abs(radb(n160 + 3, :)))
+        write (*, '(4x, "lid_eps0_matches_no_lid: A, B, X ", es10.3, ", diffraction ", es10.3, ", radiation in the fluid ", &
+               &es10.3)') worst_c, worst_f, worst_r
+        call check_below(error, "lid_eps0_matches_no_lid", max(worst_c, worst_f, worst_r), exact_limit)
+    end subroutine lid_eps0_matches_no_lid
+
+    !> Two dampers 1 to 80 and 81 to 160, both 0.2 m/s, are one damper of 0.2 m/s: A, B, X and every field value equal. With
+    !> 1.0 m/s on 81 to 160 instead (lid_ann_160_split) B11 differs from both by more than split_floor: each panel takes its own
+    !> epsilon.
+    subroutine lid_two_dampers_split(error)
+        type(error_type), allocatable, intent(out) :: error
+        type(coefficients) :: one, two, split
+        complex(8), allocatable :: dif1(:), rad1(:,:), dif2(:), rad2(:,:)
+        real(8) :: worst, worst_f, d1, d2
+
+        call read_coefficients("lid_ann_160", omega, one, error)
+        if (allocated(error)) return
+        call read_coefficients("lid_ann_160_two_dampers", omega, two, error)
+        if (allocated(error)) return
+        call read_coefficients("lid_ann_160_split", omega, split, error)
+        if (allocated(error)) return
+        worst = coefficient_difference(two, one)
+        call read_field("lid_ann_160", dif1, rad1, error)
+        if (allocated(error)) return
+        call read_field("lid_ann_160_two_dampers", dif2, rad2, error)
+        if (allocated(error)) return
+        worst_f = max(maxval(abs(dif2 - dif1))/maxval(abs(dif1)), maxval(abs(rad2 - rad1))/maxval(abs(rad1)))
+        d1 = abs(split%b(1, 1) - one%b(1, 1))/abs(one%b(1, 1))
+        d2 = abs(split%b(1, 1) - two%b(1, 1))/abs(two%b(1, 1))
+        write (*, '(4x, "lid_two_dampers_split: two against one ", es10.3, ", field ", es10.3, "; B11 0.2: ", es14.6, &
+               &", split: ", es14.6, ", relative ", es10.3)') worst, worst_f, one%b(1, 1), split%b(1, 1), d1
+        call check_below(error, "lid_two_dampers_split: two equal dampers against one", max(worst, worst_f), exact_limit)
+        if (allocated(error)) return
+        call check(error, min(d1, d2) > split_floor, "lid_two_dampers_split: the split lid gives the B11 of the uniform one")
+    end subroutine lid_two_dampers_split
+
+    !> Areas of the first n panels of DampingLid.pnl of a case, by the cross product of the diagonals (planar quads) or of two
+    !> edges (triangles), as CalPanelArea of the solver for flat panels.
+    subroutine read_lid_areas(name, n, area, error)
+        character(len=*), intent(in) :: name
+        integer, intent(in) :: n
+        real(8), intent(out) :: area(n)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=512) :: line
+        real(8), allocatable :: node(:,:)
+        real(8) :: p(3,4), v(3)
+        integer :: unit, stat, np, nn, isx, isy, i, k, id, nv, ids(4)
+
+        open (newunit=unit, file=input_dir("damping_lid", name)//"DampingLid.pnl", status="old", action="read", iostat=stat)
+        if (stat /= 0) then
+            call test_failed(error, "No DampingLid.pnl for "//name)
+            return
+        end if
+        read (unit, '(a)') line
+        read (unit, '(a)') line
+        read (unit, '(a)') line
+        read (unit, *) np, nn, isx, isy
+        allocate (node(3, nn))
+        read (unit, '(a)') line
+        read (unit, '(a)') line
+        do i = 1, nn
+            read (unit, *) id, node(:, i)
+        end do
+        read (unit, '(a)') line
+        read (unit, '(a)') line
+        read (unit, '(a)') line
+        do i = 1, n
+            read (unit, *) id, nv, ids(1:nv)
+            do k = 1, nv
+                p(:, k) = node(:, ids(k))
+            end do
+            if (nv == 3) then
+                v = 0.5d0*cross(p(:, 2) - p(:, 1), p(:, 3) - p(:, 1))
+            else
+                v = 0.5d0*cross(p(:, 3) - p(:, 1), p(:, 4) - p(:, 2))
+            end if
+            area(i) = norm2(v)
+        end do
+        close (unit)
+    end subroutine read_lid_areas
+
+    !> The lid absorbs. lid_damping_nonnegative checks B_ii >= 0. Here, from the elevations at the 160 lid centroids of
+    !> lid_ann_160 (one-point rule per panel), the lid power P = 1/2 rho omega**2 sum_l epsilon_l abs(eta_l)**2 A_l (spec):
+    !> - diffraction, per unit incident amplitude: P >= 0, and P > 0 for epsilon 0.2;
+    !> - radiation of surge and heave, per unit motion: the lid power is part of the power the body radiates,
+    !>   1/2 omega**2 B_jj, so rho sum_l epsilon abs(eta_l)**2 A_l <= B_jj. In the nondimensional output (B over rho omega,
+    !>   eta per unit motion, REFL = 1): sum_l epsilon abs(eta_l)**2 A_l <= omega B_jj. Derived; a flipped sign of alpha would make
+    !>   the lid a source and could break it. The ratio is printed and checked below 1.
+    subroutine lid_absorbs(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), parameter :: eps = 0.2d0, rho = 1000d0
+        type(coefficients) :: c
+        complex(8), allocatable :: dif(:), rad(:,:)
+        real(8) :: area(n160), power, lid_rad(2), ratio(2)
+        integer :: m
+
+        call read_lid_areas("lid_ann_160", n160, area, error)
+        if (allocated(error)) return
+        call read_field("lid_ann_160", dif, rad, error)
+        if (allocated(error)) return
+        call check(error, size(dif) == n160 + 3 .and. size(rad, 1) == n160 + 3, "lid_absorbs: not 163 points")
+        if (allocated(error)) return
+        call read_coefficients("lid_ann_160", omega, c, error)
+        if (allocated(error)) return
+        power = 0.5d0*rho*omega**2*sum(eps*abs(dif(1:n160))**2*area)
+        do m = 1, 2
+            lid_rad(m) = sum(eps*abs(rad(1:n160, 2*m - 1))**2*area)
+            ratio(m) = lid_rad(m)/(omega*c%b(2*m - 1, 2*m - 1))
+        end do
+        write (*, '(4x, "lid_absorbs: diffraction lid power ", es12.4, " W per m**2 of incident amplitude; lid area ", f9.4)') &
+            power, sum(area)
+        write (*, '(4x, "lid_absorbs: lid power over radiated power, surge ", es10.3, ", heave ", es10.3)') ratio
+        call check(error, power > 0d0, "lid_absorbs: the diffraction lid power is not positive")
+        if (allocated(error)) return
+        call check_below(error, "lid_absorbs: largest lid power over radiated power", maxval(ratio), 1d0)
+    end subroutine lid_absorbs
 
     !> The vertex order of the lid panels does not matter.
     subroutine lid_order_free(error)
@@ -657,18 +822,24 @@ contains
         call check(error, d2 < d1, "lid_shrink_to_none: the narrower ring is not closer to no lid")
     end subroutine lid_shrink_to_none
 
-    !> With the 0 and infinite frequency limits on: no NaN (lid_runs), and the lid is skipped at infinite frequency, so A there
-    !> is that of the same run with Damping_lid 0.
+    !> With the 0 and infinite frequency limits on: no NaN (lid_runs), and the lid is skipped at both limits (alpha = 0 at zero
+    !> frequency, phi = 0 on the free surface at infinite frequency), so A there is that of the same run with Damping_lid 0.
     subroutine lid_limits_finite(error)
         type(error_type), allocatable, intent(out) :: error
         type(coefficients) :: lid, bare
+        real(8) :: d(2)
+        real(8), parameter :: freqs(2) = [0d0, -1d0]
+        integer :: k
 
-        call read_coefficients("lid_limits", -1d0, lid, error)
-        if (allocated(error)) return
-        call read_coefficients("lid_limits_off", -1d0, bare, error)
-        if (allocated(error)) return
-        call check_below(error, "lid_limits_finite: infinite-frequency A against no lid", &
-                         maxval(abs(lid%a - bare%a))/maxval(abs(bare%a)), limits_limit)
+        do k = 1, 2
+            call read_coefficients("lid_limits", freqs(k), lid, error)
+            if (allocated(error)) return
+            call read_coefficients("lid_limits_off", freqs(k), bare, error)
+            if (allocated(error)) return
+            d(k) = maxval(abs(lid%a - bare%a))/maxval(abs(bare%a))
+        end do
+        write (*, '(4x, "lid_limits_finite: A against no lid at zero ", es10.3, ", at infinite frequency ", es10.3)') d
+        call check_below(error, "lid_limits_finite: A at both limits against no lid", maxval(d), limits_limit)
     end subroutine lid_limits_finite
 
     ! -------------------------------------------------------------------------------------------- field output
@@ -717,31 +888,27 @@ contains
         close (unit)
     end subroutine read_field
 
-    !> The lid rows ask for phi = 0 at the lid, so the elevation at a lid centroid must be zero: the total field in diffraction
-    !> (the incident amplitude is 1 in the non-dimensional output, whose elevation is divided by AMP), and the radiated one.
-    !> With the wrong sign of the lid term the diffraction value would be about twice the incident one. Radiation is
-    !> compared with the largest value at the two field points off the lid, at 12 and 20 m.
-    subroutine lid_elevation_zero_at_centroids(error)
+    !> epsilon = 1e6 m/s is close to a rigid lid: alpha tends to -nu and eta = i omega phi / (g - i omega epsilon) to 0. The total
+    !> diffraction elevation at the 160 lid centroids of lid_ann_160_rigid, over the incident amplitude (1 in the non-dimensional
+    !> output), is small, while the wave off the lid, at 12 and 20 m, is not.
+    subroutine lid_rigid_elevation_small(error)
         type(error_type), allocatable, intent(out) :: error
         complex(8), allocatable :: dif(:), rad(:,:)
-        real(8) :: big
 
-        call read_field("lid_ann_640", dif, rad, error)
+        call read_field("lid_ann_160_rigid", dif, rad, error)
         if (allocated(error)) return
-        call check(error, size(dif) == 12 .and. size(rad, 1) == 12, "lid_elevation_zero_at_centroids: not 12 points in each")
+        call check(error, size(dif) == n160 + 3, "lid_rigid_elevation_small: not 163 points")
         if (allocated(error)) return
-        big = maxval(abs(rad(11:12, :)))
-        write (*, '(4x, "incident amplitude 1; |elevation| at 12 and 20 m: ", 2es10.3, ", largest radiation there ", es10.3)') &
-            abs(dif(11)), abs(dif(12)), big
-        call check(error, maxval(abs(dif(11:12))) > 0.1d0 .and. big > 0d0, "lid_elevation_zero_at_centroids: no wave outside the lid")
+        write (*, '(4x, "lid_rigid_elevation_small: |elevation| at 12 and 20 m: ", 2es10.3, ", largest radiation on the lid ", &
+               &es10.3)') abs(dif(n160 + 1:n160 + 2)), maxval(abs(rad(1:n160, :)))
+        call check(error, maxval(abs(dif(n160 + 1:n160 + 2))) > 0.1d0, "lid_rigid_elevation_small: no wave outside the lid")
         if (allocated(error)) return
-        call check_below(error, "lid_elevation_zero_at_centroids: diffraction", maxval(abs(dif(1:10))), centroid_limit)
-        if (allocated(error)) return
-        call check_below(error, "lid_elevation_zero_at_centroids: radiation", maxval(abs(rad(1:10, :)))/big, radiation_centroid_limit)
-    end subroutine lid_elevation_zero_at_centroids
+        call check_below(error, "lid_rigid_elevation_small: diffraction", maxval(abs(dif(1:n160))), rigid_limit)
+    end subroutine lid_rigid_elevation_small
 
     !> At a lid node, in the middle of a lid edge, inside a panel off its centroid, at a node of the radius 8 ring (0, 8, 0) and
-    !> far away, the field is finite, and at the first three of these of the size of the incident wave.
+    !> far away, the field is finite. The first three lie in or on the edge of panel 1 or next to it, so their diffraction
+    !> elevation is close to that at the centroid c1 of panel 1: the relative difference is below off_centroid_limit.
     subroutine lid_field_off_centroid(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=10), parameter :: labels(15) = [character(len=10) :: "node", "edge", "inside", "c1", "c2", "c3", "c4", &
@@ -761,9 +928,9 @@ contains
                 call test_failed(error, "lid_field_off_centroid: NaN at "//trim(labels(ip)))
                 return
             end if
-            if (ip <= 3) worst = max(worst, abs(dif(ip)))
+            if (ip <= 3) worst = max(worst, abs(dif(ip) - dif(4))/abs(dif(4)))
         end do
-        call check_below(error, "lid_field_off_centroid: |elevation| at node, edge, inside", worst, off_centroid_limit)
+        call check_below(error, "lid_field_off_centroid: elevation at node, edge, inside against c1", worst, off_centroid_limit)
     end subroutine lid_field_off_centroid
 
     !> As field_points_match_collocation of the image term suite: the pressure at every hull centroid, integrated over the hull,
@@ -829,9 +996,8 @@ contains
     end subroutine lid_half_matches_full
 
     !> IRSP = 1 with the uniform waterplane mesh of image_cos_lid, solved by least squares with the interior rows, gives the
-    !> five key values of lid_ann_160 within 2e-2; measured 1.1e-2, above the 5e-3 first set. B11 falls with the lid mesh (8.5%,
-    !> 1.1%, 0.14% for 40, 160, 640 lid panels) but abs(X1) falls only with the hull mesh, and the Haskind residual with IRSP grows
-    !> with the lid mesh. The cause is open; the README has the measurements and what is derived.
+    !> five key values of lid_ann_160 within 7e-3; measured 3.2e-3 (B11) with epsilon 0.2. The phi = 0 lid gave 1.1e-2, whose
+    !> cause was left open (README).
     subroutine lid_irsp_matches(error)
         type(error_type), allocatable, intent(out) :: error
         type(coefficients) :: plain, irsp
@@ -867,39 +1033,6 @@ contains
         write (*, '(4x, a, 3(2x, a, " ", es10.3))') "mm_cyl_nolid", (trim(labels(i)), diff(i), i = 1, 3)
         call check_below(error, "mm_nolid_matches_maccamy_fuchs: worst", maxval(diff), maccamy_fuchs_limit)
     end subroutine mm_nolid_matches_maccamy_fuchs
-
-    !> The lid r 2 to 4 around the same cylinder at three meshes, 24 x 2, 48 x 4 and 48 x 8: X1 and the elevations at
-    !> (0, 8, 0) and (8, 0, 0) of mm_cyl_lid_c within 3% of the eigenfunction reference, as complex numbers, so magnitude and
-    !> phase, and the difference of each falling strictly from mm_cyl_lid_a to mm_cyl_lid_b to mm_cyl_lid_c.
-    subroutine mm_lid_matches_reference(error)
-        type(error_type), allocatable, intent(out) :: error
-        character(len=12), parameter :: names(3) = [character(len=12) :: "mm_cyl_lid_a", "mm_cyl_lid_b", "mm_cyl_lid_c"]
-        character(len=*), parameter :: labels(3) = [character(len=13) :: "X1", "eta(0, 8, 0)", "eta(8, 0, 0)"]
-        type(coefficients) :: c
-        complex(8), allocatable :: dif(:), rad(:,:)
-        complex(8) :: got(3)
-        real(8) :: diff(3, 3)
-        integer :: k, i
-
-        do k = 1, 3
-            call read_coefficients(trim(names(k)), mm_omega, c, error)
-            if (allocated(error)) return
-            call read_field(trim(names(k)), dif, rad, error)
-            if (allocated(error)) return
-            call check(error, size(dif) == 2, trim(names(k))//": not 2 field points")
-            if (allocated(error)) return
-            got = [c%x(1), dif(1), dif(2)]
-            diff(:, k) = abs(got - reference_lid)/abs(reference_lid)
-            write (*, '(4x, a, 3(2x, a, " ", es10.3))') trim(names(k)), (trim(labels(i)), diff(i, k), i = 1, 3)
-        end do
-        call check_below(error, "mm_lid_matches_reference: worst of mm_cyl_lid_c", maxval(diff(:, 3)), reference_limit)
-        if (allocated(error)) return
-        do i = 1, 3
-            call check(error, diff(i, 1) > diff(i, 2) .and. diff(i, 2) > diff(i, 3), "mm_lid_matches_reference: "// &
-                       trim(labels(i))//" does not approach the reference from mm_cyl_lid_a to _b to _c")
-            if (allocated(error)) return
-        end do
-    end subroutine mm_lid_matches_reference
 
     ! -------------------------------------------------------------------------------------------- two bodies
 
@@ -1036,7 +1169,7 @@ contains
 
     !> A lid with a second body 5 km away gives the A, B and X of body 1 of the single-body run with the same lid, in the five
     !> key values, within the limit of multi_matches_single. The far body still radiates into this one: B22 and B44, which
-    !> radiate towards it, differ by 1.1e-3, and the difference falls by 10 with the body at 20 km (README).
+    !> radiate towards it, differ the most (README). The five key values differ by 4.5e-4 at most with epsilon 0.2.
     subroutine lid_multi_matches_single(error)
         type(error_type), allocatable, intent(out) :: error
         type(coefficients) :: single, multi
@@ -1062,7 +1195,7 @@ contains
         call check_below(error, "lid_gap_symmetric_ab", max(worst_a, worst_b), gap_symmetry_limit)
     end subroutine lid_gap_symmetric_ab
 
-    !> The lid absorbs no energy, so the 12 x 12 B of the two boxes, symmetric part, has no negative eigenvalue beyond the hull
+    !> The lid absorbs, so the 12 x 12 B of the two boxes, symmetric part, has no negative eigenvalue beyond the hull
     !> discretisation: the two boxes without the lid have -2.3e-5 at this mesh, and both fall with the hull mesh (README).
     subroutine lid_gap_damping_nonnegative(error)
         type(error_type), allocatable, intent(out) :: error
@@ -1076,26 +1209,87 @@ contains
                          gap_damping_floor)
     end subroutine lid_gap_damping_nonnegative
 
-    !> The elevation is zero at the 80 centroids of the gap lid: the total field in diffraction, over the incident amplitude, and
-    !> each of the 12 radiation modes, over the largest radiation value at the three points off the lid.
-    subroutine lid_gap_elevation_zero(error)
+    !> X of ExcForce.3 of a two-body case at frequency freq and heading beta, the 12 modes.
+    subroutine read_x_two(name, freq, beta, x, error)
+        character(len=*), intent(in) :: name
+        real(8), intent(in) :: freq, beta
+        complex(8), intent(out) :: x(12)
         type(error_type), allocatable, intent(out) :: error
-        complex(8), allocatable :: dif(:), rad(:,:)
-        real(8) :: big
+        character(len=512) :: line
+        real(8) :: f, b, row(4)
+        integer :: unit, stat, i, n
 
-        call read_field_two("lid_gap", dif, rad, error)
+        x = (0d0, 0d0)
+        n = 0
+        open (newunit=unit, file=output_dir(name)//"Wamit_format/ExcForce.3", status="old", action="read", iostat=stat)
+        if (stat /= 0) then
+            call test_failed(error, "No ExcForce.3 for "//name)
+            return
+        end if
+        do
+            read (unit, '(a)', iostat=stat) line
+            if (stat /= 0) exit
+            if (columns(line) /= 7) cycle
+            read (line, *) f, b, i, row
+            if (abs(f - freq) < 1d-6 .and. abs(b - beta) < 1d-6 .and. i <= 12) then
+                x(i) = cmplx(row(3), row(4), kind=8)
+                n = n + 1
+            end if
+        end do
+        close (unit)
+        call check(error, n == 12, name//": ExcForce.3 has not 12 entries at the frequency and heading")
+    end subroutine read_x_two
+
+    !> epsilon = 0 on the gap lid is no lid: the 12 x 12 A and B and the 12 forces at heading 90 of lid_gap_eps0 are those of
+    !> lid_gap_nolid, relative to the largest entry of each, and so is the diffraction elevation at the 83 field points.
+    subroutine lid_gap_eps0_matches_no_lid(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: a0(12,12), b0(12,12), ab(12,12), bb(12,12), worst, worst_f
+        complex(8) :: x0(12), xb(12)
+        complex(8), allocatable :: dif0(:), rad0(:,:), difb(:), radb(:,:)
+
+        call read_ab_two("lid_gap_eps0", omega, a0, b0, error)
         if (allocated(error)) return
-        call check(error, size(dif) == 83 .and. size(rad, 1) == 83, "lid_gap_elevation_zero: not 83 points in each")
+        call read_ab_two("lid_gap_nolid", omega, ab, bb, error)
         if (allocated(error)) return
-        big = maxval(abs(rad(81:83, :)))
-        write (*, '(4x, "lid_gap: |diffraction| off the lid ", 3es10.3, ", largest radiation there ", es10.3)') &
-            abs(dif(81:83)), big
-        call check(error, maxval(abs(dif(81:83))) > 0.1d0 .and. big > 0d0, "lid_gap_elevation_zero: no wave off the lid")
+        call read_x_two("lid_gap_eps0", omega, 90d0, x0, error)
         if (allocated(error)) return
-        call check_below(error, "lid_gap_elevation_zero: diffraction", maxval(abs(dif(1:80))), gap_centroid_limit)
+        call read_x_two("lid_gap_nolid", omega, 90d0, xb, error)
         if (allocated(error)) return
-        call check_below(error, "lid_gap_elevation_zero: radiation", maxval(abs(rad(1:80, :)))/big, gap_centroid_limit)
-    end subroutine lid_gap_elevation_zero
+        worst = max(maxval(abs(a0 - ab))/maxval(abs(ab)), maxval(abs(b0 - bb))/maxval(abs(bb)), maxval(abs(x0 - xb))/maxval(abs(xb)))
+        call read_field_two("lid_gap_eps0", dif0, rad0, error)
+        if (allocated(error)) return
+        call read_field_two("lid_gap_nolid", difb, radb, error)
+        if (allocated(error)) return
+        call check(error, size(dif0) == 83 .and. size(difb) == 83, "lid_gap_eps0_matches_no_lid: not 83 points")
+        if (allocated(error)) return
+        worst_f = maxval(abs(dif0 - difb))/maxval(abs(difb))
+        write (*, '(4x, "lid_gap_eps0_matches_no_lid: A, B, X ", es10.3, ", diffraction ", es10.3)') worst, worst_f
+        call check_below(error, "lid_gap_eps0_matches_no_lid", max(worst, worst_f), exact_limit)
+    end subroutine lid_gap_eps0_matches_no_lid
+
+    !> The lid damps the gap: the largest diffraction elevation at the 80 gap centroids, over the incident amplitude, falls from
+    !> no lid (lid_gap_nolid) to epsilon 0.2 (lid_gap) to epsilon 1 (lid_gap_eps1), while the wave off the lid stays.
+    subroutine lid_gap_damps(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=13), parameter :: names(3) = [character(len=13) :: "lid_gap_nolid", "lid_gap", "lid_gap_eps1"]
+        complex(8), allocatable :: dif(:), rad(:,:)
+        real(8) :: peak(3)
+        integer :: k
+
+        do k = 1, 3
+            call read_field_two(trim(names(k)), dif, rad, error)
+            if (allocated(error)) return
+            call check(error, size(dif) == 83, trim(names(k))//": not 83 points")
+            if (allocated(error)) return
+            peak(k) = maxval(abs(dif(1:80)))
+            write (*, '(4x, a13, ": largest |elevation| on the gap lid ", es12.5, ", off the lid ", 3es10.3)') names(k), &
+                peak(k), abs(dif(81:83))
+            call check(error, maxval(abs(dif(81:83))) > 0.1d0, trim(names(k))//": no wave off the lid")
+            if (allocated(error)) return
+        end do
+        call check(error, peak(2) < peak(1) .and. peak(3) < peak(2), "lid_gap_damps: the gap elevation does not fall with epsilon")
+    end subroutine lid_gap_damps
 
     !> Panel centroids, areas and unit normals out of the body, from the hull of the cylinder of the image term cases (copied
     !> from test_integration_image, whose own copy is private).

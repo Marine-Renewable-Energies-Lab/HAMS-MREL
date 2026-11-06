@@ -2,7 +2,8 @@
 !  ------------------------------------------------------------------------------------------------------
 !
 !    Damping lid on the free surface: input, geometry and the checks that stop a run on a bad lid.
-!    The lid is a list of panels on z = 0, in global coordinates, where the potential is zero (docs/input_files.md).
+!    The lid is a list of panels on z = 0, in global coordinates, with the dissipative condition p/rho = epsilon dphi/dz of the
+!    WAMIT damping lid (docs/input_files.md, docs/superpowers/specs/2026-11-06-epsilon-damping-lid-design.md).
 !
 !  License:
 !
@@ -30,7 +31,7 @@ MODULE DampingLid
    USE NormalProcess
    USE SingularIntgr
    USE SingularIntgrMulti
-   USE WaveDyn_mod,     ONLY: V,H,WVN,NK,BETA
+   USE WaveDyn_mod,     ONLY: V,H,WVN,NK,BETA,W1
    USE Body_mod,        ONLY: XW
    USE Potentials_mod,  ONLY: MXPOT
    USE INFG3D_Open,     ONLY: INFGREEN3D,HavelockGF
@@ -54,6 +55,8 @@ MODULE DampingLid
    PUBLIC :: LID_DIFFRACTION
    PUBLIC :: SYM_SIGNS
    PUBLIC :: REFLECTED
+   PUBLIC :: LID_ALPHA
+   PUBLIC :: LID_EPS_AT
 
    INTEGER,PRIVATE:: NBODY_LID=1                                    ! set by CHECK_LID: selects the single or multi-body hull arrays
    INTEGER,PARAMETER,PRIVATE:: NGAUSS=6                             ! Gauss-Legendre points per direction of the wave term rules
@@ -61,13 +64,16 @@ MODULE DampingLid
    REAL*8,PARAMETER,PRIVATE:: RHMIN=0.03D0                          ! FINGREEN3D is sampled at R/h of at least RHMIN
 
    ! ..... The single-body system with a lid, built by LID_ASSEMBLE once per frequency ...........................................
-   !   Unknowns [phi(1:NELEM), q(1:LNELEM)]; rows: hull, lid, then the INELEM interior rows when IRSP = 1. NROW of the rows
-   !   after the hull have field points XROW: the lid centroids, then the interior waterplane centroids.
+   !   Unknowns [phi(1:NELEM), phi(1:LNELEM)], the hull and the lid potential; rows: hull, lid, then the INELEM interior rows when
+   !   IRSP = 1. NROW of the rows after the hull have field points XROW: the lid centroids, then the interior waterplane
+   !   centroids.
    INTEGER,PRIVATE:: NROW=0
    REAL*8,ALLOCATABLE,PRIVATE:: XROW(:,:)
    COMPLEX*16,ALLOCATABLE,PRIVATE:: ALID(:,:,:)                     ! LU factors when square (IRSP = 0), the matrix itself if not
    INTEGER,ALLOCATABLE,PRIVATE:: IPIVL(:,:)
    COMPLEX*16,ALLOCATABLE,PRIVATE:: SROW(:,:,:)                     ! single layer of hull panel JEL, symmetry image IS, at XROW(K)
+   COMPLEX*16,ALLOCATABLE,PRIVATE:: LCOL(:,:,:)                     ! lid column block sum_IS RXY(IS,IP) S(x reflected IS, l), before
+                                                                    ! it is scaled by -alpha_l: rows 1 to NELEM+NROW, lid panel l, class IP
 
 CONTAINS
 !=======================================================================
@@ -277,7 +283,7 @@ CONTAINS
 !=======================================================================
 !SUBROUTINE ALLOCATE_LID_UNKNOWNS
 
-!   !   q = dphi/dz - nu*phi on the lid: the radiation modes of every body and the diffraction problem, for each symmetry image.
+!   !   phi on the lid panels: the radiation modes of every body and the diffraction problem (scattered), for each symmetry image.
 
       SUBROUTINE ALLOCATE_LID_UNKNOWNS(NBODYIN)
       IMPLICIT   NONE
@@ -699,6 +705,69 @@ CONTAINS
       END FUNCTION REFLECTED
 
 !=======================================================================
+!FUNCTION LID_ALPHA
+
+!   !   alpha = i omega epsilon nu / (g - i omega epsilon), with q = dphi/dz - nu phi = alpha phi on a lid panel of epsilon EPS
+!   !   (m/s), from p/rho = epsilon dphi/dz and the time factor e^{-i omega t} (spec, Formulation). 0 at zero frequency (V = 0)
+!   !   and at infinite frequency (V = -1), where the lid is not solved.
+
+      COMPLEX*16 FUNCTION LID_ALPHA(EPS)
+      IMPLICIT   NONE
+
+      REAL*8,INTENT(IN):: EPS
+
+      IF (ABS(V).LT.1.D-8.OR.ABS(V+1.D0).LT.1.D-8) THEN
+       LID_ALPHA=(0.D0,0.D0)
+      ELSE
+       LID_ALPHA=CI*W1*EPS*V/(G-CI*W1*EPS)
+      ENDIF
+
+      END FUNCTION LID_ALPHA
+
+!=======================================================================
+!FUNCTION LID_EPS_AT
+
+!   !   The epsilon at a point X: ON is true when X(3) is within 1e-6 of 0 and (x, y) of X, or of one of its symmetry images,
+!   !   lies in or on the edge of a lid panel; the function then returns the LEPS of the first such panel. Else 0 and ON false.
+!   !   The in-panel test is that of the on-body test in CalPotential: the cross products of the edges with the point keep one
+!   !   sign, to the tolerance 1e-3 times the squared chart length. It does not depend on the vertex order.
+
+      REAL*8 FUNCTION LID_EPS_AT(X,ON)
+      IMPLICIT   NONE
+
+      REAL*8,INTENT(IN):: X(3)
+      LOGICAL,INTENT(OUT):: ON
+      INTEGER:: IS,L,K,KA,KB
+      REAL*8:: XP(3),SVAL,SMIN,SMAX,TOLA
+
+      ON=.FALSE.
+      LID_EPS_AT=0.D0
+      IF (ABS(X(3)).GT.1.D-6) RETURN
+
+      DO IS=1,NSYS
+       XP=REFLECTED(X,IS)
+       DO L=1,LNELEM
+        TOLA=1.D-3*LPNSZ(L)**2
+        SMIN= 1.D30
+        SMAX=-1.D30
+        DO K=1,LNCN(L)
+         KA=LNCON(L,K)
+         KB=LNCON(L,MOD(K,LNCN(L))+1)
+         SVAL=(LXYZ(KB,1)-LXYZ(KA,1))*(XP(2)-LXYZ(KA,2))-(LXYZ(KB,2)-LXYZ(KA,2))*(XP(1)-LXYZ(KA,1))
+         SMIN=MIN(SMIN,SVAL)
+         SMAX=MAX(SMAX,SVAL)
+        ENDDO
+        IF (SMIN.GE.-TOLA.OR.SMAX.LE.TOLA) THEN
+         ON=.TRUE.
+         LID_EPS_AT=LEPS(L)
+         RETURN
+        ENDIF
+       ENDDO
+      ENDDO
+
+      END FUNCTION LID_EPS_AT
+
+!=======================================================================
 !SUBROUTINE HULL_LAYERS
 
 !   !   The single layer SH and the double layer DH of hull panel JEL at field point XF, already reflected, built as the IRR = 3
@@ -753,15 +822,18 @@ CONTAINS
 !SUBROUTINE LID_ASSEMBLE
 
 !   !   The left-hand side of the single-body problem with a lid, for each symmetry class IP, once per frequency. Unknowns are
-!   !   the hull phi and the lid q = dphi/dz - nu*phi. Green's identity in the fluid, with the normal out of the fluid, gives
-!   !   for a field point x (docs/superpowers/specs/2026-11-05-damping-lid-design.md, Formulation):
+!   !   the hull phi and the lid phi. Green's identity in the fluid, with the normal out of the fluid, gives for a field point x
+!   !   (docs/superpowers/specs/2026-11-06-epsilon-damping-lid-design.md, Formulation):
 !   !     c phi(x) + sum_j D_xj phi_j - sum_l S_xl q_l = sum_j S_xj V_j,    c = 2 pi on the hull, 4 pi on the lid, 0 inside
-!   !   since dG/dz = nu G on z = 0 leaves the free-surface integral -int G q on the lid only. The rows:
-!   !   - hull: FILL_HULL_LEFT, and -S of the lid panels at the hull centroids.
-!   !   - lid: phi = 0, so no free term; D of the hull panels and -S of the lid panels at the lid centroids.
-!   !   - interior (IRSP = 1): the same at the interior waterplane centroids, where x is outside the fluid.
-!   !   Symmetry images enter as in ASSB_LEFT: field points reflected for image IS, weighted by RXY(IS,IP). Square systems are
-!   !   LU-factorised here; with interior rows the matrix is kept for the least-squares solve. Needs CALGREEN.
+!   !   since dG/dz = nu G on z = 0 leaves the free-surface integral -int G q on the lid only, and on the lid
+!   !   q = dphi/dz - nu phi = alpha_l phi_l (LID_ALPHA, epsilon of panel l). The rows:
+!   !   - hull: FILL_HULL_LEFT, and -alpha_l S of the lid panels at the hull centroids.
+!   !   - lid: 4 pi on the diagonal (WAMIT eq. 15.93), D of the hull panels and -alpha_l S of the lid panels at the centroids.
+!   !   - interior (IRSP = 1): the same at the interior waterplane centroids, where x is outside the fluid, with no free term.
+!   !   Symmetry images enter as in ASSB_LEFT: field points reflected for image IS, weighted by RXY(IS,IP); an image panel takes
+!   !   the epsilon of its source panel. The lid columns before the scaling by -alpha_l are kept in LCOL for the incident term of
+!   !   LID_DIFFRACTION. Square systems are LU-factorised here; with interior rows the matrix is kept for the least-squares
+!   !   solve. Needs CALGREEN.
 
       SUBROUTINE LID_ASSEMBLE(NELEM,NSYS)
       IMPLICIT   NONE
@@ -769,19 +841,20 @@ CONTAINS
       INTEGER,INTENT(IN):: NELEM,NSYS
       INTEGER:: NC,IEL,JEL,K,L,IS,IP,INFO
       REAL*8:: XF(3)
-      COMPLEX*16:: SL,SH,DH
+      COMPLEX*16:: SL,SH,DH,AL
       COMPLEX*16,ALLOCATABLE:: AH(:,:,:)
 
       NC=NELEM+LNELEM
       IF (.NOT.ALLOCATED(ALID)) THEN
        NROW=LNELEM
        IF (IRSP.EQ.1) NROW=LNELEM+iNELEM
-       ALLOCATE(XROW(NROW,3),ALID(NELEM+NROW,NC,NSYS),IPIVL(NC,NSYS),SROW(NROW,NELEM,NSYS))
+       ALLOCATE(XROW(NROW,3),ALID(NELEM+NROW,NC,NSYS),IPIVL(NC,NSYS),SROW(NROW,NELEM,NSYS),LCOL(NELEM+NROW,LNELEM,NSYS))
        XROW(1:LNELEM,:)=LXYZ_P
        IF (IRSP.EQ.1) XROW(LNELEM+1:NROW,:)=iXYZ_P
       ENDIF
 
       ALID=(0.D0,0.D0)
+      LCOL=(0.D0,0.D0)
       ALLOCATE(AH(NELEM,NELEM,NSYS))
       CALL FILL_HULL_LEFT(AH,NELEM,NSYS)
       ALID(1:NELEM,1:NELEM,:)=AH
@@ -794,7 +867,7 @@ CONTAINS
         DO L=1,LNELEM
          CALL LID_SINGLE_LAYER(XF,L,SL)
          DO IP=1,NSYS
-          ALID(IEL,NELEM+L,IP)=ALID(IEL,NELEM+L,IP)-RXY(IS,IP)*SL
+          LCOL(IEL,L,IP)=LCOL(IEL,L,IP)+RXY(IS,IP)*SL
          ENDDO
         ENDDO
        ENDDO
@@ -815,12 +888,21 @@ CONTAINS
         DO L=1,LNELEM
          CALL LID_SINGLE_LAYER(XF,L,SL)
          DO IP=1,NSYS
-          ALID(NELEM+K,NELEM+L,IP)=ALID(NELEM+K,NELEM+L,IP)-RXY(IS,IP)*SL
+          LCOL(NELEM+K,L,IP)=LCOL(NELEM+K,L,IP)+RXY(IS,IP)*SL
          ENDDO
         ENDDO
        ENDDO
       ENDDO
 !$OMP END PARALLEL DO
+
+      ! The lid columns -alpha_l LCOL, and the free term 4 pi of the lid rows (not of the interior rows)
+      DO L=1,LNELEM
+       AL=LID_ALPHA(LEPS(L))
+       DO IP=1,NSYS
+        ALID(:,NELEM+L,IP)=-AL*LCOL(:,L,IP)
+        ALID(NELEM+L,NELEM+L,IP)=ALID(NELEM+L,NELEM+L,IP)+4.D0*PI
+       ENDDO
+      ENDDO
 
       IF (NROW.EQ.LNELEM) THEN
        DO IP=1,NSYS
@@ -879,7 +961,7 @@ CONTAINS
 !SUBROUTINE LID_UNPACK
 
 !   !   From the solution of each symmetry class in B, the hull phi of each symmetry image into MXPOT(:,MD0+1:MD0+NRHS,:) and
-!   !   the lid q into MXLPOT, by the RXY recombination and the /NSYS of RADIATION_SOLVER.
+!   !   the lid phi into MXLPOT, by the RXY recombination and the /NSYS of RADIATION_SOLVER.
 
       SUBROUTINE LID_UNPACK(B,NRHS,MD0,NELEM,NSYS)
       IMPLICIT   NONE
@@ -908,7 +990,8 @@ CONTAINS
 !SUBROUTINE LID_RADIATION
 
 !   !   The six radiation problems with the lid. Hull rows from ASSB_RBC. Lid and interior rows: sum_j S_xj V_j with S from
-!   !   LID_ASSEMBLE and the mode signs of RBC_IRR; on the lid phi = 0, so nothing else. Fills MXPOT(:,1:6,:) and MXLPOT(:,1:6,:).
+!   !   LID_ASSEMBLE and the mode signs of RBC_IRR. The radiation potential has no incident part, so the lid adds nothing to
+!   !   the right-hand side. Fills MXPOT(:,1:6,:) and MXLPOT(:,1:6,:).
 
       SUBROUTINE LID_RADIATION(NELEM,NSYS)
       IMPLICIT   NONE
@@ -957,22 +1040,22 @@ CONTAINS
 !SUBROUTINE LID_DIFFRACTION
 
 !   !   The diffraction problem with the lid, for the heading BETA. The code solves for the scattered potential. Hull rows from
-!   !   ASSB_DBC. Lid and interior rows: -sum_j S_xj dphi_I/dn_j, as DBC_IRR. On the lid the total potential is zero, so the
-!   !   scattered one is -phi_I, and the free term 4 pi phi_S moves to the right as +4 pi phi_I(x), at x reflected for each
-!   !   image. Interior rows have no free term. q is that of the total potential as well, since phi_I satisfies the free-surface
-!   !   condition. At zero frequency the incident term is left out, as CalPotential leaves out the incident potential there.
+!   !   ASSB_DBC. Lid and interior rows: -sum_j S_xj dphi_I/dn_j, as DBC_IRR. phi_I satisfies dphi_I/dz = nu phi_I on z = 0, so
+!   !   the scattered q is alpha_l (phi_S + phi_I) on the lid, and every row, hull, lid and interior, gains
+!   !   + sum_l alpha_l LCOL(x,l,IP) U_I(l,IP), with U_I(l,IP) = sum_J RXY(IP,J) phi_I(centroid l reflected for J), the class
+!   !   component of phi_I in the scaling of the unknowns (spec, Symmetry). Left out at zero frequency, where alpha = 0.
 !   !   Fills MXPOT(:,7,:) and MXLPOT(:,7,:).
 
       SUBROUTINE LID_DIFFRACTION(NELEM,NSYS)
       IMPLICIT   NONE
 
       INTEGER,INTENT(IN):: NELEM,NSYS
-      INTEGER:: K,JEL,IS,IP
+      INTEGER:: K,JEL,IS,IP,L
       REAL*8:: SGX,SGY,XF(3)
-      COMPLEX*16:: BTMP(2),DPOX,DPOY,DPOZ
-      COMPLEX*16,ALLOCATABLE:: BH(:,:),B(:,:,:),DINC(:,:,:)
+      COMPLEX*16:: BTMP(2),DPOX,DPOY,DPOZ,PHIJ(2),AL
+      COMPLEX*16,ALLOCATABLE:: BH(:,:),B(:,:,:),DINC(:,:,:),UI(:,:)
 
-      ALLOCATE(BH(NELEM,NSYS),B(NELEM+NROW,1,NSYS),DINC(NELEM,NSYS,NSYS))
+      ALLOCATE(BH(NELEM,NSYS),B(NELEM+NROW,1,NSYS),DINC(NELEM,NSYS,NSYS),UI(LNELEM,NSYS))
       CALL ASSB_DBC(BH,NELEM,NSYS)
       B=(0.D0,0.D0)
       B(1:NELEM,1,:)=BH
@@ -988,7 +1071,7 @@ CONTAINS
        ENDDO
       ENDDO
 
-!$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(K,JEL,IS,IP,XF,BTMP) SCHEDULE(DYNAMIC,16)
+!$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(K,JEL,IS,IP,BTMP) SCHEDULE(DYNAMIC,16)
       DO K=1,NROW
        BTMP=(0.D0,0.D0)
        DO IS=1,NSYS
@@ -998,12 +1081,6 @@ CONTAINS
          ENDDO
         ENDDO
        ENDDO
-       IF (K.LE.LNELEM.AND.ABS(V).GE.1.D-8) THEN
-        DO IS=1,NSYS
-         XF=REFLECTED(XROW(K,:),IS)
-         BTMP(IS)=BTMP(IS)+4.D0*PI*VINP(XF(1),XF(2),XF(3),XW(1),XW(2),BETA)
-        ENDDO
-       ENDIF
        DO IP=1,NSYS
         DO IS=1,NSYS
          B(NELEM+K,1,IP)=B(NELEM+K,1,IP)+RXY(IP,IS)*BTMP(IS)
@@ -1012,9 +1089,30 @@ CONTAINS
       ENDDO
 !$OMP END PARALLEL DO
 
+      ! The incident lid term, alpha_l LCOL U_I, on every row
+      IF (ABS(V).GE.1.D-8.AND.ABS(V+1.D0).GE.1.D-8) THEN
+       DO L=1,LNELEM
+        DO IS=1,NSYS
+         XF=REFLECTED(LXYZ_P(L,:),IS)
+         PHIJ(IS)=VINP(XF(1),XF(2),XF(3),XW(1),XW(2),BETA)
+        ENDDO
+        AL=LID_ALPHA(LEPS(L))
+        DO IP=1,NSYS
+         UI(L,IP)=(0.D0,0.D0)
+         DO IS=1,NSYS
+          UI(L,IP)=UI(L,IP)+RXY(IP,IS)*PHIJ(IS)
+         ENDDO
+         UI(L,IP)=AL*UI(L,IP)
+        ENDDO
+       ENDDO
+       DO IP=1,NSYS
+        B(:,1,IP)=B(:,1,IP)+MATMUL(LCOL(:,:,IP),UI(:,IP))
+       ENDDO
+      ENDIF
+
       CALL LID_SOLVE(B,1,NELEM,NSYS)
       CALL LID_UNPACK(B,1,6,NELEM,NSYS)
-      DEALLOCATE(BH,B,DINC)
+      DEALLOCATE(BH,B,DINC,UI)
 
       RETURN
       END SUBROUTINE LID_DIFFRACTION

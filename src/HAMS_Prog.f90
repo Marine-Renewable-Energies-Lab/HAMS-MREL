@@ -283,12 +283,12 @@ program HAMS_MREL
             ! Solving the radiation problem. With a lid, at infinite frequency phi is zero on the whole free surface already,
             ! so the lid is skipped there and the hull is solved alone.
             ! A zero frequency in the frequency list stops a lid run. The zero limit that 0_inf_frequency_limits adds (KK = 1)
-            ! is not in the list and goes on, as before.
+            ! is not in the list and goes on: there alpha = 0, so the lid is skipped and the hull solved alone, as at infinity.
             IF (LIDON.EQ.1 .AND. ABS(V).LT.1.D-8 .AND. .NOT.(SYBO.EQ.1 .AND. KK.EQ.1)) THEN
                 PRINT *,' Error: zero frequency with a damping lid: frequency No.',KK-2*SYBO,' of the list is 0.'
                 STOP 1
             ENDIF
-            LIDSOLVE = LIDON.EQ.1 .AND. ABS(V+1.D0).GE.1.D-8
+            LIDSOLVE = LIDON.EQ.1 .AND. ABS(V+1.D0).GE.1.D-8 .AND. ABS(V).GE.1.D-8
             IF (LIDSOLVE) THEN
                 CALL CALGREEN                                               ! the hull block; LID_ASSEMBLE builds the interior rows
                 CALL LID_ASSEMBLE(NELEM,NSYS)
@@ -665,12 +665,12 @@ program HAMS_MREL
             ! Solving the radiation problem. With a lid, at infinite frequency phi is zero on the whole free surface already,
             ! so the lid is skipped there and the hulls are solved alone. CHECK_LID stops a lid with IRSP = 1.
             ! A zero frequency in the frequency list stops a lid run. The zero limit that 0_inf_frequency_limits adds (KK = 1)
-            ! is not in the list and goes on, as before.
+            ! is not in the list and goes on: there alpha = 0, so the lid is skipped and the hulls solved alone, as at infinity.
             IF (LIDON.EQ.1 .AND. ABS(V).LT.1.D-8 .AND. .NOT.(SYBO.EQ.1 .AND. KK.EQ.1)) THEN
                 PRINT *,' Error: zero frequency with a damping lid: frequency No.',KK-2*SYBO,' of the list is 0.'
                 STOP 1
             ENDIF
-            LIDSOLVE = LIDON.EQ.1 .AND. ABS(V+1.D0).GE.1.D-8
+            LIDSOLVE = LIDON.EQ.1 .AND. ABS(V+1.D0).GE.1.D-8 .AND. ABS(V).GE.1.D-8
             IF (LIDSOLVE) THEN
                 CALL CALGREEN_MULTI                                         ! the hull block
                 CALL LID_ASSEMBLE_MULTI(TNELEM,NSYS)

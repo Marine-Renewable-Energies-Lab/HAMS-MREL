@@ -35,7 +35,7 @@ MODULE DampingLidMulti
    USE FinGreen3D_Open, ONLY: FINGREEN3D
    USE PatcVelct,       ONLY: VINP,DINP
    USE AssbMatxMulti,   ONLY: FILL_HULL_LEFT_MULTI,ASSB_RBC_MULTI,ASSB_DBC_MULTI
-   USE DampingLid,      ONLY: LID_SINGLE_LAYER,SYM_SIGNS,REFLECTED
+   USE DampingLid,      ONLY: LID_SINGLE_LAYER,SYM_SIGNS,REFLECTED,LID_ALPHA
    ! SYM_SIGNS and REFLECTED read SX and SY, which hold the same DATA as SX_MULTI and SY_MULTI (WavDynMods.f90).
 
    IMPLICIT NONE
@@ -49,11 +49,13 @@ MODULE DampingLidMulti
    PUBLIC :: LID_DIFFRACTION_MULTI
 
    ! ..... The multi-body system with a lid, built by LID_ASSEMBLE_MULTI once per frequency .....................................
-   !   Unknowns [phi(1:NH), q(1:LNELEM)], NH the hull panels of all bodies in the order of the combined arrays; rows: hull, then
-   !   lid. Square, so LU-factorised. CHECK_LID stops a run with IRSP = 1, which would add interior rows.
+   !   Unknowns [phi(1:NH), phi(1:LNELEM)], NH the hull panels of all bodies in the order of the combined arrays, then the lid;
+   !   rows: hull, then lid. Square, so LU-factorised. CHECK_LID stops a run with IRSP = 1, which would add interior rows.
    COMPLEX*16,ALLOCATABLE:: ALIDM(:,:,:)                            ! LU factors
    INTEGER,ALLOCATABLE:: IPIVM(:,:)
    COMPLEX*16,ALLOCATABLE:: SROWM(:,:,:)                            ! single layer of hull panel JEL, symmetry image IS, at lid centroid K
+   COMPLEX*16,ALLOCATABLE:: LCOLM(:,:,:)                            ! lid column block before the scaling by -alpha_l, as LCOL of
+                                                                    ! DampingLid.f90: rows 1 to NH+LNELEM, lid panel l, class IP
 
 CONTAINS
 !=======================================================================
@@ -112,9 +114,10 @@ CONTAINS
 
 !   !   The left-hand side with a lid for several bodies, for each symmetry class IP, once per frequency. The equations are those
 !   !   of LID_ASSEMBLE in DampingLid.f90, with the hull of every body in the combined arrays:
-!   !   - hull: FILL_HULL_LEFT_MULTI, and -S of the lid panels at the hull centroids.
-!   !   - lid: phi = 0, so no free term; D of the hull panels and -S of the lid panels at the lid centroids.
-!   !   Symmetry images enter as in ASSB_LEFT_MULTI. Needs CALGREEN_MULTI.
+!   !   - hull: FILL_HULL_LEFT_MULTI, and -alpha_l S of the lid panels at the hull centroids.
+!   !   - lid: 4 pi on the diagonal, D of the hull panels and -alpha_l S of the lid panels at the lid centroids.
+!   !   Symmetry images enter as in ASSB_LEFT_MULTI. The lid columns before the scaling by -alpha_l are kept in LCOLM for the
+!   !   incident term of LID_DIFFRACTION_MULTI. Needs CALGREEN_MULTI.
 
       SUBROUTINE LID_ASSEMBLE_MULTI(NH,NSYS)
       IMPLICIT   NONE
@@ -122,13 +125,14 @@ CONTAINS
       INTEGER,INTENT(IN):: NH,NSYS
       INTEGER:: NC,IEL,JEL,K,L,IS,IP,INFO
       REAL*8:: XF(3)
-      COMPLEX*16:: SL,SH,DH
+      COMPLEX*16:: SL,SH,DH,AL
       COMPLEX*16,ALLOCATABLE:: AH(:,:,:)
 
       NC=NH+LNELEM
-      IF (.NOT.ALLOCATED(ALIDM)) ALLOCATE(ALIDM(NC,NC,NSYS),IPIVM(NC,NSYS),SROWM(LNELEM,NH,NSYS))
+      IF (.NOT.ALLOCATED(ALIDM)) ALLOCATE(ALIDM(NC,NC,NSYS),IPIVM(NC,NSYS),SROWM(LNELEM,NH,NSYS),LCOLM(NC,LNELEM,NSYS))
 
       ALIDM=(0.D0,0.D0)
+      LCOLM=(0.D0,0.D0)
       ALLOCATE(AH(NH,NH,NSYS))
       CALL FILL_HULL_LEFT_MULTI(AH,NH,NSYS)
       ALIDM(1:NH,1:NH,:)=AH
@@ -141,7 +145,7 @@ CONTAINS
         DO L=1,LNELEM
          CALL LID_SINGLE_LAYER(XF,L,SL)
          DO IP=1,NSYS
-          ALIDM(IEL,NH+L,IP)=ALIDM(IEL,NH+L,IP)-RXY_MULTI(IS,IP)*SL
+          LCOLM(IEL,L,IP)=LCOLM(IEL,L,IP)+RXY_MULTI(IS,IP)*SL
          ENDDO
         ENDDO
        ENDDO
@@ -162,12 +166,21 @@ CONTAINS
         DO L=1,LNELEM
          CALL LID_SINGLE_LAYER(XF,L,SL)
          DO IP=1,NSYS
-          ALIDM(NH+K,NH+L,IP)=ALIDM(NH+K,NH+L,IP)-RXY_MULTI(IS,IP)*SL
+          LCOLM(NH+K,L,IP)=LCOLM(NH+K,L,IP)+RXY_MULTI(IS,IP)*SL
          ENDDO
         ENDDO
        ENDDO
       ENDDO
 !$OMP END PARALLEL DO
+
+      ! The lid columns -alpha_l LCOLM and the free term 4 pi of the lid rows
+      DO L=1,LNELEM
+       AL=LID_ALPHA(LEPS(L))
+       DO IP=1,NSYS
+        ALIDM(:,NH+L,IP)=-AL*LCOLM(:,L,IP)
+        ALIDM(NH+L,NH+L,IP)=ALIDM(NH+L,NH+L,IP)+4.D0*PI
+       ENDDO
+      ENDDO
 
       DO IP=1,NSYS
        CALL ZGETRF(NC,NC,ALIDM(:,:,IP),NC,IPIVM(:,IP),INFO)
@@ -184,7 +197,7 @@ CONTAINS
 !SUBROUTINE LID_SOLVE_UNPACK_MULTI
 
 !   !   Solves for the NRHS columns of B(NH+LNELEM,NRHS,NSYS) by the LU factors of LID_ASSEMBLE_MULTI, then puts the hull phi of
-!   !   each symmetry image into MXPOT_MULTI_COMB(:,MD0+1:MD0+NRHS,:) and the lid q into MXLPOT, by the RXY_MULTI recombination and
+!   !   each symmetry image into MXPOT_MULTI_COMB(:,MD0+1:MD0+NRHS,:) and the lid phi into MXLPOT, by the RXY_MULTI recombination and
 !   !   the /NSYS of RADIATION_SOLVER_MULTI.
 
       SUBROUTINE LID_SOLVE_UNPACK_MULTI(B,NRHS,MD0,NH,NSYS)
@@ -220,8 +233,8 @@ CONTAINS
 
 !   !   The 6*NBODY radiation problems with the lid. Mode MD of body M moves the panels of body M only. Hull rows from
 !   !   ASSB_RBC_MULTI over the panels of each body, as in the multi-body loop of HAMS_Prog.f90. Lid rows: sum_j S_xj V_j over
-!   !   the panels j of that body, with S from LID_ASSEMBLE_MULTI and the mode signs of RBC_MULTI_RIGHT; on the lid phi = 0, so
-!   !   nothing else. Fills MXPOT_MULTI_COMB(:,1:6*NBODY,:) and MXLPOT(:,1:6*NBODY,:).
+!   !   the panels j of that body, with S from LID_ASSEMBLE_MULTI and the mode signs of RBC_MULTI_RIGHT; the radiation potential
+!   !   has no incident part, so nothing else. Fills MXPOT_MULTI_COMB(:,1:6*NBODY,:) and MXLPOT(:,1:6*NBODY,:).
 
       SUBROUTINE LID_RADIATION_MULTI(NH,NSYS)
       IMPLICIT   NONE
@@ -285,20 +298,20 @@ CONTAINS
 !SUBROUTINE LID_DIFFRACTION_MULTI
 
 !   !   The diffraction problem with the lid for several bodies, for the heading BETA, as LID_DIFFRACTION in DampingLid.f90:
-!   !   hull rows from ASSB_DBC_MULTI; lid rows -sum_j S_xj dphi_I/dn_j over the panels of all bodies, plus 4 pi phi_I(x), since
-!   !   the scattered potential is -phi_I on the lid. At zero frequency the incident term is left out. Fills
-!   !   MXPOT_MULTI_COMB(:,6*NBODY+1,:) and MXLPOT(:,6*NBODY+1,:).
+!   !   hull rows from ASSB_DBC_MULTI; lid rows -sum_j S_xj dphi_I/dn_j over the panels of all bodies; every row gains the
+!   !   incident lid term + sum_l alpha_l LCOLM(x,l,IP) U_I(l,IP), U_I the class component of phi_I at the lid centroids. Left out
+!   !   at zero frequency. Fills MXPOT_MULTI_COMB(:,6*NBODY+1,:) and MXLPOT(:,6*NBODY+1,:).
 
       SUBROUTINE LID_DIFFRACTION_MULTI(NH,NSYS)
       IMPLICIT   NONE
 
       INTEGER,INTENT(IN):: NH,NSYS
-      INTEGER:: K,JEL,IS,IP
+      INTEGER:: K,JEL,IS,IP,L
       REAL*8:: SGX,SGY,XF(3)
-      COMPLEX*16:: BTMP(2),DPOX,DPOY,DPOZ
-      COMPLEX*16,ALLOCATABLE:: BH(:,:),B(:,:,:),DINC(:,:,:)
+      COMPLEX*16:: BTMP(2),DPOX,DPOY,DPOZ,PHIJ(2),AL
+      COMPLEX*16,ALLOCATABLE:: BH(:,:),B(:,:,:),DINC(:,:,:),UI(:,:)
 
-      ALLOCATE(BH(NH,NSYS),B(NH+LNELEM,1,NSYS),DINC(NH,NSYS,NSYS))
+      ALLOCATE(BH(NH,NSYS),B(NH+LNELEM,1,NSYS),DINC(NH,NSYS,NSYS),UI(LNELEM,NSYS))
       CALL ASSB_DBC_MULTI(BH,NH,NSYS)
       B=(0.D0,0.D0)
       B(1:NH,1,:)=BH
@@ -315,7 +328,7 @@ CONTAINS
        ENDDO
       ENDDO
 
-!$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(K,JEL,IS,IP,XF,BTMP) SCHEDULE(DYNAMIC,16)
+!$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(K,JEL,IS,IP,BTMP) SCHEDULE(DYNAMIC,16)
       DO K=1,LNELEM
        BTMP=(0.D0,0.D0)
        DO IS=1,NSYS
@@ -325,12 +338,6 @@ CONTAINS
          ENDDO
         ENDDO
        ENDDO
-       IF (ABS(V).GE.1.D-8) THEN
-        DO IS=1,NSYS
-         XF=REFLECTED(LXYZ_P(K,:),IS)
-         BTMP(IS)=BTMP(IS)+4.D0*PI*VINP(XF(1),XF(2),XF(3),XW(1),XW(2),BETA)
-        ENDDO
-       ENDIF
        DO IP=1,NSYS
         DO IS=1,NSYS
          B(NH+K,1,IP)=B(NH+K,1,IP)+RXY_MULTI(IP,IS)*BTMP(IS)
@@ -339,8 +346,29 @@ CONTAINS
       ENDDO
 !$OMP END PARALLEL DO
 
+      ! The incident lid term, alpha_l LCOLM U_I, on every row
+      IF (ABS(V).GE.1.D-8.AND.ABS(V+1.D0).GE.1.D-8) THEN
+       DO L=1,LNELEM
+        DO IS=1,NSYS
+         XF=REFLECTED(LXYZ_P(L,:),IS)
+         PHIJ(IS)=VINP(XF(1),XF(2),XF(3),XW(1),XW(2),BETA)
+        ENDDO
+        AL=LID_ALPHA(LEPS(L))
+        DO IP=1,NSYS
+         UI(L,IP)=(0.D0,0.D0)
+         DO IS=1,NSYS
+          UI(L,IP)=UI(L,IP)+RXY_MULTI(IP,IS)*PHIJ(IS)
+         ENDDO
+         UI(L,IP)=AL*UI(L,IP)
+        ENDDO
+       ENDDO
+       DO IP=1,NSYS
+        B(:,1,IP)=B(:,1,IP)+MATMUL(LCOLM(:,:,IP),UI(:,IP))
+       ENDDO
+      ENDIF
+
       CALL LID_SOLVE_UNPACK_MULTI(B,1,6*NBODY,NH,NSYS)
-      DEALLOCATE(BH,B,DINC)
+      DEALLOCATE(BH,B,DINC,UI)
 
       RETURN
       END SUBROUTINE LID_DIFFRACTION_MULTI
