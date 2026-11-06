@@ -312,6 +312,13 @@ The script exits with 1 if one fails. What each covers, and what it does not:
   of order rho**(1/3) in rho**(1/3) u_t), so that tail is not tested. It covers the bottom series d phi/dr, its corner
   tail and the particular solution's velocity, which only F_z and M_y see; it does not test them away from the corner.
 - convergence and uncertainty: see "Reference values".
+- compare_fixture: compare on a temporary RESULTS written in HAMS's formats from LIGHT_RESOLUTION reference rows at 0.40,
+  0.70 and 1.60 rad/s, passed through the reference CSV: every difference 0 (to 1e-9) for a case with all files, heading
+  30 rows ignored; "missing" terms and control surface for a case without MeanDriftTerms.txt and
+  MeanDriftControlSurface.7; the 1.60 rows "irregular" and no other; free F_x at 0.40 rad/s empty (below the floor); and
+  irregular_frequencies equal to the 1.548 and 1.939 of drift_convergence.IRREGULAR_FREQUENCIES. It tests the readers,
+  the indices, the floor and the flags, not HAMS.
+- compare_signs: see "Comparison with HAMS".
 
 Reference values. python -I truncated_cylinder_reference.py reference [--out CSV] writes, at DEFAULT_RESOLUTION
 (N = 64000, gap basis (20, 4, 4), orders 0 ... 15) and every WIDE_FREQUENCIES, the fixed and the free rows of reference
@@ -359,6 +366,27 @@ reference's docstring), then the convergence table, then runs every check; exit 
   6 to 7 min unloaded. A row pair (fixed and free) at the default costs about 6 s: they share the solves
   (_solved), the inner products and radial ratios (_modes) and the solution-independent part of the body series
   (_series_context).
+
+Comparison with HAMS. python -I truncated_cylinder_reference.py compare RESULTS [--out CSV] [--reference CSV] reads every
+folder of RESULTS whose name starts with a_sharp_ (the sharp hull of group A of drift_convergence.study_cases: fixed and
+free, differencing and source, multiples 1 to 4, 448 to 7168 panels), output/Wamit_format/, heading 0 only, and prints per
+case and omega the percentage difference (HAMS - reference)/abs(reference) of A and B (11, 15, 33, 55; 13 and 35 are zero
+by symmetry), abs(X), abs(RAO) (both motions against the free body: HAMS writes Motion.4 for a fixed body too), F_x near
+and far, F_z, M_y, each near-field term, and the control-surface F_x of MeanDriftControlSurface.7 against the far-field
+reference, "missing" where a file is absent. Only moduli and real drift values are compared, so the factor i between
+HAMS's phases and this module's (eta_I(0) = 1 against -i) plays no part. Each drift percentage is followed by the
+reference's stated uncertainty (uncertainty()). Each block is headed by the panels and the area error of the waterline,
+a ntheta-sided inscribed polygon (polygon_area_error: -6.4e-3 at 32 sides, -4.0e-4 at 128). A percentage is empty where
+abs(reference) is below drift_convergence.percent's floor, 1e-4 of the largest abs(reference) of the quantity and motion
+over the reference rows (for a term, of the term and its total). Rows within 5 % of an irregular frequency of the hull
+(irregular_frequencies: 1.548 and 1.939 rad/s; the 1.60 rows) are marked "irregular", not counted as HAMS errors. The
+reference rows are computed at DEFAULT_RESOLUTION (cached; about 4 min) or read from a CSV of the reference subcommand.
+compare_signs, at the finest source mesh (7168 panels), tests the sign of every near-field term and of far-field F_x
+above the floor, and of the near-field totals where they are at least SIGN_CANCELLATION = 5 % of their largest term: the
+free F_z at 0.70 and 0.80 rad/s (1.4 and 1.0 % of their terms) and the free F_x at 0.60 and 0.70 rad/s are near
+cancellations whose sign HAMS's term errors of a few % can flip. Measured once against the study's results (not
+reproducible from the repository): every tested sign agrees (210 values); HAMS's free F_z at 0.70 rad/s is +0.059 against
+-0.613, and its Richardson extrapolation from 448, 1792 and 7168 panels (source) is -0.65.
 """
 import argparse
 import csv
@@ -2545,6 +2573,466 @@ def check_uncertainty():
                                                                   "\n".join(lines)))
 
 
+# Comparison with HAMS (compare; module docstring, "Comparison with HAMS")
+COMPARE_PREFIX = "a_sharp_"   # the case folders compared: the sharp hull of group A of drift_convergence.study_cases
+COMPARE_HEADING = 0.0
+# The study's results, resolved from this script's folder (not the working directory): outside the repository
+COMPARE_RESULTS = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..",
+                                                "validation-runs", "snellius-drift", "results"))
+IRREGULAR_MARGIN = 0.05   # rows within 5 % of an irregular frequency of the hull are marked "irregular"
+MISSING = "missing"
+COMPARE_PAIRS = (11, 15, 33, 55)   # A and B compared; 13 and 35 are zero by symmetry in the reference
+COMPARE_FIRST = (["A%d" % ij for ij in COMPARE_PAIRS] + ["B%d" % ij for ij in COMPARE_PAIRS]
+                 + ["X%d" % j for j in MOTION_MODES] + ["RAO%d" % j for j in MOTION_MODES])
+COMPARE_DRIFT = ["Fx_near", "Fx_far", "Fz", "My", "Fx_cs"]
+COMPARE_TERMS = ["%s_%s" % (name, key) for name in ("Fx", "Fz", "My") for key in NEAR_FIELD_TERMS]
+COMPARE_QUANTITIES = COMPARE_FIRST + COMPARE_DRIFT + COMPARE_TERMS
+_UNCERTAINTY_OF = {"Fx_near": "Fx_near", "Fx_far": "Fx_far", "Fz": "Fz", "My": "My", "Fx_cs": "Fx_far"}
+_TOTAL_OF = {"Fx": "Fx_near", "Fz": "Fz", "My": "My"}
+
+
+def irregular_frequencies(cyl, upto):
+    """The irregular frequencies of a constant-panel BEM (no lid) on the cylinder below upto, rad/s: the eigenvalues of the
+    interior problem with phi = 0 on the wetted surface and the free-surface condition on the waterplane, phi =
+    J_m(k r) sinh(k (z + d)) cos(m theta) with J_m(k a) = 0 and nu = k coth(k d). For the default cylinder 1.5487
+    (J_0) and 1.9398 (J_1) below 2 rad/s, the 1.548 and 1.939 of drift_convergence.IRREGULAR_FREQUENCIES (that tuple
+    also holds 1.10, 1.50 and 1.60, the frequencies of the study's irregular-frequency runs, which are not irregular)."""
+    from scipy.special import jn_zeros
+
+    found = []
+    for m in range(8):
+        for j in jn_zeros(m, 8):
+            k = j / cyl.radius
+            omega = math.sqrt(make_mesh.G * k / math.tanh(k * cyl.draft))
+            if omega <= upto:
+                found.append(omega)
+    return tuple(sorted(found))
+
+
+def polygon_area_error(ntheta):
+    """Area of the HAMS waterline over pi a**2, less 1: make_mesh.cylinder puts the ntheta vertices on the circle (an
+    inscribed regular polygon), area (ntheta/2) a**2 sin(2 pi/ntheta)."""
+    return ntheta * math.sin(2.0 * math.pi / ntheta) / (2.0 * math.pi) - 1.0
+
+
+def _read_drift_terms(path):
+    """MeanDriftTerms.txt (written by write_terms_row in src/SecondOrderOutput.f90; header in src/SecondOrderDriver.f90):
+    rows PER BETA1 BETA2 body I term Re Im, term 1 waterline, 2 flare, 3 velocity, 4 displacement, 5 rotation,
+    6 hydrostatic (NEAR_FIELD_TERMS I, Ia, II, III, IV, V), I = 1 ... 6, scaled and conjugated as MeanDriftPressure.9.
+    Returns (omega, beta1, beta2, I) -> {term: Re}, body 1, or None if the file is absent. drift_convergence.read_terms
+    reads I = 1 only."""
+    if not os.path.exists(path):
+        return None
+    values = {}
+    for line in open(path):
+        c = line.split()
+        if not c or line.startswith("#") or int(c[3]) != 1:
+            continue
+        key = (round(float(c[0]), 4), round(float(c[1]), 3), round(float(c[2]), 3), int(c[4]))
+        values.setdefault(key, {})[int(c[5])] = float(c[6])
+    return values
+
+
+def _read_hams_case(folder):
+    """omega -> {quantity: HAMS value or MISSING} of output/Wamit_format/ under a case folder, heading COMPARE_HEADING, body 1.
+    AmssDamp.1, ExcForce.3, Motion.4 by drift_convergence.read_hams_first_order (A/rho, B/(rho omega), MOD columns);
+    MeanDriftMomentum.8 (F_x far), MeanDriftPressure.9 (index 6(b - 1) + I: F_x 1, F_z 3, M_y 5) and
+    MeanDriftControlSurface.7 (F_x, same format) by drift_convergence.read_drift (Re column); MeanDriftTerms.txt by
+    _read_drift_terms. A file that is absent makes its quantities MISSING."""
+    out = os.path.join(folder, "output", "Wamit_format")
+    exists = lambda name: os.path.exists(os.path.join(out, name))
+    first = all(exists(n) for n in ("AmssDamp.1", "ExcForce.3", "Motion.4"))
+    a, b, x, rao = drift_convergence.read_hams_first_order(out) if first else ({}, {}, {}, {})
+    drift = {name: drift_convergence.read_drift(os.path.join(out, name)) if exists(name) else None
+             for name in ("MeanDriftMomentum.8", "MeanDriftPressure.9", "MeanDriftControlSurface.7")}
+    terms = _read_drift_terms(os.path.join(out, "MeanDriftTerms.txt"))
+    beta = round(COMPARE_HEADING, 3)
+    omegas = set()
+    for table in drift.values():
+        omegas |= {key[0] for key in (table or {}) if key[1] == beta and key[2] == beta}
+    omegas |= {key[0] for key in x if key[1] == round(COMPARE_HEADING, 1)}
+    values = {}
+    for omega in sorted(omegas):
+        w2 = round(omega, 2)
+        v = {}
+        for ij in COMPARE_PAIRS:
+            i, j = divmod(ij, 10)
+            v["A%d" % ij] = a.get((w2, i, j), MISSING) if first else MISSING
+            v["B%d" % ij] = b.get((w2, i, j), MISSING) if first else MISSING
+        for j in MOTION_MODES:
+            v["X%d" % j] = x.get((w2, round(COMPARE_HEADING, 1), j), MISSING)
+            v["RAO%d" % j] = rao.get((w2, round(COMPARE_HEADING, 1), j), MISSING)
+        for q, name, index in (("Fx_far", "MeanDriftMomentum.8", 1), ("Fx_near", "MeanDriftPressure.9", 1),
+                               ("Fz", "MeanDriftPressure.9", 3), ("My", "MeanDriftPressure.9", 5),
+                               ("Fx_cs", "MeanDriftControlSurface.7", 1)):
+            table = drift[name]
+            v[q] = MISSING if table is None else table.get((omega, beta, beta, index), MISSING)
+        for name, index in (("Fx", 1), ("Fz", 3), ("My", 5)):
+            row = None if terms is None else terms.get((omega, beta, beta, index))
+            for number, key in enumerate(NEAR_FIELD_TERMS, start=1):
+                v["%s_%s" % (name, key)] = MISSING if row is None or number not in row else row[number]
+        values[omega] = v
+    return values
+
+
+def _relative(value, ref, scale):
+    """(value - ref)/abs(ref); None where drift_convergence.percent prints an empty field (abs(ref) below 1e-4 of scale),
+    MISSING where HAMS has no value."""
+    if value == MISSING:
+        return MISSING
+    if scale <= 0.0 or drift_convergence.percent(value, ref, scale) == "":
+        return None
+    return (value - ref) / abs(ref)
+
+
+def _reference_of(q):
+    """The reference column a compared quantity is measured against: Fx_cs against Fx_far (the control surface is a
+    far-field method), the others against their own."""
+    return "Fx_far" if q == "Fx_cs" else q
+
+
+def _floor_scales(by):
+    """(motion, quantity) -> the largest abs(reference) of the quantity and motion over the frequencies of the reference
+    rows, the scale of drift_convergence.percent's floor; for a near-field term, the largest of the term and its total
+    (Fx_near, Fz, My), so that a term is empty only where it is negligible against the force it belongs to. RAO uses the
+    free rows for both motions."""
+    scales = {}
+    for motion in ("fixed", "free"):
+        for q in COMPARE_QUANTITIES:
+            source = "free" if q.startswith("RAO") else motion
+            cols = [_reference_of(q)]
+            if q in COMPARE_TERMS:
+                cols.append(_TOTAL_OF[q.split("_")[0]])
+            vals = [abs(row[c]) for (m, _), row in by.items() if m == source for c in cols]
+            scales[motion, q] = max(vals) if vals else 0.0
+    return scales
+
+
+def _sharp_cases():
+    return {case.name: case for case in drift_convergence.study_cases() if case.name.startswith(COMPARE_PREFIX)}
+
+
+def compare(results, reference_rows, names=None):
+    """One dict per (case, omega) at heading 0 for every folder of results whose name starts with COMPARE_PREFIX (or the
+    folders names), against the reference rows (reference's dicts, fixed and free, any frequencies; the RAOs of both
+    motions are compared with the free rows, since HAMS writes Motion.4 for the fixed body too). Keys: case, motion,
+    velocity, multiple, panels (drift_convergence.panels_of), ntheta, area_error (polygon_area_error), omega, flag
+    ("irregular" within IRREGULAR_MARGIN of irregular_frequencies, "no reference" if the reference has no row at omega,
+    else ""), and for each q of COMPARE_QUANTITIES: q (HAMS value or MISSING), q_ref, q_rel ((HAMS - reference)/
+    abs(reference), None below the floor, MISSING), and for COMPARE_DRIFT q_unc (the reference's stated relative
+    uncertainty, uncertainty()). Cases are sorted by motion, velocity, multiple."""
+    cyl = Cylinder()
+    by = {(r["motion"], round(r["omega"], 2)): r for r in reference_rows}
+    scales = _floor_scales(by)
+    cases = _sharp_cases()
+    folders = sorted(n for n in (names if names is not None else os.listdir(results))
+                     if n.startswith(COMPARE_PREFIX) and os.path.isdir(os.path.join(results, n)))
+    unknown = [n for n in folders if n not in cases]
+    if unknown:
+        raise ValueError("compare: %s not cases of drift_convergence.study_cases" % ", ".join(unknown))
+    folders.sort(key=lambda n: (cases[n].motion, cases[n].velocity, cases[n].multiple))
+    top = max(drift_convergence.WIDE_FREQUENCIES) * (1.0 + IRREGULAR_MARGIN) / (1.0 - IRREGULAR_MARGIN)
+    irregular = irregular_frequencies(cyl, top)
+    table = []
+    for name in folders:
+        case = cases[name]
+        ntheta = drift_convergence.scaled(drift_convergence.fixtures.DRIFT_CYL_MESH, ("ntheta",), case.multiple)["ntheta"]
+        for omega, values in _read_hams_case(os.path.join(results, name)).items():
+            w2 = round(omega, 2)
+            row = dict(case=name, motion=case.motion, velocity=case.velocity, multiple=case.multiple,
+                       panels=drift_convergence.panels_of(case), ntheta=ntheta, area_error=polygon_area_error(ntheta),
+                       omega=w2, flag="")
+            if any(abs(omega - w) <= IRREGULAR_MARGIN * w for w in irregular):
+                row["flag"] = "irregular"
+            ref = by.get((case.motion, w2))
+            free = by.get(("free", w2))
+            if ref is None or free is None:
+                row["flag"] = "no reference"
+            for q in COMPARE_QUANTITIES:
+                source = free if q.startswith("RAO") else ref
+                row[q] = values[q]
+                if source is None:
+                    row[q + "_ref"], row[q + "_rel"] = float("nan"), MISSING
+                else:
+                    row[q + "_ref"] = source[_reference_of(q)]
+                    row[q + "_rel"] = _relative(values[q], row[q + "_ref"], scales[case.motion, q])
+                if q in COMPARE_DRIFT:
+                    row[q + "_unc"] = uncertainty(case.motion, _UNCERTAINTY_OF[q], w2)
+            table.append(row)
+    return table
+
+
+def _pct_text(rel):
+    if rel == MISSING:
+        return MISSING
+    return "" if rel is None else "%+.3f" % (100.0 * rel)
+
+
+def format_compare(table):
+    """The comparison as text: one block per case, headed by its panels and polygon area error, with three tables, each a
+    row per omega: first order, drift (each percentage followed by the reference's stated uncertainty in percent, [u]),
+    and the near-field terms (Ia, zero on the vertical wall in both, is left out here; it is in the CSV)."""
+    lines = []
+    shown_terms = [q for q in COMPARE_TERMS if not q.endswith("_Ia")]
+    for name in sorted(set(r["case"] for r in table), key=[r["case"] for r in table].index):
+        rows = [r for r in table if r["case"] == name]
+        r0 = rows[0]
+        lines.append("")
+        lines.append("%s: %s, %s, multiple %g, %d panels, waterline a %d-sided inscribed polygon, area/(pi a**2) - 1 = "
+                     "%+.3e" % (name, r0["motion"], r0["velocity"], r0["multiple"], r0["panels"], r0["ntheta"],
+                                r0["area_error"]))
+        lines.append("  first order, % difference (HAMS - reference)/|reference| (RAO against the free body):")
+        lines.append("  %5s %-9s %s" % ("omega", "flag", " ".join("%8s" % q for q in COMPARE_FIRST)))
+        for r in rows:
+            lines.append("  %5.2f %-9s %s" % (r["omega"], r["flag"],
+                                               " ".join("%8s" % _pct_text(r[q + "_rel"]) for q in COMPARE_FIRST)))
+        lines.append("  drift, % difference [reference uncertainty, %]; Fx_cs against far-field F_x of the reference:")
+        lines.append("  %5s %-9s %s" % ("omega", "flag", " ".join("%17s" % q for q in COMPARE_DRIFT)))
+        for r in rows:
+            cells = []
+            for q in COMPARE_DRIFT:
+                text = _pct_text(r[q + "_rel"])
+                cells.append("%17s" % (text if text in ("", MISSING) else "%s [%.2f]" % (text, 100.0 * r[q + "_unc"])))
+            lines.append("  %5.2f %-9s %s" % (r["omega"], r["flag"], " ".join(cells)))
+        lines.append("  near-field terms (MeanDriftTerms.txt), % difference:")
+        lines.append("  %5s %-9s %s" % ("omega", "flag", " ".join("%8s" % q for q in shown_terms)))
+        for r in rows:
+            lines.append("  %5.2f %-9s %s" % (r["omega"], r["flag"],
+                                               " ".join("%8s" % _pct_text(r[q + "_rel"]) for q in shown_terms)))
+    return "\n".join(lines)
+
+
+def compare_columns():
+    """The columns of the comparison CSV, in order."""
+    cols = ["case", "motion", "velocity", "multiple", "panels", "ntheta", "area_error", "omega", "flag"]
+    for q in COMPARE_QUANTITIES:
+        cols += [q, q + "_ref", q + "_pct"] + ([q + "_unc_pct"] if q in COMPARE_DRIFT else [])
+    return cols
+
+
+def write_compare_csv(path, table):
+    """The comparison as CSV (compare_columns): values with 10 digits, percentages with 3 decimals as
+    drift_convergence.percent, empty below the floor, MISSING where HAMS has no value."""
+    cols = compare_columns()
+    with open(path, "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(cols)
+        for r in table:
+            out = []
+            for c in cols:
+                if c.endswith("_unc_pct"):
+                    out.append("%.3g" % (100.0 * r[c[:-8] + "_unc"]))
+                elif c.endswith("_pct"):
+                    out.append(_pct_text(r[c[:-4] + "_rel"]))
+                elif c == "area_error":
+                    out.append("%.6e" % r[c])
+                else:
+                    out.append(_csv_value(r[c]) if not isinstance(r[c], str) else r[c])
+            writer.writerow(out)
+
+
+def default_reference_rows():
+    """The fixed and free rows of reference at DEFAULT_RESOLUTION and every WIDE_FREQUENCIES (cached in _reference_row)."""
+    cyl, res = Cylinder(), DEFAULT_RESOLUTION
+    rows = []
+    for omega in drift_convergence.WIDE_FREQUENCIES:          # omega outermost: fixed and free share the solves
+        for motion in ("fixed", "free"):
+            rows += reference(cyl, [omega], motion, res["n_modes"], res["p_max"], res["orders"])
+    return rows
+
+
+def run_compare(results, out=None, reference_csv=None):
+    """The compare subcommand: the reference rows (read from reference_csv, a CSV of the reference subcommand, or computed
+    by default_reference_rows), compare, the text table, and the CSV if out is given. Returns 1 if results holds no
+    COMPARE_PREFIX folder, else 0."""
+    start = time.time()
+    if not os.path.isdir(results):
+        print("compare: %s is not a folder" % results)
+        return 1
+    if reference_csv:
+        rows = read_reference_csv(reference_csv)
+        source = "read from %s" % reference_csv
+    else:
+        rows = default_reference_rows()
+        source = "computed at DEFAULT_RESOLUTION"
+    table = compare(results, rows)
+    if not table:
+        print("compare: no %s* case folder with results in %s" % (COMPARE_PREFIX, results))
+        return 1
+    irregular = irregular_frequencies(Cylinder(), 2.0)
+    print("HAMS against the reference (%s), heading %g, %d cases, %d rows. Irregular frequencies of the hull below "
+          "2 rad/s: %s; rows within %g %% are marked irregular. Empty: |reference| below 1e-4 of the largest of its "
+          "quantity and motion (drift_convergence.percent)."
+          % (source, COMPARE_HEADING, len(set(r["case"] for r in table)), len(table),
+             ", ".join("%.4f" % w for w in irregular), 100 * IRREGULAR_MARGIN))
+    print(format_compare(table))
+    if out:
+        write_compare_csv(out, table)
+        print("wrote %d rows to %s" % (len(table), out))
+    print("compare: %.0f s" % (time.time() - start))
+    return 0
+
+
+COMPARE_FIXTURE_FREQUENCIES = (0.40, 0.70, 1.60)   # free F_x below the floor, an ordinary row, a row near 1.548 rad/s
+
+
+def _fixture_value(value):
+    return "%23.15E" % value
+
+
+def _write_hams_fixture(folder, rows, free_rows, terms=True, control_surface=True):
+    """Write output/Wamit_format/ of a HAMS case under folder from reference rows (omega -> row), in the formats HAMS writes
+    (see _read_hams_case), with 15 digits. free_rows give Motion.4. Rows at heading 30 hold other values, which compare
+    must not read. terms and control_surface: whether MeanDriftTerms.txt and MeanDriftControlSurface.7 are written."""
+    out = os.path.join(folder, "output", "Wamit_format")
+    os.makedirs(out)
+    v = _fixture_value
+    with open(os.path.join(out, "AmssDamp.1"), "w") as f:
+        for omega, row in sorted(rows.items()):
+            for ij in REFERENCE_PAIRS:
+                i, j = divmod(ij, 10)
+                f.write("%14.6E %5d %5d %s %s\n" % (omega, i, j, v(row["A%d" % ij]), v(row["B%d" % ij])))
+    for name, source, key in (("ExcForce.3", rows, "X"), ("Motion.4", free_rows, "RAO")):
+        with open(os.path.join(out, name), "w") as f:
+            for omega in sorted(rows):
+                for beta, factor in ((0.0, 1.0), (30.0, 2.0)):
+                    for j in MOTION_MODES:
+                        mod = factor * source[omega]["%s%d" % (key, j)]
+                        f.write("%14.6E %14.6E %5d %s %s %s %s\n" % (omega, beta, j, v(mod), v(0.0), v(mod), v(0.0)))
+
+    def drift(name, entries):
+        with open(os.path.join(out, name), "w") as f:
+            for omega, row in sorted(rows.items()):
+                for beta, factor in ((0.0, 1.0), (30.0, 2.0)):
+                    for index, key in entries:
+                        f.write("%14.6E %14.6E %14.6E %5d %s %s %s %s\n" % (omega, beta, beta, index, v(factor * row[key]),
+                                                                          v(0.0), v(factor * row[key]), v(0.0)))
+
+    drift("MeanDriftMomentum.8", ((1, "Fx_far"),))
+    drift("MeanDriftPressure.9", ((1, "Fx_near"), (3, "Fz"), (5, "My")))
+    if control_surface:
+        drift("MeanDriftControlSurface.7", ((1, "Fx_far"),))
+    if terms:
+        with open(os.path.join(out, "MeanDriftTerms.txt"), "w") as f:
+            f.write("# PER BETA1 BETA2 body I term Re Im, scaled and conjugated as MeanDriftPressure.9\n")
+            f.write("# term: 1 waterline, 2 flare, 3 velocity, 4 displacement, 5 rotation, 6 hydrostatic\n")
+            for omega, row in sorted(rows.items()):
+                for beta, factor in ((0.0, 1.0), (30.0, 2.0)):
+                    for index, name in ((1, "Fx"), (3, "Fz"), (5, "My")):
+                        for number, key in enumerate(NEAR_FIELD_TERMS, start=1):
+                            f.write("%14.6E %14.6E %14.6E %5d %5d %5d %s %s\n"
+                                    % (omega, beta, beta, 1, index, number, v(factor * row["%s_%s" % (name, key)]), v(0.0)))
+
+
+def check_compare_fixture():
+    """compare on a temporary RESULTS written from the reference itself (LIGHT_RESOLUTION, COMPARE_FIXTURE_FREQUENCIES), the
+    rows passed through the reference CSV (write_reference_csv, read_reference_csv): a free case with every file, where
+    every difference is 0 to 1e-9 and the control surface is read; a fixed case without MeanDriftTerms.txt and
+    MeanDriftControlSurface.7, whose columns are "missing" while the rest is 0; the 1.60 rad/s rows marked "irregular" and
+    the others not; free F_x near and far at 0.40 rad/s (3e-6 of 0.11) empty, below the floor of
+    drift_convergence.percent; and the irregular frequencies of irregular_frequencies equal to the 1.548 and 1.939 rad/s of
+    drift_convergence.IRREGULAR_FREQUENCIES to 1e-3."""
+    import tempfile
+
+    cyl, res = Cylinder(), LIGHT_RESOLUTION
+    computed = []
+    for omega in COMPARE_FIXTURE_FREQUENCIES:
+        for motion in ("fixed", "free"):
+            computed += reference(cyl, [omega], motion, res["n_modes"], res["p_max"], res["orders"])
+    problems = []
+    with tempfile.TemporaryDirectory() as root:
+        path = os.path.join(root, "reference.csv")
+        write_reference_csv(path, computed)
+        rows = read_reference_csv(path)
+        by = {(r["motion"], round(r["omega"], 2)): r for r in rows}
+        free = {w: by["free", w] for w in COMPARE_FIXTURE_FREQUENCIES}
+        fixed = {w: by["fixed", w] for w in COMPARE_FIXTURE_FREQUENCIES}
+        results = os.path.join(root, "results")
+        _write_hams_fixture(os.path.join(results, "a_sharp_free_src_m2"), free, free)
+        _write_hams_fixture(os.path.join(results, "a_sharp_fixed_diff_m1"), fixed, free, terms=False,
+                            control_surface=False)
+        os.makedirs(os.path.join(results, "b_bottom_src_m1"))   # not a_sharp_: not read
+        table = compare(results, rows)
+    cases = sorted(set(r["case"] for r in table))
+    if cases != ["a_sharp_fixed_diff_m1", "a_sharp_free_src_m2"]:
+        problems.append("cases %s" % cases)
+    worst, empty, missing_ok = 0.0, [], True
+    for r in table:
+        for q in COMPARE_QUANTITIES:
+            rel = r[q + "_rel"]
+            no_files = r["case"] == "a_sharp_fixed_diff_m1" and (q == "Fx_cs" or q in COMPARE_TERMS)
+            if no_files:
+                missing_ok &= rel == MISSING and r[q] == MISSING
+            elif rel == MISSING:
+                problems.append("%s %.2f %s missing" % (r["case"], r["omega"], q))
+            elif rel is None:
+                empty.append((r["case"], r["omega"], q))
+            else:
+                worst = max(worst, abs(rel))
+        flagged = r["flag"] == "irregular"
+        if flagged != (r["omega"] == 1.60):
+            problems.append("%s %.2f flag %r" % (r["case"], r["omega"], r["flag"]))
+    if worst > 1e-9:
+        problems.append("largest difference %.1e" % worst)
+    if not missing_ok:
+        problems.append("the fixed case's terms and control surface are not all 'missing'")
+    for q in ("Fx_near", "Fx_far", "Fx_cs"):
+        if ("a_sharp_free_src_m2", 0.40, q) not in empty:
+            problems.append("free %s at 0.40 rad/s not empty" % q)
+    irregular = irregular_frequencies(cyl, max(drift_convergence.WIDE_FREQUENCIES) * 1.2)
+    for listed in (1.548, 1.939):
+        if listed not in drift_convergence.IRREGULAR_FREQUENCIES or min(abs(w - listed) for w in irregular) > 1e-3:
+            problems.append("irregular frequency %.3f: computed %s" % (listed, irregular))
+    return not problems, ("%d rows, largest difference %.1e, %d empty fields (below the floor: %s), irregular "
+                          "frequencies %s; %s" % (len(table), worst, len(empty),
+                                                  ", ".join(sorted(set("%s %.2f" % (e[0][8:], e[1]) for e in empty))),
+                                                  ", ".join("%.4f" % w for w in irregular),
+                                                  "; ".join(problems) or "no problems"))
+
+
+SIGN_CASES = ("a_sharp_free_src_m4", "a_sharp_fixed_src_m4")
+SIGN_QUANTITIES = ("Fx_near", "Fx_far", "Fz", "My")
+# compare_signs: a near-field total is sign-tested only where abs(reference) is at least this fraction of its largest
+# reference term. HAMS's terms at 7168 panels are off by up to 3.4 % (free F_z II at 0.70 rad/s) and more (F_x II, 12 %),
+# so a total that cancels its terms to below 5 % can take either sign without any convention error. Its terms are tested.
+SIGN_CANCELLATION = 0.05
+
+
+def check_compare_signs():
+    """At the finest source mesh of the study (SIGN_CASES, if COMPARE_RESULTS holds a_sharp_free_src_m4; else PASS,
+    skipped), outside the irregular rows and wherever abs(reference) is above the floor of drift_convergence.percent:
+    every near-field term (MeanDriftTerms.txt) of F_x, F_z and M_y, and far-field F_x, has the reference's sign; and the
+    near-field totals F_x, F_z, M_y do too where abs(reference) is at least SIGN_CANCELLATION of the largest abs(term) of
+    the reference (the totals below that are listed, not tested). A flipped sign or a conjugate in a conversion would
+    flip whole terms. COMPARE_RESULTS is resolved from this script's folder, not the working directory."""
+    if not os.path.isdir(os.path.join(COMPARE_RESULTS, SIGN_CASES[0])):
+        return True, "skipped: %s not found" % os.path.join(COMPARE_RESULTS, SIGN_CASES[0])
+    table = compare(COMPARE_RESULTS, default_reference_rows(),
+                    names=[n for n in SIGN_CASES if os.path.isdir(os.path.join(COMPARE_RESULTS, n))])
+    tested, wrong, cancelling = 0, [], []
+    for r in table:
+        if r["flag"] == "irregular":
+            continue
+        quantities = list(SIGN_QUANTITIES) + COMPARE_TERMS
+        for q in quantities:
+            if r[q + "_rel"] in (None, MISSING):
+                continue
+            prefix = {"Fx_near": "Fx", "Fz": "Fz", "My": "My"}.get(q)
+            if prefix:
+                largest = max(abs(r["%s_%s_ref" % (prefix, key)]) for key in NEAR_FIELD_TERMS)
+                if abs(r[q + "_ref"]) < SIGN_CANCELLATION * largest:
+                    cancelling.append("%s %.2f %s %.4g (%.1f %% of its largest term; HAMS %.4g)"
+                                      % (r["case"][8:], r["omega"], q, r[q + "_ref"],
+                                         100.0 * abs(r[q + "_ref"]) / largest, r[q]))
+                    continue
+            tested += 1
+            if r[q] * r[q + "_ref"] <= 0.0:
+                wrong.append("%s %.2f %s HAMS %.4g reference %.4g" % (r["case"], r["omega"], q, r[q], r[q + "_ref"]))
+    return not wrong, ("%d values tested (totals and terms) in %s; opposite sign: %s. Totals not tested (cancelling): %s"
+                       % (tested, ", ".join(sorted(set(r["case"] for r in table))), "; ".join(wrong) or "none",
+                          "; ".join(cancelling) or "none"))
+
+
 CHECKS = {"roots": check_roots, "inner_products": check_inner_products, "polylog": check_polylog,
           "matching_tail": check_matching_tail, "bottom_limit_x1": check_bottom_limit_x1, "matching": check_matching,
           "scattering_energy": check_scattering_energy, "reciprocity": check_reciprocity,
@@ -2552,7 +3040,8 @@ CHECKS = {"roots": check_roots, "inner_products": check_inner_products, "polylog
           "bottom_limit_drift": check_bottom_limit_drift, "body_matrices": check_body_matrices,
           "free_energy": check_free_energy, "long_wave_motions": check_long_wave_motions,
           "corner_limit": check_corner_limit, "reference_point": check_reference_point,
-          "pair_symmetry": check_pair_symmetry, "fx_identity": check_fx_identity, "convergence": check_convergence}
+          "pair_symmetry": check_pair_symmetry, "fx_identity": check_fx_identity, "convergence": check_convergence,
+          "compare_fixture": check_compare_fixture, "compare_signs": check_compare_signs}
 # Run by name (check uncertainty) and by the reference subcommand, not by a bare check: nine rows at N = 128000
 SLOW_CHECKS = {"uncertainty": check_uncertainty}
 ALL_CHECKS = dict(CHECKS, **SLOW_CHECKS)
@@ -2576,6 +3065,37 @@ def _csv_value(value):
     if isinstance(value, float):
         return "" if math.isnan(value) else "%.10g" % value
     return str(value)
+
+
+def write_reference_csv(path, rows):
+    """The reference rows as CSV, columns reference_columns (_csv_value)."""
+    cols = reference_columns()
+    with open(path, "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(cols)
+        for row in rows:
+            writer.writerow([_csv_value(row[c]) for c in cols])
+
+
+def read_reference_csv(path):
+    """The rows of a CSV of write_reference_csv, as reference's dicts: motion a string, n_modes and orders ints, p_max an
+    int or a tuple ("20 4 4"), the rest floats (an empty field nan). The values carry the CSV's 10 digits."""
+    rows = []
+    with open(path, newline="") as handle:
+        for record in csv.DictReader(handle):
+            row = {}
+            for key, text in record.items():
+                if key == "motion":
+                    row[key] = text
+                elif key == "p_max":
+                    parts = [int(p) for p in text.split()]
+                    row[key] = parts[0] if len(parts) == 1 else tuple(parts)
+                elif key in ("n_modes", "orders"):
+                    row[key] = int(text)
+                else:
+                    row[key] = float(text) if text != "" else float("nan")
+            rows.append(row)
+    return rows
 
 
 def format_reference(rows):
@@ -2620,12 +3140,7 @@ def run_reference(out=None):
     print(format_reference(ordered))
     print(FREE_BODY_UNCERTAINTY)
     if out:
-        cols = reference_columns()
-        with open(out, "w", newline="") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(cols)
-            for row in ordered:
-                writer.writerow([_csv_value(row[c]) for c in cols])
+        write_reference_csv(out, ordered)
         print("wrote %d rows to %s" % (len(ordered), out))
     print("reference values: %.0f s" % (time.time() - start), flush=True)
     failed = _run_checks(["convergence"] + [name for name in ALL_CHECKS if name != "convergence"])
@@ -2640,9 +3155,16 @@ def main(argv=None):
     p_check.add_argument("names", nargs="*", metavar="NAME")
     p_ref = sub.add_parser("reference", help="reference values, the convergence table and all checks")
     p_ref.add_argument("--out", metavar="CSV", help="write the reference rows to this CSV file")
+    p_cmp = sub.add_parser("compare", help="compare the HAMS a_sharp_* case folders under RESULTS with the reference")
+    p_cmp.add_argument("results", metavar="RESULTS", help="folder holding the case folders (a_sharp_*/output/Wamit_format)")
+    p_cmp.add_argument("--out", metavar="CSV", help="write the comparison to this CSV file")
+    p_cmp.add_argument("--reference", metavar="CSV", help="read the reference rows from a CSV of the reference subcommand "
+                                                          "instead of computing them (about 2 min)")
     args = parser.parse_args(argv)
     if args.command == "reference":
         return 1 if run_reference(args.out) else 0
+    if args.command == "compare":
+        return run_compare(args.results, args.out, args.reference)
     names = args.names or list(CHECKS)
     unknown = [n for n in names if n not in ALL_CHECKS]
     if unknown:
