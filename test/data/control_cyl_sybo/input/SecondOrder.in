@@ -1,0 +1,5 @@
+! Mean drift options of this integration test
+drift_methods = far near control
+motion_state = free
+write_terms = 0
+mean_drift = 2

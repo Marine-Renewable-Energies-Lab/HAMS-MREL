@@ -74,6 +74,7 @@ module test_integration_drift
     character(len=*), parameter :: far_file = "Wamit_format/MeanDriftMomentum.8"
     character(len=*), parameter :: near_file = "Wamit_format/MeanDriftPressure.9"
     character(len=*), parameter :: terms_file = "Wamit_format/MeanDriftTerms.txt"
+    character(len=*), parameter :: control_file = "Wamit_format/MeanDriftControlSurface.7"
     character(len=*), parameter :: offset_cases(4) = [character(len=17) :: "drift_field_0p005", "drift_field_0p01", &
                                                       "drift_field_0p05", "drift_field_0p1"]
     real(8), parameter :: offsets(4) = [0.005d0, 0.01d0, 0.05d0, 0.1d0]
@@ -119,7 +120,9 @@ contains
             new_unittest("run_drift_source_round", run_drift_source_round), &
             new_unittest("run_drift_source_round_fixed", run_drift_source_round_fixed), &
             new_unittest("run_drift_source_deep", run_drift_source_deep), &
-            new_unittest("run_drift_source_two_round", run_drift_source_two_round) &
+            new_unittest("run_drift_source_two_round", run_drift_source_two_round), &
+            new_unittest("run_control_cyl", run_control_cyl), &
+            new_unittest("run_control_cyl_sybo", run_control_cyl_sybo) &
         ]
     end subroutine setup_drift
 
@@ -172,7 +175,9 @@ contains
             new_unittest("source_two_body_total", source_two_body_total), &
             new_unittest("source_symmetry", source_symmetry), &
             new_unittest("source_leaves_far_field", source_leaves_far_field), &
-            new_unittest("source_sharp_recorded", source_sharp_recorded) &
+            new_unittest("source_sharp_recorded", source_sharp_recorded), &
+            new_unittest("control_runs", control_runs), &
+            new_unittest("control_skips_limits", control_skips_limits) &
         ]
     end subroutine collect_tests_drift
 
@@ -395,6 +400,16 @@ contains
         type(error_type), allocatable, intent(out) :: error
         call run_case("drift_source_two_round", [character(len=40) :: far_file, near_file], error)
     end subroutine run_drift_source_two_round
+
+    subroutine run_control_cyl(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("control_cyl", [character(len=40) :: far_file, control_file, terms_file, "CSMesh_1.pnl"], error)
+    end subroutine run_control_cyl
+
+    subroutine run_control_cyl_sybo(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("control_cyl_sybo", [character(len=40) :: far_file, near_file, control_file], error)
+    end subroutine run_control_cyl_sybo
 
     subroutine run_drift_field_two(error)
         type(error_type), allocatable, intent(out) :: error
@@ -1635,6 +1650,114 @@ contains
         call report("terms_sum_to_total", worst)
         call check_below(error, "terms_sum_to_total", worst, printed_limit)
     end subroutine terms_sum_to_total
+
+    !> The control-surface method writes I = 1, 2, 6 for each frequency and heading, its terms sum to each load, C is written
+    !> as CSMesh_1.pnl, and the log has the difference from far-field. The difference is reported here, not limited: its
+    !> accuracy is checked in its own tests.
+    subroutine control_runs(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: rows(:,:), terms(:,:), far(:,:)
+        real(8) :: worst, total(2), scale_row, worst_fx
+        integer :: r, t, n, ntheta
+
+        call check_no_bad_numbers(output_dir("control_cyl")//control_file, error)
+        if (allocated(error)) return
+        call read_drift(output_dir("control_cyl")//control_file, rows, error)
+        if (allocated(error)) return
+        call check(error, size(rows, 1) == 3*2*3, "Expected 3 frequencies x 2 headings x 3 rows in the control-surface file")
+        if (allocated(error)) return
+        call check(error, all(nint(rows(:,4)) == 1 .or. nint(rows(:,4)) == 2 .or. nint(rows(:,4)) == 6), &
+                   "The control-surface file has a row other than I = 1, 2, 6")
+        if (allocated(error)) return
+        call check(error, log_has("control_cyl", "control vs far"), "The log has no control vs far row")
+        if (allocated(error)) return
+        call check(error, log_has("control_cyl", "Mean drift control surface fields"), "The log has no field time")
+        if (allocated(error)) return
+
+        ! The terms 11 to 13 of each load sum to it
+        call read_terms(output_dir("control_cyl")//terms_file, terms, error)
+        if (allocated(error)) return
+        call check(error, size(terms, 1) == 3*size(rows, 1), "Expected three terms for each control-surface load")
+        if (allocated(error)) return
+        worst = 0d0
+        do r = 1, size(rows, 1)
+            total = 0d0
+            n = 0
+            do t = 1, size(terms, 1)
+                if (same(terms(t,1), rows(r,1)) .and. terms(t,2) == rows(r,2) .and. terms(t,3) == rows(r,3) &
+                    .and. 6*(nint(terms(t,4)) - 1) + nint(terms(t,5)) == nint(rows(r,4))) then
+                    call check(error, nint(terms(t,6)) >= 11 .and. nint(terms(t,6)) <= 13, "A control term index is not 11 to 13")
+                    if (allocated(error)) return
+                    total = total + terms(t,7:8)
+                    n = n + 1
+                end if
+            end do
+            call check(error, n == 3, "A control-surface load does not have its three terms")
+            if (allocated(error)) return
+            scale_row = maxval(abs(terms(:,7)), mask=abs(terms(:,1) - rows(r,1)) < 1d-6 .and. &
+                               ((nint(terms(:,5)) <= 3) .eqv. (nint(rows(r,4)) <= 3)))
+            worst = max(worst, (abs(total(1) - rows(r,7)) + abs(total(2) - rows(r,8)))/scale_row)
+        end do
+        call report("control_runs terms sum to total", worst)
+        call check_below(error, "control_runs terms sum to total", worst, printed_limit)
+        if (allocated(error)) return
+
+        ! Reported only: F_x of control against far, over the frequencies and headings
+        call read_drift(output_dir("control_cyl")//far_file, far, error)
+        if (allocated(error)) return
+        worst_fx = 0d0
+        do r = 1, size(rows, 1)
+            if (nint(rows(r,4)) /= 1) cycle
+            do t = 1, size(far, 1)
+                if (same(far(t,1), rows(r,1)) .and. far(t,2) == rows(r,2) .and. nint(far(t,4)) == 1) then
+                    worst_fx = max(worst_fx, abs(rows(r,7) - far(t,7))/abs(far(t,7)))
+                    print '(4x,a,f8.4,a,f6.1,a,es12.4,a,es12.4)', "control_runs PER", rows(r,1), " beta", rows(r,2), &
+                        ": F_x control", rows(r,7), " far", far(t,7)
+                end if
+            end do
+        end do
+        call report("control_runs F_x control vs far, worst relative (not limited)", worst_fx)
+        ntheta = 0
+        call check(error, csmesh_panels(output_dir("control_cyl")//"CSMesh_1.pnl", ntheta), "CSMesh_1.pnl has no panels")
+        if (allocated(error)) return
+        print '(4x,a,i0)', "control_runs CSMesh_1.pnl panels: ", ntheta
+    end subroutine control_runs
+
+    !> The panel count in the header of a written CSMesh file, in the HullMesh.pnl format.
+    logical function csmesh_panels(path, npanel)
+        character(len=*), intent(in) :: path
+        integer, intent(out) :: npanel
+        character(len=256) :: line
+        integer :: unit, ios, k
+
+        csmesh_panels = .false.
+        npanel = 0
+        open (newunit=unit, file=path, status='old', action='read', iostat=ios)
+        if (ios /= 0) return
+        do k = 1, 4
+            read (unit, '(a)', iostat=ios) line
+            if (ios /= 0) exit
+        end do
+        if (ios == 0) read (line, *, iostat=ios) npanel
+        close (unit)
+        csmesh_panels = ios == 0 .and. npanel > 0
+    end function csmesh_panels
+
+    !> SYBO = 1 adds the zero and infinite frequencies: the control-surface file has no rows for them, and no value is NaN.
+    subroutine control_skips_limits(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(:), allocatable :: path
+        real(8), allocatable :: rows(:,:)
+
+        path = output_dir("control_cyl_sybo")//control_file
+        call check_no_bad_numbers(path, error)
+        if (allocated(error)) return
+        call read_drift(path, rows, error)
+        if (allocated(error)) return
+        call check(error, size(rows, 1) == 3*(2*2)*3, "Expected rows for the 3 real frequencies and 4 heading pairs only")
+        if (allocated(error)) return
+        call check(error, all(rows(:,1) > 0.5d0), "A limit frequency has rows in the control-surface file")
+    end subroutine control_skips_limits
 
     !> Far-only runs have no near-field output, write_terms = 0 has no terms file, and runs with both methods log the
     !> difference, with M_z moved to the origin by the driver as this test does it.

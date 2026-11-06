@@ -275,7 +275,7 @@ program HAMS_MREL
        
         CALL CalNormals(IRSP,TRIM(inputdir))
 
-        IF (so_opts%active) CALL so_setup_single(so_opts, trim(outputdir))
+        IF (so_opts%active) CALL so_setup_single(so_opts, trim(inputdir), trim(outputdir))
 
         DO MD1=1,5
             CLOSE(MD1)
@@ -608,7 +608,7 @@ program HAMS_MREL
         ! Pack the per-body padded geometry into the contiguous _COMB arrays once.
         ! This was previously redone every frequency inside CALGREEN_MULTI / ASSB_LEFT_MULTI (Phase 2.3 / 3.1).
         CALL BuildCombinedArrays
-        IF (so_opts%active) CALL so_setup_multi(so_opts, trim(outputdir))
+        IF (so_opts%active) CALL so_setup_multi(so_opts, trim(inputdir), trim(outputdir))
         ! The per-body padded arrays are no longer referenced; free them now.
         DEALLOCATE(XYZ_GLOBAL_MULTI, XYZ_MULTI_P, DS_MULTI, PNSZ_MULTI, NCN_MULTI, NCON_MULTI, DXYZ_MULTI_P, GEONRM_MULTI_P)
         IF (IRSP.EQ.1) THEN

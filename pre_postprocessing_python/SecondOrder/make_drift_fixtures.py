@@ -339,6 +339,18 @@ def main():
     write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=2, drift_methods=both, motion_state="free",
                        write_terms=0, velocity_method="source")
 
+    # The control-surface method on the hull of drift_cyl: held fixed, and with the limit frequencies and all heading pairs
+    for name, control, options in (("control_cyl", dict(), dict(mean_drift=1, drift_methods="far control", write_terms=1,
+                                                                motion_state="fixed")),
+                                   ("control_cyl_sybo", dict(sybo=1), dict(drift_methods="far near control",
+                                                                           motion_state="free", write_terms=0, mean_drift=2))):
+        target = case_dir(data, name)
+        for file in ("HullMesh.pnl", "Hydrostatic.in"):
+            shutil.copyfile(os.path.join(path, file), os.path.join(target, file))
+        write_control(os.path.join(target, "ControlFile.in"), frequencies=DRIFT_CYL_FREQUENCIES,
+                      headings=DRIFT_CYL_HEADINGS, **control)
+        write_second_order(os.path.join(target, "SecondOrder.in"), **options)
+
 
 if __name__ == "__main__":
     main()

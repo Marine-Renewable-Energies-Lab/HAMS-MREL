@@ -29,6 +29,11 @@ MODULE SecondOrderDriver
    !
    ! PanelDiagnostics.txt (write_terms = 2) is test and debugging output, in tagged rows of plain columns. See
    ! docs/output_files.md.
+   !
+   ! The control-surface method (drift_methods = control) needs the states of all the headings of a frequency at once: the
+   ! fields on C are computed in one pass over the points at the end of the frequency, for every heading (design spec
+   ! docs/superpowers/specs/2026-11-06-control-surface-drift-design.md, section 4.3). So with it the states of every heading are
+   ! kept, as for mean_drift = 2.
 
    USE Const_mod, ONLY: G, RHO
    USE HAMS_mod, ONLY: IRSP
@@ -42,13 +47,16 @@ MODULE SecondOrderDriver
    USE Inerfs_mod, ONLY: NELEM_PE, iXYZ, iNCN, iNCON
    USE Potentials_mod, ONLY: MXPOT, MXPOT_MULTI_COMB
    USE IO, ONLY: CreateDirectory
-   USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom
+   USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom, cs_points, cs_fields, CS_WALL, CS_LINE
    USE FirstOrderState, ONLY: expand_images, build_state
    USE SurfaceGeometry, ONLY: build_surface_geom, DEFAULT_SHARP_DEG
    USE SurfaceVelocity, ONLY: velocity_differencing, source_operator, build_source_operator, velocity_source
    USE FarFieldDrift, ONLY: far_amplitude, far_field_pair, far_field_pairs
    USE NearFieldDrift, ONLY: waterline_extrapolate, near_field_pair, T_WATERLINE, T_HYDROSTATIC
    USE WaterlineField, ONLY: waterline_rows, waterline_field, field_point_inside_body
+   USE ControlSurfaceMesh, ONLY: build_control_surface, check_control_surface, write_control_surface
+   USE FieldVelocity, ONLY: fields_green, fields_source
+   USE ControlSurfaceDrift, ONLY: control_surface_pair, CS_T_LINE, CS_T_PRESSURE
    USE SecondOrderOutput, ONLY: write_drift_row, write_terms_row
    IMPLICIT NONE
    PRIVATE
@@ -61,7 +69,7 @@ MODULE SecondOrderDriver
 
    TYPE(panel_mesh) :: mesh
    TYPE(surface_geom) :: geom
-   TYPE(first_order_state), ALLOCATABLE :: states(:)   ! one per heading for mean_drift = 2, otherwise only the current
+   TYPE(first_order_state), ALLOCATABLE :: states(:)   ! one per heading for mean_drift = 2 or control, otherwise the current
    COMPLEX(8), ALLOCATABLE :: phi_wl(:,:)              ! (nwl, size(states)), total potential on the waterline segments
    COMPLEX(8), ALLOCATABLE :: rows_g(:,:,:), rows_dg(:,:,:)   ! (nbase, nsys, nwl), of the current frequency, for waterline_method = field
    LOGICAL :: multi_arrays = .FALSE.                   ! the solver's mesh is in the combined multi-body arrays
@@ -69,29 +77,35 @@ MODULE SecondOrderDriver
    INTEGER :: n_velocity_fields = 0, n_fallback_total = 0                  ! over the run, logged by so_finish
    TYPE(source_operator) :: source_op                  ! of the current frequency, for velocity_method = source
    COMPLEX(8), ALLOCATABLE :: phi_source(:)            ! (n), potential of the sources of the current state, for the diagnostics
-   INTEGER :: n_source_builds = 0                      ! over the run, logged by so_finish with the two times
+   INTEGER :: n_source_builds = 0, n_source_solves = 0 ! over the run, logged by so_finish with the two times
    REAL(8) :: source_build_seconds = 0D0, source_solve_seconds = 0D0
+   LOGICAL :: near_uses_source = .FALSE.               ! velocity_method = source for the near-field method
+   ! Control-surface method
+   TYPE(cs_points) :: cs_pts                           ! points of C and Gamma_c of all bodies
+   COMPLEX(8), ALLOCATABLE :: cs_sigma(:,:)            ! (n, NBETA), source strengths of each heading, for cs_velocity = source
+   COMPLEX(8), ALLOCATABLE :: far_diag(:,:)            ! (3, NBETA), far-field F_x, F_y, M_z of each heading, for the log
+   INTEGER :: unit_control = 0
 
 CONTAINS
 
-   SUBROUTINE so_setup_single(opts, outputdir)
+   SUBROUTINE so_setup_single(opts, inputdir, outputdir)
       ! Call after CalNormals.
       TYPE(so_options), INTENT(IN) :: opts
-      CHARACTER(LEN=*), INTENT(IN) :: outputdir
+      CHARACTER(LEN=*), INTENT(IN) :: inputdir, outputdir
       INTEGER, ALLOCATABLE :: body(:)
 
       ALLOCATE (body(NELEM))
       body = 1
       CALL expand_images(XYZ_P, GEONRM_P, DXYZ_P, DS, PNSZ, XYZ, NCN, NCON, body, RESHAPE(XR, [3, 1]), ISX, ISY, NSYS, mesh)
       multi_arrays = .FALSE.
-      CALL common_setup(opts, outputdir)
+      CALL common_setup(opts, inputdir, outputdir)
    END SUBROUTINE so_setup_single
 
-   SUBROUTINE so_setup_multi(opts, outputdir)
+   SUBROUTINE so_setup_multi(opts, inputdir, outputdir)
       ! Call after BuildCombinedArrays. MXPOT_MULTI_COMB has NELEM_PE rows: with IRSP = 1 the global TNELEM also counts
       ! the waterplane panels. Node numbers in NCON_MULTI_COMB already index XYZ_GLOBAL_MULTI_COMB.
       TYPE(so_options), INTENT(IN) :: opts
-      CHARACTER(LEN=*), INTENT(IN) :: outputdir
+      CHARACTER(LEN=*), INTENT(IN) :: inputdir, outputdir
       INTEGER, ALLOCATABLE :: body(:)
       INTEGER :: b, first
 
@@ -106,12 +120,12 @@ CONTAINS
                          XYZ_GLOBAL_MULTI_COMB(1:SUM(NTND_MULTI), :), NCN_MULTI_COMB(1:NELEM_PE), &
                          NCON_MULTI_COMB(1:NELEM_PE, :), body, TRANSPOSE(XR_MULTI), ISX, ISY, NSYS, mesh)
       multi_arrays = .TRUE.
-      CALL common_setup(opts, outputdir)
+      CALL common_setup(opts, inputdir, outputdir)
    END SUBROUTINE so_setup_multi
 
-   SUBROUTINE common_setup(opts, outputdir)
+   SUBROUTINE common_setup(opts, inputdir, outputdir)
       TYPE(so_options), INTENT(IN) :: opts
-      CHARACTER(LEN=*), INTENT(IN) :: outputdir
+      CHARACTER(LEN=*), INTENT(IN) :: inputdir, outputdir
       CHARACTER(LEN=:), ALLOCATABLE :: msg
       LOGICAL :: ok
 
@@ -120,15 +134,19 @@ CONTAINS
          ERROR STOP 1
       END IF
 
-      ALLOCATE (states(MERGE(NBETA, 1, opts%mean_drift == 2)))
-      ! Only the near-field method uses the surface geometry, so only it can stop on the geometry's errors
-      IF (opts%do_near) THEN
+      ALLOCATE (states(MERGE(NBETA, 1, keep_all_headings(opts))))
+      ! Only the near-field and control-surface methods use the surface geometry (the control surface takes the waterplane
+      ! extent from it), so only they can stop on the geometry's errors
+      IF (opts%do_near .OR. opts%do_control) THEN
          CALL build_surface_geom(mesh, opts%wl_z_tolerance, DEFAULT_SHARP_DEG, geom, ok, msg)
          IF (.NOT. ok) THEN
             WRITE (*, *) 'Mean drift: ', msg
             ERROR STOP 1
          END IF
          IF (LEN_TRIM(msg) > 0) WRITE (*, *) 'Mean drift warning: ', msg
+      END IF
+      IF (opts%do_near) THEN
+         near_uses_source = opts%velocity_method == 2
          ALLOCATE (phi_wl(geom%nwl, SIZE(states)))
          IF (opts%velocity_method == 2 .AND. opts%write_terms == 2) ALLOCATE (phi_source(mesh%n))
          IF (opts%waterline_method == 2) THEN
@@ -147,12 +165,18 @@ CONTAINS
             END IF
          END IF
          OPEN (NEWUNIT=unit_near, FILE=outputdir//'/Wamit_format/MeanDriftPressure.9', STATUS='REPLACE', ACTION='WRITE')
-         IF (opts%write_terms >= 1) THEN
-            OPEN (NEWUNIT=unit_terms, FILE=outputdir//'/Wamit_format/MeanDriftTerms.txt', STATUS='REPLACE', ACTION='WRITE')
-            WRITE (unit_terms, '(a)') '# PER BETA1 BETA2 body I term Re Im, scaled and conjugated as MeanDriftPressure.9'
+      END IF
+      IF ((opts%do_near .OR. opts%do_control) .AND. opts%write_terms >= 1) THEN
+         OPEN (NEWUNIT=unit_terms, FILE=outputdir//'/Wamit_format/MeanDriftTerms.txt', STATUS='REPLACE', ACTION='WRITE')
+         WRITE (unit_terms, '(a)') '# PER BETA1 BETA2 body I term Re Im, scaled and conjugated as MeanDriftPressure.9'
+         IF (opts%do_near) THEN
             WRITE (unit_terms, '(a)') '# term: 1 waterline, 2 flare, 3 velocity, 4 displacement, 5 rotation, 6 hydrostatic'
          END IF
+         IF (opts%do_control) THEN
+            WRITE (unit_terms, '(a)') '# term: 11 control-surface line Gamma_c, 12 flux through C, 13 pressure on C (I = 1, 2, 6)'
+         END IF
       END IF
+      IF (opts%do_control) CALL control_setup(opts, inputdir, outputdir)
       IF (opts%do_far) THEN
          OPEN (NEWUNIT=unit_far, FILE=outputdir//'/Wamit_format/MeanDriftMomentum.8', STATUS='REPLACE', ACTION='WRITE')
       END IF
@@ -175,6 +199,41 @@ CONTAINS
          END IF
       END IF
    END SUBROUTINE common_setup
+
+   LOGICAL FUNCTION keep_all_headings(opts)
+      ! The states of every heading of a frequency are kept: the pairs of mean_drift = 2, and the fields of the control surface
+      TYPE(so_options), INTENT(IN) :: opts
+
+      keep_all_headings = opts%mean_drift == 2 .OR. opts%do_control
+   END FUNCTION keep_all_headings
+
+   SUBROUTINE control_setup(opts, inputdir, outputdir)
+      ! Builds and checks C of every body, writes it as CSMesh_<b>.pnl to outputdir, and opens MeanDriftControlSurface.7.
+      TYPE(so_options), INTENT(IN) :: opts
+      CHARACTER(LEN=*), INTENT(IN) :: inputdir, outputdir
+      TYPE(panel_mesh), ALLOCATABLE :: cms(:)
+      CHARACTER(LEN=:), ALLOCATABLE :: msg
+      LOGICAL :: ok
+
+      CALL build_control_surface(mesh, geom, opts, H, inputdir, cs_pts, cms, ok, msg)
+      IF (.NOT. ok) THEN
+         WRITE (*, '(a,a)') ' Mean drift control surface: ', msg
+         ERROR STOP 1
+      END IF
+      ! For a C read from a file, msg holds the warnings of its waterline
+      IF (LEN(msg) > 0) WRITE (*, '(a,a)') ' Mean drift control surface: ', msg
+      CALL check_control_surface(mesh, cs_pts, cms, opts%cs_shape /= 3, ok, msg)
+      IF (.NOT. ok) THEN
+         WRITE (*, '(a,a)') ' Mean drift control surface: ', msg
+         ERROR STOP 1
+      END IF
+      CALL write_control_surface(outputdir, cms)
+      WRITE (*, '(a,I0,a,I0,a,I0,a)') ' Mean drift control surface: ', COUNT(cs_pts%kind == CS_WALL), ' panels on C and ', &
+         COUNT(cs_pts%kind == CS_LINE), ' segments on Gamma_c, for ', mesh%nbody, ' bodies'
+      IF (opts%cs_velocity == 2) ALLOCATE (cs_sigma(mesh%n, NBETA))
+      IF (opts%do_far) ALLOCATE (far_diag(3, NBETA))
+      OPEN (NEWUNIT=unit_control, FILE=outputdir//'/Wamit_format/MeanDriftControlSurface.7', STATUS='REPLACE', ACTION='WRITE')
+   END SUBROUTINE control_setup
 
    LOGICAL FUNCTION is_limit_frequency()
       ! The zero and infinite frequencies added by SYBO = 1
@@ -222,15 +281,27 @@ CONTAINS
       COMPLEX(8), INTENT(IN) :: mxpot_in(:, :, :), dspl_in(:), exfc_in(:)
       REAL(8), INTENT(IN) :: mass(:, :), added(:, :), damping(:, :), stiffness(:, :)
       COMPLEX(8) :: f(3)
+      TYPE(first_order_state) :: scratch
       INTEGER :: slot, n_fallback
+      LOGICAL :: control_source
 
-      slot = MERGE(ib, 1, opts%mean_drift == 2)
+      slot = MERGE(ib, 1, keep_all_headings(opts))
+      control_source = opts%do_control .AND. opts%cs_velocity == 2
       CALL build_state(mesh, W1, WK, V, H, 1D0, BETA, G, RHO, mxpot_in, dspl_in, opts%motion_fixed, states(slot))
+      ! As for the waterline rows below: the operator holds for all the headings of a frequency
+      IF (ib == 1 .AND. (near_uses_source .OR. control_source)) CALL timed_source_build()
+      IF (control_source .AND. .NOT. near_uses_source) THEN
+         ! Only sigma is wanted: the solve also overwrites grad_p, which the near-field method may take from differencing
+         scratch = states(slot)
+         CALL timed_source_velocity(scratch, cs_sigma(:, slot))
+      END IF
       IF (opts%do_near) THEN
          IF (opts%velocity_method == 2) THEN
-            ! As for the waterline rows below: the operator holds for all the headings of a frequency
-            IF (ib == 1) CALL timed_source_build()
-            CALL timed_source_velocity(states(slot))
+            IF (control_source) THEN
+               CALL timed_source_velocity(states(slot), cs_sigma(:, slot))
+            ELSE
+               CALL timed_source_velocity(states(slot))
+            END IF
          ELSE
             CALL velocity_differencing(mesh, geom, states(slot), n_fallback)
             n_fallback_total = n_fallback_total + n_fallback
@@ -253,6 +324,7 @@ CONTAINS
       IF (opts%do_far .AND. opts%mean_drift == 1) THEN
          CALL far_field_pair(mesh, states(slot), states(slot), opts, f)
          CALL write_far_rows(WVHD(ib), WVHD(ib), f)
+         IF (ALLOCATED(far_diag)) far_diag(:, ib) = f
       END IF
       IF (opts%do_near .AND. opts%mean_drift == 1) THEN
          IF (opts%do_far) THEN
@@ -273,28 +345,44 @@ CONTAINS
       n_source_builds = n_source_builds + 1
    END SUBROUTINE timed_source_build
 
-   SUBROUTINE timed_source_velocity(s)
+   SUBROUTINE timed_source_velocity(s, sigma)
+      ! sigma, if given, receives the source strength on every panel, for fields_source
       TYPE(first_order_state), INTENT(INOUT) :: s
+      COMPLEX(8), INTENT(OUT), OPTIONAL :: sigma(:)
       INTEGER(8) :: t0, t1, rate
 
       CALL SYSTEM_CLOCK(t0, rate)
-      IF (ALLOCATED(phi_source)) THEN
+      IF (ALLOCATED(phi_source) .AND. PRESENT(sigma)) THEN
+         CALL velocity_source(mesh, source_op, s, phi_source, sigma_full=sigma)
+      ELSE IF (ALLOCATED(phi_source)) THEN
          CALL velocity_source(mesh, source_op, s, phi_source)
+      ELSE IF (PRESENT(sigma)) THEN
+         CALL velocity_source(mesh, source_op, s, sigma_full=sigma)
       ELSE
          CALL velocity_source(mesh, source_op, s)
       END IF
       CALL SYSTEM_CLOCK(t1)
       source_solve_seconds = source_solve_seconds + REAL(t1 - t0, 8)/REAL(rate, 8)
+      n_source_solves = n_source_solves + 1
    END SUBROUTINE timed_source_velocity
 
    SUBROUTINE so_end_frequency(opts, kk)
-      ! Call after the heading loop of frequency kk. Evaluates the heading pairs when mean_drift = 2.
+      ! Call after the heading loop of frequency kk. Evaluates the heading pairs when mean_drift = 2, and the control-surface
+      ! method.
       TYPE(so_options), INTENT(IN) :: opts
       INTEGER, INTENT(IN) :: kk
+
+      IF (is_limit_frequency()) RETURN
+      IF (opts%mean_drift == 2) CALL heading_pairs(opts)
+      IF (opts%do_control) CALL control_frequency(opts)
+   END SUBROUTINE so_end_frequency
+
+   SUBROUTINE heading_pairs(opts)
+      ! The far-field and near-field loads of every heading pair of the frequency
+      TYPE(so_options), INTENT(IN) :: opts
       COMPLEX(8), ALLOCATABLE :: f(:, :, :)
       INTEGER :: i, j
 
-      IF (is_limit_frequency() .OR. opts%mean_drift /= 2) RETURN
       IF (opts%do_far) THEN
          ALLOCATE (f(3, NBETA, NBETA))
          CALL far_field_pairs(mesh, states, opts, f)
@@ -302,6 +390,7 @@ CONTAINS
             DO i = 1, NBETA
                CALL write_far_rows(WVHD(i), WVHD(j), f(:, i, j))
             END DO
+            IF (ALLOCATED(far_diag)) far_diag(:, j) = f(:, j, j)
          END DO
       END IF
       IF (opts%do_near) THEN
@@ -315,7 +404,71 @@ CONTAINS
             END DO
          END DO
       END IF
-   END SUBROUTINE so_end_frequency
+   END SUBROUTINE heading_pairs
+
+   SUBROUTINE control_frequency(opts)
+      ! The fields on C of every heading of the frequency in one pass over the points, then the control-surface load of each
+      ! pair: (i, i) for mean_drift = 1, all pairs for mean_drift = 2. The states are at the current global frequency, which
+      ! fields_green and fields_source read.
+      TYPE(so_options), INTENT(IN) :: opts
+      TYPE(cs_fields), ALLOCATABLE :: fields(:)
+      INTEGER(8) :: t0, t1, rate
+      INTEGER :: i, j
+
+      ALLOCATE (fields(SIZE(states)))
+      CALL SYSTEM_CLOCK(t0, rate)
+      IF (opts%cs_velocity == 2) THEN
+         CALL fields_source(mesh, cs_pts, states, cs_sigma, multi_arrays, fields)
+      ELSE
+         CALL fields_green(mesh, cs_pts, states, opts%cs_fd_step, multi_arrays, fields)
+      END IF
+      CALL SYSTEM_CLOCK(t1)
+      WRITE (*, '(a,F10.5,a,F10.2,a,I0,a,I0,a)') ' Mean drift control surface fields: omega', W1, ',', &
+         REAL(t1 - t0, 8)/REAL(rate, 8), ' s for ', cs_pts%n, ' points and ', SIZE(states), ' headings'
+      DO j = 1, NBETA
+         DO i = 1, NBETA
+            IF (opts%mean_drift /= 2 .AND. i /= j) CYCLE
+            IF (ALLOCATED(far_diag) .AND. i == j) THEN
+               CALL control_output(fields, i, j, WVHD(i), WVHD(j), far_diag(:, i))
+            ELSE
+               CALL control_output(fields, i, j, WVHD(i), WVHD(j))
+            END IF
+         END DO
+      END DO
+   END SUBROUTINE control_frequency
+
+   SUBROUTINE control_output(fields, i1, i2, beta1_deg, beta2_deg, far)
+      ! Writes the control-surface load of the state pair (i1, i2), per body, about XR of each body: I = 1, 2, 6 (Phase A).
+      ! With far, logs the difference from it, with M_z moved to the origin as in near_field_output.
+      TYPE(cs_fields), INTENT(IN) :: fields(:)
+      INTEGER, INTENT(IN) :: i1, i2
+      REAL(8), INTENT(IN) :: beta1_deg, beta2_deg
+      COMPLEX(8), INTENT(IN), OPTIONAL :: far(3)
+      INTEGER, PARAMETER :: ROWS(3) = [1, 2, 6]
+      COMPLEX(8) :: terms(6, 6, mesh%nbody), total(6), control(3)
+      INTEGER :: b, k, i, term
+
+      CALL control_surface_pair(cs_pts, mesh%xr, states(i1), states(i2), fields(i1), fields(i2), terms)
+      control = (0D0, 0D0)
+      DO b = 1, mesh%nbody
+         total = SUM(terms(:, :, b), DIM=2)
+         DO k = 1, SIZE(ROWS)
+            i = ROWS(k)
+            CALL write_drift_row(unit_control, OUFR, beta1_deg, beta2_deg, 6*(b - 1) + i, total(i), REFL, i > 3)
+            IF (unit_terms == 0) CYCLE
+            DO term = CS_T_LINE, CS_T_PRESSURE
+               CALL write_terms_row(unit_terms, OUFR, beta1_deg, beta2_deg, b, i, 10 + term, terms(i, term, b), REFL, i > 3)
+            END DO
+         END DO
+         control(1:2) = control(1:2) + total(1:2)
+         control(3) = control(3) + total(6) + mesh%xr(1, b)*total(2) - mesh%xr(2, b)*total(1)
+      END DO
+      IF (PRESENT(far)) THEN
+         CALL log_against_far('control', 'F_x', beta1_deg, far(1), control(1))
+         CALL log_against_far('control', 'F_y', beta1_deg, far(2), control(2))
+         CALL log_against_far('control', 'M_z', beta1_deg, far(3), control(3))
+      END IF
+   END SUBROUTINE control_output
 
    SUBROUTINE so_finish()
       ! Closes the result files and logs the velocity method: what differencing could not do, or the time of the source solve.
@@ -323,13 +476,15 @@ CONTAINS
       IF (n_source_builds > 0) THEN
          WRITE (*, '(a,F10.2,a,I0,a,F10.2,a,I0,a)') ' Mean drift source solve: ', source_build_seconds, &
             ' s to assemble and factorize at ', n_source_builds, ' frequencies, ', source_solve_seconds, &
-            ' s to solve ', n_velocity_fields, ' first-order solutions'
-      ELSE IF (unit_near /= 0) THEN
+            ' s to solve ', n_source_solves, ' first-order solutions'
+      END IF
+      IF (unit_near /= 0 .AND. .NOT. near_uses_source) THEN
          WRITE (*, '(a,I0,a,I0,a)') ' Mean drift velocity fallback: ', n_fallback_total, &
             ' panel values over ', n_velocity_fields, ' first-order solutions have only the normal part of the velocity'
       END IF
       IF (unit_far /= 0) CLOSE (unit_far)
       IF (unit_near /= 0) CLOSE (unit_near)
+      IF (unit_control /= 0) CLOSE (unit_control)
       IF (unit_terms /= 0) CLOSE (unit_terms)
       IF (unit_diag /= 0) CLOSE (unit_diag)
    END SUBROUTINE so_finish
@@ -358,22 +513,23 @@ CONTAINS
          near(3) = near(3) + total(6) + mesh%xr(1, b)*total(2) - mesh%xr(2, b)*total(1)
       END DO
       IF (PRESENT(far)) THEN
-         CALL log_near_far('F_x', beta1_deg, far(1), near(1))
-         CALL log_near_far('F_y', beta1_deg, far(2), near(2))
-         CALL log_near_far('M_z', beta1_deg, far(3), near(3))
+         CALL log_against_far('near', 'F_x', beta1_deg, far(1), near(1))
+         CALL log_against_far('near', 'F_y', beta1_deg, far(2), near(2))
+         CALL log_against_far('near', 'M_z', beta1_deg, far(3), near(3))
       END IF
    END SUBROUTINE near_field_output
 
-   SUBROUTINE log_near_far(label, beta_deg, far, near)
+   SUBROUTINE log_against_far(method, label, beta_deg, far, other)
       ! The relative difference has no meaning for a load that is zero by symmetry, so the values are logged with it.
-      CHARACTER(LEN=*), INTENT(IN) :: label
+      ! method is 'near' or 'control'.
+      CHARACTER(LEN=*), INTENT(IN) :: method, label
       REAL(8), INTENT(IN) :: beta_deg
-      COMPLEX(8), INTENT(IN) :: far, near
+      COMPLEX(8), INTENT(IN) :: far, other
 
-      WRITE (*, '(a,a,a,F10.5,a,F8.3,a,ES12.4,a,ES12.4,a,ES10.3)') ' Mean drift near vs far ', label, ': omega', W1, &
-         ' beta', beta_deg, ' far', REAL(far, 8), ' near', REAL(near, 8), ' relative difference', &
-         ABS(far - near)/MAX(ABS(far), TINY(1D0))
-   END SUBROUTINE log_near_far
+      WRITE (*, '(a,a,a,F10.5,a,F8.3,a,ES12.4,a,ES12.4,a,ES10.3)') ' Mean drift '//method//' vs far ', label, ': omega', W1, &
+         ' beta', beta_deg, ' far', REAL(far, 8), ' '//method, REAL(other, 8), ' relative difference', &
+         ABS(far - other)/MAX(ABS(far), TINY(1D0))
+   END SUBROUTINE log_against_far
 
    SUBROUTINE write_far_rows(beta1_deg, beta2_deg, f)
       ! f = (F_x, F_y, M_z), written as I = 1, 2, 6
