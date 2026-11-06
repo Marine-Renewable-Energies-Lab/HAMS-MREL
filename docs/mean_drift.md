@@ -37,14 +37,15 @@ When both methods run, the log prints their relative difference for F_x, F_y and
 | `velocity_method` | `differencing`: tangential velocity from the potential on neighbouring panels | `source`: velocity from an extra source solve |
 | `waterline_method` | `extrapolate`: waterline potential from the adjacent panel and its gradient | `field`: boundary integral formula at a point just off the waterline |
 
-The defaults were kept after the convergence study below. `differencing` meets the gate of the plan (near-field and far-field agree and converge on a free body), and on rounded hulls it is closer to far-field than `source` at every frequency tested from 0.60 rad/s up. There is no switch of method by frequency.
+The defaults were kept after the convergence study below. `differencing` meets the gate of the plan (near-field and far-field agree and converge on a free body), and on the rounded truncated cylinder (7680 panels, from 0.60 rad/s up) and the rounded box (all frequencies run) it is closer to far-field than `source`. On the bottom-mounted cylinder, which also has no sharp edge, `source` is the closer at 0.40 to 0.80 rad/s at 4096 panels, with both within 0.06% of the exact value there. There is no switch of method by frequency.
 
 ## Which method to use
 
-- **Rounded hulls** (no sharp edges at the bilge or corners): use the defaults. On the rounded cylinder at 7680 panels, `differencing` is within 0.24% of far-field from 0.70 to 1.80 rad/s, free, and within 0.08% fixed. `source` is off by 0.12% to 2.3% on the same mesh.
+- **Rounded hulls** (no sharp edges at the bilge or corners): use the defaults. This was measured on the rounded truncated cylinder, the rounded box and the bottom-mounted cylinder. On the rounded cylinder at 7680 panels, `differencing` is within 0.24% of far-field from 0.70 to 1.80 rad/s, free, and within 0.08% fixed. `source` is off by 0.12% to 2.3% on the same mesh.
 - **Hulls with sharp edges**, such as a flat bottom meeting a vertical wall:
   - Near-field with `differencing` converges slowly. On the sharp cylinder at 7168 panels it is still +17.4% at 0.95 rad/s, free.
   - On that cylinder `source` is closer up to about 1.2 rad/s (ka about 1.5), and `differencing` is closer from 1.4 rad/s (ka about 2.0). This crossing rests on one radius. On the sharp box `source` is closer at all three frequencies run, 0.80, 1.00 and 1.40 rad/s. ka is inferred from the deep-water dispersion relation, a = 10 m.
+  - **Recommendation:** below ka about 1.5 and away from irregular frequencies, use `source`, without a lid, and check it against far-field. Above that, `differencing` was the closer on the cylinder, but not on the box. For the horizontal loads of a free sharp hull at low frequency, use far-field. Round the corners and the bilge where the real hull allows.
   - `source` costs about twice the run time at 7680 panels: +98% (ifx, 32 threads). The earlier record is +51% (ifort, 8 threads).
   - `source` cannot remove irregular frequencies: `IRSP = 1` is rejected. At the two irregular frequencies tested it is off by 32% to 198% (see below). Keep away from them, or use `differencing` with a lid there.
 - **Free sharp hull at low frequency:** use far-field. At 0.70 rad/s, where the net force is small next to its terms, `differencing` has the wrong sign at 7168 panels and `source` is still 10.3% off.
@@ -72,7 +73,7 @@ For F_x, F_y and M_z of the whole system, far-field is the reference on any hull
 
 ## Convergence study
 
-Run in November 2026 on Snellius (`fat_genoa`, 32 threads, ifx 2024.2) with [drift_convergence.py](../pre_postprocessing_python/SecondOrder/drift_convergence.py). 80 HAMS runs and 12 Nemoh runs. The per-frequency tables are not in the repository. All values below are measured unless marked inferred.
+Run in November 2026 on Snellius (`fat_genoa`, 32 threads, ifx 2024.2) with HAMS built without `-heap-arrays`, because of the crash described under [Compilers](#compilers), and with `OMP_STACKSIZE=1G` and `ulimit -s unlimited`. Commit dff7a32 makes the documented flag `-heap-arrays 0` work, tested on ifx 2024.2 with the unit and integration tests. The study used [drift_convergence.py](../pre_postprocessing_python/SecondOrder/drift_convergence.py). 80 HAMS runs and 12 Nemoh runs. The per-frequency tables are not in the repository. All values below are measured unless marked inferred.
 
 **Hulls.** Truncated cylinder, radius 10 m, draft 10 m, depth 100 m, with a sharp bilge (graded rows) or a bilge radius of 3 m (cosine rows); 448 to 7168 and 480 to 7680 panels. Bottom-mounted cylinder, radius 5 m, depth 10 m, against MacCamy-Fuchs; 256 to 4096 panels. Box 20 x 10 x 5 m, depth 50 m, sharp, with rounded vertical corners only, and with rounded corners and bilge. Frequencies 0.40 to 1.80 rad/s in steps of 0.2, plus 0.70, 0.95 and 1.10, set before any result. 0.80 rad/s is the heave resonance, and 1.60 is 3% from the first irregular frequency, 1.548 rad/s.
 
@@ -167,17 +168,17 @@ Nemoh v3.0.3 ran as a separate program, built outside this repository with ifort
 
 **Nemoh at 4320 panels is unusable.** Its F_x on the rounded fixed cylinder is -3.85 of ρg at 0.95 rad/s, against 5.35 at 1920 panels and 5.31 from HAMS. Nemoh gave no warning and returned 0. On the same mesh its first-order results agree with HAMS (table below), and so do its fixed F_z and M_y, within 1.2%. The cause is unknown. A guess, untested: the top row is 0.0196 m tall at 4320 panels, against 0.044 m at 1920. The comparison therefore rests on 448 to 1920 panels.
 
-**First order**, worst absolute difference in A, B, X and RAOs from 0.70 to 1.10 rad/s, percent:
+**First order**, worst absolute difference over the diagonal terms of A, B, X and the RAOs, plus A15 and B15, at 0.70, 0.80, 0.95, 1.00 and 1.10 rad/s, percent. The 4320-panel runs have only 0.70, 0.95 and 1.10:
 
 | Hull, panels | A | B | X | RAO |
 | :--- | ---: | ---: | ---: | ---: |
-| Rounded 480 | 3.99 | 5.86 | 1.96 | 3.77 |
-| Rounded 1920 | 2.27 | 3.47 | 1.01 | 2.11 |
+| Rounded 480 | 3.99 | 5.86 | 1.96 | 9.24 |
+| Rounded 1920 | 2.27 | 3.47 | 1.01 | 4.50 |
 | Rounded 4320 | 1.54 | 2.15 | 0.79 | 1.44 |
 | Sharp 448 | 3.22 | 4.84 | 1.67 | 10.07 |
 | Sharp 1792 | 1.84 | 3.46 | 0.84 | 6.25 |
 
-The difference falls with the mesh in all columns. The largest RAO difference on the sharp hull is in surge at 0.70 rad/s.
+The difference falls with the mesh in all columns. The largest rounded RAO difference is in surge at 0.80 rad/s, the heave resonance: 9.24% at 480 and 4.50% at 1920 panels. Over 0.70, 0.95 and 1.10 only, it is 3.77%, 2.11% and 1.44% at 480, 1920 and 4320 panels, so the 4320 value is not comparable with the two above it. The largest RAO difference on the sharp hull is in surge at 0.70 rad/s.
 
 **Drift**, F_x, heading 0, absolute difference between HAMS near-field and Nemoh, frequencies up to 1.40 rad/s with far-field above 0.5 of ρg:
 
@@ -190,7 +191,7 @@ The difference falls with the mesh in all columns. The largest RAO difference on
 
 - On the rounded free hull the worst value is at the heave resonance, 0.80 rad/s, where Nemoh itself moves from 0.86 to 1.45 of ρg between 480 and 1920 panels.
 - The sharp free hull matches the near-against-far result: `differencing` carries the sharp-edge error, `source` does not.
-- Bidirectional pair, rounded free, headings 0 and 30, 1920 panels: within 6.7% at 0.70 rad/s and within 0.85% at 0.95 and 1.10. Informative only. Nemoh's documentation states its QTFs are untested for multi-body problems, and no pair ran at 4320 panels.
+- Bidirectional pair, rounded free, headings 0 and 30, 1920 panels: HAMS near-field is 6.5% to 6.7% above Nemoh at 0.70 rad/s, 0.85% to 0.90% below at 0.95, and 0.50% to 0.69% above at 1.10, over all four heading pairs, F_x and F_y. Informative only. Nemoh's documentation states its QTFs are untested for multi-body problems, and no pair ran at 4320 panels.
 
 ## Tests
 
