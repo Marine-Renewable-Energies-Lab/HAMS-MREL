@@ -10,6 +10,7 @@ program integration_tester
     use test_integration_gmres,   only : setup_gmres,   collect_tests_gmres
     use test_integration_image,   only : setup_image,   collect_tests_image
     use test_integration_gen_modes, only : setup_gen_modes, collect_tests_gen_modes
+    use test_integration_lid,     only : setup_lid,     collect_tests_lid
     use testing_utilities
 
     implicit none
@@ -34,7 +35,9 @@ program integration_tester
         new_testsuite("setup_image",   setup_image),   &
         new_testsuite("test_image",    collect_tests_image),  &
         new_testsuite("setup_gen_modes", setup_gen_modes), &
-        new_testsuite("test_gen_modes", collect_tests_gen_modes) &
+        new_testsuite("test_gen_modes", collect_tests_gen_modes), &
+        new_testsuite("setup_lid", setup_lid), &
+        new_testsuite("test_lid", collect_tests_lid) &
     ]
 
     stat = 0

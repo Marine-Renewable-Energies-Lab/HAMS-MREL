@@ -98,6 +98,7 @@ This section begines on the next line after the previous one.
 | next | `23x,i16` | `IRSP` | Irregular frequencies: 1 for to remove them, 0 to keep them |
 | next | `23x,i16` | `NTHREAD` | Number of OpenMP threads; setting it to 1 removes parallelization |
 | (optional) | keyword, then free-format integer | `ISOLV` | Linear solver: 1 = direct LU (default), 2 = GMRES with H-matrix acceleration. Line is detected by the `Solver_type` keyword; the first integer after it is read and a trailing `# comment` is allowed. If the line is absent, ISOLV defaults to 1; if the value cannot be read, a warning is printed and ISOLV defaults to 1. See [iterative_solvers.md](iterative_solvers.md) for full details. |
+| (optional) | keyword, then free-format integer | `LIDON` | Damping lid: 0 = none (default), 1 = read `DampingLid.pnl`. The line sits after `Solver_type`, or in its place when `Solver_type` is absent, and is read the same way: the `Damping_lid` keyword, the first integer after it, a trailing `# comment` allowed. When both lines are present, `Damping_lid` must follow `Solver_type`; in the other order the field-point section is misread and the run fails with a Fortran read error. A value other than 0 or 1, or no readable integer, stops the run (`Damping_lid must be 0 or 1`). See [DampingLid.pnl](#dampinglidpnl). |
 
 **Pressure and Elevation**
 
@@ -175,6 +176,89 @@ The files are read in [HAMS_Prog.f90](../src/HAMS_Prog.f90) and in the subroutin
 
 The node coordinates of the waterplane mesh are stored in `iXYZ_LOCAL_MULTI(bodyID,nodeID,1:3)`. The number of vertices in each panel is stored in `iNCN_MULTI(bodyID,nodeID)` and the vertices (vertex1, vertex2, ...) are stored in `iNCON_MULTI(bodyID,nodeID,1:numvertices)`.
 
+
+## DampingLid.pnl
+
+Read only when `ControlFile.in` has `Damping_lid 1`. GMRES (`Solver_type 2`) is not supported with a lid. `If_remove_irr_freq 1` with a lid is experimental for a single body (see below), and stops for several bodies.
+
+The lid is a list of triangular or quadrilateral panels on the free surface z = 0, with the same file structure as `WaterPlaneMesh.pnl` (three header lines, then `NELEM NTND ISX ISY`, the nodes, the panels). There is one file for any number of bodies, because a lid belongs to no body. Its nodes are in global coordinates, not in the local frame of a body. Holes and separate patches are allowed, since the lid is only a list of panels. The vertex order of a panel does not matter, because the lid has no normal.
+
+After the panels (after the `# End Definition of Node Relations` line) the file has a damping block, in the layout of the WAMIT `.dmp` file:
+
+```
+    # Start Definition of Damping   ! number of dampers, then: first panel  last panel  epsilon (m/s)
+         2
+         1        40    0.2000000000
+        41        80    0.1000000000
+    # End Definition of Damping
+```
+
+The lines are read free-format, and a trailing `! comment` is allowed. The second line is the number of dampers, NDAMPERS. Each damper line gives IP1 and IP2, the first and last panel number of `DampingLid.pnl` (1 to the number of lid panels), and EDAMPER, epsilon in m/s. The ranges must cover every lid panel exactly once. With `ISX` or `ISY` the images of a panel take the epsilon of the panel. epsilon is constant over frequency, epsilon = 0 is allowed, and there is no default. One log line per damper is printed at the start of the run: its range, number of panels and epsilon.
+
+The lid may touch a body or lie away from every body. The file is read by `READ_LID_MESH` in [DampingLid.f90](../src/DampingLid.f90). Unlike the `WaterPlaneMesh.pnl` read in `HAMS_Prog.f90`, it does not overwrite `ISX` and `ISY`: it compares them with the hull's.
+
+What the lid does: it is the dissipative lid of WAMIT (WAMIT User Manual v7.5, Section 12.8 and eqs. 15.91 to 15.93). On the lid the free surface carries a pressure p/rho = epsilon dphi/dz, proportional to the vertical velocity, which takes work from the fluid and so absorbs energy. With the time factor e^{-i omega t} the free-surface condition on the lid becomes dphi/dz = nu g phi/(g - i omega epsilon), nu = omega**2/g. epsilon = 0 gives the open free surface (no lid), and a large epsilon a rigid lid (dphi/dz = 0). Derived from the condition (spec, "Formulation"): the power absorbed is 1/2 rho epsilon abs(dphi/dz)**2 per unit area, never negative. The formulation is in [developer_documentation.md](developer_documentation.md#damping-lid).
+
+This lid replaces the lid that held phi = 0 on the panels (design `docs/superpowers/specs/2026-11-05-damping-lid-design.md`, now superseded by `docs/superpowers/specs/2026-11-06-epsilon-damping-lid-design.md`). That lid reflected the wave and absorbed no energy. The `DampingLid.pnl` files written for it have no damping block and now stop the run (`no damping block`).
+
+Choosing epsilon. The WAMIT manual gives no recommended value. The values below are starting points only: epsilon depends on the geometry and the flow that the lid stands for, and must be calibrated against model tests or CFD.
+
+| Source | epsilon (m/s) | Use |
+| :--- | ---: | :--- |
+| WAMIT v7.5 test cases test02, test07a, test17c, test22c | 0.4; 1.0; 0.1 and 0.4; 1.0 | examples of the input, not calibrated values |
+| Gourlay (2019) | 0.2 | gap between side-by-side vessels |
+
+Some papers give the lid damping in the form of Chen, a dimensionless epsilon_Chen. For small damping, Gourlay (2019) gives epsilon ~ g epsilon_Chen / omega. This is for information only: it depends on the frequency, while the epsilon of `DampingLid.pnl` is constant over frequency.
+
+The run stops with a message and exit code 1 when:
+
+| Condition | Message contains |
+| :--- | :--- |
+| `Damping_lid 1` and no `DampingLid.pnl` | `DampingLid.pnl input file missing` |
+| a node with abs(z) > 1e-10 | `lid node is not on z = 0` |
+| `ISX` or `ISY` of the lid differ from the hull's | `lid symmetry differs from the hull` |
+| `Solver_type 2` | `damping lid needs Solver_type 1` |
+| a lid panel centroid lies inside a hull | `lid panel inside a hull` |
+| more than one body and `If_remove_irr_freq 1` | `damping lid with several bodies needs If_remove_irr_freq 0` |
+| `Damping_lid` other than 0 or 1, or no integer after it | `Damping_lid must be 0 or 1` |
+| a line of `DampingLid.pnl` that cannot be read (header, counts, node, panel) | `cannot read DampingLid.pnl`, with the kind of line and its number |
+| a lid panel with other than 3 or 4 vertices | `a lid panel in DampingLid.pnl must have 3 or 4 vertices` |
+| a vertex number outside 1 to the number of nodes | `a vertex of a lid panel in DampingLid.pnl is not a node number` |
+| a lid panel with a repeated vertex | `a lid panel in DampingLid.pnl has a repeated vertex` |
+| a lid panel of zero area (area below 1e-12 times the square of its size) | `a lid panel in DampingLid.pnl has zero area` |
+| no `# Start Definition of Damping` line after the panels | `no damping block` |
+| number of dampers below 1 or above the number of lid panels, or unreadable | `number of dampers` (or `cannot read the damping`), with the line number |
+| a damper range with first > last, or outside 1 to the number of lid panels | `damper panel range`, with the line number |
+| a lid panel in two dampers | `lid panel in two dampers`, with the panel number |
+| a lid panel in no damper | `lid panel in no damper`, with the panel number |
+| a negative epsilon | `negative damping`, with the line number |
+| a damper line that cannot be read | `cannot read the damping`, with the line number |
+| an infinite epsilon (`Inf`; a large finite value such as 1e6 m/s gives the rigid lid) | `infinite damping epsilon on line`, with the line number |
+| `ISX` or `ISY` = 1 and a vertex of a lid panel on the image side of the symmetry plane (x < 0 or y < 0 when the hull is given on x >= 0 or y >= 0) by more than 1e-6 times the largest lid panel size | `lid on the image side of the symmetry plane`, with the panel and node number |
+| a zero frequency in the frequency list | `zero frequency with a damping lid`, with its number in the list |
+
+The zero frequency that `0_inf_frequency_limits 1` adds to the run is not in the list and does not stop it, since the infinite-frequency limit cannot be given without it (see Zero frequency below). The frequency list is checked before the first frequency is solved, so a zero anywhere in the list stops the run with no frequency written. A zero period or wave length (`Input_frequency_type` 4 or 5) is an infinite frequency, not a zero one, and is not caught by this check.
+
+With `ISX` or `ISY` = 1 the lid must be given on the same half as the hull, since its images are added for it as for the hull. The kept side is that of the hull panel centroids; nodes that no lid panel uses are not checked. The tolerance, 1e-6 times the largest lid panel size, is well above the round-off of nodes written on the plane and well below any panel size. A full lid given with the flag set would be counted twice, and is stopped.
+
+The inside-hull check sums the hull's double-layer Rankine integrals and their images in z = 0 at each lid centroid. This is a solid angle: 4 pi in magnitude inside a closed hull and 0 outside, and the run stops above 2 pi. A lid inside a hull is what the water plane mesh with `If_remove_irr_freq` is for. Only the centroids are tested, so a panel that straddles the waterline with its centroid outside the hull passes.
+
+Finite depth: every integral over a lid panel takes the finite-depth part as a smooth remainder sampled at R/h of at least 0.03, because `FINGREEN3D` is unreliable at small R/h. Measured on z = 0 against a direct sum of the eigenfunction series ([README](../test/data/damping_lid/README.md), "Remainder"): `FINGREEN3D` is off by a near constant 7.9e-6 between 0.0005 h and 0.05 h, and below 0.003 h it scatters, to 1.1e-2 at 0.001 h and nu = 1. Lid-to-lid pairs are protected by the 0.03 h floor. Derived: the hull panels are not, since the lid rows and the field output evaluate them with `FINGREEN3D` at the true distance, so lid centroids or field points within about 0.01 h of a hull panel centroid get the scatter. See [developer_documentation.md](developer_documentation.md#damping-lid).
+
+`If_remove_irr_freq 1` with a single-body lid is experimental. The system then has more rows than unknowns and is solved by least squares (`ZGELS`). Measured for `lid_ann_160` at epsilon 0.2 m/s: the worst change of A11, A33, B11, B33 and abs(X1) against the same run without `If_remove_irr_freq` is 0.32% (B11). With the phi = 0 lid it was 1.1%, and the cause was not found; that study was not repeated with the epsilon lid ([README](../test/data/damping_lid/README.md), "Symmetry and IRSP").
+
+Zero frequency: a zero in the frequency list stops a run with the lid on, as in WAMIT (WAMIT User Manual v7.5, Section 12.8). The zero frequency that `0_inf_frequency_limits 1` adds is exempt: there, and at the infinite frequency, the lid is skipped and the hull is solved alone. Derived: at omega = 0 the lid term alpha = i omega epsilon nu/(g - i omega epsilon) is 0, so the lid has no effect there.
+
+Output with a lid. The file formats do not change, with one exception: a single-body run with the lid on also writes the radiation elevation rows of field points at z = 0 to `PressureElevation.6p` (last item below), so a lid run and a no-lid run of the same input give `.6p` files with different row sets. The output of runs without a lid does not change. A, B, the excitation and the RAOs are integrated over the hull only, as in WAMIT (WAMIT User Manual v7.5, Section 12.8). Field points:
+
+- The field potential includes the lid term, a single layer of strength alpha_l (phi_l + phi_I,l) on each lid panel, with phi_I,l the incident potential in diffraction only.
+- On z = 0 inside or on the edge of a lid panel of epsilon > 0, the elevation is eta = i omega phi/(g - i omega epsilon), with phi the total potential; elsewhere it is i omega phi/g, as without a lid. The pressure in the fluid has its usual form.
+- With `Wave_diffrac_solution 2` (`ISOL = 2`, scattered potential only) the diffraction elevation on a lid panel of epsilon > 0 is i omega phi_S/(g - i omega epsilon), the same factor applied to the scattered potential phi_S. It is not the total elevation less the incident one (that would be i omega phi_T/(g - i omega epsilon) - i omega phi_I/g). Off the lid it is i omega phi_S/g, as without a lid.
+- Field points at z = 0 get radiation elevation rows in `PressureElevation.6p` of a single-body run only when a lid is on; they are not written without one. The multi-body output writes them with or without a lid.
+
+What changes in the results, derived (spec, "Limits that follow"): B is the power radiated to the far field plus the power absorbed on the lid. B can still fall when the lid is added, because the lid can cut the far-field radiation by more than it absorbs (measured: B11 of `lid_ann_160` falls from 206.25 without the lid to 199.71 at 0.2 m/s, README "Single-body solve with a lid"). The Haskind relation over the hull does not hold for epsilon > 0, because the lid absorbs: do not compute the excitation from the radiation potentials when a lid is on (measured heave residual 4.6e-2 at 0.2 m/s, against 2.1e-3 without the lid).
+
+The number of lid panels is printed next to the hull panel counts and written to `ErrorCheck.txt`, only when the lid is on, so the output of a run without a lid does not change.
 
 ## gen_mod (Optional)
 

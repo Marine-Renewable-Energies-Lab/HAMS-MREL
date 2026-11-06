@@ -14,6 +14,7 @@ program unit_tester
     use test_image_term, only : collect_image_term
     use test_generalized_modes, only : collect_generalized_modes
     use test_panel_integrals, only : collect_panel_integrals
+    use test_damping_lid, only : collect_damping_lid
 
     implicit none
     integer :: stat, is
@@ -34,7 +35,8 @@ program unit_tester
         new_testsuite("create_directory", collect_create_directory), &
         new_testsuite("image_term", collect_image_term), &
         new_testsuite("generalized_modes", collect_generalized_modes), &
-        new_testsuite("panel_integrals", collect_panel_integrals) &
+        new_testsuite("panel_integrals", collect_panel_integrals), &
+        new_testsuite("damping_lid", collect_damping_lid) &
     ]
 
     stat = 0
@@ -45,7 +47,8 @@ program unit_tester
         call run_testsuite(testsuites(is)%collect, error_unit, stat, &
                            parallel=(testsuites(is)%name /= "iterative_solvers" .and. testsuites(is)%name /= "image_term" &
                                      .and. testsuites(is)%name /= "generalized_modes" &
-                                     .and. testsuites(is)%name /= "panel_integrals"))
+                                     .and. testsuites(is)%name /= "panel_integrals" &
+                                     .and. testsuites(is)%name /= "damping_lid"))
     end do
 
     if (stat > 0) then

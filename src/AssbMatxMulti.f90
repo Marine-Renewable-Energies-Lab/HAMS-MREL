@@ -39,6 +39,7 @@ MODULE AssbMatxMulti
   ! ..... Public Subroutines ...................................................................................................
 
    PUBLIC :: ASSB_LEFT_MULTI
+   PUBLIC :: FILL_HULL_LEFT_MULTI
    PUBLIC :: ASSB_RBC_MULTI
    
    PUBLIC :: ASSB_DBC_MULTI
@@ -57,12 +58,39 @@ CONTAINS
       INTEGER,INTENT(OUT):: IPIV(NELEM,NSYS)
       COMPLEX*16,INTENT(OUT):: AMAT(NELEM,NELEM,NSYS)
 
-      INTEGER IEL,JEL,IS,IP,IRR,MD,FLAG,INFO
+      INTEGER IP,INFO
+
+      CALL FILL_HULL_LEFT_MULTI(AMAT,NELEM,NSYS)
+
+! NSYS is 1 or 2 — let MKL's internal threading do the work in ZGETRF.
+! Only factorize when the direct-LU solver will be used; for ISOLV>1 the iterative
+! solver operates on the unfactored matrix and the factorization would be wasted.
+       IF (ISOLV .EQ. 1) THEN
+          DO IP=1, NSYS
+             CALL ZGETRF( NELEM, NELEM, AMAT(:,:,IP), NELEM, IPIV(:,IP), INFO )
+          ENDDO
+       ENDIF
+
+       RETURN
+      END SUBROUTINE ASSB_LEFT_MULTI
+
+! -------------------------------------------------------------------
+!    The hull block of the left-hand side of several bodies, not
+!    factorised: 2 pi on the diagonal plus the double-layer integrals,
+!    for each symmetry class IP. Needs RKBN_MULTI_COMB and
+!    CGRN_MULTI_COMB from CALGREEN_MULTI.
+! -------------------------------------------------------------------
+      SUBROUTINE FILL_HULL_LEFT_MULTI(AMAT,NELEM,NSYS)
+      IMPLICIT  NONE
+!
+      INTEGER,INTENT(IN):: NELEM,NSYS
+      COMPLEX*16,INTENT(OUT):: AMAT(NELEM,NELEM,NSYS)
+
+      INTEGER IEL,JEL,IS,IP,FLAG
       REAL*8 DIST
       COMPLEX*16 TINDP(4)
 
       ! DS_MULTI_COMB / DXYZ_MULTI_COMB are populated once at startup by BuildCombinedArrays.
-      IRR=1
       AMAT=CMPLX(0.0D0,0.0D0)
 
 !$OMP PARALLEL NUM_THREADS(NTHREAD)          
@@ -104,17 +132,8 @@ CONTAINS
 !$OMP END DO NOWAIT
 !$OMP END PARALLEL
 
-! NSYS is 1 or 2 — let MKL's internal threading do the work in ZGETRF.
-! Only factorize when the direct-LU solver will be used; for ISOLV>1 the iterative
-! solver operates on the unfactored matrix and the factorization would be wasted.
-       IF (ISOLV .EQ. 1) THEN
-          DO IP=1, NSYS
-             CALL ZGETRF( NELEM, NELEM, AMAT(:,:,IP), NELEM, IPIV(:,IP), INFO )
-          ENDDO
-       ENDIF
-
        RETURN
-      END SUBROUTINE ASSB_LEFT_MULTI
+      END SUBROUTINE FILL_HULL_LEFT_MULTI
       
       
 ! ------------------------------------------------------------------- 

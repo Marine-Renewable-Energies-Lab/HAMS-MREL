@@ -14,7 +14,7 @@ module test_panel_integrals
 
   implicit none
   private
-  public :: collect_panel_integrals
+  public :: collect_panel_integrals, reference
 
   real(8), parameter :: tol = 1d-8
   ! Nodes and weights of the 8-point Gauss-Legendre rule on (-1, 1), half of them, the others by symmetry

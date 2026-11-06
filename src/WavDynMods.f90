@@ -177,6 +177,30 @@
         REAL*8,ALLOCATABLE,PUBLIC:: iDS(:),iPNSZ(:)
 !
         END MODULE Inerfs_mod
+
+!---------------------------------------------------------------------------------------------
+!        Data module for the damping lid: panels on z = 0 with the dissipative condition p/rho = epsilon dphi/dz (docs/input_files.md)
+!        LNELEM, LNTND, LNCN, LNCON and LXYZ are read from DampingLid.pnl. LXYZ_P, LDS and LPNSZ are the centroids, areas and
+!        chart lengths. MXLPOT is the lid potential phi on the lid panels for the 6*NBODY radiation modes and the diffraction
+!        problem, the scattered potential for diffraction, as MXPOT.
+!        NDAMP dampers, panels IDAMP(k,1) to IDAMP(k,2) with epsilon EDAMP(k) (m/s), read from the damping block of DampingLid.pnl;
+!        LEPS(l) is the epsilon of lid panel l.
+!---------------------------------------------------------------------------------------------
+!
+        MODULE Lid_mod
+!
+        INTEGER,PUBLIC:: LIDON=0                                                    ! 1 when ControlFile.in has Damping_lid 1
+        INTEGER,PUBLIC:: LNELEM=0,LNTND=0
+!
+        INTEGER,ALLOCATABLE,PUBLIC:: LNCN(:),LNCON(:,:)
+        REAL*8,ALLOCATABLE,PUBLIC:: LXYZ(:,:),LXYZ_P(:,:)
+        REAL*8,ALLOCATABLE,PUBLIC:: LDS(:),LPNSZ(:)
+        COMPLEX*16,ALLOCATABLE,PUBLIC:: MXLPOT(:,:,:)
+        INTEGER,PUBLIC:: NDAMP=0
+        INTEGER,ALLOCATABLE,PUBLIC:: IDAMP(:,:)
+        REAL*8,ALLOCATABLE,PUBLIC:: EDAMP(:),LEPS(:)
+!
+        END MODULE Lid_mod
     
 !---------------------------------------------------------------------------------------------
 !        Data module for declaring variables in linear algeraic system - This is for solving the final linear algebraic equations
