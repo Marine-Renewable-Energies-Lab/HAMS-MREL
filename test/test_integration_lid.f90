@@ -30,6 +30,16 @@ module test_integration_lid
     real(8), parameter :: irsp_limit = 7d-3           ! A11, A33, B11, B33, abs(X1) with IRSP against without; measured 3.2e-3
     real(8), parameter :: collocation_limit = 1d-6    ! force from the field pressures against ExcForce.3; measured 1.6e-7, printed to 7 digits
     real(8), parameter :: maccamy_fuchs_limit = 2d-2  ! worst of X1 and two elevations of mm_cyl_nolid, complex; measured 8.5e-3
+    real(8), parameter :: mm_reference_limit = 1.2d-2 ! worst of X1 and two elevations of mm_cyl_lid_c, _c_eps1, _c_rigid against
+                                                      ! the reference, complex; measured 8.49e-3, 8.42e-3, 7.07e-3. HAMS-MREL is
+                                                      ! 5.38e-2 from the conjugate reference (Im(alpha) flipped) at 1 m/s, and a
+                                                      ! flipped binary gives 5.69e-2
+    real(8), parameter :: mm_effect_limit = 3d-2      ! worst lid-effect error of the same, relative to the reference lid effect;
+                                                      ! measured 2.21e-2, 2.20e-2, 1.97e-2 (flipped binary: 2.01 and 2.04 at 0.2
+                                                      ! and 1 m/s)
+    real(8), parameter :: mm_power_limit = 8d-3       ! lid power of mm_cyl_lid_c and _c_eps1 from the centroid elevations against
+                                                      ! the reference; measured -4.14e-3, -4.12e-3 (conjugate reference +2.08e-2,
+                                                      ! +1.06e-1; flipped binary +1.66e-2, +1.01e-1)
     real(8), parameter :: two_far_limit = 1d-3        ! body 1 of lid_two_far against lid_ann_160, the limit of multi_matches_single;
                                                       ! measured 4.5e-4
     real(8), parameter :: gap_symmetry_limit = 1d-2   ! abs(A_ij - A_ji) / max(abs(A)), the same for B, 12 x 12, lid_gap; measured
@@ -42,11 +52,26 @@ module test_integration_lid
     !> omega = sqrt(g k tanh(kh)), heading 0, field points (0, 8, 0) and (8, 0, 0).
     real(8), parameter :: mm_omega = 1.1538937638d0
     !> Reference values in the convention of ExcForce.3 and PressureElevation.6p (over rho g A and over A), from
-    !> pre_postprocessing_python/DampingLid/annular_lid_reference.py: MacCamy-Fuchs for the bare cylinder. The phi = 0 lid
-    !> reference values and their test are removed with the epsilon lid; the epsilon reference follows (README).
+    !> pre_postprocessing_python/DampingLid/annular_lid_reference.py: MacCamy-Fuchs for the bare cylinder, then the lid r 2 to 4
+    !> at epsilon 0.2, 1 and 1e6 m/s (lid projection, extrapolated in 1/N from N = 160, 320; spread 1.4e-7 or less at 0.2 and
+    !> 1 m/s, 7.7e-6 at 1e6 m/s). Each is X1, the elevation at (0, 8, 0), the elevation at (8, 0, 0).
     complex(8), parameter :: maccamy_fuchs(3) = [(1.65550518d0, 23.42095485d0), &    ! X1
                                                  (1.01387576d0, 0.04392707d0), &     ! elevation at (0, 8, 0)
                                                  (0.29600397d0, -0.97000684d0)]      ! elevation at (8, 0, 0)
+    character(len=20), parameter :: mm_lid_cases(3) = [character(len=20) :: "mm_cyl_lid_c", "mm_cyl_lid_c_eps1", &
+                                                       "mm_cyl_lid_c_rigid"]
+    real(8), parameter :: mm_eps(3) = [0.2d0, 1d0, 1d6]
+    complex(8), parameter :: mm_reference(3,3) = reshape([ &
+        (1.73472971d0, 23.39194867d0), (1.00952678d0, 0.04447564d0), (0.29053829d0, -0.96832198d0), &    ! 0.2 m/s
+        (2.02520747d0, 23.23109427d0), (0.99339102d0, 0.04910955d0), (0.27074161d0, -0.95859350d0), &    ! 1 m/s
+        (0.87716703d0, 20.84072211d0), (0.99990858d0, 0.17835860d0), (0.31664285d0, -0.79760753d0)], &  ! 1e6 m/s
+        [3, 3])
+    !> Lid power of the reference, 1/2 rho E int abs(dphi/dz)**2 dA in W per m**2 of incident amplitude, rho = 1000, at 0.2 and
+    !> 1 m/s (extrapolated from N = 160, 320; spread 5.9e-8 and 1.4e-6). It equals the net power into the cylinder r = 1000 to
+    !> 1.1e-11 and 2.6e-10 (N = 320).
+    real(8), parameter :: mm_lid_power(2) = [5.268414d3, 2.472964d4]
+    !> Lid panels of the 48 x 8 cases; their centroids are field points 3 to 386, after (0, 8, 0) and (8, 0, 0).
+    integer, parameter :: n384 = 384
 
     !> The single-body solve cases, all run by setup_lid: those with a lid and their no-lid references lid_limits_off and
     !> lid_nolid_160.
@@ -120,6 +145,9 @@ contains
             new_unittest("lid_half_matches_full", lid_half_matches_full), &
             new_unittest("lid_irsp_matches", lid_irsp_matches), &
             new_unittest("mm_nolid_matches_maccamy_fuchs", mm_nolid_matches_maccamy_fuchs), &
+            new_unittest("mm_lid_matches_reference", mm_lid_matches_reference), &
+            new_unittest("mm_lid_converges", mm_lid_converges), &
+            new_unittest("mm_lid_power_matches", mm_lid_power_matches), &
             new_unittest("stops_lid_inside_two", stops_lid_inside_two), &
             new_unittest("stops_lid_irsp_two", stops_lid_irsp_two), &
             new_unittest("lid_multi_matches_single", lid_multi_matches_single), &
@@ -224,12 +252,13 @@ contains
         call check(error, len_trim(failed) == 0, "HAMS failed for"//trim(failed))
     end subroutine run_lid_solves
 
-    !> The bottom-mounted cylinder without lid, for the independent reference. The lid cases mm_cyl_lid_a, _b and _c are not
-    !> run until the epsilon reference is in (README).
+    !> The bottom-mounted cylinder of the independent reference: without lid, with the lid at three meshes (0.2 m/s), and at 1
+    !> and 1e6 m/s on the finest.
     subroutine run_lid_mm(error)
         type(error_type), allocatable, intent(out) :: error
         type(error_type), allocatable :: one
-        character(len=12), parameter :: names(1) = [character(len=12) :: "mm_cyl_nolid"]
+        character(len=20), parameter :: names(6) = [character(len=20) :: "mm_cyl_nolid", "mm_cyl_lid_a", "mm_cyl_lid_b", &
+                                                    "mm_cyl_lid_c", "mm_cyl_lid_c_eps1", "mm_cyl_lid_c_rigid"]
         character(len=128) :: failed
         integer :: k
 
@@ -1033,6 +1062,107 @@ contains
         write (*, '(4x, a, 3(2x, a, " ", es10.3))') "mm_cyl_nolid", (trim(labels(i)), diff(i), i = 1, 3)
         call check_below(error, "mm_nolid_matches_maccamy_fuchs: worst", maxval(diff), maccamy_fuchs_limit)
     end subroutine mm_nolid_matches_maccamy_fuchs
+
+    !> X1 and the two elevations of a reference case, as complex numbers.
+    subroutine mm_values(name, v, error)
+        character(len=*), intent(in) :: name
+        complex(8), intent(out) :: v(3)
+        type(error_type), allocatable, intent(out) :: error
+        type(coefficients) :: c
+        complex(8), allocatable :: dif(:), rad(:,:)
+
+        v = (0d0, 0d0)
+        call read_coefficients(name, mm_omega, c, error)
+        if (allocated(error)) return
+        call read_field(name, dif, rad, error)
+        if (allocated(error)) return
+        call check(error, size(dif) >= 2, name//": fewer than 2 field points")
+        if (allocated(error)) return
+        v = [c%x(1), dif(1), dif(2)]
+    end subroutine mm_values
+
+    !> The lid-effect error: the change the lid makes in HAMS-MREL (the lid case minus mm_cyl_nolid) against the change it
+    !> makes in the reference (the lid reference minus MacCamy-Fuchs), relative to the reference change, worst of the three
+    !> values. The hull error, common to both runs (0.85% in X1), drops out to first order.
+    real(8) function lid_effect_error(lid, bare, ref)
+        complex(8), intent(in) :: lid(3), bare(3), ref(3)
+        lid_effect_error = maxval(abs((lid - bare) - (ref - maccamy_fuchs))/abs(ref - maccamy_fuchs))
+    end function lid_effect_error
+
+    !> The lid r 2 to 4, 48 x 8 panels, at epsilon 0.2, 1 and 1e6 m/s: X1 and the elevations at (0, 8, 0) and (8, 0, 0) within
+    !> 1.2e-2 of the eigenfunction reference as complex numbers, and the lid effect within 3e-2 of the reference lid effect.
+    !> The first is set by the hull error; at 1 m/s HAMS-MREL is 5.38e-2 from the conjugate reference (Im(alpha) flipped), so
+    !> a flipped sign fails it. The second removes the hull error; a flipped binary gives 2.01, so it fails at 0.2 m/s too.
+    subroutine mm_lid_matches_reference(error)
+        type(error_type), allocatable, intent(out) :: error
+        complex(8) :: v(3), bare(3)
+        real(8) :: diff(3), worst, effect, worst_effect
+        integer :: k
+
+        call mm_values("mm_cyl_nolid", bare, error)
+        if (allocated(error)) return
+        worst = 0d0
+        worst_effect = 0d0
+        do k = 1, size(mm_lid_cases)
+            call mm_values(trim(mm_lid_cases(k)), v, error)
+            if (allocated(error)) return
+            diff = abs(v - mm_reference(:, k))/abs(mm_reference(:, k))
+            effect = lid_effect_error(v, bare, mm_reference(:, k))
+            write (*, '(4x, a20, " eps ", es8.1, ":  X1 ", es10.3, "  eta(0, 8, 0) ", es10.3, "  eta(8, 0, 0) ", es10.3, &
+                   &"  lid effect ", es10.3)') mm_lid_cases(k), mm_eps(k), diff, effect
+            worst = max(worst, maxval(diff))
+            worst_effect = max(worst_effect, effect)
+        end do
+        call check_below(error, "mm_lid_matches_reference: worst", worst, mm_reference_limit)
+        if (allocated(error)) return
+        call check_below(error, "mm_lid_matches_reference: worst lid effect", worst_effect, mm_effect_limit)
+    end subroutine mm_lid_matches_reference
+
+    !> The lid-effect error at 0.2 m/s falls from mm_cyl_lid_a (2 rings) to _b (4) to _c (8). The error against the reference
+    !> itself does not fall: the hull error sets it (README).
+    subroutine mm_lid_converges(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=12), parameter :: names(3) = [character(len=12) :: "mm_cyl_lid_a", "mm_cyl_lid_b", "mm_cyl_lid_c"]
+        complex(8) :: v(3), bare(3)
+        real(8) :: e(3)
+        integer :: k
+
+        call mm_values("mm_cyl_nolid", bare, error)
+        if (allocated(error)) return
+        do k = 1, 3
+            call mm_values(names(k), v, error)
+            if (allocated(error)) return
+            e(k) = lid_effect_error(v, bare, mm_reference(:, 1))
+        end do
+        write (*, '(4x, "mm_lid_converges: lid-effect error at 2, 4, 8 rings ", 3es10.3)') e
+        call check(error, e(1) > e(2) .and. e(2) > e(3), "mm_lid_converges: the lid-effect error does not fall with the rings")
+    end subroutine mm_lid_converges
+
+    !> The lid power from the elevations at the 384 lid centroids, P = 1/2 rho omega**2 sum_l epsilon abs(eta_l)**2 A_l per
+    !> unit incident amplitude, is positive and within 8e-3 of the reference lid power at 0.2 and 1 m/s.
+    subroutine mm_lid_power_matches(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), parameter :: rho = 1000d0
+        complex(8), allocatable :: dif(:), rad(:,:)
+        real(8) :: area(n384), power, rel(2)
+        integer :: k
+
+        do k = 1, 2
+            call read_lid_areas(trim(mm_lid_cases(k)), n384, area, error)
+            if (allocated(error)) return
+            call read_field(trim(mm_lid_cases(k)), dif, rad, error)
+            if (allocated(error)) return
+            call check(error, size(dif) == n384 + 2, trim(mm_lid_cases(k))//": not 386 field points")
+            if (allocated(error)) return
+            power = 0.5d0*rho*mm_omega**2*sum(mm_eps(k)*abs(dif(3:n384 + 2))**2*area)
+            call check(error, power > 0d0, "mm_lid_power_matches: the lid power is not positive")
+            if (allocated(error)) return
+            rel(k) = (power - mm_lid_power(k))/mm_lid_power(k)
+            write (*, '(4x, a20, " lid power ", es12.5, " W, reference ", es12.5, ", relative ", es10.3)') &
+                mm_lid_cases(k), power, mm_lid_power(k), rel(k)
+        end do
+        call check_below(error, "mm_lid_power_matches: worst", maxval(abs(rel)), mm_power_limit)
+    end subroutine mm_lid_power_matches
 
     ! -------------------------------------------------------------------------------------------- two bodies
 
