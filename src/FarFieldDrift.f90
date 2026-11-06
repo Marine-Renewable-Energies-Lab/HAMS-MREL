@@ -110,8 +110,13 @@ CONTAINS
       TYPE(so_options), INTENT(IN) :: opts
       COMPLEX(8), INTENT(OUT) :: f(3)
       COMPLEX(8) :: fp(3, 1)
+      ! A named array, not the constructor [s1, s2]: an array constructor of a type with allocatable components
+      ! crashes at run time under ifx 2024.2 with -heap-arrays 0.
+      TYPE(first_order_state) :: pair(2)
 
-      CALL pair_core(mesh, [s1, s2], [1], [2], opts, fp)
+      pair(1) = s1
+      pair(2) = s2
+      CALL pair_core(mesh, pair, [1], [2], opts, fp)
       f = fp(:, 1)
    END SUBROUTINE far_field_pair
 
