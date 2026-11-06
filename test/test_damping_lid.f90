@@ -261,7 +261,7 @@ contains
 
   !> A disc of radius 1 at nu = 0, where the kernel on z = 0 is 2/r. The density of unit potential has total 1/pi
   !> (capacitance 2a/pi of the kernel 1/r). The density is singular at the rim, so the radial division sets the error:
-  !> nt = nr, 64, 256 and 1024 panels.
+  !> nt = nr = 8, 16 and 32, that is 64, 256 and 1024 panels.
   subroutine test_electrified_disc(error)
     type(error_type), allocatable, intent(out) :: error
     integer, parameter :: nts(3) = [8, 16, 32], nrs(3) = [8, 16, 32]
@@ -331,12 +331,15 @@ contains
     end do
   end subroutine disc
 
-  !> At large kh the finite-depth integral over a self panel is the deep-water one. FINGREEN3D returns NaN from kh = 360
-  !> (cosh(kh) overflows, test/data/damping_lid/README.md), so kh = 300 rather than 5000.
+  !> At large kh the finite-depth single layer of a self panel tends to the deep-water one. The test uses kh = 300, since
+  !> FINGREEN3D returns NaN from kh = 360, where cosh(kh) overflows (test/data/damping_lid/README.md). V and H are restored.
   subroutine test_finite_tends_to_deep(error)
     type(error_type), allocatable, intent(out) :: error
-    real(8) :: quad(4, 3), p(3)
+    real(8) :: quad(4, 3), p(3), v0, h0
     complex(8) :: deep, fin
+
+    v0 = V
+    h0 = H
 
     quad = reshape([0d0, 1d0, 1d0, 0d0, 0d0, 0d0, 1d0, 1d0, 0d0, 0d0, 0d0, 0d0], [4, 3])
     call set_one_panel(quad)
@@ -345,6 +348,8 @@ contains
     call LID_SINGLE_LAYER(p, 1, deep)
     call set_wave(1d0, 300d0)
     call LID_SINGLE_LAYER(p, 1, fin)
+    V = v0
+    H = h0
     call check(error, abs(fin - deep) < 1d-4*abs(deep), "finite depth at H = 300, nu = 1 differs from deep water")
   end subroutine test_finite_tends_to_deep
 
