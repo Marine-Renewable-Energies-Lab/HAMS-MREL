@@ -14,11 +14,13 @@ TARGET = os.path.join(ROOT, "test", "data", "damping_lid")
 EOL = "\r\n"
 
 
-def annulus(r0, r1, nt, nr, tri=False, reverse=False, z=0.0, isx=0, isy=0, z_node=None):
+def annulus(r0, r1, nt, nr, tri=False, reverse=False, z=0.0, isx=0, isy=0, z_node=None, sectors=None):
     """Panels of the annulus r0 <= r <= r1 on z = z, nt around and nr radial.
 
     r0 = 0 gives a disc: the first row is nt triangles about a centre node. tri splits every quad in two. reverse flips the
-    vertex order of every panel. z_node = (index, z) moves one node off the plane. Returns the text of a .pnl file.
+    vertex order of every panel. z_node = (index, z) moves one node off the plane. sectors = [(a0, a1), ...] in degrees keeps
+    only the panels whose middle angle lies in one of them; the other nodes stay in the file, unused. Returns the text of a
+    .pnl file.
     """
     radii = [r0 + (r1 - r0) * i / nr for i in range(nr + 1)]
     nodes = []
@@ -37,6 +39,9 @@ def annulus(r0, r1, nt, nr, tri=False, reverse=False, z=0.0, isx=0, isy=0, z_nod
     panels = []
     for i in range(nr):
         for j in range(nt):
+            middle = 360.0 * (j + 0.5) / nt
+            if sectors is not None and not any(a0 <= middle <= a1 for a0, a1 in sectors):
+                continue
             k = (j + 1) % nt
             a, b, c, d = ring[i][j], ring[i][k], ring[i + 1][k], ring[i + 1][j]
             if a == b:
@@ -67,12 +72,48 @@ def annulus(r0, r1, nt, nr, tri=False, reverse=False, z=0.0, isx=0, isy=0, z_nod
     return EOL.join(lines)
 
 
-def control_text(lid, solver=None):
-    """The image_cos control file with Damping_lid inserted after 'Number of threads', and Solver_type when given."""
+def centroids(lid_text, count):
+    """The vertex averages of the first count panels of a .pnl text, as HAMS computes the panel centroids."""
+    lines = lid_text.split(EOL)
+    nodes = {}
+    start = lines.index("    # Start Definition of Node Coordinates     ! node_number   x   y   z") + 1
+    k = start
+    while not lines[k].startswith("    # End"):
+        f = lines[k].split()
+        nodes[int(f[0])] = tuple(float(v) for v in f[1:4])
+        k += 1
+    k += 3
+    out = []
+    while len(out) < count and not lines[k].startswith("    # End"):
+        f = [int(v) for v in lines[k].split()]
+        ids = f[2:2 + f[1]]
+        out.append(tuple(sum(nodes[i][c] for i in ids) / len(ids) for c in range(3)))
+        k += 1
+    return out
+
+
+def control_text(lid, solver=None, depth=None, limits=None, points=None):
+    """The image_cos control file with Damping_lid inserted after 'Number of threads', and Solver_type when given. depth
+    replaces the water depth, limits the 0_inf_frequency_limits switch, and points the field points."""
     with open(os.path.join(SOURCE, "ControlFile.in"), "rb") as f:
         text = f.read().decode("ascii")
     out = []
+    skip = False
     for line in text.split(EOL):
+        if skip:
+            if "#End Definition of Pressure" in line:
+                skip = False
+            else:
+                continue
+        if depth is not None and line.strip().startswith("Waterdepth"):
+            line = "   Waterdepth  %.1fD0" % depth
+        if limits is not None and "0_inf_frequency_limits" in line:
+            line = "    0_inf_frequency_limits      %d" % limits
+        if points is not None and "Number_of_field_points" in line:
+            out.append("    Number_of_field_points     %d" % len(points))
+            out.extend("    %.12f  %.12f  %.12f" % p for p in points)
+            skip = True
+            continue
         out.append(line)
         if "Number of threads" in line:
             if solver is not None:
@@ -81,7 +122,7 @@ def control_text(lid, solver=None):
     return EOL.join(out)
 
 
-def write_case(name, lid_text, lid_flag=1, solver=None):
+def write_case(name, lid_text, lid_flag=1, solver=None, depth=None, limits=None, points=None):
     folder = os.path.join(TARGET, name, "input")
     if os.path.isdir(folder):
         shutil.rmtree(folder)
@@ -89,10 +130,15 @@ def write_case(name, lid_text, lid_flag=1, solver=None):
     for f in ("HullMesh.pnl", "Hydrostatic.in"):
         shutil.copy(os.path.join(SOURCE, f), os.path.join(folder, f))
     with open(os.path.join(folder, "ControlFile.in"), "wb") as f:
-        f.write(control_text(lid_flag, solver).encode("ascii"))
+        f.write(control_text(lid_flag, solver, depth, limits, points).encode("ascii"))
     if lid_text is not None:
         with open(os.path.join(folder, "DampingLid.pnl"), "wb") as f:
             f.write(lid_text.encode("ascii"))
+
+
+def write_solve_case(name, lid_text, **kwargs):
+    """A lid case that runs to the end, with its field points at the centroids of the first 10 lid panels."""
+    write_case(name, lid_text, points=centroids(lid_text, 10), **kwargs)
 
 
 def main():
@@ -103,6 +149,20 @@ def main():
     write_case("lid_stop_gmres", annulus(**outside), solver=2)
     write_case("lid_stop_inside", annulus(0.0, 2.5, 12, 2))
     write_case("lid_flag_off", annulus(**outside), lid_flag=0)
+
+    # Single-body solves (test_integration_lid.f90). Annulus r = 6 to 10 unless said.
+    write_solve_case("lid_ann_40", annulus(6.0, 10.0, 20, 2))
+    write_solve_case("lid_ann_160", annulus(6.0, 10.0, 40, 4))
+    write_solve_case("lid_ann_640", annulus(6.0, 10.0, 80, 8))
+    write_solve_case("lid_ann_160_rev", annulus(6.0, 10.0, 40, 4, reverse=True))
+    write_solve_case("lid_ann_tri", annulus(6.0, 10.0, 40, 4, tri=True))
+    write_solve_case("lid_touch", annulus(5.0, 9.0, 40, 4))
+    write_solve_case("lid_patches", annulus(6.0, 10.0, 40, 4, sectors=[(0.0, 60.0), (180.0, 240.0)]))
+    write_solve_case("lid_shrink_1", annulus(6.0, 6.5, 40, 1))
+    write_solve_case("lid_shrink_2", annulus(6.0, 6.25, 40, 1))
+    write_solve_case("lid_deep", annulus(6.0, 10.0, 40, 4), depth=-1.0)
+    write_solve_case("lid_limits", annulus(6.0, 10.0, 20, 2), limits=1)
+    write_solve_case("lid_limits_off", annulus(6.0, 10.0, 20, 2), limits=1, lid_flag=0)
 
 
 if __name__ == "__main__":
