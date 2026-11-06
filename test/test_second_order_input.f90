@@ -24,7 +24,10 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("bad_value_rejected", test_bad_value), &
     new_unittest("waterline_offset_positive", test_offset_positive), &
     new_unittest("validate_rejects", test_validate_rejects), &
-    new_unittest("validate_accepts", test_validate_accepts) &
+    new_unittest("validate_accepts", test_validate_accepts), &
+    new_unittest("control_keys_parse", test_control_keys), &
+    new_unittest("control_defaults", test_control_defaults), &
+    new_unittest("control_rejections", test_control_rejections) &
     ]
 
 end subroutine collect_second_order_input
@@ -217,6 +220,129 @@ subroutine test_validate_accepts(error)
   call validate_second_order(far, 1, 70d0, 1, 0, .true., ok, msg)
   call check(error, ok, "far field with generalized modes rejected: "//trim(msg))
 end subroutine test_validate_accepts
+
+subroutine test_control_keys(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_ctrlkeys"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: &
+    "mean_drift = 1", &
+    "drift_methods = far control", &
+    "cs_velocity = source", &
+    "cs_shape = box", &
+    "cs_margin = 12.5", &
+    "cs_fd_step = 0.05"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%do_control .and. opts%do_far .and. .not. opts%do_near, "drift_methods")
+  if (allocated(error)) return
+  call check(error, opts%cs_velocity, 2, "cs_velocity")
+  if (allocated(error)) return
+  call check(error, opts%cs_shape, 2, "cs_shape")
+  if (allocated(error)) return
+  call check(error, abs(opts%cs_margin - 12.5d0) < 1d-12, "cs_margin")
+  if (allocated(error)) return
+  call check(error, abs(opts%cs_fd_step - 0.05d0) < 1d-12, "cs_fd_step")
+  call remove_directory(root)
+end subroutine test_control_keys
+
+subroutine test_control_defaults(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_ctrldef"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = control"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%do_control .and. .not. opts%do_far .and. .not. opts%do_near, "control alone")
+  if (allocated(error)) return
+  call check(error, opts%cs_velocity, 1, "cs_velocity default")
+  if (allocated(error)) return
+  call check(error, opts%cs_shape, 1, "cs_shape default")
+  if (allocated(error)) return
+  call check(error, opts%cs_margin == 0d0, "cs_margin default")
+  if (allocated(error)) return
+  call check(error, opts%cs_bottom_margin == 0d0, "cs_bottom_margin default")
+  if (allocated(error)) return
+  call check(error, opts%cs_panel_size == 0d0, "cs_panel_size default")
+  if (allocated(error)) return
+  call check(error, opts%cs_fs_rows, 0, "cs_fs_rows default")
+  if (allocated(error)) return
+  call check(error, opts%cs_fd_step == 0.02d0, "cs_fd_step default")
+  call remove_directory(root)
+end subroutine test_control_defaults
+
+subroutine test_control_rejections(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(so_options) :: ctl, src, bad
+  logical :: ok
+  character(len=200) :: msg
+
+  ctl%active = .true.; ctl%mean_drift = 1; ctl%do_control = .true.
+  src = ctl; src%cs_velocity = 2
+
+  call validate_second_order(ctl, 1, -1d0, 1, 0, .true., ok, msg)
+  call check(error, .not. ok, "control with generalized modes accepted")
+  if (allocated(error)) return
+  call check(error, trim(msg) == "drift_methods = control cannot be used with generalized modes.", &
+    "generalized-mode message: "//trim(msg))
+  if (allocated(error)) return
+
+  call validate_second_order(src, 1, -1d0, 2, 0, .false., ok, msg)
+  call check(error, .not. ok, "cs_velocity source with GMRES accepted")
+  if (allocated(error)) return
+  call check(error, trim(msg) == "cs_velocity = source needs the direct solver (ISOLV=1) in ControlFile.in.", &
+    "isolv message: "//trim(msg))
+  if (allocated(error)) return
+
+  call validate_second_order(src, 1, -1d0, 1, 1, .false., ok, msg)
+  call check(error, .not. ok, "cs_velocity source with IRSP accepted")
+  if (allocated(error)) return
+  call check(error, trim(msg) == "cs_velocity = source cannot be used with irregular frequency removal (IRSP=1) in ControlFile.in.", &
+    "irsp message: "//trim(msg))
+  if (allocated(error)) return
+
+  bad = ctl; bad%cs_margin = -1d0
+  call expect_reject(error, bad, "cs_margin"); if (allocated(error)) return
+  bad = ctl; bad%cs_bottom_margin = -1d0
+  call expect_reject(error, bad, "cs_bottom_margin"); if (allocated(error)) return
+  bad = ctl; bad%cs_panel_size = -1d0
+  call expect_reject(error, bad, "cs_panel_size"); if (allocated(error)) return
+  bad = ctl; bad%cs_fd_step = 0d0
+  call expect_reject(error, bad, "cs_fd_step"); if (allocated(error)) return
+  bad = ctl; bad%cs_fd_step = 0.6d0
+  call expect_reject(error, bad, "cs_fd_step"); if (allocated(error)) return
+  bad = ctl; bad%cs_fs_rows = -1
+  call expect_reject(error, bad, "cs_fs_rows"); if (allocated(error)) return
+
+  bad = ctl; bad%cs_fd_step = 0.5d0
+  call validate_second_order(bad, 1, -1d0, 1, 0, .false., ok, msg)
+  call check(error, ok, "cs_fd_step = 0.5 rejected: "//trim(msg))
+end subroutine test_control_rejections
+
+subroutine expect_reject(error, opts, key)
+  type(error_type), allocatable, intent(out) :: error
+  type(so_options), intent(in) :: opts
+  character(len=*), intent(in) :: key
+  logical :: ok
+  character(len=200) :: msg
+
+  call validate_second_order(opts, 1, -1d0, 1, 0, .false., ok, msg)
+  call check(error, .not. ok, key//" out of range accepted")
+  if (allocated(error)) return
+  call check(error, index(msg, key) > 0, "message does not name "//key//": "//trim(msg))
+end subroutine expect_reject
 
 subroutine make_directory(root)
   character(len=*), intent(in) :: root

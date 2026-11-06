@@ -40,6 +40,13 @@ MODULE SecondOrderTypes
       REAL(8) :: far_tolerance = 1D-4
       INTEGER :: write_terms = 1         ! 0 none, 1 term file, 2 also panel diagnostics
       REAL(8) :: wl_z_tolerance = 1D-6   ! relative to body size
+      ! Control-surface method (drift_methods = control)
+      LOGICAL :: do_control = .FALSE.
+      INTEGER :: cs_velocity = 1         ! 1 green, 2 source
+      INTEGER :: cs_shape = 1            ! 1 cylinder, 2 box, 3 file
+      REAL(8) :: cs_margin = 0D0, cs_bottom_margin = 0D0, cs_panel_size = 0D0   ! m; 0 sets the default
+      REAL(8) :: cs_fd_step = 0.02D0     ! fraction of the local control-surface panel size
+      INTEGER :: cs_fs_rows = 0          ! free-surface rows; 0 sets the default
    END TYPE so_options
 
    TYPE :: panel_mesh

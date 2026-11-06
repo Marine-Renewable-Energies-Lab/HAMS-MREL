@@ -228,7 +228,7 @@ Each line is `key = value`. Text after `!` is a comment, blank lines are ignored
 | Key | Values | Default | Description |
 | :-- | :----- | :------ | :---------- |
 | `mean_drift` | `0`, `1`, `2` | `0` | 0 is off, 1 is unidirectional, 2 is all heading pairs. |
-| `drift_methods` | `far`, `near`, or both separated by a blank or comma | `far` | Far-field (momentum) and near-field (pressure integration) methods. |
+| `drift_methods` | any of `far`, `near`, `control`, separated by blanks or commas | `far` | Far-field (momentum), near-field (pressure integration) and control-surface methods. |
 | `velocity_method` | `differencing`, `source` | `differencing` | How the velocity on the body surface is obtained, for the near-field method. `differencing` takes the tangential part from the potential on the neighbouring panels, and the normal part from the known normal derivative. `source` solves for a source distribution with the same normal derivative, and takes the velocity from its integral: one more dense factorization and one more set of Green function evaluations per frequency. The potential itself stays that of the direct solve. The solve keeps the factorization and the gradient integrals of every symmetry block in memory, 64 nb^2 ns bytes with nb panels in the base mesh and ns symmetry blocks: 236 MB at 1920 panels and 1.2 GB at 4320 with no symmetry, about as much again as the first-order arrays. Irregular frequencies are not removed for this method, since `IRSP = 1` is rejected, and the run stops if a matrix is exactly singular. |
 | `waterline_method` | `extrapolate`, `field` | `extrapolate` | How the potential at the waterline is obtained, for the near-field method. `extrapolate` takes it from the adjacent panel and its gradient. `field` evaluates the boundary integral formula at a point close to the waterline, out from the body and down. The point is in the fluid if the wall at the waterline widens downward by no more than 45 degrees from the vertical, and if no other body is closer to it than `waterline_offset` times the segment length, so keep the gap between bodies larger than that. On a wider wall the run stops with a message. It costs one set of Green function evaluations per waterline segment and frequency. It converges more slowly than `extrapolate`, and in finite depth it can jump with the mesh or the offset: see `test/data/drift_cyl/README.md`. |
 | `waterline_offset` | positive real | `0.01` | With `waterline_method = field`: how far the point lies from the waterline, out from the body and down, each as a fraction of the waterline segment length. |
@@ -237,6 +237,13 @@ Each line is `key = value`. Text after `!` is a comment, blank lines are ignored
 | `far_tolerance` | real | `1d-4` | Tolerance of the far-field integration. |
 | `write_terms` | `0`, `1`, `2` | `1` | 0 writes nothing extra, 1 writes the term file, 2 also writes panel diagnostics. |
 | `wl_z_tolerance` | real | `1d-6` | Tolerance for panels at the waterline, relative to the body size. |
+| `cs_velocity` | `green`, `source` | `green` | With `control`: how the velocity on the control surface is obtained. `green` differentiates the potential by finite differences of the Green function. `source` solves for a source distribution and takes the velocity from its integral. |
+| `cs_shape` | `cylinder`, `box`, `file` | `cylinder` | With `control`: the shape of the control surface. `cylinder` and `box` are generated around each body. `file` reads `CSMesh_{b}.pnl` for each body. |
+| `cs_margin` | real, at least 0 | `0` | With `control`: the horizontal gap in metres between the hull and the control surface. 0 means 4 times the median hull panel size. |
+| `cs_bottom_margin` | real, at least 0 | `0` | With `control`: the gap in metres below the deepest hull point. 0 means 4 times the median hull panel size. |
+| `cs_panel_size` | real, at least 0 | `0` | With `control`: the panel size of the control surface in metres. 0 means the median hull panel size. |
+| `cs_fd_step` | real, above 0 and at most 0.5 | `0.02` | With `cs_velocity = green`: the finite-difference step, as a fraction of the local control-surface panel size. |
+| `cs_fs_rows` | integer, at least 0 | `0` | Number of free-surface rows. 0 sets it from `cs_panel_size`. |
 
 Example:
 
@@ -252,3 +259,6 @@ The options are checked against `ControlFile.in` and the mesh files. A run is re
 - The water depth `H` is above 500 m. Set `H < 0` for infinite depth instead, because the incident-wave velocity routines treat depths above 500 m differently.
 - `drift_methods` includes `near` and any generalized mode file (`gen_mod_{body}_{dof}.txt`) is present.
 - `velocity_method = source` with `ISOLV = 2` (GMRES), or with `IRSP = 1` (irregular frequency removal).
+- `drift_methods` includes `control` and any generalized mode file is present.
+- `cs_velocity = source` with `ISOLV = 2` (GMRES), or with `IRSP = 1` (irregular frequency removal).
+- `cs_margin`, `cs_bottom_margin`, `cs_panel_size` or `cs_fs_rows` is negative, or `cs_fd_step` is outside (0, 0.5].

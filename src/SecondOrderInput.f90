@@ -96,7 +96,7 @@ CONTAINS
 
       opts%active = opts%mean_drift > 0
       ! Without drift_methods the far-field method is used
-      IF (opts%active .AND. .NOT. (opts%do_far .OR. opts%do_near)) opts%do_far = .TRUE.
+      IF (opts%active .AND. .NOT. (opts%do_far .OR. opts%do_near .OR. opts%do_control)) opts%do_far = .TRUE.
    END SUBROUTINE read_second_order_options
 
    SUBROUTINE set_option(key, value, opts, ok, msg)
@@ -137,6 +137,28 @@ CONTAINS
          READ(value, *, IOSTAT=ios) opts%write_terms
       CASE ('wl_z_tolerance')
          READ(value, *, IOSTAT=ios) opts%wl_z_tolerance
+      CASE ('cs_velocity')
+         CALL choose(value, 'green', 'source', opts%cs_velocity, ios)
+      CASE ('cs_shape')
+         IF (value == 'cylinder') THEN
+            opts%cs_shape = 1
+         ELSE IF (value == 'box') THEN
+            opts%cs_shape = 2
+         ELSE IF (value == 'file') THEN
+            opts%cs_shape = 3
+         ELSE
+            ios = 1
+         END IF
+      CASE ('cs_margin')
+         READ(value, *, IOSTAT=ios) opts%cs_margin
+      CASE ('cs_bottom_margin')
+         READ(value, *, IOSTAT=ios) opts%cs_bottom_margin
+      CASE ('cs_panel_size')
+         READ(value, *, IOSTAT=ios) opts%cs_panel_size
+      CASE ('cs_fd_step')
+         READ(value, *, IOSTAT=ios) opts%cs_fd_step
+      CASE ('cs_fs_rows')
+         READ(value, *, IOSTAT=ios) opts%cs_fs_rows
       CASE DEFAULT
          ok = .FALSE.
          msg = 'Unknown key "'//key//'" in SecondOrder.in.'
@@ -148,7 +170,7 @@ CONTAINS
       END IF
    END SUBROUTINE set_option
 
-   ! drift_methods is a list of the words "far" and "near", separated by blanks or commas.
+   ! drift_methods is a list of the words "far", "near" and "control", separated by blanks or commas.
    SUBROUTINE parse_methods(value, opts, ios)
       CHARACTER(LEN=*), INTENT(IN)    :: value
       TYPE(so_options), INTENT(INOUT) :: opts
@@ -160,6 +182,7 @@ CONTAINS
       ios = 0
       opts%do_far = .FALSE.
       opts%do_near = .FALSE.
+      opts%do_control = .FALSE.
       rest = value
       DO i = 1, LEN(rest)
          IF (rest(i:i) == ',') rest(i:i) = ' '
@@ -173,13 +196,15 @@ CONTAINS
             opts%do_far = .TRUE.
          CASE ('near')
             opts%do_near = .TRUE.
+         CASE ('control')
+            opts%do_control = .TRUE.
          CASE DEFAULT
             ios = 1
             RETURN
          END SELECT
          rest = ADJUSTL(rest(n:))
       END DO
-      IF (.NOT. (opts%do_far .OR. opts%do_near)) ios = 1
+      IF (.NOT. (opts%do_far .OR. opts%do_near .OR. opts%do_control)) ios = 1
    END SUBROUTINE parse_methods
 
    SUBROUTINE choose(value, word1, word2, code, ios)
@@ -220,6 +245,22 @@ CONTAINS
          msg = 'velocity_method = source needs the direct solver (ISOLV=1) in ControlFile.in.'
       ELSE IF (opts%velocity_method == 2 .AND. irsp == 1) THEN
          msg = 'velocity_method = source cannot be used with irregular frequency removal (IRSP=1) in ControlFile.in.'
+      ELSE IF (opts%do_control .AND. has_gen_modes) THEN
+         msg = 'drift_methods = control cannot be used with generalized modes.'
+      ELSE IF (opts%cs_velocity == 2 .AND. isolv == 2) THEN
+         msg = 'cs_velocity = source needs the direct solver (ISOLV=1) in ControlFile.in.'
+      ELSE IF (opts%cs_velocity == 2 .AND. irsp == 1) THEN
+         msg = 'cs_velocity = source cannot be used with irregular frequency removal (IRSP=1) in ControlFile.in.'
+      ELSE IF (opts%cs_margin < 0D0) THEN
+         msg = 'cs_margin must not be negative in SecondOrder.in.'
+      ELSE IF (opts%cs_bottom_margin < 0D0) THEN
+         msg = 'cs_bottom_margin must not be negative in SecondOrder.in.'
+      ELSE IF (opts%cs_panel_size < 0D0) THEN
+         msg = 'cs_panel_size must not be negative in SecondOrder.in.'
+      ELSE IF (opts%cs_fd_step <= 0D0 .OR. opts%cs_fd_step > 0.5D0) THEN
+         msg = 'cs_fd_step must be above 0 and at most 0.5 in SecondOrder.in.'
+      ELSE IF (opts%cs_fs_rows < 0) THEN
+         msg = 'cs_fs_rows must not be negative in SecondOrder.in.'
       ELSE
          ok = .TRUE.
       END IF
