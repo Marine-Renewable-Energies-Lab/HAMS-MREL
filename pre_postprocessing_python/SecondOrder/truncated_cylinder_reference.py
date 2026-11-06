@@ -3278,7 +3278,7 @@ def _run_checks(names):
             ok, message = ALL_CHECKS[name]()
         except Exception as exc:  # a check that cannot run has failed
             ok, message = False, "%s: %s" % (type(exc).__name__, exc)
-        failed += ok is False
+        failed += ok is not None and not ok  # a check may return numpy.bool_, which "ok is False" misses
         skipped += ok is None
         status = "SKIP" if ok is None else "PASS" if ok else "FAIL"
         print("%s %s (%.0f s): %s" % (status, name, time.time() - start, message), flush=True)
