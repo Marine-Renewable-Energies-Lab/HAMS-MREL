@@ -74,20 +74,26 @@ CONTAINS
 !SUBROUTINE READ_LID_MESH
 
 !   !   Reads DampingLid.pnl, in the format of WaterPlaneMesh.pnl. Unlike the waterplane read in HAMS_Prog, the symmetry
-!   !   flags of the file are compared with the hull's and never stored over them.
+!   !   flags of the file are compared with the hull's and never stored over them. Stops on a read error, on a panel with other
+!   !   than 3 or 4 vertices, and on a vertex number outside 1 to the number of nodes.
 
       SUBROUTINE READ_LID_MESH(INPUTDIR)
       IMPLICIT   NONE
 
       CHARACTER(LEN=*),INTENT(IN):: INPUTDIR
-      INTEGER:: IU,IND,IEL,J,M,LISX,LISY
+      INTEGER:: IU,IND,IEL,J,M,LISX,LISY,IOS
+      CHARACTER(LEN=512):: LINE
 
-      OPEN(NEWUNIT=IU,FILE=TRIM(INPUTDIR)//"/DampingLid.pnl",STATUS="OLD",ACTION="READ")
+      OPEN(NEWUNIT=IU,FILE=TRIM(INPUTDIR)//"/DampingLid.pnl",STATUS="OLD",ACTION="READ",IOSTAT=IOS)
+      IF (IOS.NE.0) CALL LID_READ_ERROR('the file cannot be opened',0)
 
       DO J=1,3
-       READ(IU,*)
+       READ(IU,*,IOSTAT=IOS)
+       IF (IOS.NE.0) CALL LID_READ_ERROR('header line',J)
       ENDDO
-      READ(IU,*) LNELEM,LNTND,LISX,LISY
+      READ(IU,*,IOSTAT=IOS) LNELEM,LNTND,LISX,LISY
+      IF (IOS.NE.0) CALL LID_READ_ERROR('line of the numbers of panels and nodes and the symmetry flags',0)
+      IF (LNELEM.LT.1.OR.LNTND.LT.3) CALL LID_READ_ERROR('line of the numbers of panels and nodes (need at least 1 and 3)',0)
       IF (LISX.NE.ISX.OR.LISY.NE.ISY) THEN
        PRINT *,' Error: lid symmetry differs from the hull.'
        PRINT *,' ISX, ISY of DampingLid.pnl:',LISX,LISY,'  of the hull:',ISX,ISY
@@ -98,10 +104,12 @@ CONTAINS
       LNCON=0
 
       DO J=1,2
-       READ(IU,*)
+       READ(IU,*,IOSTAT=IOS)
+       IF (IOS.NE.0) CALL LID_READ_ERROR('header line before the nodes',J)
       ENDDO
       DO IND=1,LNTND
-       READ(IU,*) M,LXYZ(IND,1),LXYZ(IND,2),LXYZ(IND,3)
+       READ(IU,*,IOSTAT=IOS) M,LXYZ(IND,1),LXYZ(IND,2),LXYZ(IND,3)
+       IF (IOS.NE.0) CALL LID_READ_ERROR('node line, node No.',IND)
        IF (ABS(LXYZ(IND,3)).GT.1.D-10) THEN
         PRINT *,' Error: lid node is not on z = 0, node No.',IND
         STOP 1
@@ -109,10 +117,23 @@ CONTAINS
       ENDDO
 
       DO J=1,3
-       READ(IU,*)
+       READ(IU,*,IOSTAT=IOS)
+       IF (IOS.NE.0) CALL LID_READ_ERROR('header line before the panels',J)
       ENDDO
       DO IEL=1,LNELEM
-       READ(IU,*) M,LNCN(IEL),(LNCON(IEL,J),J=1,LNCN(IEL))
+       READ(IU,'(A)',IOSTAT=IOS) LINE                               ! the vertex count is checked before the vertices are read
+       IF (IOS.EQ.0) READ(LINE,*,IOSTAT=IOS) M,LNCN(IEL)
+       IF (IOS.NE.0) CALL LID_READ_ERROR('panel line, panel No.',IEL)
+       IF (LNCN(IEL).NE.3.AND.LNCN(IEL).NE.4) THEN
+        PRINT *,' Error: a lid panel in DampingLid.pnl must have 3 or 4 vertices, panel No.',IEL,' has',LNCN(IEL)
+        STOP 1
+       ENDIF
+       READ(LINE,*,IOSTAT=IOS) M,LNCN(IEL),(LNCON(IEL,J),J=1,LNCN(IEL))
+       IF (IOS.NE.0) CALL LID_READ_ERROR('panel line, panel No.',IEL)
+       IF (ANY(LNCON(IEL,1:LNCN(IEL)).LT.1).OR.ANY(LNCON(IEL,1:LNCN(IEL)).GT.LNTND)) THEN
+        PRINT *,' Error: a vertex of a lid panel in DampingLid.pnl is not a node number, panel No.',IEL
+        STOP 1
+       ENDIF
       ENDDO
 
       CLOSE(IU)
@@ -121,19 +142,53 @@ CONTAINS
       END SUBROUTINE READ_LID_MESH
 
 !=======================================================================
+!   !   Stops on a read error in DampingLid.pnl, naming the kind of line and its number (0: none).
+
+      SUBROUTINE LID_READ_ERROR(WHAT,N)
+      IMPLICIT   NONE
+
+      CHARACTER(LEN=*),INTENT(IN):: WHAT
+      INTEGER,INTENT(IN):: N
+
+      IF (N.GT.0) THEN
+       PRINT *,' Error: cannot read DampingLid.pnl, ',WHAT,N
+      ELSE
+       PRINT *,' Error: cannot read DampingLid.pnl, ',WHAT
+      ENDIF
+      STOP 1
+      END SUBROUTINE LID_READ_ERROR
+
+!=======================================================================
 !SUBROUTINE LID_GEOMETRY
 
 !   !   Centroids, areas and chart lengths of the lid panels. No normal: the lid has none, so the vertex order of a panel
-!   !   does not matter.
+!   !   does not matter. Stops on a panel with a repeated vertex or with zero area.
 
       SUBROUTINE LID_GEOMETRY()
       IMPLICIT   NONE
+
+      INTEGER:: IEL,I,J
 
       ALLOCATE(LXYZ_P(LNELEM,3),LDS(LNELEM),LPNSZ(LNELEM))
 
       CALL CalPanelCentre(LXYZ,LNTND,LNELEM,LNCN,LNCON,LXYZ_P)
       CALL CalPanelArea(LXYZ,LNTND,LNELEM,LNCN,LNCON,LDS)
       CALL CalPanelChartLength(LXYZ,LNTND,LNELEM,LNCN,LNCON,LPNSZ)
+
+      DO IEL=1,LNELEM
+       DO I=1,LNCN(IEL)-1
+        DO J=I+1,LNCN(IEL)
+         IF (LNCON(IEL,I).EQ.LNCON(IEL,J)) THEN
+          PRINT *,' Error: a lid panel in DampingLid.pnl has a repeated vertex, panel No.',IEL
+          STOP 1
+         ENDIF
+        ENDDO
+       ENDDO
+       IF (LDS(IEL).LT.1.D-12*LPNSZ(IEL)**2) THEN
+        PRINT *,' Error: a lid panel in DampingLid.pnl has zero area, panel No.',IEL
+        STOP 1
+       ENDIF
+      ENDDO
 
       RETURN
       END SUBROUTINE LID_GEOMETRY
@@ -581,7 +636,8 @@ CONTAINS
       COMPLEX*16:: GRN(4)
 
       XQ=XYZ_P(JEL,:)
-      DIST=SQRT(SUM((XF-XQ)**2))
+      DIST=SQRT(SUM((XF-XQ)**2))                                     ! FLAG uses the distance to the reflected field point XF;
+                                                                     ! CALGREEN uses the distance to the unreflected one
       IF (DIST.LE.50.D0*PNSZ(JEL)) THEN
        FLAG=1
       ELSE
