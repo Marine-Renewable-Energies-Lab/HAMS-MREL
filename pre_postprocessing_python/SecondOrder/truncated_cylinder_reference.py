@@ -41,7 +41,8 @@ unknown is the radial velocity on the gap, dphi_m/dr(a, z) = sum_p c_p u_p(t), s
 continuous by construction. The exterior coefficients come from projecting dphi_m/dr at r = a on Z_n over the whole depth
 (the body velocity on the wall, zero for diffraction, and u on the gap), the interior ones from projecting it on
 cos(lambda_n (z + h)) over the gap. Continuity of phi on the gap, projected on u_p, p = 0 ... P, is then a complex system of
-size P + 1 in c_p (a Galerkin method):
+size P + 1 in c_p for the single family (a Galerkin method; for the three families of "Gap basis", in the kept Gram
+combinations):
 
     sum_q c_q [sum_n E_pn E_qn/(N_n kappa_n) - sum_n F_pn F_qn/(nu_n mu_n)] = -E_p0 inc_m 2i/(pi ka H_m'(ka)) + (radiation),
 
@@ -115,16 +116,23 @@ flux. Without that reduction the coefficients reach 3e4 and the near field is er
 Matching tail (_matching_tail, MATRIX_TAIL). The matrix sums sum_n E E/(N kappa) - F F/(nu mu) of the corner family
 converge only like N**(-4/3) (E_pn ~ n**(-2/3)), and the wall projection like N**(-5/3); the Hankel expansion gives
 their non-oscillating leading tails in closed form (Hurwitz zeta), checked against brute-force sums from N = 2000 to 2e5
-to 1e-3 of the tail. Adding them makes the near-field identity converge like N**(-2) instead of N**(-1.3) and leaves the
-single-family results N-converged at N = 4000 (fixed body, 0.70 rad/s, 6.21e-4 at N = 4000 and 6.25e-4 at N = 32000).
-It applies to every solve, single family included.
+to 1e-3 of the tail (check_matching_tail: 1.1e-3 for the matrix, 1.8e-3 for the wall, N = 2000 to 64000). Adding them
+makes the near-field identity converge like N**(-2) instead of N**(-1.3) and leaves the single-family results
+N-converged at N = 4000 (fixed body, 0.70 rad/s, 6.21e-4 at N = 4000 and 6.25e-4 at N = 32000). It applies to every
+solve, single family included, but only where the leading terms are valid (_tail_rows): the Hankel expansion needs
+k_N g >> nu**2, nu = 2p + lam, and the omitted oscillating products are about 1/(k_N g) of the tail. At the default
+cylinder that holds for every row at every resolution used here; at the 0.1 and 0.2 m gaps of the bottom-limit checks
+(N = 1000, k_N g = pi and 2 pi) it holds for none, and those solves have no tail.
 
 Convergence. The exterior and interior series of dphi/dr at r = a are expansions of a velocity that is singular at the
-corner and jumps there, so their pointwise value converges slowly in N, about N**(-2/3) a few metres from the corner; phi
-converges about as N**(-1.6), and so do the excitation forces, the added mass and the damping. The truncation in N of the
-sums in the matrix grows with P, so N must grow with P (N >= 100 P or so); at fixed N, larger P gives slightly worse
-forces. N does not grow the linear system (size P + 1), so N in the thousands is cheap: a solve at N = 16000, P = 20 takes
-about 0.5 s.
+corner and jumps there, so their pointwise value converges slowly in N, about N**(-2/3) a few metres from the corner.
+Without the matching tail phi, the excitation forces, the added mass and the damping converged about as N**(-1.6), and N
+had to grow with P (N >= 100 P or so). With it they converge as N**(-5/3), for the single family and for (20, 4, 4)
+alike: X_1, A_11 and B_11 at 0.70 rad/s change by 1.1e-8, 2.2e-8 and 1.1e-8 (relative) from N = 32000 to 64000,
+measured exponent 1.67 (1.5 to 2 for X_5, A_55, B_55). N does not grow the linear system (basis.size unknowns, or the
+fewer kept Gram combinations), only the inner products, so N in the tens of thousands is cheap: a diffraction solve
+(16 orders) and the three radiation solves at N = 64000, (20, 4, 4), take about 3 s, most of it the inner products,
+which _modes computes once per (omega, N, gap basis) for all of them.
 
 Incident wave and HAMS's excitation normalisation. HAMS's incident potential is VINP in src/PatclVelct.f90: for finite
 depth, VINP = DUM cosh(k (z + h)) e^(i k x), DUM = -A omega/(k sinh kh), which is phi_I = -(g A/omega) Z_0(z) e^(i k x) by the
@@ -222,10 +230,13 @@ The script exits with 1 if one fails. What each covers, and what it does not:
   to haskind_excitation of the mode j radiation solution to 1e-6, j = 1, 3, 5. Values at N = CHECK_RESOLUTION's 8000 and
   2 N = 16000, P = 20, extrapolated in N with the exponent 5/3 (Richardson); the message also prints the residuals at
   N = 16000 itself (about 1e-6). With MATRIX_TAIL no identity holds to round-off any more (the solve sees the tail of the
-  sums, the forces only the N modes); all converge in N, and the extrapolated residuals are 2e-9. check_reciprocity's docstring says what each part tests.
+  sums, the forces only the N modes); all converge in N, and the extrapolated residuals are 2e-9. The same at one
+  frequency for the three-family basis (THREE_FAMILY_CASE: 0.70 rad/s, (20, 4, 4), N = 8000 and 16000): 3.7e-10
+  extrapolated, 3.8e-7 and 7.5e-8 at N = 16000 itself. check_reciprocity's docstring says what each part tests.
 - radiation_energy: same resolution and extrapolation: B11, B33 and B55 from the body pressure equal
-  radiated_energy_damping, the energy flux at infinity, to 1e-6. It tests the flux formula and the sign and normalisation of
-  B, and for heave and pitch the particular solutions. Neither radiation check bounds the error of A, B or X themselves.
+  radiated_energy_damping, the energy flux at infinity, to 1e-6, and the same for THREE_FAMILY_CASE (3.7e-10
+  extrapolated). It tests the flux formula and the sign and normalisation of B, and for heave and pitch the particular
+  solutions. Neither radiation check bounds the error of A, B or X themselves (convergence does, for B11).
 - particular_bottom: _Particular.bottom, closed form, equals quad of fields(r, -d) r**(m+1) over 0 < r < a to 1e-12, heave
   and pitch, gaps 90 m and 0.1 m. The bottom term is real and enters only Re A33 and Re A55 (and so the heave and pitch
   RAOs), which neither radiation check sees. It does not test fields; the radiation checks do, through the gap.
@@ -247,7 +258,7 @@ The script exits with 1 if one fails. What each covers, and what it does not:
   the fixed body's flux (the free body's own flux is 1.5e-5 at 0.40 rad/s, where it nearly follows the wave, and the
   difference of two O(1) sums has round-off 1e-16 against it). Measured to round-off at N = 1000 and 4000: a free body
   with real M, A and C does no mean work, so the outgoing wave carries the energy the body takes out of the incident
-  wave. It tests the sign and phase of X against the radiation
+  wave. The same for THREE_FAMILY_CASE at N = 16000 (9e-16). It tests the sign and phase of X against the radiation
   waves, the normalisation of B, the velocity factor -i omega and the combination in total_solution (a sign flip of xi
   gives 0.6, conj(xi) 0.16, 1.01 xi 7e-3). It cannot see an error in A, M or C, which change xi but keep the body
   lossless; body_matrices and particular_bottom cover M, C and the bottom term of A, and the rest of A only the
@@ -264,24 +275,86 @@ The script exits with 1 if one fails. What each covers, and what it does not:
   near_field's F_x against far_field_fx, to 5e-4 of abs(far F_x), with the floor of drift_convergence.percent (1e-4 of
   the motion's largest abs(far F_x)), which acts only at free 0.40 rad/s (far F_x = 3e-6). Measured: fixed below 2.4e-6,
   free 4.0e-4 (0.70), 4.1e-4 (0.80, near the pitch resonance), 1.9e-4 (0.40) and below 1.7e-4 elsewhere. The gate of
-  the near field: it tests every term of F_x, the body velocities (the body condition and the corner-corrected series),
-  the quadrature, and through the free body the motions, A and the radiation potentials near the body. Prescribed single
+  the near field: it tests every term of F_x, the quadrature, and through the free body the motions, A and the
+  radiation potentials near the body. Of the body velocities it tests what F_x sees: n_x is zero on the bottom, so F_x
+  takes II and III from the wall only (the body condition and the wall series of phi and d phi/dz with their corner
+  tails), and from the bottom only phi, through G_z in the rotation term IV. It does not test the bottom's tangential
+  velocity d phi/dr (the interior series and its corner tail), which enters only F_z and M_y; corner_limit does. The
+  rows are the reference values (DEFAULT_RESOLUTION, cached in _reference_row). Prescribed single
   motions at 0.70 rad/s, (20, 4, 4), N = 64000, against the momentum far field (X - int abs(a)**2 cos(theta) dtheta,
   valid without the lossless assumption): surge 1.8e-6, heave 5.6e-8, pitch -1.6e-4 absolute (F 1.92, 0.15, 0.80); the
   pitch residual falls slowly with the basis ((10, 1, 1): -2.0e-4) and is most of the free-body error at 0.70 rad/s.
-  It does not test F_z or M_y; reference_point tests M_y's moment arms.
+  It does not test F_z or M_y; reference_point tests M_y's moment arms, corner_limit the bottom velocity.
 - reference_point: xr = (0, 0, -3) against the origin, fixed and free, 0.70 and 1.40 rad/s, LIGHT_RESOLUTION:
   M_y(xr) = M_y(0) - (xr x F)_y and F_x unchanged, to 1e-10. The motions are re-expressed about xr (xi' = xi + alpha x xr),
   so it tests that every moment arm, the IV moment (alpha x H + xi' x G) and M_S transform as a rigid shift. F_z is not
   compared: F_S,z depends on Z_o (Near field).
 - pair_symmetry: free body, omega_i = 0.70, omega_j = 0.95: T-_ij = conj(T-_ji) for every term and component, to 1e-12. It
   tests that each state's frequency, motion and conjugation enter the kernel symmetrically, not the values.
+- polylog: _polylog against direct sums, 1e-10, for s = 1 and the orders of the corner tails, real mu from -0.05 to -60
+  and complex mu off the unit circle; and that it raises for Re mu > 0. Measured 1.4e-14. Its docstring says what it
+  does not cover (the unit circle itself).
+- matching_tail: at 0.70 rad/s, orders 0 and 1, (20, 4, 4), the closed-form tail of _matching_tail summed from N = 2000
+  to 64000 (the tail at 2000 less the tail at 64000) equals the brute-force sums of the matrix and of the wall projection
+  over those modes to 5e-3 of the largest (measured 1.1e-3 and 1.8e-3: what is left is the O(1/n) part the model omits);
+  _tail_rows keeps every row at the default cylinder at LIGHT, CHECK, the matching check's and the default resolutions,
+  and none at a 0.1 m gap, N = 1000, P = 10, where the tail is zero. It covers the tail's coefficients, phases and
+  powers, and where it applies, not its effect on the solution (the N convergence of the other checks shows that).
+- corner_limit: fixed and free, 0.70 and 1.40 rad/s, orders 0 ... 3, CORNER_LIMIT_RESOLUTION ((20, 4, 4), N = 16000):
+  rho**(1/3) d phi_m/dz on the wall and rho**(1/3) d phi_m/dr on the bottom, from _body_series at rho = 1e-3, 1e-4,
+  1e-5 m, each fitted with c0 + c1 s + c2 s**2 in s = rho**(1/3) (the wedge expansion), have the same corner limit c0,
+  to 1e-3 relative: the 270 degree wedge's leading term rho**(2/3) cos(2 alpha/3) gives the same tangential velocity
+  rho**(-1/3) on both faces, in this sign convention. Measured 1e-4 to 1.9e-4 (4e-6 to 1e-4 at N = 64000, 2.7e-3 at
+  N = 4000); the raw values at rho = 1e-3 differ by up to 0.12 (free, m = 0), from the c1 s term, which differs between
+  the faces, so the fit is needed. Injected errors: the bottom corner tail dropped gives 1.0,
+  scaled by 1.01 gives 1.1e-2 (both caught); dropping the lam = 5/6 bottom tail changes the limit by 3e-5 only (it is
+  of order rho**(1/3) in rho**(1/3) u_t), so that tail is not tested. It covers the bottom series d phi/dr, its corner
+  tail and the particular solution's velocity, which only F_z and M_y see; it does not test them away from the corner.
+- convergence: see "Reference values".
+
+Reference values. python -I truncated_cylinder_reference.py reference [--out CSV] writes, at DEFAULT_RESOLUTION
+(N = 64000, gap basis (20, 4, 4), orders 0 ... 15) and every WIDE_FREQUENCIES, the fixed and the free rows of reference
+(A, B, abs(X), abs(xi), F_x far and near, F_z, M_y and the near-field terms, in HAMS's normalisations, listed in
+reference's docstring), then the convergence table, then runs every check; exit 1 if one fails.
+
+- convergence (the check): for F_x far, F_z, M_y (near field, about the origin) and B11 at 0.70, 0.95 and 1.40 rad/s
+  (CONVERGENCE_FREQUENCIES), fixed and free, the values at the three resolutions of CONVERGENCE_LADDER, N = 32000 with
+  (10, 2, 2), N = 64000 with (20, 4, 4) (the default) and N = 128000 with (30, 6, 6), and at the default with orders
+  0 ... 30, are finite, and the default's spread against the finest and against 2M is below 1e-4 of its value. F_z and
+  M_y are sums of terms that can cancel: where a value is below CONVERGENCE_TERM_FLOOR = 0.1 of its largest term, the
+  spread is taken over that tenth instead (1e-5 of the largest term). That applies only at free F_z, 0.70 rad/s
+  (-0.6128 from II -29.94, III +42.58, IV -13.25): its raw spread is 2.6e-4 of F_z (1.6e-4 absolute, 3.8e-6 of II), and
+  the check passes there on the floor alone. Every other spread is below 1.6e-5 (measured; F_x far below 1.2e-7, B11
+  below 4e-9);
+  the 2M spread is zero to round-off everywhere (the far-field amplitude of order 16 is 1e-25 of order 0 at 1.40 rad/s).
+- DEFAULT_RESOLUTION is the coarsest that meets both gates: N = 32000 with (10, 2, 2) as the default would fail the
+  spread against N = 64000 with (20, 4, 4) (fixed F_z at 1.40 rad/s, 1.3e-4), and the free body needs the three
+  families and N = 64000 for fx_identity (Gap basis; at N = 32000 (10, 2, 2) passes it at 0.70 rad/s only because it is
+  not converged in N: -3.4e-4, and -5.1e-4 at N = 128000).
+- Uncertainty. The fixed body: the spreads, below 2e-5 relative for F_z and M_y and far below for the rest (fx_identity
+  below 2.4e-6). The free body away from 0.60 to 0.80 rad/s likewise (fx_identity below 2e-4, 0.95 rad/s 7e-6). The free
+  body at 0.60 to 0.80 rad/s: near-field F_x settles about 4.2e-4 of far F_x from it at N -> infinity, systematically,
+  pitch only (a rho**2 log rho corner term, which no power family represents, is a plausible cause, Gap basis), and does
+  not fall with the gap basis; so the reference's uncertainty there is +-5e-4 relative for F_x near (far F_x is exact to
+  1e-7). F_z and M_y are not covered by that identity, and their spreads understate their error there: across gap bases
+  (10, 2, 2), (20, 4, 4), (30, 6, 6) at N = 128000 they move linearly with the F_x residual (fit residual 3e-7 at 0.60
+  and 0.70 rad/s, 1e-4 at 0.80), dF_z/d(residual) = -0.47, -3.8, +24 and dM_y/d(residual) = 0.03, 0.82, 114 at 0.60,
+  0.70, 0.80 rad/s. Taking the error as slope times residual gives F_z 8e-5, 1.6e-3, 1.0e-2 absolute (3e-5, 2.6e-3,
+  3.6e-3 relative) and M_y 5e-6, 3.4e-4, 4.8e-2 (below 5e-5 relative) at 0.60, 0.70, 0.80 rad/s: an estimate, not a
+  bound (it assumes the error vanishes where the residual does). The convergence table prints this
+  (FREE_BODY_UNCERTAINTY).
+- Run time, laptop: reference --out 4 min 1 s (the 22 rows 77 s, then the checks, which reuse them); check alone
+  3 min 52 s (it was 6 min 25 s before the caches, with fewer checks). A row pair (fixed and free) at the default costs about 6 s: they share the solves (_solved),
+  the inner products and radial ratios (_modes) and the solution-independent part of the body series
+  (_series_context).
 """
 import argparse
+import csv
 import functools
 import math
 import os
 import sys
+import time
 import warnings
 from dataclasses import dataclass
 
@@ -311,9 +384,10 @@ RICHARDSON_EXPONENT = 5.0 / 3.0   # the radiation identities' residual falls as 
 LIGHT_RESOLUTION = dict(n_modes=1000, p_max=10, orders=15)
 
 
-@dataclass
+@dataclass(frozen=True)
 class Cylinder:
-    """Truncated vertical cylinder, lengths in m. Defaults: the study's sharp hull (HULLS["sharp"] in drift_convergence.py)."""
+    """Truncated vertical cylinder, lengths in m. Defaults: the study's sharp hull (HULLS["sharp"] in drift_convergence.py).
+    Frozen, so that it can key the caches of the solves (_modes, _solved)."""
     radius: float = 10.0
     draft: float = 10.0
     depth: float = 100.0
@@ -361,7 +435,7 @@ class Family:
     poly: np.ndarray
 
 
-@dataclass
+@dataclass(eq=False)
 class Basis:
     """The gap basis: the families of FAMILIES with p_max >= 0, in that order; the coefficients of an Order's gap are
     stacked family by family (slices). p_max is the spec it was built from (an int: the lambda = 1/6 family only)."""
@@ -409,9 +483,11 @@ def _gram(basis):
     return 2.0 * (u * (3.0 * sigma ** 2 * w)) @ u.T             # even: twice the integral over 0 < t < 1
 
 
+@functools.lru_cache(maxsize=None)
 def _gram_transform(basis, cutoff=None):
     """T, size x K: the columns span the basis with orthonormal combinations, T^T G T = I, keeping the eigenvalues of G
-    above cutoff times the largest; and the kept eigenvalue range (for the report)."""
+    above cutoff times the largest; and the kept eigenvalue range (for the report). Cached per basis (gegenbauer_basis
+    returns one object per spec)."""
     cutoff = GRAM_CUTOFF if cutoff is None else cutoff
     values, vectors = np.linalg.eigh(_gram(basis))
     keep = values > cutoff * values[-1]
@@ -429,9 +505,19 @@ def basis_spec(p_max):
     return spec
 
 
+def _spec_key(p_max):
+    """p_max as a hashable cache key: an int, or a tuple of ints."""
+    return int(p_max) if isinstance(p_max, (int, np.integer)) else tuple(int(p) for p in p_max)
+
+
 def gegenbauer_basis(p_max, nodes=GAUSS_JACOBI_NODES):
     """The gap basis for p_max (basis_spec), each family with a Gauss-Jacobi rule of `nodes` points for
-    alpha = beta = lam - 1/2."""
+    alpha = beta = lam - 1/2. One object per (p_max, nodes): the arrays are not to be changed."""
+    return _gegenbauer_basis(_spec_key(p_max), nodes)
+
+
+@functools.lru_cache(maxsize=None)
+def _gegenbauer_basis(p_max, nodes):
     families = []
     for lam, p in zip(FAMILIES, basis_spec(p_max)):
         if p < 0:
@@ -660,7 +746,82 @@ def _inner_products(cyl, k, kn, basis):
     return inner_exterior(cyl, k, kn, basis), inner_interior(cyl, len(kn), basis)
 
 
+def _radial_ratios(cyl, m, k, kn):
+    """(kappa, mu), n = 0 ... len(kn): the radial log derivatives at r = a of the exterior modes (H_m'/H_m for n = 0,
+    K_m'/K_m) and of the interior modes (m/a for n = 0, I_m'/I_m), by scaled Bessel functions."""
+    a, g = cyl.radius, cyl.gap
+    kappa = np.empty(len(kn) + 1, complex)
+    kappa[0] = k * h1vp(m, k * a) / hankel1(m, k * a)
+    x = kn * a
+    kappa[1:] = -0.5 * kn * (kve(m - 1, x) + kve(m + 1, x)) / kve(m, x)
+    lam = np.arange(1, len(kn) + 1) * math.pi / g
+    mu = np.empty(len(kn) + 1)
+    mu[0] = m / a
+    y = lam * a
+    mu[1:] = 0.5 * lam * (ive(m - 1, y) + ive(m + 1, y)) / ive(m, y)
+    return kappa, mu
+
+
+@dataclass(eq=False)
+class _Modes:
+    """The order-independent part of the matching at one (cylinder, omega, N, p_max): the roots, the basis, the inner
+    products, the mode norms and the wall moments, and per order the radial ratios (computed once per order). Shared by
+    solve_diffraction, solve_radiation and _body_series through the cache of _modes."""
+    cyl: Cylinder
+    omega: float
+    k: float
+    kn: np.ndarray
+    basis: Basis
+    inner: tuple
+    norms: np.ndarray
+    moments: tuple
+    _ratios: dict
+
+    def ratios(self, m):
+        if m not in self._ratios:
+            self._ratios[m] = _radial_ratios(self.cyl, m, self.k, self.kn)
+        return self._ratios[m]
+
+
+@functools.lru_cache(maxsize=2)
+def _interior_cached(cyl, n_modes, p_max):
+    """inner_interior, which does not depend on omega, cached for the frequency loops."""
+    return inner_interior(cyl, n_modes, gegenbauer_basis(p_max))
+
+
+@functools.lru_cache(maxsize=2)
+def _modes_cached(cyl, omega, n_modes, p_max):
+    k, kn = wave_numbers(omega, cyl.depth, n_modes)
+    basis = gegenbauer_basis(p_max)
+    inner = (inner_exterior(cyl, k, kn, basis), _interior_cached(cyl, n_modes, p_max))
+    return _Modes(cyl, omega, k, kn, basis, inner, _mode_norms(k, kn, cyl.depth), _wall_moments(cyl, k, kn), {})
+
+
+def _modes(cyl, omega, n_modes, p_max):
+    """_Modes of (cyl, omega, N, p_max), cached (the last two): the fixed and the free body at one omega, and the
+    diffraction and radiation solves, share one."""
+    return _modes_cached(cyl, float(omega), int(n_modes), _spec_key(p_max))
+
+
 MATRIX_TAIL = True   # add the sums over n > N of the leading asymptotic terms to the matching system (_matching_tail)
+TAIL_ORDER_RATIO = 0.25     # _tail_rows: the tail applies to the u_p with nu_p**2/(2 x_N) <= this, nu_p = 2p + lam, and
+TAIL_MIN_ARGUMENT = 100.0   # only where x_N = (N + 1) pi g/h, the smallest Bessel argument of the tail, is at least this
+
+
+def _tail_rows(cyl, basis, n_modes):
+    """Boolean per basis function: where the leading terms of _matching_tail are valid. The Hankel expansion of
+    J_nu(x) needs x >> nu**2 (its first correction is (4 nu**2 - 1)/(8 x)), and the oscillating products the tail
+    omits are about 1/x of it; x_N = (N + 1) pi g/h is the smallest argument k_n g of the tail. Measured against
+    brute-force sums (check_matching_tail): 1e-3 of the tail at the default gap, N = 2000, (20, 4, 4), where every row
+    has nu**2/(2 x_N) <= 0.14; at a 0.1 m gap, N = 1000, P = 10, x_N = pi and the leading terms are 10 to 16 % off
+    even for p = 0, and wrong in order of magnitude for nu > x_N. So the tail applies to the rows and columns with
+    nu_p**2/(2 x_N) <= TAIL_ORDER_RATIO, and nowhere if x_N < TAIL_MIN_ARGUMENT: at every resolution of the default
+    cylinder used here it applies everywhere, at the bottom-limit gaps (0.1 and 0.2 m, N = 1000) nowhere."""
+    x = (n_modes + 1) * math.pi * cyl.gap / cyl.depth
+    nu = np.concatenate([2.0 * np.arange(f.p_max + 1) + f.lam for f in basis.families])
+    if x < TAIL_MIN_ARGUMENT:
+        return np.zeros(nu.shape, bool)
+    return nu ** 2 / (2.0 * x) <= TAIL_ORDER_RATIO
 
 
 def _matching_tail(cyl, basis, n_modes):
@@ -670,7 +831,8 @@ def _matching_tail(cyl, basis, n_modes):
     N_n kappa_n ~ -h k_n/(2 cos(k_n h)**2), nu_n mu_n ~ n pi/2, k_n ~ n pi/h, and the wall projection of a wall velocity
     V at the corner ~ -V sin(k_n g)/(k_n cos(k_n h)). T[p, q] is the tail of sum E E/(N kappa) - sum F F/(nu mu), w[p]
     that of sum E wall/(N kappa) per unit V. What is left falls one power of n faster (the O(1/n) terms of the expansions
-    and the oscillating products, cos(2 k_n g - ...))."""
+    and the oscillating products, cos(2 k_n g - ...)). Rows, columns and entries of w where they are not valid
+    (_tail_rows) are zero."""
     g, h = cyl.gap, cyl.depth
     lam = np.concatenate([np.full(f.p_max + 1, f.lam) for f in basis.families])
     c = np.concatenate([_gegenbauer_constant(np.arange(f.p_max + 1), f.lam) for f in basis.families])
@@ -678,29 +840,31 @@ def _matching_tail(cyl, basis, n_modes):
     s = beta[:, None] + beta[None, :] + 1.0
     hurwitz = zeta(s, n_modes + 1.0)
     cc = np.outer(c, c)
-    ext = -(g ** 2 / (2.0 * math.pi * h)) * cc * np.cos(chi[:, None] - chi[None, :])         * g ** (1.0 - s) * (h / math.pi) ** s * hurwitz
+    ext = (-(g ** 2 / (2.0 * math.pi * h)) * cc * np.cos(chi[:, None] - chi[None, :])
+           * g ** (1.0 - s) * (h / math.pi) ** s * hurwitz)
     intr = (g ** 2 / math.pi) * cc * np.outer(np.cos(chi), np.cos(chi)) * math.pi ** (-s) * hurwitz
-    w = (g / (2.0 * h)) * math.sqrt(2.0 / math.pi) * c * np.sin(chi) * g ** (-beta) * (h / math.pi) ** (beta + 2.0)         * zeta(beta + 2.0, n_modes + 1.0)
-    return ext - intr, w
+    w = ((g / (2.0 * h)) * math.sqrt(2.0 / math.pi) * c * np.sin(chi) * g ** (-beta) * (h / math.pi) ** (beta + 2.0)
+         * zeta(beta + 2.0, n_modes + 1.0))
+    valid = _tail_rows(cyl, basis, n_modes)
+    return (ext - intr) * np.outer(valid, valid), w * valid
 
 
-def _solve_order(cyl, m, k, kn, basis, incident=0.0, wall=None, particular=None, inner=None, wall_velocity=(0.0, 0.0)):
-    """One order of the matching; see the module docstring. A complex system of size basis.size (plus one for m = 0
-    with several families). inner: _inner_products, if already computed."""
+def _solve_order(cyl, m, k, kn, basis, incident=0.0, wall=None, particular=None, inner=None, wall_velocity=(0.0, 0.0),
+                 modes=None):
+    """One order of the matching; see the module docstring. A complex system of the basis.size unknowns, or of the kept
+    Gram combinations with several families (plus one for m = 0). inner: _inner_products, if already computed; modes: the
+    _Modes of (cyl, omega, N, p_max), which supplies inner, the norms and the radial ratios."""
     a, g = cyl.radius, cyl.gap
     n_modes = len(kn)
-    big_e, big_f = _inner_products(cyl, k, kn, basis) if inner is None else inner   # (size, N+1) each
-    norms = _mode_norms(k, kn, cyl.depth)
+    if modes is not None:
+        big_e, big_f = modes.inner
+        norms = modes.norms
+        kappa, mu = modes.ratios(m)
+    else:
+        big_e, big_f = _inner_products(cyl, k, kn, basis) if inner is None else inner   # (size, N+1) each
+        norms = _mode_norms(k, kn, cyl.depth)
+        kappa, mu = _radial_ratios(cyl, m, k, kn)            # Z_n' radial log derivatives at r = a
     ka = k * a
-    kappa = np.empty(n_modes + 1, complex)                   # Z_n' radial log derivatives at r = a
-    kappa[0] = k * h1vp(m, ka) / hankel1(m, ka)
-    x = kn * a
-    kappa[1:] = -0.5 * kn * (kve(m - 1, x) + kve(m + 1, x)) / kve(m, x)
-    lam = np.arange(n_modes + 1) * math.pi / g
-    mu = np.empty(n_modes + 1)
-    mu[0] = m / a
-    y = lam[1:] * a
-    mu[1:] = 0.5 * lam[1:] * (ive(m - 1, y) + ive(m + 1, y)) / ive(m, y)
     nu_int = np.full(n_modes + 1, 0.5 * g)
     nu_int[0] = g
     wall = np.zeros(n_modes + 1) if wall is None else np.asarray(wall)
@@ -762,14 +926,13 @@ def _order_list(orders):
 def solve_diffraction(cyl, omega, orders, n_modes, p_max):
     """Fixed body in HAMS's incident wave of unit amplitude along +x. orders: an int M (orders 0 ... M) or the orders to
     solve. n_modes: evanescent exterior modes and interior modes N. p_max: corner basis size P."""
-    k, kn = wave_numbers(omega, cyl.depth, n_modes)
-    basis = gegenbauer_basis(p_max)
-    inner = _inner_products(cyl, k, kn, basis)
+    modes = _modes(cyl, omega, n_modes, p_max)
+    k, kn = modes.k, modes.kn
     amplitude = -make_mesh.G / omega                       # phi_I = -(g A/omega) Z_0 e^(i k x), A = 1
     solved = {}
     for m in _order_list(orders):
         inc = amplitude * (1.0 if m == 0 else 2.0) * 1j ** m   # e^(ikx) = sum eps_m i^m J_m(kr) cos(m theta)
-        solved[m] = _solve_order(cyl, m, k, kn, basis, incident=inc, inner=inner)
+        solved[m] = _solve_order(cyl, m, k, kn, modes.basis, incident=inc, modes=modes)
     return Solution(cyl, omega, k, kn, p_max, solved)
 
 
@@ -823,14 +986,14 @@ def solve_radiation(cyl, omega, mode, n_modes, p_max):
     One order, solved by _solve_order as diffraction is."""
     if mode not in RADIATION_ORDER:
         raise ValueError("solve_radiation: mode 1, 3 or 5, got %s" % mode)
-    k, kn = wave_numbers(omega, cyl.depth, n_modes)
-    basis = gegenbauer_basis(p_max)
+    modes = _modes(cyl, omega, n_modes, p_max)
+    k, kn, basis = modes.k, modes.kn, modes.basis
     m = RADIATION_ORDER[mode]
-    i0, i1 = _wall_moments(cyl, k, kn)
+    i0, i1 = modes.moments
     wall = {1: i0, 3: None, 5: i1}[mode]
     particular = None if mode == 1 else _Particular(cyl, mode, basis, n_modes)
     velocity = {1: (1.0, 0.0), 3: (0.0, 0.0), 5: (0.0, 1.0)}[mode]   # dphi/dr on the wall, as `wall` above
-    order = _solve_order(cyl, m, k, kn, basis, wall=wall, particular=particular, wall_velocity=velocity)
+    order = _solve_order(cyl, m, k, kn, basis, wall=wall, particular=particular, wall_velocity=velocity, modes=modes)
     order.wall_velocity = velocity
     return Solution(cyl, omega, k, kn, p_max, {m: order})
 
@@ -1101,7 +1264,7 @@ class Face:
     corner: np.ndarray
 
 
-@dataclass
+@dataclass(eq=False)
 class Quadrature:
     """The wetted surface: the wall r = a, -d < z < 0, the bottom z = -d, 0 < r < a, and the trapezoidal rule in theta,
     theta_k = 2 pi k/n, weight 2 pi/n, which is exact for the products of the near-field terms when n > 2 M + 4."""
@@ -1115,10 +1278,14 @@ class Quadrature:
         return (self.wall, self.bottom)
 
 
-def _corner_rule(length, n):
-    """(rho, W): int_0^length f(rho) drho ~ sum(W f(rho)), Gauss-Jacobi for the weight rho**(-2/3) (exact for f =
-    rho**(-2/3) times a polynomial of degree < 2 n). scipy's weight (1 - x)**0 (1 + x)**beta, rho = length (1 + x)/2."""
-    if CORNER_RULE == "cube":
+def _corner_rule(length, n, rule=None):
+    """(rho, W): int_0^length f(rho) drho ~ sum(W f(rho)), n nodes. rule (default CORNER_RULE): "cube", Gauss-Legendre
+    in s = (rho/length)**(1/3), rho = length s**3, W = 3 length s**2 w, exact for f = rho**(-2/3) times a polynomial in
+    rho**(1/3) of degree < 2 n (module docstring, "Quadrature"); or "jacobi", Gauss-Jacobi for the weight rho**(-2/3),
+    exact for f = rho**(-2/3) times a polynomial in rho of degree < 2 n (scipy's weight (1 - x)**0 (1 + x)**beta,
+    rho = length (1 + x)/2)."""
+    rule = CORNER_RULE if rule is None else rule
+    if rule == "cube":
         s, w = _legendre_rule(0.0, 1.0, n)
         return length * s ** 3, 3.0 * length * s ** 2 * w
     x, w = roots_jacobi(n, 0.0, CORNER_EXPONENT)
@@ -1132,14 +1299,21 @@ def _legendre_rule(lo, hi, n):
 
 
 def body_quadrature(cyl, n_corner, n_far, n_theta=NEAR_THETA):
-    """Quadrature of the wetted surface. On each face, Gauss-Jacobi with the weight rho**(-2/3) in the distance rho from
-    the corner, n_corner nodes, within min(gap, d) of it on the wall and min(gap, a/2) on the bottom, and Gauss-Legendre with
-    n_far nodes beyond (on the default cylinder the corner zone is the whole wall, d = 10 < g = 90, so the wall has no
-    Gauss-Legendre part)."""
+    """Quadrature of the wetted surface (_body_quadrature), one object per arguments and CORNER_RULE, so that the
+    cache of _series_context sees the same quadrature."""
+    return _body_quadrature(cyl, int(n_corner), int(n_far), int(n_theta), CORNER_RULE)
+
+
+@functools.lru_cache(maxsize=None)
+def _body_quadrature(cyl, n_corner, n_far, n_theta, rule):
+    """Quadrature of the wetted surface. On each face, the corner rule `rule` (_corner_rule; the default "cube",
+    Gauss-Legendre in (rho/L)**(1/3)) in the distance rho from the corner, n_corner nodes, within min(gap, d) of it on the
+    wall and min(gap, a/2) on the bottom, and Gauss-Legendre in rho with n_far nodes beyond (on the default cylinder the
+    corner zone is the whole wall, d = 10 < g = 90, so the wall has no Gauss-Legendre part)."""
     a, d, g = cyl.radius, cyl.draft, cyl.gap
     faces = []
     for name, extent, zone in (("wall", d, min(g, d)), ("bottom", a, min(g, 0.5 * a))):
-        rho, w = _corner_rule(zone, n_corner)
+        rho, w = _corner_rule(zone, n_corner, rule)
         if extent > zone:
             far, wf = _legendre_rule(zone, extent, n_far)
             rho, w = np.concatenate([rho, far]), np.concatenate([w, wf])
@@ -1180,16 +1354,15 @@ NEAR_WINDOW_START = 0.25      # the smooth window of the wall series falls from 
 BOTTOM_DECAY = 40.0           # bottom series: modes with lambda_n (a - r) > 40 are dropped (exp(-40) of the first)
 
 
-def _extended_roots(sol, count):
-    """k_n, n = 1 ... count: sol.kn, then y = n pi - atan(nu h/y), y = k_n h, by fixed-point iteration (its derivative
-    nu h/(y**2 + (nu h)**2) is below 1e-6 for the n beyond any N used here, so eight steps reach round-off)."""
-    h = sol.cyl.depth
-    c = sol.omega ** 2 / make_mesh.G * h
-    n = np.arange(len(sol.kn) + 1, count + 1)
+def _extended_roots(omega, h, kn, count):
+    """k_n, n = 1 ... count: the solution's kn, then y = n pi - atan(nu h/y), y = k_n h, by fixed-point iteration (its
+    derivative nu h/(y**2 + (nu h)**2) is below 1e-6 for the n beyond any N used here, so eight steps reach round-off)."""
+    c = omega ** 2 / make_mesh.G * h
+    n = np.arange(len(kn) + 1, count + 1)
     y = (n - 0.5) * math.pi
     for _ in range(8):
         y = n * math.pi - np.arctan(c / y)
-    return np.concatenate([sol.kn, y / h])
+    return np.concatenate([kn, y / h])
 
 
 def _smooth_window(count, start):
@@ -1201,20 +1374,38 @@ def _smooth_window(count, start):
     return np.where(x <= 0.0, 1.0, np.where(x >= 1.0, 0.0, e1 / np.where(inside, e0 + e1, 1.0)))
 
 
-POLYLOG_TERMS = 40   # terms of the zeta series of _polylog; |mu| <= 0.2 pi here, so they fall like 0.1**k
+POLYLOG_TERMS = 60    # terms of the zeta series of _polylog; they fall like (|mu|/(2 pi))**k, below 0.53**k where used
+POLYLOG_DIRECT = 40   # terms of the direct sum of _polylog where Re mu < -1: the remainder is below e**(-40) of the sum
+POLYLOG_RADIUS = 3.5  # the zeta series is used for |mu| <= this (with Re mu >= -1, |Im mu| <= pi: |mu| <= 3.3)
 
 
 def _polylog(order, mu):
-    """Li_s(e^mu) = sum_(n >= 1) n**(-s) e^(n mu), Re mu <= 0, 0 < |mu| < 2 pi, elementwise. Non-integer s: the zeta series
-    Li_s(e^mu) = Gamma(1 - s) (-mu)**(s - 1) + sum_k zeta(s - k) mu**k/k! (DLMF 25.12.12); s = 1: -log(1 - e^mu)."""
+    """Li_s(e^mu) = sum_(n >= 1) n**(-s) e^(n mu), Re mu <= 0, mu != 0, elementwise. Where Re mu < -1, any s: the
+    direct sum (POLYLOG_DIRECT terms). Elsewhere, s = 1: -log(1 - e^mu) (by expm1); s not an integer: the zeta series
+    Li_s(e^mu) = Gamma(1 - s) (-mu)**(s - 1) + sum_k zeta(s - k) mu**k/k! (DLMF 25.12.12), which converges only for
+    |mu| < 2 pi and is used for |mu| <= POLYLOG_RADIUS (ValueError beyond, and for Re mu > 0). Without the direct branch
+    the series diverged silently: Li_(2/3)(e**(-12)) gave -6.4e9 for 6.1e-6 (the bottom tails reach
+    mu = -pi a/(2 g), -12 at a 1.3 m gap). check_polylog tests both branches."""
     mu = np.asarray(mu, complex)
+    if np.any(mu.real > 0.0):
+        raise ValueError("_polylog: Re mu > 0, outside the domain of the series")
+    direct = mu.real < -1.0
+    near = np.where(direct, -0.5 + 0j, mu)                     # a harmless point where the direct sum is used
     if order == 1:
-        return -np.log(-np.expm1(mu))
-    out = gamma(1.0 - order) * (-mu) ** (order - 1.0)
-    term = np.ones_like(mu)
-    for k in range(POLYLOG_TERMS):
-        out = out + zeta(order - k) * term
-        term = term * mu / (k + 1)
+        out = -np.log(-np.expm1(near))                         # expm1 keeps 1 - e^mu accurate near mu = 0
+    else:
+        if np.any(np.abs(mu[~direct]) > POLYLOG_RADIUS):
+            raise ValueError("_polylog: |mu| > %g with Re mu >= -1, where the zeta series of %d terms is not accurate"
+                             % (POLYLOG_RADIUS, POLYLOG_TERMS))
+        out = gamma(1.0 - order) * (-near) ** (order - 1.0)
+        term = np.ones_like(near)
+        for k in range(POLYLOG_TERMS):
+            out = out + zeta(order - k) * term
+            term = term * near / (k + 1)
+    if np.any(direct):
+        n = np.arange(1, POLYLOG_DIRECT + 1).reshape((-1,) + (1,) * mu.ndim)
+        far = np.where(direct, mu, -2.0 + 0j)
+        out = np.where(direct, np.sum(n ** (-order) * np.exp(n * far), axis=0), out)
     return out
 
 
@@ -1268,25 +1459,59 @@ def _corner_models(quad, cyl, count, window, lam):
                 bottom_dr=root * (exact_dr - cut_dr), bottom_phi=root * (exact_bphi - cut_phi))
 
 
-def _body_series(sol, quad, count=None):
-    """Per order m: (phi_m, d phi_m/dz) on the wall nodes, (phi_m, d phi_m/dr) on the bottom nodes, phi_m at the
-    waterline, of the extended, corner-corrected series (module docstring, "Near field"). The gap velocity
-    sum_p gap[p] u_p and the wall velocity of each order define the exterior and interior coefficients for every n in
-    closed form (as in _solve_order); the first N are the solution's own, and the series is carried to n = count. The
-    wall and waterline sums are summed with _smooth_window, the bottom sums cut where exp(-lambda_n (a - r)) is below
-    exp(-BOTTOM_DECAY); then the exact sum less the windowed (or cut) sum of each model tail is added (_corner_models)."""
-    cyl = sol.cyl
-    a, d, h, g = cyl.radius, cyl.draft, cyl.depth, cyl.gap
-    count = max(NEAR_SERIES_MODES, len(sol.kn)) if count is None else count
-    if count < len(sol.kn):
-        raise ValueError("_body_series: count %d is below the solution's N = %d" % (count, len(sol.kn)))
-    n_sol = len(sol.kn)
-    kn = _extended_roots(sol, count)
-    basis = gegenbauer_basis(sol.p_max)
-    big_e = inner_exterior(cyl, sol.k, kn, basis)[:, 1:]
-    big_f = inner_interior(cyl, count, basis)[:, 1:]
-    norms = _mode_norms(sol.k, kn, h)[1:]
-    i0, i1 = _wall_moments(cyl, sol.k, kn)
+@dataclass(eq=False)
+class _SeriesContext:
+    """The solution-independent part of _body_series at one (cylinder, omega, N, p_max, count, quadrature, orders): the
+    extended roots, inner products, norms and wall moments, the window, the corner models and the Bessel functions on
+    the bottom nodes. The fixed and the free body at one omega share it (_series_context)."""
+    k: float
+    kn: np.ndarray
+    basis: Basis
+    big_e: np.ndarray
+    big_f: np.ndarray
+    norms: np.ndarray
+    moments: tuple
+    window: np.ndarray
+    models: dict
+    cos_wall: np.ndarray
+    sin_wall: np.ndarray
+    z0: np.ndarray
+    dz0: np.ndarray
+    lam: np.ndarray
+    sign: np.ndarray
+    keep: np.ndarray
+    bessel_a: list
+    bessel_r: list
+    growth: list
+    modes: object                 # the _Modes of the solve when count = N (its radial ratios are shared), else None
+    _ratios: dict
+
+    def ratios(self, cyl, m):
+        """(kappa_n, mu_n), n = 1 ... count."""
+        if self.modes is not None:
+            kappa, mu = self.modes.ratios(m)
+            return kappa[1:], mu[1:]
+        if m not in self._ratios:
+            kappa, mu = _radial_ratios(cyl, m, self.k, self.kn)
+            self._ratios[m] = (kappa[1:], mu[1:])
+        return self._ratios[m]
+
+
+@functools.lru_cache(maxsize=1)
+def _series_context(cyl, omega, k, n_sol, p_max, count, quad, top):
+    a, h, g = cyl.radius, cyl.depth, cyl.gap
+    modes = _modes(cyl, omega, n_sol, p_max) if count == n_sol else None
+    if modes is not None:
+        kn, basis = modes.kn, modes.basis
+        big_e, big_f = modes.inner[0][:, 1:], modes.inner[1][:, 1:]
+        norms, (i0, i1) = modes.norms[1:], modes.moments
+    else:
+        kn = _extended_roots(omega, h, wave_numbers(omega, h, n_sol)[1], count)
+        basis = gegenbauer_basis(p_max)
+        big_e = inner_exterior(cyl, k, kn, basis)[:, 1:]
+        big_f = inner_interior(cyl, count, basis)[:, 1:]
+        norms = _mode_norms(k, kn, h)[1:]
+        i0, i1 = _wall_moments(cyl, k, kn)
     window = _smooth_window(count, NEAR_WINDOW_START)
     models = {f.lam: _corner_models(quad, cyl, count, window, f.lam) for f in basis.families}
     if 0.5 not in models:                                        # the jump of the wall velocity needs it
@@ -1296,24 +1521,44 @@ def _body_series(sol, quad, count=None):
     phase = np.outer(s_wall, kn)
     cos_wall = np.cos(phase) * (secant * window)
     sin_wall = -np.sin(phase) * (kn * secant * window)
-    z0, dz0 = _cosh_ratio(sol.k, s_wall, h)
-    dz0 = sol.k * dz0
+    z0, dz0 = _cosh_ratio(k, s_wall, h)
     lam = np.arange(1, count + 1) * math.pi / g
     sign = (-1.0) ** np.arange(1, count + 1)                     # cos(lambda_n g), the bottom z = -d
     rb = quad.bottom.r
     keep = _bottom_keep(quad, cyl, count)
-    top = max(sol.orders) + 2                                    # ive(k, .) for k = 0 ... max order + 1, shared by the orders
-    bessel_a = [ive(k, lam * a) for k in range(top)]
-    bessel_r = [[ive(k, lam[:q] * r) for k in range(top)] for r, q in zip(rb, keep)]
-    growth = [np.exp(lam[:q] * (r - a)) for r, q in zip(rb, keep)]
+    bessel_a = [ive(q, lam * a) for q in range(top)]             # ive(q, .) for q = 0 ... max order + 1
+    bessel_r = [[ive(q, lam[:n] * r) for q in range(top)] for r, n in zip(rb, keep)]
+    growth = [np.exp(lam[:n] * (r - a)) for r, n in zip(rb, keep)]
+    return _SeriesContext(k, kn, basis, big_e, big_f, norms, (i0, i1), window, models, cos_wall, sin_wall, z0, k * dz0,
+                          lam, sign, keep, bessel_a, bessel_r, growth, modes, {})
+
+
+def _body_series(sol, quad, count=None):
+    """Per order m: (phi_m, d phi_m/dz) on the wall nodes, (phi_m, d phi_m/dr) on the bottom nodes, phi_m at the
+    waterline, of the extended, corner-corrected series (module docstring, "Near field"). The gap velocity
+    sum_p gap[p] u_p and the wall velocity of each order define the exterior and interior coefficients for every n in
+    closed form (as in _solve_order); the first N are the solution's own, and the series is carried to n = count. The
+    wall and waterline sums are summed with _smooth_window, the bottom sums cut where exp(-lambda_n (a - r)) is below
+    exp(-BOTTOM_DECAY); then the exact sum less the windowed (or cut) sum of each model tail is added (_corner_models).
+    What does not depend on the solution is cached (_series_context), so the fixed and the free body share it."""
+    cyl = sol.cyl
+    a, d, h, g = cyl.radius, cyl.draft, cyl.depth, cyl.gap
+    count = max(NEAR_SERIES_MODES, len(sol.kn)) if count is None else count
+    if count < len(sol.kn):
+        raise ValueError("_body_series: count %d is below the solution's N = %d" % (count, len(sol.kn)))
+    n_sol = len(sol.kn)
+    ctx = _series_context(cyl, float(sol.omega), float(sol.k), n_sol, _spec_key(sol.p_max), count, quad,
+                          max(sol.orders) + 2)
+    basis, big_e, big_f, norms, models = ctx.basis, ctx.big_e, ctx.big_f, ctx.norms, ctx.models
+    i0, i1 = ctx.moments
+    cos_wall, sin_wall, z0, dz0, lam, sign = ctx.cos_wall, ctx.sin_wall, ctx.z0, ctx.dz0, ctx.lam, ctx.sign
+    rb, keep, bessel_a, bessel_r, growth = quad.bottom.r, ctx.keep, ctx.bessel_a, ctx.bessel_r, ctx.growth
+    window = ctx.window
     out = {}
     for m, o in sol.orders.items():
-        x = kn * a
-        kappa = -0.5 * kn * (kve(m - 1, x) + kve(m + 1, x)) / kve(m, x)
+        kappa, mu = ctx.ratios(cyl, m)
         wall = o.wall_velocity[0] * i0[1:] + o.wall_velocity[1] * i1[1:]
         b = (o.gap @ big_e + wall) / (norms * kappa)
-        y = lam * a
-        mu = 0.5 * lam * (ive(m - 1, y) + ive(m + 1, y)) / ive(m, y)
         flux = o.particular.flux(count)[1:] if o.particular is not None else 0.0
         c = (o.gap @ big_f - flux) / (0.5 * g * mu)
         for mine, theirs, name in ((b[:n_sol], o.evanescent, "exterior"), (c[:n_sol], o.interior[1:], "interior")):
@@ -1681,10 +1926,15 @@ def _first_order(omega, n_modes, p_max):
                 flux=np.array([radiated_energy_damping(rads[j]) for j in (1, 3, 5)]))
 
 
-def _first_order_extrapolated(omega):
-    """_first_order at N and 2 N of CHECK_RESOLUTION, extrapolated in N: (2**p Q(2N) - Q(N))/(2**p - 1), p =
-    RICHARDSON_EXPONENT. Also returns the values at 2 N."""
-    n, p_max = CHECK_RESOLUTION["n_modes"], CHECK_RESOLUTION["p_max"]
+# The three-family case of the radiation and energy checks: one frequency, gap basis (20, 4, 4), N and 2 N
+THREE_FAMILY_CASE = dict(omega=0.70, n_modes=8000, p_max=(20, 4, 4))
+
+
+def _first_order_extrapolated(omega, n=None, p_max=None):
+    """_first_order at N and 2 N (default: CHECK_RESOLUTION's), extrapolated in N: (2**p Q(2N) - Q(N))/(2**p - 1),
+    p = RICHARDSON_EXPONENT. Also returns the values at 2 N."""
+    n = CHECK_RESOLUTION["n_modes"] if n is None else n
+    p_max = CHECK_RESOLUTION["p_max"] if p_max is None else p_max
     lo, hi = _first_order(omega, n, p_max), _first_order(omega, 2 * n, p_max)
     w = 2.0 ** RICHARDSON_EXPONENT
     return {key: (w * hi[key] - lo[key]) / (w - 1.0) for key in lo}, hi
@@ -1706,9 +1956,9 @@ def check_reciprocity():
     to round-off at any N and P (1e-16 at N = 50, P = 5). MATRIX_TAIL (Matching tail) adds the tails of the sums to the
     solve but not to the forces, so it breaks that exactness: surge's Haskind residual is now 7e-4 at N = 50, P = 5, and
     5e-8, 5e-9 at N = 16000, 64000 (gap basis (20, 4, 4), 0.70 rad/s). It still tests the Haskind formula, the far-field
-    normalisation and the sign and conjugation of excitation and added_mass_damping, now after extrapolation in N. Pitch and heave have
-    the interior particular solution, which is not in the span of the N truncated interior modes; the residual of the
-    identities is the tail of its cosine projection (coefficients n**-2) against that of the corner-singular gap velocity
+    normalisation and the sign and conjugation of excitation and added_mass_damping, now after extrapolation in N.
+    Pitch and heave have the interior particular solution, which is not in the span of the N truncated interior modes;
+    the residual of the identities is the tail of its cosine projection (coefficients n**-2) against that of the corner-singular gap velocity
     (n**-2/3), so it falls as N**(-5/3): measured exponent 1.68 to 1.73 for N = 1000 ... 8000, 1.3e-7 for A15 = A51 still at
     N = 32000. One Richardson step with p = 5/3 removes that term; what remains falls about as N**-2.9 (2e-8 at N = 4000,
     8000). So A15 = A51, B15 = B51 and Haskind for modes 3 and 5 test the particular solutions through their gap
@@ -1723,10 +1973,16 @@ def check_reciprocity():
         worst_sym, worst_haskind = max(worst_sym, sym), max(worst_haskind, haskind)
         sym, haskind = _reciprocity_errors(hi)
         raw_sym, raw_haskind = max(raw_sym, sym), max(raw_haskind, haskind)
-    ok = worst_sym < 1e-8 and worst_haskind < 1e-6
+    case = THREE_FAMILY_CASE
+    q, hi = _first_order_extrapolated(case["omega"], case["n_modes"], case["p_max"])
+    three_sym, three_haskind = _reciprocity_errors(q)
+    ok = max(worst_sym, three_sym) < 1e-8 and max(worst_haskind, three_haskind) < 1e-6
     return ok, ("extrapolated in N: max |A15 - A51|/|A15|, |B15 - B51|/|B15| %.1e, max |X Haskind - X diffraction|/|X| "
-                "%.1e, modes 1, 3, 5; at N = %d itself %.1e and %.1e"
-                % (worst_sym, worst_haskind, 2 * CHECK_RESOLUTION["n_modes"], raw_sym, raw_haskind))
+                "%.1e, modes 1, 3, 5; at N = %d itself %.1e and %.1e; gap basis %s at %.2f rad/s, N = %d and %d, "
+                "extrapolated: %.1e and %.1e (at N = %d itself %.1e and %.1e)"
+                % (worst_sym, worst_haskind, 2 * CHECK_RESOLUTION["n_modes"], raw_sym, raw_haskind, case["p_max"],
+                   case["omega"], case["n_modes"], 2 * case["n_modes"], three_sym, three_haskind,
+                   2 * case["n_modes"], *_reciprocity_errors(hi)))
 
 
 def check_radiation_energy():
@@ -1742,8 +1998,14 @@ def check_radiation_energy():
     for omega in drift_convergence.WIDE_FREQUENCIES:
         q, hi = _first_order_extrapolated(omega)
         worst, raw = max(worst, error(q)), max(raw, error(hi))
-    return worst < 1e-6, ("extrapolated in N: max |B_jj - flux|/|flux| %.1e, j = 1, 3, 5; at N = %d itself %.1e"
-                          % (worst, 2 * CHECK_RESOLUTION["n_modes"], raw))
+    case = THREE_FAMILY_CASE
+    q, hi = _first_order_extrapolated(case["omega"], case["n_modes"], case["p_max"])
+    three, three_raw = error(q), error(hi)
+    return max(worst, three) < 1e-6, ("extrapolated in N: max |B_jj - flux|/|flux| %.1e, j = 1, 3, 5; at N = %d itself "
+                                      "%.1e; gap basis %s at %.2f rad/s, N = %d and %d, extrapolated: %.1e (at N = %d "
+                                      "itself %.1e)" % (worst, 2 * CHECK_RESOLUTION["n_modes"], raw, case["p_max"],
+                                                        case["omega"], case["n_modes"], 2 * case["n_modes"], three,
+                                                        2 * case["n_modes"], three_raw))
 
 
 def check_particular_bottom():
@@ -1798,18 +2060,23 @@ def check_free_energy():
     docstring."""
     cyl = Cylinder()
     res = LIGHT_RESOLUTION
-    worst = 0.0
-    for omega in drift_convergence.WIDE_FREQUENCIES:
-        diff = solve_diffraction(cyl, omega, res["orders"], res["n_modes"], res["p_max"])
-        rads = {j: solve_radiation(cyl, omega, j, res["n_modes"], res["p_max"]) for j in MOTION_MODES}
+    cases = [(omega, res["n_modes"], res["p_max"]) for omega in drift_convergence.WIDE_FREQUENCIES]
+    three = THREE_FAMILY_CASE
+    cases.append((three["omega"], 2 * three["n_modes"], three["p_max"]))
+    errors = []
+    for omega, n_modes, p_max in cases:
+        diff = solve_diffraction(cyl, omega, res["orders"], n_modes, p_max)
+        rads = {j: solve_radiation(cyl, omega, j, n_modes, p_max) for j in MOTION_MODES}
         total = total_solution(diff, rads, motions(cyl, omega, diff, rads))
         a = far_field_amplitude(total)
         full = np.concatenate([a[:0:-1], a])
         flux = 2.0 * math.pi * np.sum(np.abs(full) ** 2)
         optical = -math.sqrt(8.0 * math.pi / total.k) * np.real(np.exp(0.75j * math.pi) * np.sum(full))
         fixed = 2.0 * math.pi * np.sum(np.abs(far_field_amplitude(diff)) ** 2 * np.where(np.arange(len(a)), 2.0, 1.0))
-        worst = max(worst, abs(flux - optical) / fixed)
-    return worst < 1e-10, "max |flux - optical|/(flux of the fixed body) %.1e, free body" % worst
+        errors.append(abs(flux - optical) / fixed)
+    return max(errors) < 1e-10, ("max |flux - optical|/(flux of the fixed body) %.1e, free body; gap basis %s at %.2f "
+                                 "rad/s, N = %d: %.1e" % (max(errors[:-1]), three["p_max"], three["omega"],
+                                                          2 * three["n_modes"], errors[-1]))
 
 
 BODY_MATRICES_SIDES = 4096
@@ -1832,28 +2099,90 @@ def check_body_matrices():
     return worst < 1e-5, "max relative difference per nonzero entry %.1e (zero pattern equal)" % worst
 
 
+def _orders_key(orders):
+    """orders as a hashable cache key: an int M, or a tuple of orders."""
+    return int(orders) if isinstance(orders, (int, np.integer)) else tuple(int(m) for m in orders)
+
+
+@functools.lru_cache(maxsize=1)
+def _solved(cyl, omega, n_modes, p_max, orders):
+    """(diff, rads): the diffraction solution and the radiation solutions of modes 1, 3, 5 at one resolution, cached (the
+    last one), so that the fixed and the free body at one omega share them. Keys from _spec_key and _orders_key."""
+    diff = solve_diffraction(cyl, omega, orders, n_modes, p_max)
+    return diff, {j: solve_radiation(cyl, omega, j, n_modes, p_max) for j in MOTION_MODES}
+
+
 def _first_order_case(cyl, omega, motion, n_modes, p_max, orders):
     """(total, xi) of the default problem at one resolution: diffraction, and for "free" the radiation solutions, the
-    motions and the total potential."""
-    diff = solve_diffraction(cyl, omega, orders, n_modes, p_max)
+    motions and the total potential (_solved)."""
+    diff, rads = _solved(cyl, float(omega), int(n_modes), _spec_key(p_max), _orders_key(orders))
     if motion == "fixed":
         return diff, motions(cyl, omega, diff, None, "fixed")
-    rads = {j: solve_radiation(cyl, omega, j, n_modes, p_max) for j in MOTION_MODES}
     xi = motions(cyl, omega, diff, rads)
     return total_solution(diff, rads, xi), xi
 
 
-# Resolution of fx_identity: the three-family gap basis (20, 4, 4) and N = 64000, where the free-body error at 0.70 and
-# 0.80 rad/s (4.0e-4 and 4.1e-4) has settled to about 3e-5 (module docstring, "Gap basis")
-NEAR_CHECK_RESOLUTION = dict(n_modes=64000, p_max=(20, 4, 4), orders=15)
+# The resolution of the reference values (reference): N exterior and interior modes, the gap basis (P_1/6, P_1/2, P_5/6)
+# (Gap basis), azimuthal orders 0 ... M. The coarsest that meets the gate of fx_identity (the free body needs the three
+# families and N = 64000) and the 1e-4 spread of convergence (module docstring, "Reference values").
+DEFAULT_RESOLUTION = dict(n_modes=64000, p_max=(20, 4, 4), orders=15)
+# Resolution of fx_identity: the default, so that its rows are the reference values (cached in _reference_row)
+NEAR_CHECK_RESOLUTION = DEFAULT_RESOLUTION
+# The (N, gap basis) ladder of convergence, increasing, with DEFAULT_RESOLUTION in it; the orders are tested by doubling M
+CONVERGENCE_LADDER = (dict(n_modes=32000, p_max=(10, 2, 2), orders=15), DEFAULT_RESOLUTION,
+                      dict(n_modes=128000, p_max=(30, 6, 6), orders=15))
+# convergence: a near-field value below CONVERGENCE_TERM_FLOOR times its largest term (I ... V) is a cancellation, and its
+# spreads are measured against that floor instead (1e-5 of the largest term, for the spread gate 1e-4); it acts only at
+# free F_z, 0.70 rad/s (-0.61 from terms of -29.9, +42.6, -13.3)
+CONVERGENCE_TERM_FLOOR = 0.1
+FREE_BODY_UNCERTAINTY = (
+    "Uncertainty of the free body at 0.60 to 0.80 rad/s (module docstring, \"Reference values\"): near-field F_x settles "
+    "4.2e-4 of far F_x from it (pitch only, systematic, not falling with N or the gap basis), so take +-5e-4 relative "
+    "for near-field F_x there. F_z and M_y move with that residual across gap bases (linearly); the estimated errors are "
+    "F_z 8e-5, 1.6e-3, 1.0e-2 and M_y 5e-6, 3.4e-4, 4.8e-2 (absolute) at 0.60, 0.70, 0.80 rad/s, that is F_z 3e-5, "
+    "2.6e-3, 3.6e-3 relative and M_y below 5e-5 relative. The spreads below do not show these.")
+
+REFERENCE_PAIRS = (11, 13, 15, 33, 35, 55)
 
 
-def _fx_pair(cyl, omega, motion, res=None):
-    """(near F_x, far F_x) over rho g A**2 of the default problem at NEAR_CHECK_RESOLUTION."""
-    res = NEAR_CHECK_RESOLUTION if res is None else res
+@functools.lru_cache(maxsize=None)
+def _reference_row(cyl, omega, motion, n_modes, p_max, orders):
+    """One row of reference (keys: _spec_key, _orders_key), cached: fx_identity, convergence and the reference
+    subcommand share the rows at DEFAULT_RESOLUTION."""
+    diff, rads = _solved(cyl, omega, n_modes, p_max, orders)
+    a, b = added_mass_damping(cyl, omega, rads)
+    x = excitation(cyl, diff)
+    xi = motions(cyl, omega, diff, rads, motion)
+    total = total_solution(diff, rads, xi)
     quad = body_quadrature(cyl, NEAR_QUADRATURE["n_corner"], NEAR_QUADRATURE["n_far"])
-    total, xi = _first_order_case(cyl, omega, motion, res["n_modes"], res["p_max"], res["orders"])
-    return near_field(cyl, omega, total, xi, quad)[1][0], far_field_fx(cyl, omega, total)
+    terms, near = near_field(cyl, omega, total, xi, quad)
+    row = dict(omega=omega, motion=motion, n_modes=n_modes, p_max=p_max, orders=orders)
+    for ij in REFERENCE_PAIRS:
+        i, j = divmod(ij, 10)
+        row["A%d" % ij], row["B%d" % ij] = float(a[i - 1, j - 1]), float(b[i - 1, j - 1])
+    for j in MOTION_MODES:
+        row["X%d" % j] = abs(x[j])
+    for j in MOTION_MODES:
+        row["RAO%d" % j] = abs(xi[j]) if motion == "free" else float("nan")
+    row["Fx_far"] = far_field_fx(cyl, omega, total)
+    row["Fx_near"], row["Fz"], row["My"] = float(near[0]), float(near[2]), float(near[4])
+    for name, index in (("Fx", 0), ("Fz", 2), ("My", 4)):
+        for key in NEAR_FIELD_TERMS:
+            row["%s_%s" % (name, key)] = float(terms[key][index])
+    return row
+
+
+def reference(cyl, frequencies, motion, n_modes, p_max, orders):
+    """One row per omega of frequencies, motion "fixed" or "free", at the resolution (n_modes, p_max, orders): omega,
+    motion and the resolution; A and B (AmssDamp.1's normalisation, A/rho and B/(rho omega), keys A11, A13, A15, A33,
+    A35, A55 and B..); abs(X) (ExcForce.3, over rho g A; X1, X3, X5); abs(xi) (Motion.4's MOD, rotations in rad/m;
+    RAO1, RAO3, RAO5, nan for the fixed body); Fx_far (MeanDriftMomentum.8), Fx_near, Fz, My (MeanDriftPressure.9, over
+    rho g A**2, moments in m about the origin) and each near-field term of them, Fx_I ... Fx_V, Fz_.., My_..
+    (MeanDriftTerms.txt). See the module docstring, "Reference values", for the uncertainty."""
+    if motion not in ("fixed", "free"):
+        raise ValueError("reference: motion is 'fixed' or 'free', got %r" % (motion,))
+    return [dict(_reference_row(cyl, float(omega), motion, int(n_modes), _spec_key(p_max), _orders_key(orders)))
+            for omega in frequencies]
 
 
 FX_FLOOR = 1e-4   # fx_identity: below FX_FLOOR times the largest abs(far F_x) of the motion, the error is over that floor
@@ -1864,16 +2193,21 @@ def check_fx_identity():
     NEAR_CHECK_RESOLUTION, to 5e-4 of max(abs(far F_x), FX_FLOOR scale), scale the largest abs(far F_x) of the motion
     (the floor of drift_convergence.percent; it acts only at free 0.40 rad/s, far F_x = 3e-6); see the module docstring."""
     cyl = Cylinder()
-    worst, rows = 0.0, []
+    res = NEAR_CHECK_RESOLUTION
+    rows = {}
+    for omega in drift_convergence.WIDE_FREQUENCIES:          # omega outermost: fixed and free share the solves
+        for motion in ("fixed", "free"):
+            rows[motion, omega] = reference(cyl, [omega], motion, res["n_modes"], res["p_max"], res["orders"])[0]
+    worst, text = 0.0, []
     for motion in ("fixed", "free"):
-        pairs = [(omega, _fx_pair(cyl, omega, motion)) for omega in drift_convergence.WIDE_FREQUENCIES]
-        scale = max(abs(far) for _, (_, far) in pairs)
-        for omega, (near, far) in pairs:
+        scale = max(abs(rows[motion, w]["Fx_far"]) for w in drift_convergence.WIDE_FREQUENCIES)
+        for omega in drift_convergence.WIDE_FREQUENCIES:
+            near, far = rows[motion, omega]["Fx_near"], rows[motion, omega]["Fx_far"]
             floored = abs(far) < FX_FLOOR * scale
             err = abs(near - far) / max(abs(far), FX_FLOOR * scale)
             worst = max(worst, err)
-            rows.append("%s %.2f %.1e%s" % (motion, omega, err, " (floor)" if floored else ""))
-    return worst < 5e-4, "max |near - far|/|far| %.1e; per case: %s" % (worst, ", ".join(rows))
+            text.append("%s %.2f %.1e%s" % (motion, omega, err, " (floor)" if floored else ""))
+    return worst < 5e-4, "max |near - far|/|far| %.1e; per case: %s" % (worst, ", ".join(text))
 
 
 def check_reference_point():
@@ -1934,25 +2268,232 @@ def check_long_wave_motions():
                 % (heave, tol[3], pitch, tol[5]))
 
 
-CHECKS = {"roots": check_roots, "inner_products": check_inner_products, "bottom_limit_x1": check_bottom_limit_x1,
-          "matching": check_matching, "scattering_energy": check_scattering_energy, "reciprocity": check_reciprocity,
+POLYLOG_ORDERS = (1.0, 2.0 / 3.0, 7.0 / 6.0, 4.0 / 3.0, 5.0 / 3.0, 11.0 / 6.0, 13.0 / 6.0)
+POLYLOG_POINTS = (-0.05, -0.5, -1.0, -1.5, -3.0, -12.0, -60.0, -1.0 + 3.0j, -0.05 + 0.1j, -0.05 - 1.0j, -0.05 + 3.1j,
+                  -2.0 + 3.1j)
+
+
+def check_polylog():
+    """_polylog(s, mu) against the direct sum sum_(n=1)^(4000) n**(-s) e^(n mu), to 1e-10 relative, for the orders of
+    _corner_models (1 and lam + 1/2, lam + 3/2 of the three families) at real mu from -0.05 to -60 (the bottom tails,
+    mu = -pi rho/g, reach -pi a/(2 g), large for a small gap) and complex mu with Re mu = -0.05 ... -2 and Im mu up to
+    3.1 (Re mu <= -0.05, so that 4000 terms reach round-off); and that it raises outside its domain (Re mu > 0). It tests
+    both branches of _polylog (zeta series and direct sum) and the switch between them, not the unit circle Re mu = 0,
+    where the direct sum does not converge absolutely; the wall tails there are tested through the wall series
+    (fx_identity) and corner_limit."""
+    n = np.arange(1, 4001)
+    worst = 0.0
+    for order in POLYLOG_ORDERS:
+        for mu in POLYLOG_POINTS:
+            direct = np.sum(n ** (-order) * np.exp(n * mu))
+            worst = max(worst, abs(complex(_polylog(order, mu)) - direct) / abs(direct))
+    try:
+        _polylog(2.0 / 3.0, 0.5)
+        raised = False
+    except ValueError:
+        raised = True
+    return worst < 1e-10 and raised, ("max |Li_s(e^mu) - direct sum|/|direct sum| %.1e over %d orders and %d points; "
+                                      "raises for Re mu > 0: %s" % (worst, len(POLYLOG_ORDERS), len(POLYLOG_POINTS),
+                                                                   raised))
+
+
+MATCHING_TAIL_CASE = dict(omega=0.70, n_modes=2000, p_max=(20, 4, 4), brute=64000)
+MATCHING_TAIL_TOLERANCE = 5e-3   # measured 1.1e-3 (matrix) and 1.8e-3 (wall)
+
+
+def check_matching_tail():
+    """_matching_tail against brute-force sums, and where it applies (_tail_rows); see the module docstring."""
+    cyl = Cylinder()
+    case = MATCHING_TAIL_CASE
+    n, big = case["n_modes"], case["brute"]
+    basis = gegenbauer_basis(case["p_max"])
+    k, kn = wave_numbers(case["omega"], cyl.depth, big)
+    big_e, big_f = _inner_products(cyl, k, kn, basis)
+    norms = _mode_norms(k, kn, cyl.depth)
+    i0, _ = _wall_moments(cyl, k, kn)
+    tail_n, wall_n = _matching_tail(cyl, basis, n)
+    tail_big, wall_big = _matching_tail(cyl, basis, big)
+    model, model_wall = tail_n - tail_big, wall_n - wall_big          # the model's sum over N < n <= brute
+    sl = slice(n + 1, big + 1)
+    worst = worst_wall = 0.0
+    for m in (0, 1):
+        kappa, mu = _radial_ratios(cyl, m, k, kn)
+        ext = big_e[:, sl] / (norms[sl] * kappa[sl])
+        brute = ext @ big_e[:, sl].T - (big_f[:, sl] / (0.5 * cyl.gap * mu[sl])) @ big_f[:, sl].T
+        brute_wall = ext @ i0[sl]                                     # a unit wall velocity: the moment i0
+        worst = max(worst, np.max(np.abs(model - brute)) / np.max(np.abs(brute)))
+        worst_wall = max(worst_wall, np.max(np.abs(model_wall - brute_wall)) / np.max(np.abs(brute_wall)))
+    small = Cylinder(draft=cyl.depth - 0.1)
+    rows_small = _tail_rows(small, gegenbauer_basis(10), 1000)
+    tail_small, wall_small = _matching_tail(small, gegenbauer_basis(10), 1000)
+    restricted = not rows_small.any() and not np.any(tail_small) and not np.any(wall_small)
+    matching = dict(n_modes=MATCHING_MODES_PER_P * max(MATCHING_P), p_max=max(MATCHING_P))
+    everywhere = all(_tail_rows(cyl, gegenbauer_basis(res["p_max"]), res["n_modes"]).all()
+                     for res in (LIGHT_RESOLUTION, CHECK_RESOLUTION, matching, DEFAULT_RESOLUTION))
+    ok = worst < MATCHING_TAIL_TOLERANCE and worst_wall < MATCHING_TAIL_TOLERANCE and restricted and everywhere
+    return ok, ("gap basis %s, N = %d, sums to n = %d, orders 0 and 1: max |model - brute|/max |brute| %.1e (matrix), "
+                "%.1e (wall); gap 0.1 m, N = 1000, P = 10: no row kept %s; default gap at LIGHT, CHECK, matching and "
+                "default resolutions: every row kept %s" % (case["p_max"], n, big, worst, worst_wall, restricted,
+                                                            everywhere))
+
+
+CORNER_LIMIT_RHO = (1e-3, 1e-4, 1e-5)    # distances from the corner of the probe nodes, m
+CORNER_LIMIT_RESOLUTION = dict(n_modes=16000, p_max=(20, 4, 4), orders=3)
+CORNER_LIMIT_TOLERANCE = 1e-3            # measured 1.9e-4 (fixed and free, 0.70 and 1.40 rad/s, orders 0 ... 3)
+
+
+def _probe_quadrature(cyl, rho):
+    """A Quadrature whose wall and bottom nodes lie at the distances rho from the corner, with zero weights: for
+    evaluating the body series there, not for integrating."""
+    a, d = cyl.radius, cyl.draft
+    rho = np.asarray(rho, dtype=float)
+    wall = Face("wall", np.full(rho.shape, a), -d + rho, np.zeros_like(rho), (-1.0, 0.0), rho)
+    bottom = Face("bottom", a - rho, np.full(rho.shape, -d), np.zeros_like(rho), (0.0, 1.0), rho)
+    return Quadrature(wall, bottom, np.zeros(1), 2.0 * math.pi)
+
+
+def check_corner_limit():
+    """rho**(1/3) times the tangential velocity on the wall (d phi_m/dz, exterior series) and on the bottom (d phi_m/dr,
+    interior series), each extrapolated to the corner, agree; see the module docstring."""
+    cyl = Cylinder()
+    rho = np.array(CORNER_LIMIT_RHO)
+    s = rho ** (1.0 / 3.0)
+    fit = np.vander(s, 3, increasing=True)                # c0 + c1 s + c2 s**2, s = rho**(1/3)
+    quad = _probe_quadrature(cyl, rho)
+    res = CORNER_LIMIT_RESOLUTION
+    worst, cases = 0.0, 0
+    for omega in (0.70, 1.40):
+        for motion in ("fixed", "free"):
+            total, _ = _first_order_case(cyl, omega, motion, res["n_modes"], res["p_max"], res["orders"])
+            for m, values in _body_series(total, quad).items():
+                wall = np.linalg.lstsq(fit, values["wall"][1] * s, rcond=None)[0][0]
+                bottom = np.linalg.lstsq(fit, values["bottom"][1] * s, rcond=None)[0][0]
+                worst = max(worst, abs(wall - bottom) / abs(wall))
+                cases += 1
+    return worst < CORNER_LIMIT_TOLERANCE, ("max |c_wall - c_bottom|/|c_wall| %.1e over %d cases (corner limits of "
+                                           "rho**(1/3) u_t, fitted at rho = %s m)"
+                                           % (worst, cases, ", ".join("%g" % r for r in CORNER_LIMIT_RHO)))
+
+
+CONVERGENCE_FREQUENCIES = (0.70, 0.95, 1.40)
+CONVERGENCE_QUANTITIES = ("Fx_far", "Fz", "My", "B11")
+CONVERGENCE_SPREAD = 1e-4
+
+
+def convergence_orders():
+    """DEFAULT_RESOLUTION with twice its orders."""
+    return dict(DEFAULT_RESOLUTION, orders=2 * DEFAULT_RESOLUTION["orders"])
+
+
+def convergence_table(cyl=None):
+    """For CONVERGENCE_QUANTITIES at CONVERGENCE_FREQUENCIES, fixed and free: the values at the resolutions of
+    CONVERGENCE_LADDER and at DEFAULT_RESOLUTION with twice its orders, and the spreads of the default against the
+    finest of the ladder and against 2M, each over max(abs(default value), floor). For F_z and M_y the floor is
+    CONVERGENCE_TERM_FLOOR times the largest abs(term) of the default row (a value far below its terms is a
+    cancellation); F_x far and B11 are not sums of terms and have none. A list of dicts, one per (motion, quantity,
+    omega); "raw" is the larger spread over abs(default value) alone."""
+    cyl = Cylinder() if cyl is None else cyl
+    resolutions = list(CONVERGENCE_LADDER) + [convergence_orders()]
+    values = {}
+    for omega in CONVERGENCE_FREQUENCIES:                 # omega outermost: the solves are cached per omega
+        for i, res in enumerate(resolutions):
+            for motion in ("fixed", "free"):
+                values[omega, motion, i] = _reference_row(cyl, omega, motion, res["n_modes"], _spec_key(res["p_max"]),
+                                                          _orders_key(res["orders"]))
+    default, finest = CONVERGENCE_LADDER.index(DEFAULT_RESOLUTION), len(CONVERGENCE_LADDER) - 1
+    out = []
+    for motion in ("fixed", "free"):
+        for quantity in CONVERGENCE_QUANTITIES:
+            for omega in CONVERGENCE_FREQUENCIES:
+                row = values[omega, motion, default]
+                v = [values[omega, motion, i][quantity] for i in range(len(resolutions))]
+                ref = v[default]
+                terms = [abs(row["%s_%s" % (quantity, key)]) for key in NEAR_FIELD_TERMS if quantity in ("Fz", "My")]
+                floor = CONVERGENCE_TERM_FLOOR * max(terms) if terms else 0.0
+                spread_n, spread_m = abs(v[finest] - ref), abs(v[-1] - ref)
+                out.append(dict(omega=omega, motion=motion, quantity=quantity, values=v,
+                                spread_n=spread_n / max(abs(ref), floor), spread_m=spread_m / max(abs(ref), floor),
+                                raw=max(spread_n, spread_m) / abs(ref), floored=abs(ref) < floor,
+                                finite=bool(np.all(np.isfinite(v)))))
+    return out
+
+
+def format_convergence_table(table):
+    """The convergence table as text."""
+    names = ["N %d, gap basis %s, M %d" % (r["n_modes"], r["p_max"], r["orders"]) for r in CONVERGENCE_LADDER]
+    names.append("the default with 2M")
+    default, finest = CONVERGENCE_LADDER.index(DEFAULT_RESOLUTION), len(CONVERGENCE_LADDER) - 1
+    lines = ["Convergence (F over rho g A**2, moments in m; B11 over rho omega). Resolutions: "
+             + "; ".join("[%d] %s" % (i, n) for i, n in enumerate(names)) + " ([%d] is DEFAULT_RESOLUTION)." % default,
+             "Spreads: |[%d] - [%d]| (N, gap basis) and |[%d] - [%d]| (orders), over max(|[%d]|, floor), floor = %g of "
+             "the largest term for F_z and M_y; raw: the larger spread over |[%d]|."
+             % (finest, default, len(names) - 1, default, default, CONVERGENCE_TERM_FLOOR, default),
+             "%-6s %5s %-6s %s %10s %10s %10s" % ("motion", "omega", "qty", " ".join("%17s" % ("[%d]" % i)
+                                                                                 for i in range(len(names))),
+                                                "spread NP", "spread M", "raw")]
+    for row in table:
+        lines.append("%-6s %5.2f %-6s %s %10.1e %10.1e %10.1e%s" % (
+            row["motion"], row["omega"], row["quantity"], " ".join("%17.10g" % v for v in row["values"]),
+            row["spread_n"], row["spread_m"], row["raw"], " (floor)" if row["floored"] else ""))
+    lines.append(FREE_BODY_UNCERTAINTY)
+    return "\n".join(lines)
+
+
+def check_convergence():
+    """Every value of the convergence table is finite and both spreads of every row are below CONVERGENCE_SPREAD; the
+    message carries the table. See the module docstring, "Convergence"."""
+    table = convergence_table()
+    finite = all(row["finite"] for row in table)
+    worst = max(max(row["spread_n"], row["spread_m"]) for row in table)
+    floored = ["%s %.2f %s (raw %.1e)" % (row["motion"], row["omega"], row["quantity"], row["raw"])
+               for row in table if row["floored"]]
+    ok = finite and worst < CONVERGENCE_SPREAD
+    return ok, ("all finite %s; max spread %.1e (gate %.0e)%s\n%s"
+                % (finite, worst, CONVERGENCE_SPREAD, "; the term floor applied at " + ", ".join(floored) if floored
+                   else "; the term floor applies nowhere", format_convergence_table(table)))
+
+
+CHECKS = {"roots": check_roots, "inner_products": check_inner_products, "polylog": check_polylog,
+          "matching_tail": check_matching_tail, "bottom_limit_x1": check_bottom_limit_x1, "matching": check_matching,
+          "scattering_energy": check_scattering_energy, "reciprocity": check_reciprocity,
           "radiation_energy": check_radiation_energy, "particular_bottom": check_particular_bottom,
           "bottom_limit_drift": check_bottom_limit_drift, "body_matrices": check_body_matrices,
           "free_energy": check_free_energy, "long_wave_motions": check_long_wave_motions,
-          "fx_identity": check_fx_identity, "reference_point": check_reference_point,
-          "pair_symmetry": check_pair_symmetry}
+          "corner_limit": check_corner_limit, "reference_point": check_reference_point,
+          "pair_symmetry": check_pair_symmetry, "fx_identity": check_fx_identity, "convergence": check_convergence}
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    sub = parser.add_subparsers(dest="command", required=True)
-    p_check = sub.add_parser("check")
-    p_check.add_argument("names", nargs="*", metavar="NAME")
-    args = parser.parse_args(argv)
-    names = args.names or list(CHECKS)
-    unknown = [n for n in names if n not in CHECKS]
-    if unknown:
-        parser.error("unknown check(s) %s; known: %s" % (", ".join(unknown), ", ".join(CHECKS)))
+def reference_columns():
+    """The columns of the reference CSV, in order."""
+    cols = ["omega", "motion", "n_modes", "p_max", "orders"]
+    cols += ["A%d" % ij for ij in REFERENCE_PAIRS] + ["B%d" % ij for ij in REFERENCE_PAIRS]
+    cols += ["X%d" % j for j in MOTION_MODES] + ["RAO%d" % j for j in MOTION_MODES]
+    cols += ["Fx_far", "Fx_near", "Fz", "My"]
+    cols += ["%s_%s" % (name, key) for name in ("Fx", "Fz", "My") for key in NEAR_FIELD_TERMS]
+    return cols
+
+
+def _csv_value(value):
+    if isinstance(value, tuple):
+        return " ".join(str(v) for v in value)
+    if isinstance(value, float):
+        return "" if math.isnan(value) else "%.10g" % value
+    return str(value)
+
+
+def format_reference(rows):
+    """The main reference values as a text table (every column is in the CSV)."""
+    cols = ["A11", "A15", "A33", "A55", "B11", "B15", "B33", "B55", "X1", "X3", "X5", "RAO1", "RAO3", "RAO5",
+            "Fx_far", "Fx_near", "Fz", "My"]
+    lines = ["%-6s %5s %s" % ("motion", "omega", " ".join("%12s" % c for c in cols))]
+    for row in rows:
+        lines.append("%-6s %5.2f %s" % (row["motion"], row["omega"],
+                                         " ".join("%12s" % ("" if math.isnan(row[c]) else "%.6g" % row[c])
+                                                  for c in cols)))
+    return "\n".join(lines)
+
+
+def _run_checks(names):
     failed = 0
     for name in names:
         try:
@@ -1960,7 +2501,57 @@ def main(argv=None):
         except Exception as exc:  # a check that cannot run has failed
             ok, message = False, "%s: %s" % (type(exc).__name__, exc)
         failed += not ok
-        print("%s %s: %s" % ("PASS" if ok else "FAIL", name, message))
+        print("%s %s: %s" % ("PASS" if ok else "FAIL", name, message), flush=True)
+    return failed
+
+
+def run_reference(out=None):
+    """The reference subcommand: the fixed and free rows at DEFAULT_RESOLUTION for every WIDE_FREQUENCIES (printed, and
+    written to out as CSV if given), then the convergence table (the convergence check), then every other check.
+    Returns the number of failed checks."""
+    start = time.time()
+    cyl, res = Cylinder(), DEFAULT_RESOLUTION
+    rows = {}
+    for omega in drift_convergence.WIDE_FREQUENCIES:          # omega outermost: fixed and free share the solves
+        for motion in ("fixed", "free"):
+            rows[motion, omega] = reference(cyl, [omega], motion, res["n_modes"], res["p_max"], res["orders"])[0]
+    ordered = [rows[motion, omega] for motion in ("fixed", "free") for omega in drift_convergence.WIDE_FREQUENCIES]
+    print("Reference values at DEFAULT_RESOLUTION (N %d, gap basis %s, orders 0 ... %d); A/rho, B/(rho omega), "
+          "abs(X)/(rho g A), abs(xi) (rad/m for 5), F/(rho g A**2), M_y in m about the origin:"
+          % (res["n_modes"], res["p_max"], res["orders"]))
+    print(format_reference(ordered))
+    print(FREE_BODY_UNCERTAINTY)
+    if out:
+        cols = reference_columns()
+        with open(out, "w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(cols)
+            for row in ordered:
+                writer.writerow([_csv_value(row[c]) for c in cols])
+        print("wrote %d rows to %s" % (len(ordered), out))
+    print("reference values: %.0f s" % (time.time() - start), flush=True)
+    failed = _run_checks(["convergence"] + [name for name in CHECKS if name != "convergence"])
+    print("reference: %d check(s) failed; run time %.0f s" % (failed, time.time() - start))
+    return failed
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    p_check = sub.add_parser("check", help="run the named checks, or all of them")
+    p_check.add_argument("names", nargs="*", metavar="NAME")
+    p_ref = sub.add_parser("reference", help="reference values, the convergence table and all checks")
+    p_ref.add_argument("--out", metavar="CSV", help="write the reference rows to this CSV file")
+    args = parser.parse_args(argv)
+    if args.command == "reference":
+        return 1 if run_reference(args.out) else 0
+    names = args.names or list(CHECKS)
+    unknown = [n for n in names if n not in CHECKS]
+    if unknown:
+        parser.error("unknown check(s) %s; known: %s" % (", ".join(unknown), ", ".join(CHECKS)))
+    start = time.time()
+    failed = _run_checks(names)
+    print("check: %d of %d failed; run time %.0f s" % (failed, len(names), time.time() - start))
     return 1 if failed else 0
 
 
