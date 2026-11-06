@@ -230,3 +230,71 @@ The IRSP limit of the plan, 5e-3, is not met: B11 and abs(X1) change by 1.1%. Th
 Measured: B11 changes less with IRSP as the lid mesh is refined (8.5%, 1.1%, 0.14% at hull 180; 0.94%, 0.07% at hull 390). abs(X1) barely moves with the lid mesh (0.9%, 1.1%, 1.0% at hull 180 for lid 40 x 2, 40 x 4, 80 x 8) and falls only with the hull mesh (1.1% to 0.57% at lid 40 x 4, 1.0% to 0.45% at lid 80 x 8). Without a lid, IRSP changes abs(X1) of `image_cos` by 0.1% and B11 by 0.3%. The Haskind heave residual with IRSP is 4.4e-3 (`lid_ann_160_irsp`) and 8.1e-3 (`lid_ann_640` with IRSP), against 4.6e-4 and 3.1e-3 without IRSP; with IRSP it grows with the lid mesh, and this is unexplained.
 
 Derived, not shown: the trends suggest that the change is a discretisation difference of the least-squares solution (the system has more rows than unknowns), and not a missing term, since B11 converges and abs(X1) improves with the hull. The two measurements above that do not fit this (abs(X1) not following the lid mesh, the Haskind residual growing) leave the cause open. The code was read for a missing incident term in the interior rows and none was found (they have no free term and no incident term, as the formulation requires). A check that would settle it: hull meshes finer than 390 panels with IRSP, to see whether abs(X1) and the Haskind residual fall together.
+
+## Independent reference: bottom-mounted cylinder with an annular lid
+
+Cases (`make_lid_fixtures.py`, `wall()` and `wall_hydrostatics()`): a vertical cylinder of radius a = 2 m standing on the sea bed in h = 10 m of water, wave number k = 0.15 given directly (`Input_frequency_type 2`, kh = 1.5, omega = 1.1538937638 rad/s), heading 0, field points (0, 8, 0) and (8, 0, 0).
+
+| Case | Hull | Lid |
+| :--- | :--- | :--- |
+| `mm_cyl_nolid` | wall 24 around x 10 rows, 240 panels | none, `Damping_lid 0` |
+| `mm_cyl_lid_a` | the same | r 2 to 4, 24 x 2 |
+| `mm_cyl_lid_b` | the same | r 2 to 4, 48 x 4 |
+
+The hull is the wall only, from z = 0 to z = -h, with no bottom panel: the sea bed closes it. Rows are at z = -(h/2)(1 - cos(pi i/10)) as in `image_cos`, node and vertex order as in `image_cos`, nodes at the angles of the lid's nodes. The first and last rows are 0.245 m high, 0.0245 h, below the 0.03 h asked for: ten cosine rows do not allow it. The lid panels next to the hull are 0.26 m (48 x 4) and 0.52 m (24 x 2) around, the first below 0.03 h too. No centroid lies on z = 0 (the top row centroids are at z = -0.122).
+
+`Hydrostatic.in` affects only the motions, not the excitation, and the motions are not compared. It is that of a free-floating column of the same shape: mass rho pi a**2 h = 125664 kg (rho = 1000 of `src/WavDynMods.f90`), centre of gravity at the centre of buoyancy (0, 0, -5), inertia of a solid column about the origin, restoring C33 = rho g pi a**2 and C44 = C55 = rho g pi a**4/4 (the rho g V z_B and -m g z_G terms cancel), no external matrices.
+
+The reference is `pre_postprocessing_python/DampingLid/annular_lid_reference.py` (eigenfunction matching, no BEM, no Green function; method in its docstring). Its self-checks: with b = a it gives MacCamy-Fuchs to 4.5e-16 for every projection, and with the lid the scattered wave of every order m keeps the incident energy to 7e-16 (the lid absorbs none).
+
+Measured, the reference (projection on the outer modes, X1 over rho g A, elevations over A, in the convention of `ExcForce.3` and `PressureElevation.6p`):
+
+| N | abs(X1) | abs(eta(0, 8, 0)) | abs(eta(8, 0, 0)) |
+| ---: | ---: | ---: | ---: |
+| 20 | 12.980572 | 0.874523 | 0.474631 |
+| 40 | 12.879270 | 0.870389 | 0.468534 |
+| 80 | 12.831200 | 0.868327 | 0.465541 |
+| 160 | 12.807762 | 0.867297 | 0.464057 |
+| 320 | 12.796188 | 0.866782 | 0.463319 |
+| linear in 1/N from 20, 40 | 12.778045 | 0.866274 | 0.462438 |
+| linear in 1/N from 40, 80 | 12.783149 | 0.866269 | 0.462547 |
+| linear in 1/N from 160, 320 (used) | 12.784614 | 0.866268 | 0.462580 |
+| the same, projected on the lid modes | 12.784720 | 0.866267 | 0.462580 |
+| the same, phi on lid modes, dphi/dr on outer modes | 12.784853 | 0.866274 | 0.462585 |
+| the same, phi on outer modes, dphi/dr on lid modes | 12.784470 | 0.866259 | 0.462570 |
+| MacCamy-Fuchs (no lid) | 23.479391 | 1.014827 | 1.014165 |
+
+The phases of the reference: X1 93.32 deg, eta(0, 8, 0) 28.15 deg, eta(8, 0, 0) -65.43 deg (MacCamy-Fuchs: 85.96, 2.48, -73.03).
+
+Measured, HAMS-MREL, relative differences to the reference as complex numbers, with the magnitude and phase parts:
+
+| Case | abs(X1) | X1 | eta(0, 8, 0) | eta(8, 0, 0) |
+| :--- | ---: | :--- | :--- | :--- |
+| `mm_cyl_nolid`, against MacCamy-Fuchs | 23.2801 | 0.85% (-0.85%, +0.03 deg) | 0.07% (-0.02%, -0.04 deg) | 0.09% (-0.01%, +0.05 deg) |
+| `mm_cyl_lid_a` | 13.1528 | 3.14% (+2.88%, -0.71 deg) | 3.27% (+2.37%, -1.27 deg) | 6.54% (+6.54%, +0.04 deg) |
+| `mm_cyl_lid_b` | 12.9038 | 1.07% (+0.93%, -0.30 deg) | 1.50% (+1.11%, -0.57 deg) | 2.95% (+2.94%, +0.07 deg) |
+
+Scratch runs, not fixtures (same generator, outside the repository):
+
+| Hull | Lid | X1 | eta(0, 8, 0) | eta(8, 0, 0) |
+| :--- | :--- | ---: | ---: | ---: |
+| 48 x 20, no lid, against MacCamy-Fuchs | none | 0.21% | 0.02% | 0.02% |
+| 24 x 10 | 48 x 8 | 0.28% | 0.76% | 1.48% |
+| 24 x 10 | 96 x 8 | 0.22% | 0.68% | 1.32% |
+| 48 x 20 | 48 x 4 | 1.61% | 1.55% | 3.07% |
+| 48 x 20 | 96 x 8 | 0.68% | 0.73% | 1.44% |
+
+Run times, one thread: 1.1 s (`mm_cyl_nolid`), 1.2 s (`mm_cyl_lid_a`), 2.1 s (`mm_cyl_lid_b`); the reference script 6 s.
+
+| Test | Limit | Measured |
+| :--- | ---: | ---: |
+| `mm_nolid_matches_maccamy_fuchs`, abs(X1 - X1_MF)/abs(X1_MF) | 2e-2 | 8.5e-3 |
+| `mm_lid_matches_reference`, worst of X1 and the two elevations of `mm_cyl_lid_b`, complex | 3e-2 | 2.95e-2 (eta(8, 0, 0)) |
+| the same, each closer than `mm_cyl_lid_a` | | 1.07e-2 < 3.14e-2, 1.50e-2 < 3.27e-2, 2.95e-2 < 6.54e-2 |
+
+Derived from these:
+
+- The reference converges as 1/N (the change halves when N doubles: 0.101, 0.048, 0.023, 0.012 in abs(X1)), as expected of the edge singularity at (b, 0). The linear extrapolations from 40, 80 and from 160, 320 agree to 1.2e-4, and the four projections agree to 2.2e-5 after extrapolation, so the reference is good to about 1e-4, far below the differences above.
+- The bare cylinder on the sea bed matches MacCamy-Fuchs, and its error falls from 0.85% to 0.21% when the hull is refined twice each way, so the hull reaching the sea bed works, and the output convention (time factor, normalisation, phase) is the one the script assumes.
+- With the lid, HAMS-MREL converges to the reference: the errors fall with the number of lid rings (eta(8, 0, 0): 6.5%, 2.9%, 1.5% at 2, 4, 8 rings) and hardly with the number around (48 x 8 and 96 x 8 differ by 0.16% or less). The finer hull moves X1 the other way (1.07% to 1.61% at lid 48 x 4): the hull error of X1 (-0.85% at 24 x 10) partly cancels the lid error (positive), and it shrinks with the finer hull. This is the first-order convergence in the ring width seen on `lid_ann_*`. The 3% limit holds at 48 x 4 with little margin (2.95%) because 4 rings is a coarse mesh for the 1/sqrt edge singularity, not because of a sign or a missing term.
+- The lid's strength is confirmed: the reference gives abs(X1) 0.5445 of the bare cylinder, eta(8, 0, 0) 0.4561 and eta(0, 8, 0) 0.8536, and HAMS-MREL gives 0.5543, 0.4696 and 0.8632 at 48 x 4. The phase shifts the lid causes (X1 +7.4 deg, eta(0, 8, 0) +25.7 deg) are reproduced to 0.6 deg. The factor 100 on B11 of `lid_ann_*` is another geometry (r 6 to 10 around a draft 5 cylinder in 50 m) and is not checked here.

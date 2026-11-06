@@ -72,6 +72,63 @@ def annulus(r0, r1, nt, nr, tri=False, reverse=False, z=0.0, isx=0, isy=0, z_nod
     return EOL.join(lines)
 
 
+def wall(a, h, nt, nz):
+    """The vertical wall r = a from z = 0 to the sea bed z = -h, with no bottom: nt around, nz rows at
+    z = -(h/2)(1 - cos(pi i/nz)), as the rows of image_cos. Node and vertex order as in image_cos, so the normals point the same
+    way. Returns the text of HullMesh.pnl."""
+    zs = [-(h / 2.0) * (1.0 - math.cos(math.pi * i / nz)) for i in range(nz + 1)]
+    zs[-1] = -h
+    nodes = []
+    for j in range(nt):
+        t = 2.0 * math.pi * j / nt
+        for z in zs:
+            nodes.append((a * math.cos(t), a * math.sin(t), z))
+
+    def node(j, i):
+        return (j % nt) * (nz + 1) + i + 1
+
+    panels = [[node(j, i + 1), node(j + 1, i + 1), node(j + 1, i), node(j, i)] for j in range(nt) for i in range(nz)]
+    lines = ["    --------------Hull Mesh File---------------", "",
+             "    # Number of Panels, Nodes, X-Symmetry and Y-Symmetry",
+             "%12d%10d%10d%10d" % (len(panels), len(nodes), 0, 0), "",
+             "    # Start Definition of Node Coordinates     ! node_number   x   y   z"]
+    for n, (x, y, z) in enumerate(nodes, 1):
+        lines.append("%10d%20.10f%20.10f%20.10f" % (n, x, y, z))
+    lines += ["    # End Definition of Node Coordinates", "",
+              "    # Start Definition of Node Relations   ! panel_number  number_of_vertices   Vertex1_ID ..."]
+    for n, p in enumerate(panels, 1):
+        lines.append("%10d%5d" % (n, len(p)) + "".join("%8d" % v for v in p))
+    lines += ["    # End Definition of Node Relations", "", "    --------------End Hull Mesh File---------------", ""]
+    return EOL.join(lines)
+
+
+def wall_hydrostatics(a, h, rho=1000.0, g=9.80665):
+    """Hydrostatic.in of the wall: only the motions depend on it, not the excitation. Mass rho pi a**2 h (the water the column
+    would displace), centre of gravity at the centre of buoyancy z = -h/2, inertia of a solid column about the origin, and the
+    waterplane restoring of a free-floating column of that shape: C33 = rho g pi a**2, C44 = C55 = rho g pi a**4/4 (the
+    rho g V z_B and -m g z_G terms cancel). rho and g of src/WavDynMods.f90."""
+    m = rho * math.pi * a * a * h
+    zg = -h / 2.0
+    ixx = m * (3 * a * a + h * h) / 12.0 + m * zg * zg
+    izz = m * a * a / 2.0
+    mass = [[m, 0, 0, 0, m * zg, 0], [0, m, 0, -m * zg, 0, 0], [0, 0, m, 0, 0, 0], [0, -m * zg, 0, ixx, 0, 0],
+            [m * zg, 0, 0, 0, ixx, 0], [0, 0, 0, 0, 0, izz]]
+    c33 = rho * g * math.pi * a * a
+    c44 = rho * g * math.pi * a ** 4 / 4.0
+    restoring = [[0.0] * 6 for _ in range(6)]
+    restoring[2][2], restoring[3][3], restoring[4][4] = c33, c44, c44
+    zero = [[0.0] * 6 for _ in range(6)]
+
+    def block(title, mat):
+        return [" " + title] + ["".join("%14.5E" % v for v in row) for row in mat]
+
+    lines = [" Center of Gravity:", "  %.12E  %.12E  %.12E" % (0.0, 0.0, zg)]
+    lines += block("Body Mass Matrix:", mass) + block("External Linear Damping Matrix:", zero)
+    lines += block("External Quadratic Damping Matrix:", zero) + block("Hydrostatic Restoring Matrix:", restoring)
+    lines += block("External Restoring Matrix:", zero)
+    return EOL.join(lines) + EOL
+
+
 def centroids(lid_text, count):
     """The vertex averages of the first count panels of a .pnl text, as HAMS computes the panel centroids."""
     lines = lid_text.split(EOL)
@@ -100,9 +157,10 @@ def off_centroid_points(lid_text):
             + [(0.0, 8.0, 0.0), (20.0, 0.0, 0.0)])
 
 
-def control_text(lid, solver=None, depth=None, limits=None, points=None, irsp=0):
+def control_text(lid, solver=None, depth=None, limits=None, points=None, irsp=0, wave_number=None):
     """The image_cos control file with Damping_lid inserted after 'Number of threads', and Solver_type when given. depth
-    replaces the water depth, limits the 0_inf_frequency_limits switch, and points the field points."""
+    replaces the water depth, limits the 0_inf_frequency_limits switch, points the field points, and wave_number the frequency
+    by a wave number (Input_frequency_type 2)."""
     with open(os.path.join(SOURCE, "ControlFile.in"), "rb") as f:
         text = f.read().decode("ascii")
     out = []
@@ -117,6 +175,10 @@ def control_text(lid, solver=None, depth=None, limits=None, points=None, irsp=0)
             line = "   Waterdepth  %.1fD0" % depth
         if limits is not None and "0_inf_frequency_limits" in line:
             line = "    0_inf_frequency_limits      %d" % limits
+        if wave_number is not None and "Input_frequency_type" in line:
+            line = "    Input_frequency_type        2"
+        if wave_number is not None and line.strip() == "1.3500":
+            line = "  %.4f" % wave_number
         if irsp and "If_remove_irr_freq" in line:
             line = "    If_remove_irr_freq       %d" % irsp
         if points is not None and "Number_of_field_points" in line:
@@ -134,19 +196,23 @@ def control_text(lid, solver=None, depth=None, limits=None, points=None, irsp=0)
 
 
 def write_case(name, lid_text, lid_flag=1, solver=None, depth=None, limits=None, points=None, hull=None, water_plane=None,
-               irsp=0):
+               irsp=0, wave_number=None, hull_files=None):
     """hull replaces the folder of the hull and hydrostatics (default image_cos), water_plane is the path of a WaterPlaneMesh.pnl
-    to copy, used with irsp = 1."""
+    to copy, used with irsp = 1. hull_files = (mesh text, hydrostatics text) writes them in place of the copies."""
     folder = os.path.join(TARGET, name, "input")
     if os.path.isdir(folder):
         shutil.rmtree(folder)
     os.makedirs(folder)
-    for f in ("HullMesh.pnl", "Hydrostatic.in"):
-        shutil.copy(os.path.join(hull or SOURCE, f), os.path.join(folder, f))
+    for k, f in enumerate(("HullMesh.pnl", "Hydrostatic.in")):
+        if hull_files is not None:
+            with open(os.path.join(folder, f), "wb") as out:
+                out.write(hull_files[k].encode("ascii"))
+        else:
+            shutil.copy(os.path.join(hull or SOURCE, f), os.path.join(folder, f))
     if water_plane is not None:
         shutil.copy(water_plane, os.path.join(folder, "WaterPlaneMesh.pnl"))
     with open(os.path.join(folder, "ControlFile.in"), "wb") as f:
-        f.write(control_text(lid_flag, solver, depth, limits, points, irsp).encode("ascii"))
+        f.write(control_text(lid_flag, solver, depth, limits, points, irsp, wave_number).encode("ascii"))
     if lid_text is not None:
         with open(os.path.join(folder, "DampingLid.pnl"), "wb") as f:
             f.write(lid_text.encode("ascii"))
@@ -197,6 +263,15 @@ def main():
     write_case("lid_ann_160_pts", full, points=points)
     write_case("lid_ann_160_half", annulus(6.0, 10.0, 40, 4, isy=1, sectors=[(0.0, 180.0)]), points=points, hull=half_hull)
     write_solve_case("lid_ann_160_irsp", full, irsp=1, water_plane=plane)
+
+    # Independent reference (test_integration_lid.f90, pre_postprocessing_python/DampingLid/annular_lid_reference.py): a
+    # cylinder of radius 2 standing on the sea bed in 10 m of water, kh = 1.5, the lid r 2 to 4 at two meshes.
+    cylinder = (wall(2.0, 10.0, 24, 10), wall_hydrostatics(2.0, 10.0))
+    far = [(0.0, 8.0, 0.0), (8.0, 0.0, 0.0)]
+    reference = dict(depth=10.0, wave_number=0.15, points=far, hull_files=cylinder)
+    write_case("mm_cyl_nolid", None, lid_flag=0, **reference)
+    write_case("mm_cyl_lid_a", annulus(2.0, 4.0, 24, 2), **reference)
+    write_case("mm_cyl_lid_b", annulus(2.0, 4.0, 48, 4), **reference)
 
 
 if __name__ == "__main__":
