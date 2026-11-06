@@ -66,6 +66,12 @@ module test_integration_lid
         (2.02520747d0, 23.23109427d0), (0.99339102d0, 0.04910955d0), (0.27074161d0, -0.95859350d0), &    ! 1 m/s
         (0.87716703d0, 20.84072211d0), (0.99990858d0, 0.17835860d0), (0.31664285d0, -0.79760753d0)], &  ! 1e6 m/s
         [3, 3])
+    !> The reference at 1 m/s with the conjugate lid condition, K' = nu g/(g + i omega E), that is Im(alpha) flipped
+    !> (annular_lid_reference.py --epsilon 1 --conjugate; same extrapolation, spread 1.5e-7). mm_cyl_lid_c_eps1 must lie more
+    !> than mm_reference_limit from it, so that a larger limit cannot silently stop the test from telling the signs apart.
+    complex(8), parameter :: mm_conjugate_eps1(3) = [(1.24207194d0, 23.48921293d0), &   ! X1
+                                                     (1.03631036d0, 0.04551342d0), &    ! elevation at (0, 8, 0)
+                                                     (0.32493007d0, -0.97294067d0)]     ! elevation at (8, 0, 0)
     !> Lid power of the reference, 1/2 rho E int abs(dphi/dz)**2 dA in W per m**2 of incident amplitude, rho = 1000, at 0.2 and
     !> 1 m/s (extrapolated from N = 160, 320; spread 5.9e-8 and 1.4e-6). It equals the net power into the cylinder r = 1000 to
     !> 1.1e-11 and 2.6e-10 (N = 320).
@@ -82,8 +88,8 @@ module test_integration_lid
         "lid_ann_160_eps0", "lid_ann_160_rigid", "lid_ann_160_two_dampers", "lid_ann_160_split", "lid_nolid_160"]
 
     !> The two-body cases, run by setup_lid: with a lid, and lid_gap_nolid without.
-    character(len=16), parameter :: two_cases(5) = [character(len=16) :: "lid_two_far", "lid_gap", "lid_gap_eps0", &
-        "lid_gap_eps1", "lid_gap_nolid"]
+    character(len=17), parameter :: two_cases(8) = [character(len=17) :: "lid_two_far", "lid_gap", "lid_gap_eps0", &
+        "lid_gap_eps1", "lid_gap_nolid", "lid_gap_res", "lid_gap_res_eps1", "lid_gap_res_nolid"]
 
     !> Field points of lid_ann_160 and its epsilon variants: the 160 lid centroids, then (12, 0, 0), (20, 0, 0) and (12, 0, -3).
     integer, parameter :: n160 = 160
@@ -1093,16 +1099,19 @@ contains
     !> 1.2e-2 of the eigenfunction reference as complex numbers, and the lid effect within 3e-2 of the reference lid effect.
     !> The first is set by the hull error; at 1 m/s HAMS-MREL is 5.38e-2 from the conjugate reference (Im(alpha) flipped), so
     !> a flipped sign fails it. The second removes the hull error; a flipped binary gives 2.01, so it fails at 0.2 m/s too.
+    !> Sign pin: mm_cyl_lid_c_eps1 must be more than mm_reference_limit from the conjugate reference (measured 5.38e-2), so
+    !> the first check keeps telling the signs apart if the limit is changed.
     subroutine mm_lid_matches_reference(error)
         type(error_type), allocatable, intent(out) :: error
         complex(8) :: v(3), bare(3)
-        real(8) :: diff(3), worst, effect, worst_effect
+        real(8) :: diff(3), worst, effect, worst_effect, conjugate
         integer :: k
 
         call mm_values("mm_cyl_nolid", bare, error)
         if (allocated(error)) return
         worst = 0d0
         worst_effect = 0d0
+        conjugate = 0d0
         do k = 1, size(mm_lid_cases)
             call mm_values(trim(mm_lid_cases(k)), v, error)
             if (allocated(error)) return
@@ -1112,15 +1121,26 @@ contains
                    &"  lid effect ", es10.3)') mm_lid_cases(k), mm_eps(k), diff, effect
             worst = max(worst, maxval(diff))
             worst_effect = max(worst_effect, effect)
+            if (k == 2) conjugate = maxval(abs(v - mm_conjugate_eps1)/abs(mm_conjugate_eps1))
         end do
+        write (*, '(4x, "mm_cyl_lid_c_eps1 against the conjugate reference: worst ", es10.3, ", limit ", es10.3)') &
+            conjugate, mm_reference_limit
         call check_below(error, "mm_lid_matches_reference: worst", worst, mm_reference_limit)
         if (allocated(error)) return
         call check_below(error, "mm_lid_matches_reference: worst lid effect", worst_effect, mm_effect_limit)
+        if (allocated(error)) return
+        call check(error, conjugate > mm_reference_limit, &
+                   "mm_lid_matches_reference: mm_cyl_lid_c_eps1 is within the limit of the conjugate reference; the limit no "// &
+                   "longer tells the sign of Im(alpha)")
     end subroutine mm_lid_matches_reference
 
-    !> The lid-effect error at 0.2 m/s falls from mm_cyl_lid_a (2 rings) to _b (4) to _c (8). The error against the reference
-    !> itself does not fall: the hull error sets it (README).
+    !> The lid-effect error at 0.2 m/s falls from mm_cyl_lid_a (2 rings) to _b (4), and does not rise again at _c (8): measured
+    !> 3.70e-2, 2.28e-2, 2.21e-2. From 4 rings on it levels off at a floor set by the 24 x 10 hull and the 48 panels around, not by the rings: with the
+    !> 48 x 20 hull it is 8.15e-3 at 8 rings and 7.90e-3 at 32 (README, "Lid convergence with the 48 x 20 hull"). So
+    !> the test asks e(c) <= e(b) (1 + converge_tol) and not a strict fall from b to c (spec item 5, deviation accepted). The
+    !> error against the reference itself does not fall: the hull error sets it (README).
     subroutine mm_lid_converges(error)
+        real(8), parameter :: converge_tol = 0.05d0 ! allowed rise from b to c, relative; measured -3.1e-2 (a fall)
         type(error_type), allocatable, intent(out) :: error
         character(len=12), parameter :: names(3) = [character(len=12) :: "mm_cyl_lid_a", "mm_cyl_lid_b", "mm_cyl_lid_c"]
         complex(8) :: v(3), bare(3)
@@ -1135,7 +1155,9 @@ contains
             e(k) = lid_effect_error(v, bare, mm_reference(:, 1))
         end do
         write (*, '(4x, "mm_lid_converges: lid-effect error at 2, 4, 8 rings ", 3es10.3)') e
-        call check(error, e(1) > e(2) .and. e(2) > e(3), "mm_lid_converges: the lid-effect error does not fall with the rings")
+        call check(error, e(1) > e(2), "mm_lid_converges: the lid-effect error does not fall from 2 to 4 rings")
+        if (allocated(error)) return
+        call check(error, e(3) <= e(2)*(1d0 + converge_tol), "mm_lid_converges: the lid-effect error rises from 4 to 8 rings")
     end subroutine mm_lid_converges
 
     !> The lid power from the elevations at the 384 lid centroids, P = 1/2 rho omega**2 sum_l epsilon abs(eta_l)**2 A_l per
@@ -1155,6 +1177,8 @@ contains
             call check(error, size(dif) == n384 + 2, trim(mm_lid_cases(k))//": not 386 field points")
             if (allocated(error)) return
             power = 0.5d0*rho*mm_omega**2*sum(mm_eps(k)*abs(dif(3:n384 + 2))**2*area)
+            ! power is a sum of non-negative terms, so this guards only against an all-zero read of the elevations; the
+            ! sign of the lid absorption is checked against the reference below and in mm_lid_matches_reference.
             call check(error, power > 0d0, "mm_lid_power_matches: the lid power is not positive")
             if (allocated(error)) return
             rel(k) = (power - mm_lid_power(k))/mm_lid_power(k)
@@ -1399,26 +1423,33 @@ contains
     end subroutine lid_gap_eps0_matches_no_lid
 
     !> The lid damps the gap: the largest diffraction elevation at the 80 gap centroids, over the incident amplitude, falls from
-    !> no lid (lid_gap_nolid) to epsilon 0.2 (lid_gap) to epsilon 1 (lid_gap_eps1), while the wave off the lid stays.
+    !> no lid to epsilon 0.2 to epsilon 1, while the wave off the lid stays. Checked at 1.35 rad/s (lid_gap_nolid, lid_gap,
+    !> lid_gap_eps1), above the epsilon = 0 gap resonance, and at the resonance, 1.29 rad/s (lid_gap_res_nolid, lid_gap_res,
+    !> lid_gap_res_eps1), found by a frequency sweep of lid_gap_nolid (README, "Gap resonance").
     subroutine lid_gap_damps(error)
         type(error_type), allocatable, intent(out) :: error
-        character(len=13), parameter :: names(3) = [character(len=13) :: "lid_gap_nolid", "lid_gap", "lid_gap_eps1"]
+        character(len=17), parameter :: names(3,2) = reshape([character(len=17) :: "lid_gap_nolid", "lid_gap", "lid_gap_eps1", &
+            "lid_gap_res_nolid", "lid_gap_res", "lid_gap_res_eps1"], [3, 2])
         complex(8), allocatable :: dif(:), rad(:,:)
         real(8) :: peak(3)
-        integer :: k
+        integer :: k, f
 
-        do k = 1, 3
-            call read_field_two(trim(names(k)), dif, rad, error)
-            if (allocated(error)) return
-            call check(error, size(dif) == 83, trim(names(k))//": not 83 points")
-            if (allocated(error)) return
-            peak(k) = maxval(abs(dif(1:80)))
-            write (*, '(4x, a13, ": largest |elevation| on the gap lid ", es12.5, ", off the lid ", 3es10.3)') names(k), &
-                peak(k), abs(dif(81:83))
-            call check(error, maxval(abs(dif(81:83))) > 0.1d0, trim(names(k))//": no wave off the lid")
+        do f = 1, 2
+            do k = 1, 3
+                call read_field_two(trim(names(k, f)), dif, rad, error)
+                if (allocated(error)) return
+                call check(error, size(dif) == 83, trim(names(k, f))//": not 83 points")
+                if (allocated(error)) return
+                peak(k) = maxval(abs(dif(1:80)))
+                write (*, '(4x, a17, ": largest |elevation| on the gap lid ", es12.5, ", off the lid ", 3es10.3)') names(k, f), &
+                    peak(k), abs(dif(81:83))
+                call check(error, maxval(abs(dif(81:83))) > 0.1d0, trim(names(k, f))//": no wave off the lid")
+                if (allocated(error)) return
+            end do
+            call check(error, peak(2) < peak(1) .and. peak(3) < peak(2), &
+                       "lid_gap_damps: the gap elevation does not fall with epsilon at "//trim(names(1, f)))
             if (allocated(error)) return
         end do
-        call check(error, peak(2) < peak(1) .and. peak(3) < peak(2), "lid_gap_damps: the gap elevation does not fall with epsilon")
     end subroutine lid_gap_damps
 
     !> Panel centroids, areas and unit normals out of the body, from the hull of the cylinder of the image term cases (copied
