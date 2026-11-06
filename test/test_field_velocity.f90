@@ -34,6 +34,8 @@ module test_field_velocity
   real(8), parameter :: exact_phi_limit = 1d-12, exact_fd_limit = 1d-6
   real(8), parameter :: green_phi_limit = 1d-2, green_grad_limit = 2d-2
   real(8), parameter :: source_phi_limit = 2d-2, source_grad_limit = 3d-2
+  ! Half mesh with its images against the whole mesh: the same sums in another order (half_mesh_y_matches_whole measured 7.35e-10)
+  real(8), parameter :: source_half_limit = 1d-8
   ! The size given to the test points, a typical control-surface panel
   real(8), parameter :: point_size = 0.5d0
 
@@ -47,7 +49,8 @@ contains
       new_unittest("incident_stencil", test_incident_stencil), &
       new_unittest("maccamy_fuchs_field_consistent", test_maccamy_fuchs_field), &
       new_unittest("green_field_matches_exact", test_green_field), &
-      new_unittest("source_field_matches_exact", test_source_field) &
+      new_unittest("source_field_matches_exact", test_source_field), &
+      new_unittest("source_field_half_matches_full", test_source_field_half) &
       ]
   end subroutine collect_field_velocity
 
@@ -442,5 +445,71 @@ contains
     write (info, '(a,es10.3)') "gradient against MacCamy-Fuchs, relative to max |gradient| ", err_grad
     call check(error, err_grad <= source_grad_limit, trim(info))
   end subroutine test_source_field
+
+  !> The symmetry-image path of fields_source: a hull with a plane of symmetry (nsys = 2, the images of sigma_full and the mirrored
+  !> field point) against the same hull whole (nsys = 1), same state and points, 20 points around the hull with y < 0 and x < 0
+  !> among them, 8 at z = 0. Both planes: ISY = 1 at depth 10 and ISX = 1 in deep water.
+  subroutine test_source_field_half(error)
+    type(error_type), allocatable, intent(out) :: error
+    real(8) :: rel_phi, rel_grad
+
+    call half_against_whole(10d0, 0, 1, rel_phi, rel_grad, error)
+    if (allocated(error)) return
+    print '(4x,a,2es10.2)', "Source field, ISY = 1 half against whole: phi and gradient ", rel_phi, rel_grad
+    call check(error, max(rel_phi, rel_grad) <= source_half_limit, "ISY = 1 half mesh against whole mesh")
+    if (allocated(error)) return
+    call half_against_whole(-1d0, 1, 0, rel_phi, rel_grad, error)
+    if (allocated(error)) return
+    print '(4x,a,2es10.2)', "Source field, ISX = 1 half against whole: phi and gradient ", rel_phi, rel_grad
+    call check(error, max(rel_phi, rel_grad) <= source_half_limit, "ISX = 1 half mesh against whole mesh")
+  end subroutine test_source_field_half
+
+  subroutine half_against_whole(depth, isx_in, isy_in, rel_phi, rel_grad, error)
+    real(8), intent(in) :: depth
+    integer, intent(in) :: isx_in, isy_in
+    real(8), intent(out) :: rel_phi, rel_grad
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: mesh
+    type(first_order_state) :: states(1)
+    type(source_operator) :: op
+    type(cs_points) :: pts
+    type(cs_fields) :: fields_w(1), fields_h(1)
+    complex(8), allocatable :: sigmas(:, :)
+    real(8) :: g_w
+    integer :: pass, i
+
+    call ring_points(8, 12, [9d0, 6.5d0, 11d0, 15d0], [0d0, -0.6d0, -2.5d0, -7d0], pts)
+    rel_phi = 0d0
+    rel_grad = 0d0
+    do pass = 1, 2
+      call set_wave(depth)
+      if (pass == 1) then
+        call load_single(0, 0, mesh)
+      else
+        call load_single(isx_in, isy_in, mesh)
+      end if
+      g_w = wave_gravity(W1, WK, H)
+      call zero_state(mesh, 0.6d0, states(1))
+      allocate (states(1)%grad_p(3, mesh%n), states(1)%grad_i(3, mesh%n))
+      do i = 1, mesh%n
+        call incident_grad(mesh%xc(:, i), W1, WK, H, 1d0, 0.6d0, g_w, states(1)%grad_i(:, i))
+        states(1)%dphi_p_dn(i) = -sum(states(1)%grad_i(:, i)*mesh%nrm(:, i))
+      end do
+      allocate (sigmas(mesh%n, 1))
+      call build_source_operator(mesh, .false., .false., op)
+      call velocity_source(mesh, op, states(1), sigma_full=sigmas(:, 1))
+      if (pass == 1) then
+        call check(error, mesh%nsys == 1, "The whole mesh should have no symmetry")
+        call fields_source(mesh, pts, states, sigmas, .false., fields_w)
+      else
+        call check(error, mesh%nsys == 2, "The half mesh should have one plane")
+        call fields_source(mesh, pts, states, sigmas, .false., fields_h)
+      end if
+      if (allocated(error)) return
+      deallocate (sigmas, op%lu, op%ipiv, op%gradient)
+    end do
+    rel_phi = maxval(abs(fields_h(1)%phi - fields_w(1)%phi))/maxval(abs(fields_w(1)%phi))
+    rel_grad = maxval(abs(fields_h(1)%grad - fields_w(1)%grad))/maxval(abs(fields_w(1)%grad))
+  end subroutine half_against_whole
 
 end module test_field_velocity
