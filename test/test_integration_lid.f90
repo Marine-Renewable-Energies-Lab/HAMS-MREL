@@ -656,7 +656,7 @@ contains
         end do
     end subroutine lid_converges
 
-    !> A and B are symmetric, by reciprocity: the lid condition is the same homogeneous condition in every problem (spec).
+    !> A and B are symmetric, by reciprocity: the lid condition is the same homogeneous condition in every problem.
     subroutine lid_symmetric_ab(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=16), parameter :: names(3) = [character(len=16) :: "lid_ann_640", "lid_touch", "lid_patches"]
@@ -691,7 +691,7 @@ contains
         haskind_residual = abs(predicted - c%b(3, 3))/c%b(3, 3)
     end function haskind_residual
 
-    !> The Haskind relation over the hull does not hold with epsilon > 0, since the lid absorbs (spec). With epsilon = 0 the lid
+    !> The Haskind relation over the hull does not hold with epsilon > 0, since the lid absorbs. With epsilon = 0 the lid
     !> is no lid, so the heave residual of lid_ann_160_eps0 stays below twice that of lid_nolid_160. lid_ann_160 is printed.
     subroutine lid_haskind_eps0(error)
         type(error_type), allocatable, intent(out) :: error
@@ -820,7 +820,7 @@ contains
     end subroutine read_lid_areas
 
     !> The lid absorbs. lid_damping_nonnegative checks B_ii >= 0. Here, from the elevations at the 160 lid centroids of
-    !> lid_ann_160 (one-point rule per panel), the lid power P = 1/2 rho omega**2 sum_l epsilon_l abs(eta_l)**2 A_l (spec):
+    !> lid_ann_160 (one-point rule per panel), the lid power P = 1/2 rho omega**2 sum_l epsilon_l abs(eta_l)**2 A_l:
     !> - diffraction, per unit incident amplitude: P >= 0, and P > 0 for epsilon 0.2;
     !> - radiation of surge and heave, per unit motion: the lid power is part of the power the body radiates,
     !>   1/2 omega**2 B_jj, so rho sum_l epsilon abs(eta_l)**2 A_l <= B_jj. In the nondimensional output (B over rho omega,
@@ -1187,7 +1187,7 @@ contains
     !> 48 x 20 hull it is 8.15e-3 at 8 rings and 7.90e-3 at 32, and it falls with finer hull and circumferential
     !> resolution; the rate and the split between the two are not determined (README, "Lid convergence with the 48 x 20
     !> hull"). So
-    !> the test asks e(c) <= e(b) (1 + converge_tol) and not a strict fall from b to c (spec item 5, deviation accepted). The
+    !> the test asks e(c) <= e(b) (1 + converge_tol) and not a strict fall from b to c (the lid-effect error levels off at the hull floor). The
     !> error against the reference itself does not fall: the hull error sets it (README).
     subroutine mm_lid_converges(error)
         real(8), parameter :: converge_tol = 0.05d0 ! allowed rise from b to c, relative; measured -3.1e-2 (a fall)

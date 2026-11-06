@@ -361,7 +361,7 @@ CONTAINS
       CALL CalPotential(XP,RDFLG,MD,XPOT)
 
       ! On a lid panel of epsilon > 0 the dynamic condition with p/rho = epsilon dphi/dz gives
-      ! eta = i omega phi / (g - i omega epsilon) (spec, Formulation); elsewhere, and for epsilon = 0, i omega phi / g.
+      ! eta = i omega phi / (g - i omega epsilon) (developer_documentation.md, Damping lid); elsewhere, and for epsilon = 0, i omega phi / g.
       ON=.FALSE.
       EPS=0.D0
       IF (LIDON.EQ.1) EPS=LID_EPS_AT(XP,ON)
