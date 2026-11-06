@@ -366,12 +366,15 @@ reference's docstring), then the convergence table, then runs every check; exit 
     0.7e-4 (0.80) and the extrapolation to r = 0 is 5 to 6 times that span, and it assumes the error vanishes where
     the residual does, which nothing here tests (the residual does not fall with the basis). It is an estimate of
     the size, not a bound.
+  - Free body at 1.40 to 1.80 rad/s: near-field F_x is -1.11e-4, -1.29e-4, -1.26e-4 from far F_x (fx_identity), so
+    KNOWN_UNCERTAINTY states 2e-4 for it there. F_z and M_y there have no separate estimate (check_uncertainty covers
+    0.60 to 0.80 rad/s only); they carry DEFAULT_UNCERTAINTY.
 - Run time, laptop, measured once each: check (the 20 checks without SLOW_CHECKS) 4 min 49 s, most of it convergence
   (146 s) and fx_identity (94 s, the 22 reference rows). reference --out 7 min 2 s for all 22 checks: the rows 92 s,
   convergence 136 s, uncertainty 134 s (the rows at N = 128000 that no other check computes); compare_signs takes 0 s
-  there, since the rows are cached, and about 3 min alone. A row pair (fixed and free) at the default costs about 6 s: they share the solves
-  (_solved), the inner products and radial ratios (_modes) and the solution-independent part of the body series
-  (_series_context).
+  there, since the rows are cached, and about 3 min alone. A row pair (fixed and free) at the default costs about
+  6 s: they share the solves (_solved), the inner products and radial ratios (_modes) and the solution-independent
+  part of the body series (_series_context).
 
 Comparison with HAMS. python -I truncated_cylinder_reference.py compare RESULTS [--out CSV] [--reference CSV] reads every
 folder of RESULTS whose name starts with a_sharp_ (the sharp hull of group A of drift_convergence.study_cases: fixed and
@@ -2203,11 +2206,15 @@ CONVERGENCE_FLOOR = 1e-4
 # The stated relative uncertainty of the reference values: DEFAULT_UNCERTAINTY (the spread gate of convergence) except
 # where KNOWN_UNCERTAINTY names a larger one, (motion, quantity, omega) -> relative uncertainty. The free body at 0.60 to
 # 0.80 rad/s carries the systematic residual of the F_x identity (module docstring, "Reference values"): near-field F_x
-# there is +-5e-4, and F_z at 0.70 and 0.80 rad/s is estimated at 2.6e-3 and 3.6e-3 (check_uncertainty reproduces the
-# estimates and fails if one exceeds its entry). convergence passes a row named here against this value instead of the
-# gate, and prints it as a known exceedance. Every other row of the CSV carries DEFAULT_UNCERTAINTY.
+# there is +-5e-4, and F_z at 0.70 and 0.80 rad/s is estimated at 2.5e-3 and 3.3e-3 (check_uncertainty reproduces the
+# estimates and fails if one exceeds its entry). Free near-field F_x at 1.40, 1.60 and 1.80 rad/s is 2e-4: its residual
+# against far F_x (which changes by less than 1.2e-7 over the resolutions) is -1.11e-4, -1.29e-4, -1.26e-4 (fx_identity);
+# free F_z and M_y there have no separate estimate (check_uncertainty covers 0.60 to 0.80 rad/s only). convergence passes
+# a row named here against this value instead of the gate, and prints it as a known exceedance. Every other row of the
+# CSV carries DEFAULT_UNCERTAINTY.
 DEFAULT_UNCERTAINTY = 1e-4
 KNOWN_UNCERTAINTY = {("free", "Fx_near", 0.60): 5e-4, ("free", "Fx_near", 0.70): 5e-4, ("free", "Fx_near", 0.80): 5e-4,
+                     ("free", "Fx_near", 1.40): 2e-4, ("free", "Fx_near", 1.60): 2e-4, ("free", "Fx_near", 1.80): 2e-4,
                      ("free", "Fz", 0.70): 3e-3, ("free", "Fz", 0.80): 4e-3}
 UNCERTAIN_QUANTITIES = ("Fx_far", "Fx_near", "Fz", "My")   # the quantities with an uncertainty column in the CSV
 
@@ -2220,7 +2227,8 @@ def uncertainty(motion, quantity, omega):
 FREE_BODY_UNCERTAINTY = (
     "Stated uncertainty (KNOWN_UNCERTAINTY; module docstring, \"Reference values\"): relative %g everywhere except the "
     "free body at 0.60 to 0.80 rad/s, where near-field F_x settles about 4.2e-4 of far F_x from it (pitch only, "
-    "systematic): %s. The estimates come from check_uncertainty (F_z and M_y against the F_x residual across gap bases); "
+    "systematic), and free near-field F_x at 1.40 to 1.80 rad/s, 1.1e-4 to 1.3e-4 from far F_x (fx_identity): %s. "
+    "Free F_z and M_y at 1.40 to 1.80 rad/s have no separate estimate. The estimates come from check_uncertainty (F_z and M_y against the F_x residual across gap bases); "
     "the CSV carries them per row (columns *_unc)."
     % (DEFAULT_UNCERTAINTY, ", ".join("%s %s %.2f: %g" % (k[0], k[1], k[2], v) for k, v in sorted(KNOWN_UNCERTAINTY.items()))))
 
