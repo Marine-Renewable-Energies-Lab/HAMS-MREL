@@ -78,9 +78,10 @@
 !                      Level-1 (Top-level) driver subroutine                      !
 !!-------------------------------------------------------------------------------!!
 
-      SUBROUTINE FINGREEN3D(XF,XP,YF,YP,ZF,ZP,V,WVN,NK,H,GRN,FLAG)
+      SUBROUTINE FINGREEN3D(XF,XP,YF,YP,ZF,ZP,V,WVN,NK,H,GRN,FLAG,RR_DECIDE)
 
       INTEGER,INTENT(IN):: NK,FLAG
+      REAL*8,INTENT(IN),OPTIONAL:: RR_DECIDE                       ! Horizontal distance at which the series is chosen, see FINGREEN3D_R
       REAL*8 R,R1,RR,XPQ,YPQ,ZPQ
       REAL*8,INTENT(IN):: XF,XP,YF,YP,ZF,ZP,V,WVN(1:NK),H
       COMPLEX*16,INTENT(OUT):: GRN(4)
@@ -107,7 +108,7 @@
 
         ELSE
             
-          CALL FINGREEN3D_R(RR,ZF,ZP,V,WVN,NK,H,FG,FLAG)
+          CALL FINGREEN3D_R(RR,ZF,ZP,V,WVN,NK,H,FG,FLAG,RR_DECIDE)
           
           IF(RR.GT.1.E-6) THEN
           GRN(2)=FG(2)*XPQ/RR
@@ -157,10 +158,11 @@
 !                      Level-1 (Top-level) driver subroutine                      !
 !!-------------------------------------------------------------------------------!!
 
-      SUBROUTINE FINGREEN3D_R(RR,ZF,ZP,V,WVN,NK,H,GRN,TAG)
+      SUBROUTINE FINGREEN3D_R(RR,ZF,ZP,V,WVN,NK,H,GRN,TAG,RR_DECIDE)
 
         IMPLICIT NONE
         INTEGER TAG,NK
+        REAL*8,INTENT(IN),OPTIONAL:: RR_DECIDE
         REAL*8 R,R1,RR,ZPQ,PI4,G,RHP,WK
         REAL*8,INTENT(IN)::ZF,ZP,V,WVN(1:NK),H
         COMPLEX*16,INTENT(OUT):: GRN(3)
@@ -181,6 +183,9 @@
 ! based on the value of RHP (R/h)                                                                   ! This is the domain decomposition
 !  
         RHP=DABS(RR/H)                                                           ! RR - Horizontal distance between the source point and the field point, H - Depth
+! The series do not agree exactly at the switches below. RR_DECIDE, if present, sets the choice, so that the points of a
+! difference stencil all take the series of its centre: the series is still evaluated at RR.
+        IF (PRESENT(RR_DECIDE)) RHP=DABS(RR_DECIDE/H)
 ! LINTON is used up to R/h = RLIN when nu*h <= VHLIN. Below R/h of about 0.02 the 100 terms
 ! of PIDCOCK have not started to decay, and the epsilon algorithm (Limes) picks a table entry
 ! that jumps when R moves by rounding size: dG/dR*h^2 then scatters by up to 1e5. Around

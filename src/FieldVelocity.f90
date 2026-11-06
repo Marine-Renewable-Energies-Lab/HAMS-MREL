@@ -33,7 +33,8 @@ MODULE FieldVelocity
    !     at z = 0.
    ! Differences are used because the analytic gradient of the formula needs the gradient of dG/dn, a second derivative of G,
    ! which FINGREEN3D and INFGREEN3D do not give. All stencil points of a point take the near-or-far decision of its centre
-   ! (x_decide of field_influence_row), so that no jump between the two panel integrals enters a difference.
+   ! (x_decide of field_influence_row), so that no jump between the two panel integrals enters a difference. They also take
+   ! the centre's choice of the FINGREEN3D series, which do not agree exactly where FINGREEN3D_R switches between them.
    ! The rows of one stencil point serve every state before the next point, and no row is stored: the rows of all points
    ! would take gigabytes (memory estimate from section 4.3 of the spec).
    !

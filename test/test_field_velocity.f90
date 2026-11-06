@@ -9,6 +9,7 @@ module test_field_velocity
   use SecondOrderTypes, only : panel_mesh, first_order_state, cs_points, cs_fields, CS_WALL, CS_LINE
   use FirstOrderState, only : image_signs, incident_phi, incident_grad, wave_gravity
   use WaterlineField, only : field_influence_row
+  use FinGreen3D_Open, only : FINGREEN3D
   use SurfaceVelocity, only : source_panel_integrals, source_operator, build_source_operator, velocity_source
   use FieldVelocity, only : fields_green, fields_source
   use second_order_fixtures, only : make_cylinder, maccamy_fuchs_state, maccamy_fuchs_phi, maccamy_fuchs_field
@@ -45,6 +46,7 @@ contains
     type(unittest_type), allocatable, intent(out) :: testsuite(:)
     testsuite = [ &
       new_unittest("x_decide_sets_the_flag", test_x_decide), &
+      new_unittest("stencil_takes_one_green_series", test_one_series), &
       new_unittest("field_rows_match_analytic_gradient", test_rows_gradient), &
       new_unittest("incident_stencil", test_incident_stencil), &
       new_unittest("maccamy_fuchs_field_consistent", test_maccamy_fuchs_field), &
@@ -58,7 +60,8 @@ contains
 
   !> x_decide = xp gives the row of xp. x_decide far from every panel gives the row of a mesh whose panel sizes make every
   !> panel far, which takes the one-point value everywhere; the point itself is 1 to 3 panel sizes from the hull, where every
-  !> panel is near. Both comparisons are exact: the decision is the only thing x_decide changes.
+  !> panel is near. Both comparisons are exact. x_decide also sets the series of FINGREEN3D, so the reference row passes the
+  !> same far x_decide: on that mesh it changes only the series.
   subroutine test_x_decide(error)
     type(error_type), allocatable, intent(out) :: error
     real(8), parameter :: xp(3) = [6d0, 1d0, -2d0], far(3) = [400d0, 300d0, -2d0]
@@ -79,7 +82,7 @@ contains
     call field_influence_row(mesh, xp, .false., far_g, far_dg, far)
     all_far = mesh
     all_far%psize = 1d-9
-    call field_influence_row(all_far, xp, .false., ref_g, ref_dg)
+    call field_influence_row(all_far, xp, .false., ref_g, ref_dg, far)
     call check(error, all(far_g == ref_g) .and. all(far_dg == ref_dg), "A far x_decide does not give the one-point row")
     if (allocated(error)) return
     ! The two rows must differ, or the test would not see the decision
@@ -87,6 +90,52 @@ contains
     print '(4x,a,es10.2)', "x_decide: largest relative change of an entry between near and far ", separation
     call check(error, separation > 1d-3, "The near and far rows are too close to tell apart")
   end subroutine test_x_decide
+
+  !> FINGREEN3D picks its series by R/h (FINGREEN3D_R), and the series do not agree exactly at a switch. A central
+  !> difference whose two points straddle a switch then takes the mismatch over 2 delta. With RR_DECIDE at the centre both
+  !> points take the centre's series, and the difference matches dG/dx at the centre. Shown at R/h = 0.5, h = 50,
+  !> omega = 0.4: the case of the box at m2 that failed the drift gate. The switch at R/h = 0.05 is not shown: there the
+  !> Limes noise of EIGENE gives 2.8e-2 even with one series (measured).
+  subroutine test_one_series(error)
+    type(error_type), allocatable, intent(out) :: error
+
+    call series_case(0.5d0, error)
+  end subroutine test_one_series
+
+  subroutine series_case(r_over_h, error)
+    real(8), intent(in) :: r_over_h
+    type(error_type), allocatable, intent(out) :: error
+    integer, parameter :: nk_local = 200
+    real(8), parameter :: depth = 50d0, om = 0.4d0, g_disp = 9.807d0, delta = 1d-3, zq = -3d0, zs = -8d0
+    real(8), parameter :: series_limit = 1d-3
+    real(8) :: wvn_local(nk_local), nu, r0, rel_one, rel_free
+    complex(8) :: g0(4), gp(4), gm(4), one, free
+    character(len=160) :: info
+    external :: DISPERSION
+
+    nu = om**2/g_disp
+    call DISPERSION(wvn_local, nk_local, om, depth)
+    r0 = r_over_h*depth
+    call FINGREEN3D(r0, 0d0, 0d0, 0d0, zq, zs, nu, wvn_local, nk_local, depth, g0, 1)
+    ! The series of the centre at both points
+    call FINGREEN3D(r0 + delta, 0d0, 0d0, 0d0, zq, zs, nu, wvn_local, nk_local, depth, gp, 1, RR_DECIDE=r0)
+    call FINGREEN3D(r0 - delta, 0d0, 0d0, 0d0, zq, zs, nu, wvn_local, nk_local, depth, gm, 1, RR_DECIDE=r0)
+    one = (gp(1) - gm(1))/(2d0*delta)
+    rel_one = abs(one - g0(2))/abs(g0(2))
+    ! Each point its own series
+    call FINGREEN3D(r0 + delta, 0d0, 0d0, 0d0, zq, zs, nu, wvn_local, nk_local, depth, gp, 1)
+    call FINGREEN3D(r0 - delta, 0d0, 0d0, 0d0, zq, zs, nu, wvn_local, nk_local, depth, gm, 1)
+    free = (gp(1) - gm(1))/(2d0*delta)
+    rel_free = abs(free - g0(2))/abs(g0(2))
+    print '(4x,a,f5.2,a,es10.2,a,2es10.2)', "series switch at R/h = ", r_over_h, ": jump in G ", &
+      abs(free - one)*2d0*delta, ", relative error of the difference with one series and with two ", rel_one, rel_free
+    write (info, '(a,f5.2,a,2es10.3)') "R/h = ", r_over_h, ": relative error with one series and with two ", &
+      rel_one, rel_free
+    call check(error, rel_one <= series_limit, trim(info))
+    if (allocated(error)) return
+    ! Without the forced choice the difference must fail, or the test would not show the fix matters
+    call check(error, rel_free > series_limit, "No jump seen: "//trim(info))
+  end subroutine series_case
 
   !> The central difference of row_g, with the near-or-far flag decided at the centre, against grad_int of
   !> source_panel_integrals for the same panel, image and flag. The gradient of G(M x, q) in x is M grad_p G.
