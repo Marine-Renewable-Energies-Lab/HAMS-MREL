@@ -363,3 +363,6 @@ MigrationBackup/
 FodyWeavers.xsd
 
 *.mod
+# Planning notes from the superpowers workflow, kept out of the repository
+docs/superpowers/
+.superpowers/
