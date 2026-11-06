@@ -1,10 +1,14 @@
 !> Unit tests for the finite-depth Green function (FinGreen3D.f90).
-!> Both tests check continuity, so they need no reference data:
 !>  1. G at the self point (R=0, z=z') must equal G at R=1e-4 m (LINTON SR->0 limit).
-!>  2. G must be continuous across R/h = 0.0005, where LINTON hands over to PIDCOCK.
+!>  2. G must be continuous across R/h = 0.02, where LINTON hands over to PIDCOCK.
+!>  3. Below R/h = 0.02 and up to nu*h = 50, G and its derivatives must not scatter when R
+!>     moves by rounding size. The epsilon algorithm in PIDCOCK did, by up to 1e4 in dG/dR*h^2.
+!>  4. There they must match a direct sum of the eigenfunction series.
+!>  5. The routine choice follows the limits R/h < 0.02 and nu*h <= 50 exactly.
 module test_fingreen3d
   use testdrive, only : new_unittest, unittest_type, error_type, check
-  use FinGreen3D_Open, only : FINGREEN3D_R
+  use FinGreen3D_Open, only : FINGREEN3D_R, LINTON, PIDCOCK
+  use direct_sum_green_mod, only : direct_sum_green
   implicit none
   private
   public :: collect_fingreen3d
@@ -14,13 +18,27 @@ module test_fingreen3d
   real(8), parameter :: OMEGAS(3) = [0.3d0, 0.8d0, 1.5d0]
   real(8), parameter :: DEPTHS(2) = [70d0, 150d0]
 
+  ! Grid for the small-R tests, in units of h. Depth pairs (zf/h, zp/h) near the surface,
+  ! at the same depth, and deeper. nu*h = 0.018 is example 5 at 0.05 rad/s.
+  real(8), parameter :: SR_DEPTHS(2) = [10d0, 100d0]
+  real(8), parameter :: SR_NUH(4) = [0.018d0, 1d0, 20d0, 50d0]
+  real(8), parameter :: SR_RH(5) = [0.0006d0, 0.002d0, 0.005d0, 0.01d0, 0.015d0]
+  real(8), parameter :: SR_ZF(6) = [-0.003d0, -0.01d0, -0.03d0, -0.1d0, -0.3d0, -0.06d0]
+  real(8), parameter :: SR_ZP(6) = [-0.03d0, -0.003d0, -0.03d0, -0.2d0, -0.5d0, -0.06d0]
+  ! Irregular-frequency lid points lie on z = 0.
+  real(8), parameter :: LID_ZF(2) = [0d0, 0d0]
+  real(8), parameter :: LID_ZP(2) = [-0.03d0, 0d0]
+
 contains
 
   subroutine collect_fingreen3d(testsuite)
     type(unittest_type), allocatable, intent(out) :: testsuite(:)
     testsuite = [ &
       new_unittest("selfterm_continuity", test_selfterm_continuity), &
-      new_unittest("linton_pidcock_continuity", test_linton_pidcock_continuity) ]
+      new_unittest("linton_pidcock_continuity", test_linton_pidcock_continuity), &
+      new_unittest("small_r_no_scatter", test_small_r_no_scatter), &
+      new_unittest("small_r_matches_direct_sum", test_small_r_matches_direct_sum), &
+      new_unittest("linton_limit", test_linton_limit) ]
   end subroutine collect_fingreen3d
 
   subroutine test_selfterm_continuity(error)
@@ -52,13 +70,103 @@ contains
       do i = 1, size(OMEGAS)
         H = DEPTHS(j); W = OMEGAS(i); V = W*W/GRAV
         call DISPERSION(WVN, NK, W, H)
-        call FINGREEN3D_R(0.99999d0*5d-4*H, -20d0, -24d0, V, WVN, NK, H, gl, 1)
-        call FINGREEN3D_R(1.00001d0*5d-4*H, -20d0, -24d0, V, WVN, NK, H, gp, 1)
+        call FINGREEN3D_R(0.99999d0*2d-2*H, -20d0, -24d0, V, WVN, NK, H, gl, 1)
+        call FINGREEN3D_R(1.00001d0*2d-2*H, -20d0, -24d0, V, WVN, NK, H, gp, 1)
         call check(error, abs(gl(1) - gp(1)) < 1d-2*abs(gp(1)), &
-                   "G jumps across R/h = 0.0005 (LINTON -> PIDCOCK)")
+                   "G jumps across R/h = 0.02 (LINTON -> PIDCOCK)")
         if (allocated(error)) return
       end do
     end do
   end subroutine test_linton_pidcock_continuity
+
+  !> Set V and the wave numbers for a given nu*h and depth.
+  subroutine set_frequency(nuh, H, V, WVN)
+    real(8), intent(in) :: nuh, H
+    real(8), intent(out) :: V, WVN(NK)
+    external :: DISPERSION
+    V = nuh/H
+    call DISPERSION(WVN, NK, sqrt(V*GRAV), H)
+  end subroutine set_frequency
+
+  subroutine test_small_r_no_scatter(error)
+    type(error_type), allocatable, intent(out) :: error
+    integer, parameter :: NS = 20
+    real(8) :: WVN(NK), V, H, R, s(4, NS), spread
+    complex(8) :: g(3)
+    integer :: ih, iv, ir, iz, k
+    character(len=160) :: msg
+    do ih = 1, size(SR_DEPTHS)
+      H = SR_DEPTHS(ih)
+      do iv = 1, size(SR_NUH)
+        call set_frequency(SR_NUH(iv), H, V, WVN)
+        do ir = 1, size(SR_RH)
+          do iz = 1, size(SR_ZF)
+            do k = 1, NS
+              R = SR_RH(ir)*H*(1d0 + k*2d-11)
+              call FINGREEN3D_R(R, SR_ZF(iz)*H, SR_ZP(iz)*H, V, WVN, NK, H, g, 1)
+              s(:, k) = [real(g(2)), aimag(g(2)), real(g(3)), aimag(g(3))]*H**2
+            end do
+            spread = maxval(maxval(s, dim=2) - minval(s, dim=2))
+            write(msg, '(A,ES9.2,A,F6.1,A,F7.4,A,2F7.3)') "dG/dR or dG/dz *h^2 scatters by ", &
+              spread, " at h = ", H, ", R/h = ", SR_RH(ir), ", z/h = ", SR_ZF(iz), SR_ZP(iz)
+            call check(error, spread < 1d0, trim(msg))
+            if (allocated(error)) return
+          end do
+        end do
+      end do
+    end do
+  end subroutine test_small_r_no_scatter
+
+  subroutine test_small_r_matches_direct_sum(error)
+    type(error_type), allocatable, intent(out) :: error
+    real(8) :: WVN(NK), V, H, R, zf(8), zp(8), e(3)
+    complex(8) :: g(3), ref(3)
+    integer :: ih, iv, ir, iz
+    character(len=200) :: msg
+    zf = [SR_ZF, LID_ZF]; zp = [SR_ZP, LID_ZP]
+    do ih = 1, size(SR_DEPTHS)
+      H = SR_DEPTHS(ih)
+      do iv = 1, size(SR_NUH)
+        call set_frequency(SR_NUH(iv), H, V, WVN)
+        do ir = 1, size(SR_RH)
+          R = SR_RH(ir)*H
+          do iz = 1, size(zf)
+            call FINGREEN3D_R(R, zf(iz)*H, zp(iz)*H, V, WVN, NK, H, g, 1)
+            call direct_sum_green(R, zf(iz)*H, zp(iz)*H, V, WVN(1), H, ref)
+            e = [abs(g(1) - ref(1))*H, abs(g(2) - ref(2))*H**2, abs(g(3) - ref(3))*H**2]
+            write(msg, '(A,3ES9.2,A,F6.1,A,F6.3,A,F7.4,A,2F7.3)') "error against direct sum (G*h, dG/dR*h^2, dG/dz*h^2) ", &
+              e, " at h = ", H, ", nu*h = ", SR_NUH(iv), ", R/h = ", SR_RH(ir), ", z/h = ", zf(iz), zp(iz)
+            call check(error, e(1) < 0.05d0 .and. e(2) < 0.5d0 .and. e(3) < 0.5d0, trim(msg))
+            if (allocated(error)) return
+          end do
+        end do
+      end do
+    end do
+  end subroutine test_small_r_matches_direct_sum
+
+  subroutine test_linton_limit(error)
+    type(error_type), allocatable, intent(out) :: error
+    real(8), parameter :: H = 100d0, ZF = -1d0, ZP = -3d0
+    real(8), parameter :: NUH(5) = [49.9d0, 60d0, 60d0, 20d0, 20d0]
+    real(8), parameter :: RH(5) = [0.01d0, 0.01d0, 0.0004d0, 0.0199d0, 0.0201d0]
+    logical, parameter :: WANT_LINTON(5) = [.true., .false., .true., .true., .false.]
+    real(8) :: WVN(NK), V
+    complex(8) :: g(3), w(3)
+    integer :: i
+    character(len=80) :: msg
+    do i = 1, size(NUH)
+      call set_frequency(NUH(i), H, V, WVN)
+      call FINGREEN3D_R(RH(i)*H, ZF, ZP, V, WVN, NK, H, g, 1)
+      if (WANT_LINTON(i)) then
+        call LINTON(RH(i)*H, ZF, ZP, V, WVN(1), WVN, NK, H, w)
+      else
+        call PIDCOCK(RH(i)*H, ZF, ZP, V, WVN(1), WVN, NK, H, w)
+      end if
+      write(msg, '(A,F5.1,A,F7.4,A,L1)') "wrong routine at nu*h = ", NUH(i), ", R/h = ", RH(i), &
+        ", LINTON expected: ", WANT_LINTON(i)
+      call check(error, all(g == w), trim(msg))
+      if (allocated(error)) return
+    end do
+  end subroutine test_linton_limit
 
 end module test_fingreen3d
