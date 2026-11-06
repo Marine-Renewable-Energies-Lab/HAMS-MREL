@@ -193,7 +193,8 @@ CORNER_RULE "cube" uses Gauss-Legendre in s = (rho/L)**(1/3) on the corner zone 
 bottom), which carries the weight rho**(-2/3) exactly in its Jacobian 3 L s**2: the same case agrees to 1e-7 between 8 and
 32 nodes. Gauss-Legendre in r beyond. The trapezoidal rule in theta is exact.
 
-Self-checks: python -I truncated_cylinder_reference.py check [NAME ...] runs the named checks, or all of them without NAME.
+Self-checks: python -I truncated_cylinder_reference.py check [NAME ...] runs the named checks, or without NAME all of them
+but uncertainty (SLOW_CHECKS: it is run by name, and by the reference subcommand).
 The script exits with 1 if one fails. What each covers, and what it does not:
 
 - roots: at each omega of drift_convergence.WIDE_FREQUENCIES, h = 100, N = CHECK_N: abs(k tanh kh - nu) and
@@ -310,7 +311,7 @@ The script exits with 1 if one fails. What each covers, and what it does not:
   scaled by 1.01 gives 1.1e-2 (both caught); dropping the lam = 5/6 bottom tail changes the limit by 3e-5 only (it is
   of order rho**(1/3) in rho**(1/3) u_t), so that tail is not tested. It covers the bottom series d phi/dr, its corner
   tail and the particular solution's velocity, which only F_z and M_y see; it does not test them away from the corner.
-- convergence: see "Reference values".
+- convergence and uncertainty: see "Reference values".
 
 Reference values. python -I truncated_cylinder_reference.py reference [--out CSV] writes, at DEFAULT_RESOLUTION
 (N = 64000, gap basis (20, 4, 4), orders 0 ... 15) and every WIDE_FREQUENCIES, the fixed and the free rows of reference
@@ -320,32 +321,43 @@ reference's docstring), then the convergence table, then runs every check; exit 
 - convergence (the check): for F_x far, F_z, M_y (near field, about the origin) and B11 at 0.70, 0.95 and 1.40 rad/s
   (CONVERGENCE_FREQUENCIES), fixed and free, the values at the three resolutions of CONVERGENCE_LADDER, N = 32000 with
   (10, 2, 2), N = 64000 with (20, 4, 4) (the default) and N = 128000 with (30, 6, 6), and at the default with orders
-  0 ... 30, are finite, and the default's spread against the finest and against 2M is below 1e-4 of its value. F_z and
-  M_y are sums of terms that can cancel: where a value is below CONVERGENCE_TERM_FLOOR = 0.1 of its largest term, the
-  spread is taken over that tenth instead (1e-5 of the largest term). That applies only at free F_z, 0.70 rad/s
-  (-0.6128 from II -29.94, III +42.58, IV -13.25): its raw spread is 2.6e-4 of F_z (1.6e-4 absolute, 3.8e-6 of II), and
-  the check passes there on the floor alone. Every other spread is below 1.6e-5 (measured; F_x far below 1.2e-7, B11
-  below 4e-9);
-  the 2M spread is zero to round-off everywhere (the far-field amplitude of order 16 is 1e-25 of order 0 at 1.40 rad/s).
+  0 ... 30, are finite, and the default's spread against the finest and against 2M is below 1e-4 of its value
+  (CONVERGENCE_SPREAD; for a near-zero value, of CONVERGENCE_FLOOR = 1e-4 of the largest of its quantity and motion,
+  which applies nowhere here). One row exceeds 1e-4 and is a named known exceedance (KNOWN_UNCERTAINTY): free F_z at
+  0.70 rad/s, -0.6128 from II -29.94, III +42.58, IV -13.25, spread 2.6e-4 (1.6e-4 absolute, all of it in II on the
+  bottom); it passes against its stated uncertainty, 3e-3, and would fail if the spread grew past that. Every other
+  spread is below 1.6e-5 (F_x far below 1.2e-7, B11 below 4e-9); the 2M spread is zero to round-off everywhere (the
+  far-field amplitude of order 16 is 1e-25 of order 0 at 1.40 rad/s).
 - DEFAULT_RESOLUTION is the coarsest that meets both gates: N = 32000 with (10, 2, 2) as the default would fail the
   spread against N = 64000 with (20, 4, 4) (fixed F_z at 1.40 rad/s, 1.3e-4), and the free body needs the three
   families and N = 64000 for fx_identity (Gap basis; at N = 32000 (10, 2, 2) passes it at 0.70 rad/s only because it is
   not converged in N: -3.4e-4, and -5.1e-4 at N = 128000).
-- Uncertainty. The fixed body: the spreads, below 2e-5 relative for F_z and M_y and far below for the rest (fx_identity
-  below 2.4e-6). The free body away from 0.60 to 0.80 rad/s likewise (fx_identity below 2e-4, 0.95 rad/s 7e-6). The free
-  body at 0.60 to 0.80 rad/s: near-field F_x settles about 4.2e-4 of far F_x from it at N -> infinity, systematically,
-  pitch only (a rho**2 log rho corner term, which no power family represents, is a plausible cause, Gap basis), and does
-  not fall with the gap basis; so the reference's uncertainty there is +-5e-4 relative for F_x near (far F_x is exact to
-  1e-7). F_z and M_y are not covered by that identity, and their spreads understate their error there: across gap bases
-  (10, 2, 2), (20, 4, 4), (30, 6, 6) at N = 128000 they move linearly with the F_x residual (fit residual 3e-7 at 0.60
-  and 0.70 rad/s, 1e-4 at 0.80), dF_z/d(residual) = -0.47, -3.8, +24 and dM_y/d(residual) = 0.03, 0.82, 114 at 0.60,
-  0.70, 0.80 rad/s. Taking the error as slope times residual gives F_z 8e-5, 1.6e-3, 1.0e-2 absolute (3e-5, 2.6e-3,
-  3.6e-3 relative) and M_y 5e-6, 3.4e-4, 4.8e-2 (below 5e-5 relative) at 0.60, 0.70, 0.80 rad/s: an estimate, not a
-  bound (it assumes the error vanishes where the residual does). The convergence table prints this
-  (FREE_BODY_UNCERTAINTY).
-- Run time, laptop: reference --out 4 min 1 s (the 22 rows 77 s, then the checks, which reuse them); check alone
-  3 min 52 s (it was 6 min 25 s before the caches, with fewer checks). A row pair (fixed and free) at the default costs about 6 s: they share the solves (_solved),
-  the inner products and radial ratios (_modes) and the solution-independent part of the body series
+- Uncertainty, stated per row (uncertainty(): KNOWN_UNCERTAINTY, else DEFAULT_UNCERTAINTY = 1e-4 relative; the CSV
+  columns Fx_far_unc, Fx_near_unc, Fz_unc, My_unc). Evidence for the default 1e-4:
+  - Fixed body: spread of the default against N = 128000 with (30, 6, 6), measured at every WIDE_FREQUENCIES for F_z
+    and M_y (outside the check, once): F_z 6e-7 to 6.6e-6 up to 1.20 rad/s, 1.6e-5 at 1.40, 3.1e-5 at 1.60, 4.8e-5 at
+    1.80 (F_z falls to -0.025 there); M_y below 1.5e-6. fx_identity below 2.4e-6. F_x far and B11 far below.
+  - Free body away from 0.60 to 0.80 rad/s: the convergence spreads at 0.95 and 1.40 (below 4e-6), fx_identity below
+    2e-4 (7e-6 at 0.95 rad/s). Not measured for F_z and M_y at 0.40, 1.00 ... 1.20, 1.60, 1.80 beyond fx_identity.
+  - Free body at 0.60 to 0.80 rad/s: near-field F_x settles about 4.2e-4 of far F_x from it as N grows, systematically,
+    pitch only (a rho**2 log rho corner term, which no power family represents, is a plausible cause, Gap basis), and
+    does not fall with the gap basis: Fx_near is stated at 5e-4 there (far F_x is exact to 1e-7). F_z and M_y are not
+    covered by that identity, and their spreads understate their error. check_uncertainty (drift_uncertainty) fits F_z
+    and M_y against the F_x residual r over the gap bases (10, 2, 2), (20, 4, 4), (30, 6, 6) at N = 128000:
+      r = -2.56e-4, -1.68e-4, -2.09e-4 (0.60 rad/s); -5.11e-4, -4.17e-4, -4.46e-4 (0.70); +4.94e-4, +4.24e-4,
+      +4.26e-4 (0.80);
+    slopes dF_z/dr = -0.47, -3.8, +24 and dM_y/dr = 0.03, 0.82, 114; the linear fit's largest residual is 2e-7, 3e-7,
+    8e-5 for F_z. The estimated error is the distance of the default value to the fit's value at r = 0: F_z 2.4e-5,
+    2.5e-3, 3.3e-3 relative, M_y 3.0e-5, 4.1e-5, 3.2e-5 relative. So KNOWN_UNCERTAINTY states F_z 3e-3 at 0.70 and 4e-3 at
+    0.80 rad/s; the rest stays within 1e-4. The lever arm is short: the residuals span only 0.9e-4 (0.70 rad/s) and
+    0.7e-4 (0.80) and the extrapolation to r = 0 is 5 to 6 times that span, and it assumes the error vanishes where
+    the residual does, which nothing here tests (the residual does not fall with the basis). It is an estimate of
+    the size, not a bound.
+- Run time, laptop: check (without uncertainty) 3 min 52 s. reference --out 15 min 19 s in a run where the laptop
+  was about 2.5 times slower than for that figure (its 22 rows took 191 s, 77 s before; convergence 208 s, 127 s
+  before): uncertainty took 453 s of it (six rows at N = 128000 that no other check computes), so expect about
+  6 to 7 min unloaded. A row pair (fixed and free) at the default costs about 6 s: they share the solves
+  (_solved), the inner products and radial ratios (_modes) and the solution-independent part of the body series
   (_series_context).
 """
 import argparse
@@ -2131,16 +2143,33 @@ NEAR_CHECK_RESOLUTION = DEFAULT_RESOLUTION
 # The (N, gap basis) ladder of convergence, increasing, with DEFAULT_RESOLUTION in it; the orders are tested by doubling M
 CONVERGENCE_LADDER = (dict(n_modes=32000, p_max=(10, 2, 2), orders=15), DEFAULT_RESOLUTION,
                       dict(n_modes=128000, p_max=(30, 6, 6), orders=15))
-# convergence: a near-field value below CONVERGENCE_TERM_FLOOR times its largest term (I ... V) is a cancellation, and its
-# spreads are measured against that floor instead (1e-5 of the largest term, for the spread gate 1e-4); it acts only at
-# free F_z, 0.70 rad/s (-0.61 from terms of -29.9, +42.6, -13.3)
-CONVERGENCE_TERM_FLOOR = 0.1
+# convergence: below CONVERGENCE_FLOOR times the largest abs(value) of the quantity and motion over CONVERGENCE_FREQUENCIES,
+# a value counts as near zero and its spreads are measured against that floor (the floor of drift_convergence.percent);
+# it acts nowhere in the present table
+CONVERGENCE_FLOOR = 1e-4
+# The stated relative uncertainty of the reference values: DEFAULT_UNCERTAINTY (the spread gate of convergence) except
+# where KNOWN_UNCERTAINTY names a larger one, (motion, quantity, omega) -> relative uncertainty. The free body at 0.60 to
+# 0.80 rad/s carries the systematic residual of the F_x identity (module docstring, "Reference values"): near-field F_x
+# there is +-5e-4, and F_z at 0.70 and 0.80 rad/s is estimated at 2.6e-3 and 3.6e-3 (check_uncertainty reproduces the
+# estimates and fails if one exceeds its entry). convergence passes a row named here against this value instead of the
+# gate, and prints it as a known exceedance. Every other row of the CSV carries DEFAULT_UNCERTAINTY.
+DEFAULT_UNCERTAINTY = 1e-4
+KNOWN_UNCERTAINTY = {("free", "Fx_near", 0.60): 5e-4, ("free", "Fx_near", 0.70): 5e-4, ("free", "Fx_near", 0.80): 5e-4,
+                     ("free", "Fz", 0.70): 3e-3, ("free", "Fz", 0.80): 4e-3}
+UNCERTAIN_QUANTITIES = ("Fx_far", "Fx_near", "Fz", "My")   # the quantities with an uncertainty column in the CSV
+
+
+def uncertainty(motion, quantity, omega):
+    """The stated relative uncertainty of a reference value (KNOWN_UNCERTAINTY, else DEFAULT_UNCERTAINTY)."""
+    return KNOWN_UNCERTAINTY.get((motion, quantity, round(float(omega), 2)), DEFAULT_UNCERTAINTY)
+
+
 FREE_BODY_UNCERTAINTY = (
-    "Uncertainty of the free body at 0.60 to 0.80 rad/s (module docstring, \"Reference values\"): near-field F_x settles "
-    "4.2e-4 of far F_x from it (pitch only, systematic, not falling with N or the gap basis), so take +-5e-4 relative "
-    "for near-field F_x there. F_z and M_y move with that residual across gap bases (linearly); the estimated errors are "
-    "F_z 8e-5, 1.6e-3, 1.0e-2 and M_y 5e-6, 3.4e-4, 4.8e-2 (absolute) at 0.60, 0.70, 0.80 rad/s, that is F_z 3e-5, "
-    "2.6e-3, 3.6e-3 relative and M_y below 5e-5 relative. The spreads below do not show these.")
+    "Stated uncertainty (KNOWN_UNCERTAINTY; module docstring, \"Reference values\"): relative %g everywhere except the "
+    "free body at 0.60 to 0.80 rad/s, where near-field F_x settles about 4.2e-4 of far F_x from it (pitch only, "
+    "systematic): %s. The estimates come from check_uncertainty (F_z and M_y against the F_x residual across gap bases); "
+    "the CSV carries them per row (columns *_unc)."
+    % (DEFAULT_UNCERTAINTY, ", ".join("%s %s %.2f: %g" % (k[0], k[1], k[2], v) for k, v in sorted(KNOWN_UNCERTAINTY.items()))))
 
 REFERENCE_PAIRS = (11, 13, 15, 33, 35, 55)
 
@@ -2169,6 +2198,8 @@ def _reference_row(cyl, omega, motion, n_modes, p_max, orders):
     for name, index in (("Fx", 0), ("Fz", 2), ("My", 4)):
         for key in NEAR_FIELD_TERMS:
             row["%s_%s" % (name, key)] = float(terms[key][index])
+    for quantity in UNCERTAIN_QUANTITIES:
+        row["%s_unc" % quantity] = uncertainty(motion, quantity, omega)
     return row
 
 
@@ -2178,7 +2209,9 @@ def reference(cyl, frequencies, motion, n_modes, p_max, orders):
     A35, A55 and B..); abs(X) (ExcForce.3, over rho g A; X1, X3, X5); abs(xi) (Motion.4's MOD, rotations in rad/m;
     RAO1, RAO3, RAO5, nan for the fixed body); Fx_far (MeanDriftMomentum.8), Fx_near, Fz, My (MeanDriftPressure.9, over
     rho g A**2, moments in m about the origin) and each near-field term of them, Fx_I ... Fx_V, Fz_.., My_..
-    (MeanDriftTerms.txt). See the module docstring, "Reference values", for the uncertainty."""
+    (MeanDriftTerms.txt); and Fx_far_unc, Fx_near_unc, Fz_unc, My_unc, the stated relative uncertainty of each
+    (uncertainty: KNOWN_UNCERTAINTY or DEFAULT_UNCERTAINTY). p_max is the key of _spec_key, a tuple for the three
+    families; the CSV writes it space-separated ("20 4 4"). See the module docstring, "Reference values"."""
     if motion not in ("fixed", "free"):
         raise ValueError("reference: motion is 'fixed' or 'free', got %r" % (motion,))
     return [dict(_reference_row(cyl, float(omega), motion, int(n_modes), _spec_key(p_max), _orders_key(orders)))
@@ -2388,10 +2421,10 @@ def convergence_orders():
 def convergence_table(cyl=None):
     """For CONVERGENCE_QUANTITIES at CONVERGENCE_FREQUENCIES, fixed and free: the values at the resolutions of
     CONVERGENCE_LADDER and at DEFAULT_RESOLUTION with twice its orders, and the spreads of the default against the
-    finest of the ladder and against 2M, each over max(abs(default value), floor). For F_z and M_y the floor is
-    CONVERGENCE_TERM_FLOOR times the largest abs(term) of the default row (a value far below its terms is a
-    cancellation); F_x far and B11 are not sums of terms and have none. A list of dicts, one per (motion, quantity,
-    omega); "raw" is the larger spread over abs(default value) alone."""
+    finest of the ladder and against 2M, each over max(abs(default value), floor), floor = CONVERGENCE_FLOOR times the
+    largest abs(default value) of the quantity and motion over the frequencies (near-zero values only); "allowed" is the
+    larger of CONVERGENCE_SPREAD and the row's stated uncertainty (uncertainty). A list of dicts, one per (motion,
+    quantity, omega)."""
     cyl = Cylinder() if cyl is None else cyl
     resolutions = list(CONVERGENCE_LADDER) + [convergence_orders()]
     values = {}
@@ -2404,16 +2437,16 @@ def convergence_table(cyl=None):
     out = []
     for motion in ("fixed", "free"):
         for quantity in CONVERGENCE_QUANTITIES:
+            scale = max(abs(values[w, motion, default][quantity]) for w in CONVERGENCE_FREQUENCIES)
             for omega in CONVERGENCE_FREQUENCIES:
-                row = values[omega, motion, default]
                 v = [values[omega, motion, i][quantity] for i in range(len(resolutions))]
-                ref = v[default]
-                terms = [abs(row["%s_%s" % (quantity, key)]) for key in NEAR_FIELD_TERMS if quantity in ("Fz", "My")]
-                floor = CONVERGENCE_TERM_FLOOR * max(terms) if terms else 0.0
-                spread_n, spread_m = abs(v[finest] - ref), abs(v[-1] - ref)
-                out.append(dict(omega=omega, motion=motion, quantity=quantity, values=v,
-                                spread_n=spread_n / max(abs(ref), floor), spread_m=spread_m / max(abs(ref), floor),
-                                raw=max(spread_n, spread_m) / abs(ref), floored=abs(ref) < floor,
+                ref, floor = v[default], CONVERGENCE_FLOOR * scale
+                spread_n = abs(v[finest] - ref) / max(abs(ref), floor)
+                spread_m = abs(v[-1] - ref) / max(abs(ref), floor)
+                allowed = max(CONVERGENCE_SPREAD, uncertainty(motion, quantity, omega))
+                out.append(dict(omega=omega, motion=motion, quantity=quantity, values=v, spread_n=spread_n,
+                                spread_m=spread_m, floored=abs(ref) < floor, allowed=allowed,
+                                known=max(spread_n, spread_m) >= CONVERGENCE_SPREAD and allowed > CONVERGENCE_SPREAD,
                                 finite=bool(np.all(np.isfinite(v)))))
     return out
 
@@ -2426,31 +2459,90 @@ def format_convergence_table(table):
     lines = ["Convergence (F over rho g A**2, moments in m; B11 over rho omega). Resolutions: "
              + "; ".join("[%d] %s" % (i, n) for i, n in enumerate(names)) + " ([%d] is DEFAULT_RESOLUTION)." % default,
              "Spreads: |[%d] - [%d]| (N, gap basis) and |[%d] - [%d]| (orders), over max(|[%d]|, floor), floor = %g of "
-             "the largest term for F_z and M_y; raw: the larger spread over |[%d]|."
-             % (finest, default, len(names) - 1, default, default, CONVERGENCE_TERM_FLOOR, default),
+             "the largest |[%d]| of the quantity and motion; allowed: %g, or the stated uncertainty where larger."
+             % (finest, default, len(names) - 1, default, default, CONVERGENCE_FLOOR, default, CONVERGENCE_SPREAD),
              "%-6s %5s %-6s %s %10s %10s %10s" % ("motion", "omega", "qty", " ".join("%17s" % ("[%d]" % i)
                                                                                  for i in range(len(names))),
-                                                "spread NP", "spread M", "raw")]
+                                                "spread NP", "spread M", "allowed")]
     for row in table:
+        note = " known exceedance" if row["known"] else ""
+        note += " (floor)" if row["floored"] else ""
         lines.append("%-6s %5.2f %-6s %s %10.1e %10.1e %10.1e%s" % (
             row["motion"], row["omega"], row["quantity"], " ".join("%17.10g" % v for v in row["values"]),
-            row["spread_n"], row["spread_m"], row["raw"], " (floor)" if row["floored"] else ""))
+            row["spread_n"], row["spread_m"], row["allowed"], note))
     lines.append(FREE_BODY_UNCERTAINTY)
     return "\n".join(lines)
 
 
 def check_convergence():
-    """Every value of the convergence table is finite and both spreads of every row are below CONVERGENCE_SPREAD; the
-    message carries the table. See the module docstring, "Convergence"."""
+    """Every value of the convergence table is finite, and both spreads of every row are below CONVERGENCE_SPREAD, or
+    below the row's stated uncertainty where KNOWN_UNCERTAINTY names a larger one (a known exceedance: it still fails if
+    the spread grows past it). The message carries the table. See the module docstring, "Reference values"."""
     table = convergence_table()
     finite = all(row["finite"] for row in table)
-    worst = max(max(row["spread_n"], row["spread_m"]) for row in table)
-    floored = ["%s %.2f %s (raw %.1e)" % (row["motion"], row["omega"], row["quantity"], row["raw"])
-               for row in table if row["floored"]]
-    ok = finite and worst < CONVERGENCE_SPREAD
-    return ok, ("all finite %s; max spread %.1e (gate %.0e)%s\n%s"
-                % (finite, worst, CONVERGENCE_SPREAD, "; the term floor applied at " + ", ".join(floored) if floored
-                   else "; the term floor applies nowhere", format_convergence_table(table)))
+    ok = finite and all(max(row["spread_n"], row["spread_m"]) < row["allowed"] for row in table)
+    plain = [row for row in table if not row["known"]]
+    known = ["%s %.2f %s %.1e (stated %.0e)" % (row["motion"], row["omega"], row["quantity"],
+                                               max(row["spread_n"], row["spread_m"]), row["allowed"])
+             for row in table if row["known"]]
+    floored = ["%s %.2f %s" % (row["motion"], row["omega"], row["quantity"]) for row in table if row["floored"]]
+    return ok, ("all finite %s; max spread %.1e (gate %.0e) outside the known exceedances; known exceedances: %s; "
+                "near-zero floor applied at: %s\n%s"
+                % (finite, max(max(r["spread_n"], r["spread_m"]) for r in plain), CONVERGENCE_SPREAD,
+                   ", ".join(known) or "none", ", ".join(floored) or "none", format_convergence_table(table)))
+
+
+UNCERTAINTY_FREQUENCIES = (0.60, 0.70, 0.80)   # check_uncertainty: the free body where the F_x residual is systematic
+UNCERTAINTY_BASES = ((10, 2, 2), (20, 4, 4), (30, 6, 6))
+UNCERTAINTY_MODES = 128000                       # N of the fit, where each basis is converged in N for F_x
+UNCERTAINTY_LINEARITY = 0.1   # the fit's largest residual must be below this times the estimated error
+
+
+def drift_uncertainty(cyl=None):
+    """The estimates behind KNOWN_UNCERTAINTY. For each omega of UNCERTAINTY_FREQUENCIES, free body, at N =
+    UNCERTAINTY_MODES and each gap basis of UNCERTAINTY_BASES: the F_x-identity residual r = (near - far)/far, and F_z
+    and M_y. Each of F_z, M_y is fitted as c + s r over the bases; the estimated error of the reference value q (at
+    DEFAULT_RESOLUTION) is abs(q - c)/abs(q), the distance to the value at zero residual. The F_x near estimate is abs(r)
+    at the default. Assumption: the error vanishes where the residual does (not testable here; the residual itself
+    does not fall with the basis). Returns a list of dicts per (omega, quantity) with the residuals, the slope, the
+    intercept, the fit's largest residual and the relative estimate."""
+    cyl = Cylinder() if cyl is None else cyl
+    res = DEFAULT_RESOLUTION
+    out = []
+    for omega in UNCERTAINTY_FREQUENCIES:
+        rows = [_reference_row(cyl, omega, "free", UNCERTAINTY_MODES, _spec_key(b), _orders_key(res["orders"]))
+                for b in UNCERTAINTY_BASES]
+        ref = _reference_row(cyl, omega, "free", res["n_modes"], _spec_key(res["p_max"]), _orders_key(res["orders"]))
+        r = np.array([(row["Fx_near"] - row["Fx_far"]) / row["Fx_far"] for row in rows])
+        out.append(dict(omega=omega, quantity="Fx_near", residuals=r, slope=float("nan"), intercept=ref["Fx_far"],
+                        fit=0.0, estimate=abs(ref["Fx_near"] - ref["Fx_far"]) / abs(ref["Fx_far"]), value=ref["Fx_near"]))
+        for quantity in ("Fz", "My"):
+            q = np.array([row[quantity] for row in rows])
+            slope, intercept = np.polyfit(r, q, 1)
+            fit = float(np.max(np.abs(q - (intercept + slope * r))))
+            out.append(dict(omega=omega, quantity=quantity, residuals=r, slope=float(slope), intercept=float(intercept),
+                            fit=fit, estimate=abs(ref[quantity] - intercept) / abs(ref[quantity]),
+                            value=ref[quantity]))
+    return out
+
+
+def check_uncertainty():
+    """drift_uncertainty: every estimate is within the stated uncertainty (uncertainty(), from KNOWN_UNCERTAINTY or
+    DEFAULT_UNCERTAINTY), and every fit is linear to UNCERTAINTY_LINEARITY of its estimate (or to 1e-6 relative where
+    the estimate is below 1e-5). It reproduces KNOWN_UNCERTAINTY; it does not test the zero-intercept assumption."""
+    ok, lines = True, []
+    for e in drift_uncertainty():
+        stated = uncertainty("free", e["quantity"], e["omega"])
+        linear = e["fit"] <= max(UNCERTAINTY_LINEARITY * e["estimate"], 1e-6) * abs(e["value"])
+        ok &= e["estimate"] <= stated and linear
+        lines.append("%.2f %-7s residuals %s slope %s intercept %.7g fit %.1e estimate %.1e (stated %.0e)%s"
+                     % (e["omega"], e["quantity"], " ".join("%+.3e" % x for x in e["residuals"]),
+                        "%.4g" % e["slope"] if e["quantity"] != "Fx_near" else "-", e["intercept"], e["fit"],
+                        e["estimate"], stated, "" if linear else " NOT LINEAR"))
+    return ok, ("free body, N = %d, gap bases %s: F_x residuals per basis, F_z and M_y fitted against them, estimated "
+                "relative errors against the stated ones\n%s" % (UNCERTAINTY_MODES, ", ".join(str(b) for b in
+                                                                                          UNCERTAINTY_BASES),
+                                                                  "\n".join(lines)))
 
 
 CHECKS = {"roots": check_roots, "inner_products": check_inner_products, "polylog": check_polylog,
@@ -2461,14 +2553,19 @@ CHECKS = {"roots": check_roots, "inner_products": check_inner_products, "polylog
           "free_energy": check_free_energy, "long_wave_motions": check_long_wave_motions,
           "corner_limit": check_corner_limit, "reference_point": check_reference_point,
           "pair_symmetry": check_pair_symmetry, "fx_identity": check_fx_identity, "convergence": check_convergence}
+# Run by name (check uncertainty) and by the reference subcommand, not by a bare check: nine rows at N = 128000
+SLOW_CHECKS = {"uncertainty": check_uncertainty}
+ALL_CHECKS = dict(CHECKS, **SLOW_CHECKS)
 
 
 def reference_columns():
-    """The columns of the reference CSV, in order."""
+    """The columns of the reference CSV, in order (reference's keys). A tuple (p_max) is written space-separated,
+    "20 4 4"; nan (the fixed body's RAOs) as an empty field."""
     cols = ["omega", "motion", "n_modes", "p_max", "orders"]
     cols += ["A%d" % ij for ij in REFERENCE_PAIRS] + ["B%d" % ij for ij in REFERENCE_PAIRS]
     cols += ["X%d" % j for j in MOTION_MODES] + ["RAO%d" % j for j in MOTION_MODES]
     cols += ["Fx_far", "Fx_near", "Fz", "My"]
+    cols += ["%s_unc" % q for q in UNCERTAIN_QUANTITIES]
     cols += ["%s_%s" % (name, key) for name in ("Fx", "Fz", "My") for key in NEAR_FIELD_TERMS]
     return cols
 
@@ -2496,12 +2593,13 @@ def format_reference(rows):
 def _run_checks(names):
     failed = 0
     for name in names:
+        start = time.time()
         try:
-            ok, message = CHECKS[name]()
+            ok, message = ALL_CHECKS[name]()
         except Exception as exc:  # a check that cannot run has failed
             ok, message = False, "%s: %s" % (type(exc).__name__, exc)
         failed += not ok
-        print("%s %s: %s" % ("PASS" if ok else "FAIL", name, message), flush=True)
+        print("%s %s (%.0f s): %s" % ("PASS" if ok else "FAIL", name, time.time() - start, message), flush=True)
     return failed
 
 
@@ -2530,7 +2628,7 @@ def run_reference(out=None):
                 writer.writerow([_csv_value(row[c]) for c in cols])
         print("wrote %d rows to %s" % (len(ordered), out))
     print("reference values: %.0f s" % (time.time() - start), flush=True)
-    failed = _run_checks(["convergence"] + [name for name in CHECKS if name != "convergence"])
+    failed = _run_checks(["convergence"] + [name for name in ALL_CHECKS if name != "convergence"])
     print("reference: %d check(s) failed; run time %.0f s" % (failed, time.time() - start))
     return failed
 
@@ -2546,9 +2644,9 @@ def main(argv=None):
     if args.command == "reference":
         return 1 if run_reference(args.out) else 0
     names = args.names or list(CHECKS)
-    unknown = [n for n in names if n not in CHECKS]
+    unknown = [n for n in names if n not in ALL_CHECKS]
     if unknown:
-        parser.error("unknown check(s) %s; known: %s" % (", ".join(unknown), ", ".join(CHECKS)))
+        parser.error("unknown check(s) %s; known: %s" % (", ".join(unknown), ", ".join(ALL_CHECKS)))
     start = time.time()
     failed = _run_checks(names)
     print("check: %d of %d failed; run time %.0f s" % (failed, len(names), time.time() - start))
