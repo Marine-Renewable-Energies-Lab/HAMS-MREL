@@ -196,7 +196,7 @@ Measured (README, "Single-layer integral of G over a lid panel"):
 
 Measured (README, "Single-body solve with a lid"): from 40 to 160 to 640 lid panels of the `lid_ann_*` cases at 0.2 m/s, the change falls by 3.1 (A11), 4.0 (A33), 8.5 (B11), 4.3 (B33) and 8.6 (abs(X1)). A narrowing ring approaches no lid about in proportion to its width (distance 5.5e-3 at 0.5 m, 2.8e-3 at 0.25 m).
 
-Lid convergence against the eigenfunction reference, measured (README, "Lid convergence with the 48 x 20 hull"; bottom-mounted cylinder of the next section, 48 x 20 hull, lid r 2 to 4 with 48 panels around). The worst lid-effect error is 8.15e-3, 7.97e-3 and 7.90e-3 for 8, 16 and 32 rings at 0.2 m/s, and 8.10e-3, 7.88e-3 at 8 and 32 rings at 1 m/s, while the raw error stays at the bare-hull error (2.1e-3 in X1). Derived: the rings are resolved at 8. What remains is set by the panels around and by the hull rows near the waterline: 96 lid panels around give 5.81e-3, and the 72 x 30 hull with a 72-around lid 3.71e-3. The error then falls about as the square of the panel count around. The lid power error follows the area deficit of the polygonal lid (-3.2e-3 measured against 2.9e-3 for 48 panels around).
+Lid convergence against the eigenfunction reference, measured (README, "Lid convergence with the 48 x 20 hull"; bottom-mounted cylinder of the next section, 48 x 20 hull, lid r 2 to 4 with 48 panels around). The worst lid-effect error is 8.15e-3, 7.97e-3 and 7.90e-3 for 8, 16 and 32 rings at 0.2 m/s, and 8.10e-3, 7.88e-3 at 8 and 32 rings at 1 m/s, while the raw error stays at the bare-hull error (2.1e-3 in X1). Derived: the rings are resolved at 8. What remains is set by the panels around and by the hull rows near the waterline: 96 lid panels around give 5.81e-3, and the 72 x 30 hull with a 72-around lid 3.71e-3. The floor falls with finer circumferential and hull resolution; the rate, and the split between the two, are not determined by these runs (doubling the panels around alone gives a factor of 1.4 to 1.6). The lid power error is of the order of the area deficit of the polygonal lid (-3.2e-3 measured against 2.9e-3 at 48 panels around, -1.1e-3 against 7.1e-4 at 96).
 
 Symmetry, measured (README, "Symmetry and IRSP"): the half hull with the half lid (`ISY = 1`) gives A, B and X of the full model to 1.4e-6 relative to the largest entry, and the field values to 6.7e-7.
 
@@ -208,7 +208,7 @@ Measured (README, "Independent reference"): a bottom-mounted cylinder (radius 2 
 
 HAMS-MREL with the 24 x 10 hull and the lid of 48 x 8 panels, complex relative error in X1, eta(0, 8, 0), eta(8, 0, 0):
 
-| epsilon (m/s) | X1 | eta(0, 8, 0) | eta(8, 0, 0) | Lid effect, worst | Lid power |
+| epsilon (m/s) | X1 | eta(0, 8, 0) | eta(8, 0, 0) | Lid effect, worst | Lid power, relative error |
 | ---: | ---: | ---: | ---: | ---: | ---: |
 | none (against MacCamy-Fuchs) | 8.50e-3 | 6.53e-4 | 8.90e-4 | | |
 | 0.2 | 8.49e-3 | 6.46e-4 | 9.10e-4 | 2.21e-2 | -4.14e-3 |
@@ -230,7 +230,7 @@ Measured (README, "Gap resonance"): a sweep of `lid_gap_nolid` from 0.8 to 2.0 r
 ### Limits
 
 - epsilon must be chosen by the user and calibrated against model tests or CFD; the code has no default. Starting values are in [input_files.md](input_files.md#dampinglidpnl).
-- A, B, X and the RAOs are integrated over the hull only, as in WAMIT. The lid power is not written.
+- A, B, X and the RAOs are integrated over the hull only, as in WAMIT (WAMIT User Manual v7.5, Section 12.8). The lid power is not written.
 - The Haskind relation over the hull does not hold for epsilon > 0 (derived above; measured heave residual 4.6e-2 at 0.2 m/s against 2.1e-3 without the lid).
 - A zero frequency in the frequency list stops a run with the lid on (`zero frequency with a damping lid`). The zero frequency of `0_inf_frequency_limits` is exempt, and the lid is skipped there.
 - No GMRES: `Solver_type 2` with a lid stops (`damping lid needs Solver_type 1`). Derived: the H-matrix assumes hull geometry, and the lid rows would need their own preconditioner.
