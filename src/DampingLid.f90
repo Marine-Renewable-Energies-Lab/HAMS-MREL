@@ -46,6 +46,7 @@ MODULE DampingLid
    PUBLIC :: READ_LID_MESH
    PUBLIC :: LID_GEOMETRY
    PUBLIC :: CHECK_LID
+   PUBLIC :: CHECK_LID_FREQUENCIES
    PUBLIC :: ALLOCATE_LID_UNKNOWNS
    PUBLIC :: HULL_SOLID_ANGLE
    PUBLIC :: LID_SINGLE_LAYER
@@ -192,6 +193,10 @@ CONTAINS
        ENDIF
        IF (IP1.GT.IP2.OR.IP1.LT.1.OR.IP2.GT.LNELEM) THEN
         PRINT *,' Error: damper panel range must be 1 <= first <= last <=',LNELEM,', line',ILINE,' has',IP1,IP2
+        STOP 1
+       ENDIF
+       IF (ABS(E).GT.HUGE(E)) THEN
+        PRINT *,' Error: infinite damping epsilon on line',ILINE,' (use a large finite value, e.g. 1e6 m/s, for a rigid lid)'
         STOP 1
        ENDIF
        IF (E.LT.0.D0) THEN
@@ -375,7 +380,8 @@ CONTAINS
 !=======================================================================
 !SUBROUTINE CHECK_LID
 
-!   !   The stops that need the hull: the solver type, IRSP with several bodies, and a lid panel inside a hull. The file and
+!   !   The stops that need the hull: the solver type, IRSP with several bodies, a symmetric lid off the kept half, and a lid
+!   !   panel inside a hull. The file and
 !   !   node checks are made in the control file read and in READ_LID_MESH. Call after the hull normals and LID_GEOMETRY.
 
       SUBROUTINE CHECK_LID(NBODYIN)
@@ -399,9 +405,11 @@ CONTAINS
        STOP 1
       ENDIF
 
+      CALL CHECK_LID_HALF(NBODYIN)
+
       IFIRST=LNELEM+1
       SFIRST=0.D0
-!$OMP PARALLEL DO PRIVATE(IEL,SANG) REDUCTION(MIN:IFIRST) SCHEDULE(DYNAMIC,16)
+!$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(IEL,SANG) REDUCTION(MIN:IFIRST) SCHEDULE(DYNAMIC,16)
       DO IEL=1,LNELEM
        SANG=HULL_SOLID_ANGLE(LXYZ_P(IEL,:))
        IF (ABS(SANG).GT.2.D0*PI) IFIRST=MIN(IFIRST,IEL)
@@ -418,6 +426,90 @@ CONTAINS
 
       RETURN
       END SUBROUTINE CHECK_LID
+
+!=======================================================================
+!SUBROUTINE CHECK_LID_HALF
+
+!   !   With ISX = 1 (x reflected) or ISY = 1 (y reflected), as SYM_SIGNS reflects, the lid must lie on the half of the hull
+!   !   that is given, since its images are added for it. The kept side is that of the hull centroids (the sign of their sum
+!   !   in the reflected coordinate). Stops on a vertex of a lid panel that lies on the image side by more than TOL = 1e-6 times
+!   !   the largest lid panel size: far above the round-off of nodes written on the plane, far below any panel. Nodes that no
+!   !   panel uses are not checked.
+
+      SUBROUTINE CHECK_LID_HALF(NBODYIN)
+      IMPLICIT   NONE
+
+      INTEGER,INTENT(IN):: NBODYIN
+      INTEGER:: IC,IEL,J,IND
+      REAL*8:: SIDE,TOL
+
+      IF (ISX.NE.1.AND.ISY.NE.1) RETURN
+      IC=2
+      IF (ISX.EQ.1) IC=1
+      IF (NBODYIN.EQ.1) THEN
+       SIDE=SIGN(1.D0,SUM(XYZ_P(:,IC)))
+      ELSE
+       SIDE=SIGN(1.D0,SUM(XYZ_GLOBAL_MULTI_COMB_P(:,IC)))
+      ENDIF
+      TOL=1.D-6*MAXVAL(LPNSZ)
+
+      DO IEL=1,LNELEM
+       DO J=1,LNCN(IEL)
+        IND=LNCON(IEL,J)
+        IF (SIDE*LXYZ(IND,IC).LT.-TOL) THEN
+         PRINT *,' Error: lid on the image side of the symmetry plane, panel No.',IEL,', node No.',IND
+         PRINT *,' With ISX or ISY = 1 give only the lid on the half of the hull; the images are added.'
+         STOP 1
+        ENDIF
+       ENDDO
+      ENDDO
+
+      RETURN
+      END SUBROUTINE CHECK_LID_HALF
+
+!=======================================================================
+!SUBROUTINE CHECK_LID_FREQUENCIES
+
+!   !   A zero frequency in the frequency list stops a lid run before any frequency is solved, so that no partial output is
+!   !   written. V of each list entry as CalWaveProperts computes it, for each Input_frequency_type; a period or wave length of
+!   !   0 is an infinite frequency, not a zero one. The entries KK = 1, 2 that 0_inf_frequency_limits adds are not in the list
+!   !   and are skipped. The check in the frequency loop stays.
+
+      SUBROUTINE CHECK_LID_FREQUENCIES()
+      USE HAMS_mod,    ONLY: INFT,SYBO
+      USE WaveDyn_mod, ONLY: NPER,WVNB
+      IMPLICIT   NONE
+
+      INTEGER:: KK
+      REAL*8:: X,VK,WKK
+
+      DO KK=2*SYBO+1,NPER
+       X=WVNB(KK)
+       VK=1.D0
+       IF (INFT.EQ.1) THEN
+        VK=X
+       ELSEIF (INFT.EQ.2) THEN
+        VK=X
+        IF (H.GT.0.D0) VK=X*TANH(X*H)
+       ELSEIF (INFT.EQ.3) THEN
+        VK=X*X/G
+       ELSEIF (INFT.EQ.4) THEN
+        IF (X.NE.0.D0) VK=(2.D0*PI/X)**2/G
+       ELSEIF (INFT.EQ.5) THEN
+        IF (X.NE.0.D0) THEN
+         WKK=2.D0*PI/X
+         VK=WKK
+         IF (H.GT.0.D0) VK=WKK*TANH(WKK*H)
+        ENDIF
+       ENDIF
+       IF (ABS(VK).LT.1.D-8) THEN
+        PRINT *,' Error: zero frequency with a damping lid: frequency No.',KK-2*SYBO,' of the list is 0.'
+        STOP 1
+       ENDIF
+      ENDDO
+
+      RETURN
+      END SUBROUTINE CHECK_LID_FREQUENCIES
 
 !=======================================================================
 !SUBROUTINE LID_SINGLE_LAYER

@@ -348,7 +348,8 @@ def off_centroid_points(lid_text):
 def control_text(lid, solver=None, depth=None, limits=None, points=None, irsp=0, wave_number=None, zero_frequency=False):
     """The image_cos control file with Damping_lid inserted after 'Number of threads', and Solver_type when given. depth
     replaces the water depth, limits the 0_inf_frequency_limits switch, points the field points, and wave_number the frequency
-    by a wave number (Input_frequency_type 2). zero_frequency puts 0 before the frequency (two frequencies)."""
+    by a wave number (Input_frequency_type 2). zero_frequency puts 0 before the frequency (two frequencies), or after it when
+    it is "late"."""
     with open(os.path.join(SOURCE, "ControlFile.in"), "rb") as f:
         text = f.read().decode("ascii")
     out = []
@@ -372,7 +373,7 @@ def control_text(lid, solver=None, depth=None, limits=None, points=None, irsp=0,
         if zero_frequency and "Number_of_frequencies" in line:
             line = "    Number_of_frequencies      2"
         if zero_frequency and line.strip() == "1.3500":
-            line = "  0.0000  1.3500"
+            line = "  1.3500  0.0000" if zero_frequency == "late" else "  0.0000  1.3500"
         if irsp and "If_remove_irr_freq" in line:
             line = "    If_remove_irr_freq       %d" % irsp
         if points is not None and "Number_of_field_points" in line:
@@ -441,6 +442,12 @@ def main():
     write_case("lid_stop_damp_negative", annulus(**outside, dampers=[(1, 40, -0.1)]))
     write_case("lid_stop_damp_value", annulus(**outside, dampers=[(1, 40, "abc")]))
     write_case("lid_stop_zero_frequency", annulus(**outside), zero_frequency=True)
+    # Review fixes: the zero after a frequency that would solve (the run must stop before it), an infinite epsilon, and a
+    # symmetric lid (ISY = 1, on the half hull of image_cos_half, y >= 0) given in full, so half of it lies on the image side.
+    write_case("lid_stop_zero_frequency_late", annulus(**outside), zero_frequency="late")
+    write_case("lid_stop_damp_infinite", annulus(**outside, dampers=[(1, 40, "Inf")]))
+    write_case("lid_stop_half_side", annulus(**outside, isy=1),
+               hull=os.path.join(ROOT, "test", "data", "image_term", "image_cos_half", "input"))
 
     # Single-body solves (test_integration_lid.f90). Annulus r = 6 to 10 unless said.
     write_solve_case("lid_ann_40", annulus(6.0, 10.0, 20, 2))
@@ -499,10 +506,13 @@ def main():
     write_case("mm_cyl_lid_c_rigid", annulus(2.0, 4.0, 48, 8, dampers=[(1, 384, 1.0e6)]), points=points_c, **reference)
 
     # Two bodies (test_integration_lid.f90). lid_two_far: the hulls of image_cos_two, the second 5 km away along y, with the lid
-    # and field points of lid_ann_160 about the first. The stops: a lid disc inside the second body, and IRSP. lid_gap: two
+    # and the field points of lid_ann_160 (the 160 lid centroids and the three off the lid) about the first. The stops: a lid disc inside the second body, and IRSP. lid_gap: two
     # boxes 20 x 8 x 4 m with 1 m panels, side by side 4 m apart (centres at y = -6 and 6), heading 90 degrees, with the lid on
     # the whole gap, 20 x 4 panels; field points at the 80 lid centroids, then three off the lid.
-    write_case_two("lid_two_far", ann, centroids(ann, 10))
+    write_case_two("lid_two_far", ann, points160)
+    # The same without the lid (Damping_lid 0, the lid file present and unused), so that the lid effect of the two-body run can
+    # be compared with that of lid_ann_160 against lid_ann_160_eps0: the wave of the far body cancels in the difference.
+    write_case_two("lid_two_far_nolid", ann, points160, lid_flag=0)
     write_case_two("lid_stop_inside_two", annulus(0.0, 2.5, 12, 2, centre=(0.0, 5000.0)), centroids(ann, 10))
     write_case_two("lid_stop_irsp_two", annulus(**outside), centroids(ann, 10), irsp=1, water_plane=plane)
     gap = rectangle(-10.0, 10.0, -2.0, 2.0, 20, 4)

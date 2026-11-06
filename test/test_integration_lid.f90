@@ -42,6 +42,12 @@ module test_integration_lid
                                                       ! +1.06e-1; flipped binary +1.66e-2, +1.01e-1)
     real(8), parameter :: two_far_limit = 1d-3        ! body 1 of lid_two_far against lid_ann_160, the limit of multi_matches_single;
                                                       ! measured 4.5e-4
+    real(8), parameter :: two_far_dif_limit = 3d-2    ! lid effect on the diffraction values of lid_two_far (less lid_two_far_nolid)
+                                                      ! against that of lid_ann_160 (less lid_ann_160_eps0), relative to the
+                                                      ! largest single-body lid effect; measured 1.39e-2
+    real(8), parameter :: two_far_rad_limit = 4d-3    ! the same for the radiation values of body 1; measured 1.87e-3
+    real(8), parameter :: two_far_body2_limit = 0.1d0 ! lid effect on the radiation values of body 2, relative to the largest
+                                                      ! single-body radiation lid effect; measured 4.90e-2
     real(8), parameter :: gap_symmetry_limit = 1d-2   ! abs(A_ij - A_ji) / max(abs(A)), the same for B, 12 x 12, lid_gap; measured
                                                       ! 8.0e-3, 8.6e-3 without the lid
     real(8), parameter :: gap_damping_floor = 1d-5    ! eigenvalues of B of lid_gap >= -gap_damping_floor * max(abs(B)); measured
@@ -88,8 +94,8 @@ module test_integration_lid
         "lid_ann_160_eps0", "lid_ann_160_rigid", "lid_ann_160_two_dampers", "lid_ann_160_split", "lid_nolid_160"]
 
     !> The two-body cases, run by setup_lid: with a lid, and lid_gap_nolid without.
-    character(len=17), parameter :: two_cases(8) = [character(len=17) :: "lid_two_far", "lid_gap", "lid_gap_eps0", &
-        "lid_gap_eps1", "lid_gap_nolid", "lid_gap_res", "lid_gap_res_eps1", "lid_gap_res_nolid"]
+    character(len=17), parameter :: two_cases(9) = [character(len=17) :: "lid_two_far", "lid_two_far_nolid", "lid_gap", &
+        "lid_gap_eps0", "lid_gap_eps1", "lid_gap_nolid", "lid_gap_res", "lid_gap_res_eps1", "lid_gap_res_nolid"]
 
     !> Field points of lid_ann_160 and its epsilon variants: the 160 lid centroids, then (12, 0, 0), (20, 0, 0) and (12, 0, -3).
     integer, parameter :: n160 = 160
@@ -132,6 +138,9 @@ contains
             new_unittest("stops_lid_damp_negative", stops_lid_damp_negative), &
             new_unittest("stops_lid_damp_value", stops_lid_damp_value), &
             new_unittest("stops_lid_zero_frequency", stops_lid_zero_frequency), &
+            new_unittest("stops_lid_zero_frequency_late", stops_lid_zero_frequency_late), &
+            new_unittest("stops_lid_damp_infinite", stops_lid_damp_infinite), &
+            new_unittest("stops_lid_half_side", stops_lid_half_side), &
             new_unittest("flag_off_matches_no_lid", flag_off_matches_no_lid), &
             new_unittest("lid_runs", lid_runs), &
             new_unittest("lid_damping_nonnegative", lid_damping_nonnegative), &
@@ -157,6 +166,7 @@ contains
             new_unittest("stops_lid_inside_two", stops_lid_inside_two), &
             new_unittest("stops_lid_irsp_two", stops_lid_irsp_two), &
             new_unittest("lid_multi_matches_single", lid_multi_matches_single), &
+            new_unittest("lid_multi_field_matches_single", lid_multi_field_matches_single), &
             new_unittest("lid_gap_symmetric_ab", lid_gap_symmetric_ab), &
             new_unittest("lid_gap_damping_nonnegative", lid_gap_damping_nonnegative), &
             new_unittest("lid_gap_eps0_matches_no_lid", lid_gap_eps0_matches_no_lid), &
@@ -381,6 +391,44 @@ contains
         type(error_type), allocatable, intent(out) :: error
         call run_case_expect_stop("lid_stop_zero_frequency", "zero frequency with a damping lid", error)
     end subroutine stops_lid_zero_frequency
+
+    !> The zero after a frequency that would solve: the list is checked before the first frequency, so the run stops with no
+    !> frequency written to AmssDamp.1, ExcForce.3 or PressureElevation.6p.
+    subroutine stops_lid_zero_frequency_late(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=20), parameter :: files(3) = [character(len=20) :: "AmssDamp.1", "ExcForce.3", "PressureElevation.6p"]
+        character(len=512) :: line
+        integer :: unit, stat, k, n
+
+        call run_case_expect_stop("lid_stop_zero_frequency_late", "zero frequency with a damping lid", error)
+        if (allocated(error)) return
+        do k = 1, size(files)
+            n = 0
+            open (newunit=unit, file=output_dir("lid_stop_zero_frequency_late")//"Wamit_format/"//trim(files(k)), status="old", &
+                  action="read", iostat=stat)
+            if (stat /= 0) cycle
+            do
+                read (unit, '(a)', iostat=stat) line
+                if (stat /= 0) exit
+                if (len_trim(line) > 0) n = n + 1
+            end do
+            close (unit)
+            call check(error, n == 0, "lid_stop_zero_frequency_late: "//trim(files(k))//" has rows")
+            if (allocated(error)) return
+        end do
+    end subroutine stops_lid_zero_frequency_late
+
+    !> An infinite epsilon ("Inf") stops, naming the line; the rigid lid is a large finite epsilon.
+    subroutine stops_lid_damp_infinite(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case_expect_stop("lid_stop_damp_infinite", "infinite damping epsilon on line", error)
+    end subroutine stops_lid_damp_infinite
+
+    !> With ISY = 1 the lid must lie on the half of the hull (y >= 0): the full annulus stops.
+    subroutine stops_lid_half_side(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case_expect_stop("lid_stop_half_side", "lid on the image side of the symmetry plane", error)
+    end subroutine stops_lid_half_side
 
     !> A lid disc inside the second of two bodies: the multi-body branch of HULL_SOLID_ANGLE.
     subroutine stops_lid_inside_two(error)
@@ -1337,6 +1385,49 @@ contains
         call check_below(error, "lid_multi_matches_single", &
                          maxval(abs(key_values(multi) - key_values(single))/abs(key_values(single))), two_far_limit)
     end subroutine lid_multi_matches_single
+
+    !> The lid field output of two bodies. lid_two_far has the 163 field points of lid_ann_160 about body 1, so its lid effect,
+    !> lid_two_far less lid_two_far_nolid, must be that of lid_ann_160 less lid_ann_160_eps0 (epsilon 0 is no lid, and writes
+    !> the radiation rows on z = 0 as a lid run does). The wave of the far body cancels in the difference: lid_two_far itself
+    !> differs from lid_ann_160 in the diffraction values by 1.4e-2 of the largest, a quarter of the lid effect (5.3e-2).
+    !> Checked: the diffraction values, the radiation values of body 1 (modes 1 to 6), and those of body 2 (modes 7 to 12),
+    !> whose lid effect is only that on the wave of body 2 reaching the lid from 5 km, so small. Measured (README, "Multi-body
+    !> lid field output"): 1.39e-2, 1.87e-3, 4.90e-2. Scratch breaks that this catches (README): the incident term left out
+    !> of the multi-body lid sum, the lid columns of body 1 used for body 2, and i omega/g in place of
+    !> i omega/(g - i omega epsilon) on the lid.
+    subroutine lid_multi_field_matches_single(error)
+        type(error_type), allocatable, intent(out) :: error
+        complex(8), allocatable :: d1(:), r1(:,:), d0(:), r0(:,:), d2(:), r2(:,:), dn(:), rn(:,:)
+        complex(8), allocatable :: es(:), em(:), rs(:,:), rm(:,:)
+        real(8) :: worst_d, worst_r, worst_b
+
+        call read_field("lid_ann_160", d1, r1, error)
+        if (allocated(error)) return
+        call read_field("lid_ann_160_eps0", d0, r0, error)
+        if (allocated(error)) return
+        call read_field_two("lid_two_far", d2, r2, error)
+        if (allocated(error)) return
+        call read_field_two("lid_two_far_nolid", dn, rn, error)
+        if (allocated(error)) return
+        call check(error, size(d1) == n160 + 3 .and. size(d0) == n160 + 3 .and. size(d2) == n160 + 3 .and. &
+                   size(dn) == n160 + 3 .and. size(r1, 1) == n160 + 3 .and. size(r0, 1) == n160 + 3 .and. &
+                   size(r2, 1) == n160 + 3 .and. size(rn, 1) == n160 + 3, "lid_multi_field_matches_single: not 163 points")
+        if (allocated(error)) return
+        es = d1 - d0
+        em = d2 - dn
+        rs = r1 - r0
+        rm = r2 - rn
+        worst_d = maxval(abs(em - es))/maxval(abs(es))
+        worst_r = maxval(abs(rm(:, 1:6) - rs))/maxval(abs(rs))
+        worst_b = maxval(abs(rm(:, 7:12)))/maxval(abs(rs))
+        write (*, '(4x, "lid_multi_field_matches_single: diffraction ", es10.3, ", body 1 ", es10.3, ", body 2 ", es10.3)') &
+            worst_d, worst_r, worst_b
+        call check_below(error, "lid_multi_field_matches_single: diffraction lid effect", worst_d, two_far_dif_limit)
+        if (allocated(error)) return
+        call check_below(error, "lid_multi_field_matches_single: body 1 radiation lid effect", worst_r, two_far_rad_limit)
+        if (allocated(error)) return
+        call check_below(error, "lid_multi_field_matches_single: body 2 radiation lid effect", worst_b, two_far_body2_limit)
+    end subroutine lid_multi_field_matches_single
 
     !> The 12 x 12 A and B of two boxes with a lid in the gap are symmetric, by reciprocity.
     subroutine lid_gap_symmetric_ab(error)
