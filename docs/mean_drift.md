@@ -45,10 +45,11 @@ The defaults were kept after the convergence study below. `differencing` meets t
 - **Hulls with sharp edges**, such as a flat bottom meeting a vertical wall:
   - Near-field with `differencing` converges slowly. On the sharp cylinder at 7168 panels it is still +17.4% at 0.95 rad/s, free.
   - On that cylinder `source` is closer up to about 1.2 rad/s (ka about 1.5), and `differencing` is closer from 1.4 rad/s (ka about 2.0). This crossing rests on one radius. On the sharp box `source` is closer at all three frequencies run, 0.80, 1.00 and 1.40 rad/s. ka is inferred from the deep-water dispersion relation, a = 10 m.
-  - **Recommendation:** below ka about 1.5 and away from irregular frequencies, use `source`, without a lid, and check it against far-field. Above that, `differencing` was the closer on the cylinder, but not on the box. For the horizontal loads of a free sharp hull at low frequency, use far-field. Round the corners and the bilge where the real hull allows.
+  - Against the [semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder) at 7168 panels, the crossing holds for F_x, `source` is the closer for F_z at every frequency, and `differencing` is the closer for M_y wherever compared (within 0.8%, against 1.90% to 5.75% for `source`).
+  - **Recommendation:** below ka about 1.5 and away from irregular frequencies, use `source`, without a lid, and check it against far-field. Above that, `differencing` was the closer on the cylinder, but not on the box. For the horizontal loads of a free sharp hull at low frequency, use far-field. Round the corners and the bilge where the real hull allows. For M_y, `differencing` was the closer on the sharp cylinder, at every frequency compared.
   - `source` costs about twice the run time at 7680 panels: +98% (ifx, 32 threads). The earlier record is +51% (ifort, 8 threads).
   - `source` cannot remove irregular frequencies: `IRSP = 1` is rejected. At the two irregular frequencies tested it is off by 32% to 198% (see below). Keep away from them, or use `differencing` with a lid there.
-- **Free sharp hull at low frequency:** use far-field. At 0.70 rad/s, where the net force is small next to its terms, `differencing` has the wrong sign at 7168 panels and `source` is still 10.3% off.
+- **Free sharp hull at low frequency:** use far-field. At 0.70 rad/s, where the net force is small next to its terms, `differencing` has the wrong sign at 7168 panels and `source` is still 10.3% off. Against the semi-analytical reference, HAMS far-field F_x is 0.68% off there and `source` near-field F_x 11.1%.
 - **Sharp box:** near-field F_y and M_z are not reliable, with either method, on the meshes tested. F_y is +12.5% off with `source` at 7040 panels. Round the vertical corners and the bilge if near-field F_y or M_z are needed. That makes it a different hull: judge it against its own far-field.
 - **Waterline:** keep `extrapolate`. `field` is opt-in. It is first order where `extrapolate` is second order, and in finite depth it can jump with the mesh or the offset (see [Limits](#limits)).
 - **Settings:** `GRN_KIND = 8` changed no printed digit of F_x. `ISOLV = 2` (GMRES) matches LU to within 0.003 in F_x / (ρg) on the cases tried.
@@ -105,7 +106,7 @@ F_x, heading 0, finest mesh, percent of far-field, `differencing` / `source`:
 | 1792 | 0.1127 | -0.1327 | 0.1281 |
 | 7168 | 0.1107 | -0.0402 | 0.1222 |
 
-`differencing` keeps falling but has the wrong sign at 7168 panels. `source` is 10% to 14% off on all meshes. Its error, 0.0115 at 7168, is 0.44% of term I.
+`differencing` keeps falling but has the wrong sign at 7168 panels. `source` is 10% to 14% off on all meshes. Its error, 0.0115 at 7168, is 0.44% of term I. The semi-analytical reference gives 0.10997 (far-field; stated uncertainty 1e-4, and it changes by less than 1.2e-7 over the resolutions), so the far-field column is 8.5%, 2.5% and 0.68% off; see [Semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder).
 
 **Rounded hull, `source`.** Its error falls with refinement, but reaching zero is not shown. Fixed at 0.95 rad/s, near minus far is -0.0478, -0.0369, -0.0290, -0.0238 of ρg at 480, 1920, 4320, 7680 panels. The ratio per doubling goes from 0.77 to 0.65, so the local order rises from about 0.4 to 0.6. A constant offset would make it fall instead. At order 0.6, halving the error needs about 10 times the panels (inferred).
 
@@ -193,6 +194,99 @@ The difference falls with the mesh in all columns. The largest rounded RAO diffe
 - The sharp free hull matches the near-against-far result: `differencing` carries the sharp-edge error, `source` does not.
 - Bidirectional pair, rounded free, headings 0 and 30, 1920 panels: HAMS near-field is 6.5% to 6.7% above Nemoh at 0.70 rad/s, 0.85% to 0.90% below at 0.95, and 0.50% to 0.69% above at 1.10, over all four heading pairs, F_x and F_y (F_y of the (0, 0) pair is zero by symmetry and is excluded from these ranges). Informative only. Nemoh's documentation states its QTFs are untested for multi-body problems, and no pair ran at 4320 panels.
 
+## Semi-analytical reference: sharp truncated cylinder
+
+[truncated_cylinder_reference.py](../pre_postprocessing_python/SecondOrder/truncated_cylinder_reference.py) computes the first-order solution and the mean drift of the sharp truncated cylinder of the convergence study (radius 10 m, draft 10 m, depth 100 m) by eigenfunction matching, without panels. It needs no HAMS run. All values in this section were measured with it in November 2026, on a laptop.
+
+**Method.** The potential is a series of vertical eigenfunctions outside the cylinder and in the gap under it, matched at r = a, as in Garrett (1971) for diffraction and Yeung (1981) for radiation. The unknown radial velocity in the gap is expanded in functions that carry the corner singularity of the 270° fluid corner at the bilge, (distance)^(-1/3), and the next terms of the corner expansion. Far-field F_x follows from Maruo's formula (Maruo 1960; Newman 1967) applied to the outgoing wave. Near-field F_x, F_z and M_y follow from the six terms of the pressure integration (WAMIT v7.5 user manual, eqs. 15.54 to 15.57), the terms HAMS-MREL writes to `MeanDriftTerms.txt`, with a quadrature that integrates the corner singularity exactly; the free body uses its own motions, with the mass and stiffness rule of `make_mesh.py` applied to the exact circle.
+
+**Checks.** The script runs 22 checks and exits with 1 if one fails. The main ones, with the measured values:
+
+| Check | Requirement | Measured |
+| :--- | :--- | ---: |
+| Bottom-mounted limit (gap 0.001 h): X_1 and far-field F_x against MacCamy-Fuchs | 1e-3 | 5.5e-5 and 4.0e-5 |
+| Scattered energy against the optical theorem, fixed body | 1e-6 | 2.3e-15 |
+| Reciprocity: A15 = A51, B15 = B51, and Haskind X against diffraction X | 1e-8 and 1e-6 | 2.0e-9 and 1.3e-9 |
+| B11, B33, B55 against the radiated energy flux | 1e-6 | 1.3e-9 |
+| Near-field F_x against far-field F_x, fixed body, 11 frequencies | 5e-4 | 2.3e-6 |
+| Near-field F_x against far-field F_x, free body, 11 frequencies | 5e-4 | 4.1e-4 (0.80 rad/s) |
+| Velocity at the corner: same limit from the wall and the bottom series | 1e-3 | 1.9e-4 |
+| M_y moved to another reference point | 1e-10 | 3.4e-16 |
+| Spread of F_x far, F_z, M_y, B11 at 0.70, 0.95, 1.40 rad/s over three resolutions and twice the azimuthal orders | 1e-4 | 1.6e-5, except free F_z at 0.70 rad/s: 2.6e-4 |
+
+The reciprocity and energy values are extrapolated in the number of modes; the bottom-mounted values are extrapolated to zero gap from two gaps. The near-field against far-field residual of the free body is 1.6e-4 to 4.1e-4 at 0.60 to 0.80 rad/s and 1.1e-4 to 1.3e-4 at 1.40 to 1.80 rad/s. The script's docstring states what each check covers and what it does not.
+
+**Uncertainty.** Each value carries a stated relative uncertainty of 1e-4, from the spreads above. The spreads were measured at 0.70, 0.95 and 1.40 rad/s only; at the other frequencies the 1e-4 is carried over, not measured (fixed-body F_z and M_y were measured once at every frequency, within 4.8e-5). Three exceptions:
+
+- free near-field F_x at 0.60 to 0.80 rad/s: 5e-4, from the residual against far-field, which does not fall with the resolution;
+- free near-field F_x at 1.40 to 1.80 rad/s: 2e-4, from the residual against far-field, measured 1.1e-4 to 1.3e-4;
+- free F_z at 0.70 rad/s: 3e-3, and at 0.80 rad/s: 4e-3. These are estimates, not bounds. They come from a linear fit of F_z against the F_x residual over three gap bases, extrapolated to zero residual. The fit assumes that the F_z error vanishes where the F_x residual does, which is not tested.
+
+Free F_z and M_y at 1.40 to 1.80 rad/s have no separate error estimate: the fit above covers 0.60 to 0.80 rad/s only. Far-field F_x changes by less than 1.2e-7 over the resolutions.
+
+These uncertainties, and the default resolution (64000 modes, three gap families (20, 4, 4), azimuthal orders 0 to 15), hold for this hull only (depth/radius = 10) and the 11 frequencies. The number of modes needed grows with depth/radius: free F_z at 0.90 rad/s changes by 4.9% between 4000 and 16000 modes for radius 10 m, draft 10 m, depth 500 m, and by 0.8% for radius 5 m, draft 8 m, depth 40 m (measured, gap families (20, 4, 4)). For any other cylinder, resolution or frequency the script states no uncertainty (`nan`, an empty field in the CSV: not measured), and `compare` shows `[n/m]`. A new geometry needs the convergence and near-field against far-field F_x measurements repeated before its values carry an uncertainty.
+
+**Reference values.** F/(ρgA²) and M_y/(ρgA²), the normalisation of `MeanDriftPressure.9` (`REFL = 1`), M_y about the origin on the still waterline, heading 0. A13, A35, B13, B35, F_y, M_x and M_z are zero by symmetry.
+
+| Motion | rad/s | F_x far | F_x near | F_z | M_y |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| Fixed | 0.70 | 1.75010 | 1.75010 | -4.00842 | 4.70520 |
+| Fixed | 0.95 | 5.46404 | 5.46403 | -2.58008 | 13.5153 |
+| Fixed | 1.40 | 6.20766 | 6.20766 | -0.330282 | 15.7037 |
+| Free | 0.70 | 0.109973 | 0.109929 | -0.6128 | -8.16741 |
+| Free | 0.95 | 2.95856 | 2.95854 | 2.17347 | 53.5495 |
+| Free | 1.40 | 6.51956 | 6.51884 | 0.735582 | 22.2976 |
+
+`python -I truncated_cylinder_reference.py reference --out CSV` writes all 11 frequencies, fixed and free, with A, B, X, the RAOs, every near-field term and the stated uncertainties.
+
+**HAMS against the reference.** `compare` was run on the results of the convergence study (outside the repository). Finest mesh of each velocity method, 7168 panels, percent (HAMS - reference)/|reference|. An empty cell means the reference is below 1e-4 of the largest value of that quantity. F_x far is the same for both methods. 1.60 rad/s is 3% from the irregular frequency 1.5483 rad/s.
+
+| Motion | rad/s | `source` F_x near | F_x far | `source` F_z | `source` M_y | `differencing` F_x near | `differencing` F_z | `differencing` M_y |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Fixed | 0.40 | +0.86 | -0.07 | +1.34 | +5.75 | +7.79 | +10.5 | +0.40 |
+| Fixed | 0.60 | +0.25 | -0.03 | +1.41 | +4.08 | +6.09 | +11.7 | +0.14 |
+| Fixed | 0.70 | -0.06 | -0.002 | +1.46 | +3.83 | +4.75 | +12.4 | +0.11 |
+| Fixed | 0.80 | -0.24 | +0.03 | +1.69 | +3.62 | +3.55 | +13.4 | +0.05 |
+| Fixed | 0.95 | -0.27 | +0.07 | +2.39 | +3.10 | +2.14 | +15.3 | +0.07 |
+| Fixed | 1.00 | -0.27 | +0.07 | +2.65 | +2.88 | +1.82 | +16.0 | +0.08 |
+| Fixed | 1.10 | -0.36 | +0.08 | +3.10 | +2.44 | +1.37 | +17.4 | +0.08 |
+| Fixed | 1.20 | -0.63 | +0.07 | +3.46 | +2.18 | +1.07 | +18.6 | +0.08 |
+| Fixed | 1.40 | -1.55 | +0.05 | +4.48 | +2.73 | +0.58 | +21.0 | +0.13 |
+| Fixed | 1.60 | +2.42 | +0.08 | +2.86 | -2.43 | +0.39 | +23.0 | +0.09 |
+| Fixed | 1.80 | -1.88 | +0.06 | +5.43 | +2.41 | +0.47 | +25.3 | +0.14 |
+| Free | 0.40 | | | +0.22 | | | +1.13 | |
+| Free | 0.60 | +29.3 | +0.61 | +2.95 | -3.96 | -77.2 | +13.8 | -0.56 |
+| Free | 0.70 | +11.1 | +0.68 | +110 | -4.05 | -137 | +506 | -0.77 |
+| Free | 0.80 | +5.48 | +0.24 | +319 | +2.62 | +141 | +1215 | +0.03 |
+| Free | 0.95 | +0.38 | -0.15 | +20.5 | +1.92 | +17.2 | +68.1 | -0.28 |
+| Free | 1.00 | -0.04 | -0.10 | +12.4 | +1.90 | +11.2 | +39.7 | -0.21 |
+| Free | 1.10 | -0.63 | -0.06 | +7.56 | +1.91 | +5.23 | +22.9 | -0.14 |
+| Free | 1.20 | -0.99 | -0.04 | +6.15 | +2.03 | +2.65 | +17.9 | -0.09 |
+| Free | 1.40 | -1.83 | -0.005 | +4.95 | +2.77 | +0.89 | +12.5 | +0.04 |
+| Free | 1.60 | +3.27 | +0.12 | +2.87 | -2.28 | +0.54 | +8.27 | +0.08 |
+| Free | 1.80 | -1.54 | +0.08 | +2.72 | +2.08 | +0.55 | +4.95 | +0.16 |
+
+What the comparison shows, all measured on these meshes (448, 1792, 7168 panels for both methods, and 4032 for `source` at 0.70, 0.95 and 1.10 rad/s):
+
+- The reference's stated uncertainty is 0.01% for most entries (0.05% for free F_x near at 0.60 to 0.80 rad/s, 0.02% at 1.40 to 1.80 rad/s, 0.3% and 0.4% for free F_z at 0.70 and 0.80 rad/s). Every difference in the table is larger, except far-field F_x at 0.70 rad/s fixed (-0.002%) and 1.40 rad/s free (-0.005%). So the table measures HAMS's error, not the reference's.
+- **First order** at 7168 panels, outside 1.60 rad/s: A within 0.29%, B within 1.02% (B33 at 1.80 rad/s), |X| within 0.3%, |RAO| within 0.41%. The worst error falls by 3 to 5 times per doubling of the panels per side (measured ratios 3.1 to 4.6).
+- **Far-field F_x** is the closest HAMS result: within 0.08% fixed and 0.68% free at 7168 panels. Free at 0.70 rad/s it is +8.5%, +2.5%, +1.2%, +0.68% at 448, 1792, 4032, 7168 panels.
+- **`source`** is the closer method for near-field F_x up to 1.20 rad/s and for F_z at every frequency.
+- **`differencing`** is the closer method for M_y wherever it is compared (0.03% to 0.8%, against 1.90% to 5.75% for `source`), and for near-field F_x from 1.40 rad/s. Its F_z is 10% to 25% off fixed at 7168 panels.
+- **Cancellation.** The free F_z at 0.70 and 0.80 rad/s is 1.4% and 1.0% of its largest term, and the free near-field F_x at 0.60 and 0.70 rad/s is 2.7% and 4.3%. A few percent of error in a term gives the large percentages there. Free F_z at 0.70 rad/s is +0.059 in HAMS (`source`, 7168 panels) against -0.613. HAMS's terms have the reference's sign and are within 3.4%. The `source` totals at 448, 1792, 4032, 7168 panels are 2.35, 0.81, 0.31, 0.06, and Richardson extrapolation from 448, 1792 and 7168 panels gives -0.65.
+- **Signs.** At 7168 panels with `source`, outside 1.60 rad/s, all 210 tested values have the reference's sign: every near-field term of F_x, F_z and M_y, far-field F_x, and the near-field totals that are at least 5% of their largest term. So no sign or conjugation error shows in the drift outputs. Phases are not compared.
+
+**Run time** (laptop, Python 3.7, measured once): `check` (20 checks) 5 min 4 s; `reference --out` (all 22 checks and the rows) 7 min 11 s, of which the rows take 92 s; `compare` 93 s, nearly all of it the reference rows, and under 1 s with `--reference CSV`.
+
+**Sources.**
+
+- Garrett, C.J.R. (1971). Wave forces on a circular dock. J. Fluid Mech. 46(1), 129-139. doi:10.1017/S0022112071000430
+- Yeung, R.W. (1981). Added mass and damping of a vertical cylinder in finite-depth waters. Appl. Ocean Res. 3(3), 119-133. doi:10.1016/0141-1187(81)90101-2
+- MacCamy, R.C. and Fuchs, R.A. (1954). Wave forces on piles: a diffraction theory. Technical Memorandum 69, Beach Erosion Board.
+- Maruo, H. (1960). The drift of a body floating on waves. J. Ship Res. 4, 1-10.
+- Newman, J.N. (1967). The drift force and moment on ships in waves. J. Ship Res. 11(1), 51-60. doi:10.5957/jsr.1967.11.1.51
+- WAMIT User Manual, Version 7.5, section 15.8, eqs. 15.54 to 15.57.
+
 ## Tests
 
 The integration fixtures and their measured values are described in [test/data/drift_cyl/README.md](../test/data/drift_cyl/README.md). Two limits have thin margins on ifx and Linux (Snellius, ifx 2024.2, measured):
@@ -210,6 +304,7 @@ ifx 2024.2 with `-heap-arrays 0` stopped the far-field method with a segmentatio
 
 ## Open items
 
-- A free sharp body at low frequency has no good near-field result. Far-field is the number to use.
+- A free sharp body at low frequency has no good near-field result from HAMS. Far-field is the number to use. For the sharp cylinder, the [semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder) gives near-field F_x, F_z and M_y, with stated uncertainties.
+- Free F_z of the sharp cylinder at 0.70 and 0.80 rad/s: the reference's uncertainty there (3e-3 and 4e-3) is an estimate from an extrapolation, not a bound.
 - Nemoh at 4320 panels: the cause is unknown, and testing it needs another Nemoh run.
-- WAMIT remains an option if a licence becomes available. It is still needed to settle the conjugation and axes of the WAMIT-format output.
+- WAMIT remains an option if a licence becomes available. It is still needed to settle the conjugation and axes of the WAMIT-format output. The semi-analytical reference covers the signs of the mean drift values (210 values agree at 7168 panels), not the phases of the complex outputs.

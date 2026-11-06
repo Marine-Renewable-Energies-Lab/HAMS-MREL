@@ -26,7 +26,8 @@ generalized_modes.py
 SecondOrder/
 ├── make_mesh.py
 ├── make_drift_fixtures.py
-└── drift_convergence.py
+├── drift_convergence.py
+└── truncated_cylinder_reference.py
 ```
 
 Dependencies: `numpy`, `matplotlib`, `shapely`. The WEC-Sim conversion scripts additionally use `cmath`, `os`, and `datetime` (all standard library).
@@ -176,3 +177,15 @@ python make_mesh.py box --lx 20 --ly 10 --draft 5 --nx 10 --ny 5 --nz 4 --out Hu
 **`SecondOrder/make_drift_fixtures.py`** regenerates all the `test/data/drift_*` inputs, including `ControlFile.in` and `SecondOrder.in`. See `test/data/drift_cyl/README.md`.
 
 **`SecondOrder/drift_convergence.py`** generates and runs the mean drift convergence study of [Mean Drift](mean_drift.md#convergence-study) (HAMS-MREL, and Nemoh as a separate program), writes Slurm scripts for it, and collects the results into a table. Run it with `list` to see the cases. Its `collect` step needs `scipy`, for the MacCamy-Fuchs value.
+
+**`SecondOrder/truncated_cylinder_reference.py`** computes a semi-analytical reference (eigenfunction matching, no panels) for the sharp truncated cylinder of the convergence study: A, B, X, RAOs, far-field F_x, and near-field F_x, F_z and M_y with each of the six terms, fixed and free. It needs `numpy` and `scipy`. Results, checks and the comparison with HAMS are in [Mean Drift](mean_drift.md#semi-analytical-reference-sharp-truncated-cylinder). Run it from its folder:
+
+```
+python -I truncated_cylinder_reference.py check [NAME ...]
+python -I truncated_cylinder_reference.py reference --out tc_reference.csv
+python -I truncated_cylinder_reference.py compare RESULTS --out tc_compare.csv [--reference tc_reference.csv]
+```
+
+- `check` runs the named self-checks, or all but the two slow ones (`uncertainty`, `compare_signs`), and exits with 1 if one fails. A check that cannot run for want of data (`compare_signs` without the study's results) prints SKIP and is not counted as passed. 5 min 4 s on a laptop.
+- `reference` writes the reference values at 11 frequencies, fixed and free, with their stated uncertainties, prints the convergence table and runs all 22 checks. 7 min 11 s. The stated uncertainties hold for this hull at the default resolution only; for any other cylinder or resolution they are `nan` (not measured), an empty field in the CSV.
+- `compare` reads the `a_sharp_*` case folders of the study under `RESULTS` (`output/Wamit_format/`) and prints, per case and frequency, the percentage difference of HAMS from the reference. Folders that are not study cases, or have no output, are skipped with a note. 93 s, nearly all of it the reference rows; `--reference` reads them from a CSV of `reference` instead (under 1 s). The uncertainty shown after each drift percentage is the one the reference rows carry.
