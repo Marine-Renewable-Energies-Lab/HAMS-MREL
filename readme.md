@@ -4,19 +4,24 @@ HAMS-MREL (Hydrodynamic Analysis of Marine Structures – Marine Renewable Energ
 
 HAMS-MREL is developed as an extension of the original [HAMS solver](https://github.com/YingyiLiu/HAMS). While HAMS focuses on single-body hydrodynamic analysis, HAMS-MREL expands the framework to handle interactions among multiple bodies. Other features include free surface elevation and pressure fields, suppression of irregular frequencies, global symmetry, generalized modes, an optional GMRES iterative solver with H-matrix acceleration for large multi-body problems, and integration with WEC-Sim.
 
-Current version: 2.3.2 (The repository has migrated from https://github.com/vaibhavraghavan/HAMS-MREL to keep all open source tools from MREL under one unbrella. For v2.0 to v2.2, got to the old repository.)
+Current version: 2.3.3 (The repository has migrated from https://github.com/vaibhavraghavan/HAMS-MREL to keep all open source tools from MREL under one unbrella. For v2.0 to v2.2, got to the old repository.)
 
 The binary for Windows is available in the [Releases](https://github.com/Marine-Renewable-Energies-Lab/HAMS-MREL/releases). This was compiled using OneAPI 2022 (ifort) and Visual Studio 2019. 
 
 ## Release notes
 
-The changes made after the v2.3.2 release, including the corrections below, are not in v2.3.2 or its Windows binary. They will be added in v2.3.3.
+v2.3.3 corrects these errors in first-order results:
 
-**Correction to triangular panels (v2.3.3).** A triangle with an obtuse angle at its second node was integrated over the wrong shape, in the 1/r term of the Green function. Results change for meshes with such a triangle on the hull, and depended on the order of its nodes. Other meshes are not affected. To check a mesh, look for a triangle where the projection of side 1-3 on side 1-2 is longer than side 1-2.
+- **Free-surface image term.** Now integrated over the source panel instead of taken at its centroid. Results change a little on all meshes; both forms converge to the same limit. See [the image term section](docs/developer_documentation.md#free-surface-image-term).
+- **Triangular panels.** A triangle with an obtuse angle at node 2 is now integrated over the correct shape. Other meshes are not affected. See [triangle panels](docs/developer_documentation.md#triangle-panels).
+- **Generalized modes in DOF 1 to 3.** The panel direction was read from the columns the mode overrides, which changed all modes of all bodies in v2.0 to v2.3.2. Runs without a mode file do not change. See [gen_mod](docs/input_files.md#gen_mod-optional).
+- **Finite depth, panels closer than 2% of the depth.** Now computed with Linton's method up to ν·h = 50, which removes jumps in the Green function. Infinite depth is not affected.
+- **Finite depth at large kh.** Results above kh = 355 are no longer NaN. Below kh = 300 the output is unchanged.
 
-**Correction to generalized modes in DOF 1 to 3 (v2.3.3).** Results with a mode file `gen_mod_<body>_<dof>.txt` in DOF 1, 2 or 3, are wrong and should be re-run if they came from releases v2.0, v2.3, v2.3.1 or v2.3.2, or from any other code between commit ca4c744 (2026-02-27) and this fix. These are all the release tags in this repository. v2.1 and v2.2, in the old repository, were not checked. This covers added mass, damping and excitation of all modes of all bodies, motions and field-point output. The cause was that code needing the panel's direction read the columns the mode overrides. On example 3, with a mode in DOF 1 at 0.14 rad/s, the added mass of body 1 in sway (a mode not involving the file) was 61.8 and is now 135.5, as in the same case with no mode file. Modes in DOF 4 and 5 were measured not to change, and the fix does not touch DOF 4 to 6. Runs with no mode file do not change: the outputs of examples 1, 2, 4 and 5 are byte-identical with and without the fix on the same build. See [gen_mod](docs/input_files.md#gen_mod-optional) for what the values affect.
+It also adds two checks:
 
-**Correction to the finite-depth Green function at small distances (v2.3.3).** In finite depth, for panel pairs closer than 2% of the depth (R/h < 0.02), the Green function and its derivatives were computed with a series whose acceleration (the epsilon algorithm) gave values that jump when R moves by rounding size. The radial derivative times h² scattered by up to 1e5. These pairs now use the method already used below R/h = 0.0005 (Linton's), run in units of the depth, when ν·h ≤ 50 (ν = ω²/g). Above ν·h = 50 nothing changes. Infinite depth is not affected. Results change most where the depth is small compared with the panels at high frequency. On example 1 (h = 0.9 m) at 14.26 rad/s, the largest error in added mass, against a direct sum of the eigenfunction series, falls from 0.65% to 0.01%; in damping from 3.3% to 0.04%; and in excitation from 0.32% to 0.06%. Examples 2 to 5 change by less than 1e-4 in added mass and diagonal damping, and by less than 1e-6 in excitation. Run time does not change noticeably.
+- A run with NaN or Inf results says so and exits with code 1.
+- A hull panel with its centroid on z = 0 stops the run with a message.
 
 ## Installation and Usage
 
