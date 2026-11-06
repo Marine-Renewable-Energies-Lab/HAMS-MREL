@@ -25,6 +25,7 @@ MODULE SingularIntgr
    USE Const_mod
    USE PanelMesh_mod
    USE Inerfs_mod
+   USE Lid_mod
 
    IMPLICIT NONE
 
@@ -538,6 +539,13 @@ CONTAINS
         XQ(3,:)=iXYZ(iNCON(JEL,3),:)
         IF (iNCN(JEL).EQ.4) XQ(4,:)=iXYZ(iNCON(JEL,4),:)
 
+       ELSEIF (IRR.EQ.5) THEN
+
+        XQ(1,:)=LXYZ(LNCON(JEL,1),:)
+        XQ(2,:)=LXYZ(LNCON(JEL,2),:)
+        XQ(3,:)=LXYZ(LNCON(JEL,3),:)
+        IF (LNCN(JEL).EQ.4) XQ(4,:)=LXYZ(LNCON(JEL,4),:)
+
        ELSE
         PRINT*, 'Please define where the field point locates.'
        ENDIF   
@@ -638,6 +646,20 @@ CONTAINS
        GOTO 30
        ENDIF
 
+       ELSEIF (IRR.EQ.5) THEN
+
+       IF (LNCN(JEL).EQ.3) THEN
+       GOTO 80
+       ELSEIF (LNCN(JEL).EQ.4.AND.ITNO.EQ.2) THEN
+       GOTO 80
+       ELSEIF (LNCN(JEL).EQ.4.AND.ITNO.EQ.1) THEN
+       ITNO=2
+       XV(1,:)=XQ(1,:)
+       XV(2,:)=XQ(3,:)
+       XV(3,:)=XQ(4,:)
+       GOTO 30
+       ENDIF
+
        ELSE
 
        IF (iNCN(JEL).EQ.3) THEN
@@ -705,6 +727,13 @@ CONTAINS
         XQ(2,:)=iXYZ(iNCON(JEL,2),:)
         XQ(3,:)=iXYZ(iNCON(JEL,3),:)
         IF (iNCN(JEL).EQ.4) XQ(4,:)=iXYZ(iNCON(JEL,4),:)
+
+       ELSEIF (IRR.EQ.5) THEN
+
+        XQ(1,:)=LXYZ(LNCON(JEL,1),:)
+        XQ(2,:)=LXYZ(LNCON(JEL,2),:)
+        XQ(3,:)=LXYZ(LNCON(JEL,3),:)
+        IF (LNCN(JEL).EQ.4) XQ(4,:)=LXYZ(LNCON(JEL,4),:)
 
        ELSE
         PRINT*, 'Please define where the field point locates.'
