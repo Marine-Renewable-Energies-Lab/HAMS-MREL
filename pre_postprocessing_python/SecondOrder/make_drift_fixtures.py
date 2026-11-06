@@ -40,6 +40,10 @@ BOTTOM_MOUNTED_FREQUENCIES = (1.0, 1.6)
 WATERLINE_OFFSETS = (0.005, 0.01, 0.05, 0.1)
 # Hull panels whose centroids are the field points of drift_cyl: side, bottom, bilge, lee and weather
 FIELD_PANELS = (1, 4, 8, 9, 14, 40, 85, 130, 133, 200, 270, 448)
+# Control-surface fixtures: threads, the frequency of the cases that need one, and the finite-difference steps besides 0.02
+CONTROL_THREADS = 4
+CONTROL_FREQUENCY = 0.95
+CONTROL_STEPS = (0.005, 0.01, 0.05, 0.1)
 
 
 def real12(value):
@@ -349,6 +353,65 @@ def main():
             shutil.copyfile(os.path.join(path, file), os.path.join(target, file))
         write_control(os.path.join(target, "ControlFile.in"), frequencies=DRIFT_CYL_FREQUENCIES,
                       headings=DRIFT_CYL_HEADINGS, **control)
+        write_second_order(os.path.join(target, "SecondOrder.in"), **options)
+
+    write_control_physics(data)
+
+
+def copy_inputs(data, source, target, files):
+    for file in files:
+        shutil.copyfile(os.path.join(data, source, "input", file), os.path.join(target, file))
+
+
+def write_control_physics(data):
+    """The control-surface method against far-field, exact results and itself. These run on CONTROL_THREADS threads, with as
+    few frequencies and headings as each test needs: the field rows cost about 50 s per frequency on one thread at 448 hull
+    panels."""
+    hull = ("HullMesh.pnl", "Hydrostatic.in")
+    two_hulls = ("HullMesh_1.pnl", "Hydrostatic_1.in", "HullMesh_2.pnl", "Hydrostatic_2.in")
+    one = (CONTROL_FREQUENCY,)
+    fixed = dict(mean_drift=1, drift_methods="far control", write_terms=0, motion_state="fixed")
+    free = dict(fixed, motion_state="free")
+    # (name, source fixture, files, ControlFile.in options, SecondOrder.in options)
+    cases = [
+        ("control_cyl_free", "drift_cyl", hull, dict(frequencies=DRIFT_CYL_FREQUENCIES), free),
+        ("control_cyl_wide", "drift_cyl", hull, dict(frequencies=one), dict(fixed, cs_margin=30)),
+        ("control_cyl_box", "drift_cyl", hull, dict(frequencies=one), dict(fixed, cs_shape="box")),
+        ("control_bottom", "drift_field_0p01", hull, dict(depth=BOTTOM_MOUNTED_MESH["draft"],
+                                                          frequencies=BOTTOM_MOUNTED_FREQUENCIES, headings=(0.0,)), fixed),
+        ("control_box", "drift_box", hull, dict(depth=50.0, frequencies=OBLIQUE_FREQUENCIES, headings=(30.0,)), fixed),
+        ("control_two_round", "drift_two_round", two_hulls,
+         dict(depth=50.0, frequencies=(1.35,), body_origins=[(0.0, 0.0), (0.0, 30.0)]),
+         dict(free, drift_methods="far near control")),
+        ("control_far_apart", "drift_far_apart", two_hulls,
+         dict(depth=50.0, frequencies=(FAR_APART_FREQUENCY,), headings=(0.0,),
+              body_origins=[(0.0, 0.0), (0.0, FAR_APART_SEPARATION)]), free),
+        ("control_isolated", "drift_isolated", hull, dict(depth=50.0, frequencies=(FAR_APART_FREQUENCY,), headings=(0.0,)),
+         free),
+        ("control_irsp", "drift_irsp", hull + ("WaterPlaneMesh.pnl",),
+         dict(frequencies=IRSP_FREQUENCIES, headings=(0.0,), irsp=1), free),
+        ("control_irsp_ref", "drift_irsp_ref", hull, dict(frequencies=IRSP_FREQUENCIES, headings=(0.0,)), free),
+        ("control_half", "drift_cyl_half", hull, dict(frequencies=one), free),
+        ("control_gmres", "drift_cyl", hull, dict(frequencies=one, solver=2), free),
+        ("control_pairs", "drift_cyl", hull, dict(frequencies=one), dict(free, mean_drift=2)),
+        # The source route on C, with near-field by differencing: the driver builds the sources on a scratch copy of the
+        # state. control_source_ref is the same case without control, for the near-field rows
+        ("control_source", "drift_cyl", hull, dict(frequencies=DRIFT_CYL_FREQUENCIES),
+         dict(free, drift_methods="far near control", velocity_method="differencing", cs_velocity="source")),
+        ("control_source_ref", "drift_cyl", hull, dict(frequencies=DRIFT_CYL_FREQUENCIES),
+         dict(free, drift_methods="far near", velocity_method="differencing")),
+        # Deep water: the Green function goes by INFGREEN3D, as drift_source_deep
+        ("control_deep", "drift_round_fixed", hull, dict(depth=-1.0, frequencies=(1.10,)), fixed),
+    ]
+    # The finite-difference step of the green route. 0.02, the default, is control_cyl
+    for step in CONTROL_STEPS:
+        cases.append(("control_step_%s" % str(step).replace(".", "p"), "drift_cyl", hull, dict(frequencies=one),
+                      dict(fixed, cs_fd_step=step)))
+    for name, source, files, control, options in cases:
+        target = case_dir(data, name)
+        copy_inputs(data, source, target, files)
+        control = dict(dict(headings=DRIFT_CYL_HEADINGS, threads=CONTROL_THREADS), **control)
+        write_control(os.path.join(target, "ControlFile.in"), **control)
         write_second_order(os.path.join(target, "SecondOrder.in"), **options)
 
 

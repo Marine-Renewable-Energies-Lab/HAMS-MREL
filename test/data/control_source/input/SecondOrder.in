@@ -1,0 +1,7 @@
+! Mean drift options of this integration test
+mean_drift = 1
+drift_methods = far near control
+write_terms = 0
+motion_state = free
+velocity_method = differencing
+cs_velocity = source
