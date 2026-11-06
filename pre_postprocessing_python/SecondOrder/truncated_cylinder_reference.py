@@ -1,6 +1,7 @@
 """Semi-analytical reference for a truncated vertical cylinder, by eigenfunction matching, to validate HAMS-MREL's mean drift.
 
-Problem (design: docs/superpowers/specs/2026-11-06-truncated-cylinder-drift-reference-design.md, sections 2 and 3). A vertical
+Problem (the method of Garrett 1971 and Yeung 1981, with a corner basis; see Sources at the end, and the section
+"Semi-analytical reference: sharp truncated cylinder" of docs/mean_drift.md for the results). A vertical
 cylinder of radius a and draft d, sharp bilge, in water of depth h, with the gap g = h - d below it. Linear potential flow,
 time factor exp(-i omega t), nu = omega**2/G. G and RHO are make_mesh.G and make_mesh.RHO, the values of src/WavDynMods.f90.
 z is up, z = 0 is the still waterline, z = -h the sea bed. Each azimuthal order m is solved on its own.
@@ -16,7 +17,7 @@ n <= BRENTQ_ROOTS; this form has no pole in the bracket (as evanescent_roots in 
 feature/damping-lid). Beyond, the same equation by fixed-point iteration, vectorised (contraction below 1.3e-5 there).
 
 Corner basis. The fluid corner at (a, -d) is a 270 degree wedge, so the radial velocity on the gap behaves like
-(-d - z)**(-1/3) (design section 3). Reflecting the gap about the sea bed, where dphi/dz = 0, gives t = (z + h)/g in [-1, 1],
+(-d - z)**(-1/3). Reflecting the gap about the sea bed, where dphi/dz = 0, gives t = (z + h)/g in [-1, 1],
 with the corner at t = +-1 and the bed at t = 0, and the even basis
 
     u_p(t) = (1 - t**2)**(-1/3) C_2p^(1/6)(t),   p = 0 ... P,
@@ -89,9 +90,9 @@ rad/m, in this module's convention, as total_solution and the near-field terms n
 complex value, and abs(xi) is Motion.4's MOD. total_solution adds sum_j (-i omega xi_j) phi_j, phi_j per unit velocity.
 
 Far-field drift. far_field_fx is Maruo's formula, F_x/(rho g A**2) = (1/2)(C_g/C_p) int abs(a)**2 (1 - cos theta) dtheta,
-heading 0, with a(theta) the outgoing elevation amplitude of far_field_amplitude (spec section 5.3 of
-docs/superpowers/specs/2026-11-04-second-order-waves-design.md, "Far-field."; there a(theta) is the same amplitude, in
-exp(-i omega t)). That spec's general form, (1/2)(C_g/C_p)[X - int abs(a)**2 cos theta dtheta] with the optical term
+heading 0, with a(theta) the outgoing elevation amplitude of far_field_amplitude, eta_scattered ~ a(theta) e^(i k r)/sqrt(r)
+as k r -> infinity, in exp(-i omega t) (Maruo 1960; Newman 1967). The general momentum form,
+(1/2)(C_g/C_p)[X - int abs(a)**2 cos theta dtheta] with the optical term
 X = -sqrt(8 pi/k) Re(e^(3 i pi/4) a(0)) for this module's a and eta_I = -i e^(i k x), is the form HAMS evaluates
 (pair_core in src/FarFieldDrift.f90, with its own Kochin amplitude); the two are equal when no energy is lost,
 X = int abs(a)**2 dtheta, which scattering_energy checks for the fixed body and free_energy for the free one. HAMS writes
@@ -105,7 +106,7 @@ radial velocity of a moving wall), rho**(1/3) (the second wedge eigenfunction), 
 velocity next to the corner and sees the missing ones: with the single family the free body's near-field F_x settles
 (in N) 17 % (P = 20) and 4 % (P = 60) from the far field at 0.70 rad/s. So p_max may be a tuple (basis_spec): the
 families (1 - t**2)**(lam - 1/2) C_2p^lam(t), lam = 1/6, 1/2, 5/6 (FAMILIES; exponents -1/3 + n, n, 1/3 + n), each even
-in t, with their own p_max; an int P is the single family of Tasks 1 to 4, unchanged. Each family's inner products are
+in t, with their own p_max; an int P is the single lam = 1/6 family, unchanged. Each family's inner products are
 Gegenbauer's integral with its lam (c_p = pi 2**(1 - lam) Gamma(2p + 2 lam)/((2p)! Gamma(lam))), and check_inner_products
 tests all three against quad. The families are not orthogonal and together nearly dependent (the Gram matrix
 int u_p u_q dt of (20, 4, 4) has 8 eigenvalues below 1e-10 of the largest; _gram, exact in sigma, 1 - abs(t) = sigma**3),
@@ -148,10 +149,12 @@ already in degrees, so it is not used. In a one-off comparison (not a check, and
 the HAMS output is outside it) with the ExcForce.3 of the study's finest sharp-hull HAMS run, source method, the three
 components agree in sign, phase and modulus to about 1e-3, the mesh error.
 
-Near field. near_field_terms writes the terms of spec 5.3 of docs/superpowers/specs/2026-11-04-second-order-waves-design.md
-(WAMIT eq. 15.54-15.57) under the kernel T- of spec 5.4, P(f, g) = (f_i conj(g_j) + conj(f_j) g_i)/4, over rho g, n the
-unit normal out of the fluid (into the body), x relative to xr, xi' = xi + alpha x xr the translation of xr and alpha =
-(0, xi_5, 0) the rotation (the module's xi are about the origin), X = xi' + alpha x (x - xr), phi_t = -i omega phi:
+Near field. near_field_terms writes the pressure-integration terms of the WAMIT v7.5 user manual, section 15.8,
+eqs. (15.54) to (15.57), restated below as coded (the six terms docs/mean_drift.md lists for HAMS-MREL), for a pair of
+first-order states i, j under the difference-frequency kernel P(f, g) = (f_i conj(g_j) + conj(f_j) g_i)/4 (for i = j,
+Re(f conj(g))/2, the time average of the product of two harmonic quantities), over rho g, n the unit normal out of the
+fluid (into the body), x relative to xr, xi' = xi + alpha x xr the translation of xr and alpha = (0, xi_5, 0) the
+rotation (the module's xi are about the origin), X = xi' + alpha x (x - xr), phi_t = -i omega phi:
 
     I    (1/2) int_WL r' [P(zeta, zeta) - 2 P(zeta, X_3)] a dtheta, zeta = (i omega/g) phi(a, theta, 0), r' = n' or
          (x - xr) x n', n' = (-cos theta, -sin theta, 0) the unit horizontal normal into the body,
@@ -160,7 +163,7 @@ unit normal out of the fluid (into the body), x relative to xr, xi' = xi + alpha
     III  -(1/g) int_S r sum_k P(X_k, d_k phi_t) dS,
     IV   force P(alpha x G), moment P(alpha x H) + P(xi' x G), G = -(1/g) int n phi_t dS, H = -(1/g) int (x - xr) x n phi_t dS,
          the first-order dynamic pressure only,
-    V    F_S,z and M_S,y of Task 7 of docs/superpowers/plans/2026-11-04-mean-wave-drift.md, with A = pi a**2, (x_f, y_f) =
+    V    F_S,z and M_S,y of WAMIT eqs. (15.56) and (15.57), the formula HAMS-MREL uses, with A = pi a**2, (x_f, y_f) =
          -(x_r, y_r), L_ij about xr, V = pi a**2 d, (x_b, y_b) = -(x_r, y_r), Z_o = z_r (_hydrostatic_term).
 
 The order is that of MeanDriftTerms.txt (T_WATERLINE ... T_HYDROSTATIC in src/NearFieldDrift.f90); near_field's total is in
@@ -194,7 +197,7 @@ bottom), which carries the weight rho**(-2/3) exactly in its Jacobian 3 L s**2: 
 32 nodes. Gauss-Legendre in r beyond. The trapezoidal rule in theta is exact.
 
 Self-checks: python -I truncated_cylinder_reference.py check [NAME ...] runs the named checks, or without NAME all of them
-but uncertainty (SLOW_CHECKS: it is run by name, and by the reference subcommand).
+but uncertainty and compare_signs (SLOW_CHECKS: they are run by name, and by the reference subcommand).
 The script exits with 1 if one fails. What each covers, and what it does not:
 
 - roots: at each omega of drift_convergence.WIDE_FREQUENCIES, h = 100, N = CHECK_N: abs(k tanh kh - nu) and
@@ -315,10 +318,13 @@ The script exits with 1 if one fails. What each covers, and what it does not:
 - compare_fixture: compare on a temporary RESULTS written in HAMS's formats from LIGHT_RESOLUTION reference rows at 0.40,
   0.70 and 1.60 rad/s, passed through the reference CSV: every difference 0 (to 1e-9) for a case with all files, heading
   30 rows ignored; "missing" terms and control surface for a case without MeanDriftTerms.txt and
-  MeanDriftControlSurface.7; the 1.60 rows "irregular" and no other; free F_x at 0.40 rad/s empty (below the floor); and
-  irregular_frequencies equal to the 1.548 and 1.939 of drift_convergence.IRREGULAR_FREQUENCIES. It tests the readers,
-  the indices, the floor and the flags, not HAMS.
-- compare_signs: see "Comparison with HAMS".
+  MeanDriftControlSurface.7; the 1.60 rows "irregular" and no other; free F_x at 0.40 rad/s empty (below the floor); an
+  a_sharp_ folder that is not a study case and one without output/Wamit_format skipped; and irregular_frequencies equal
+  to the 1.548 and 1.939 of drift_convergence.IRREGULAR_FREQUENCIES. Every complex value is written with the phase
+  FIXTURE_PHASE = 0.6 rad, Re = MOD cos(phase), Im = MOD sin(phase), so a reader that takes the wrong column fails
+  (measured: MOD instead of Re for the drift files, Re instead of MOD for ExcForce.3, Im instead of Re for
+  MeanDriftTerms.txt, each FAIL). It tests the readers, the indices, the floor and the flags, not HAMS.
+- compare_signs (in SLOW_CHECKS): see "Comparison with HAMS".
 
 Reference values. python -I truncated_cylinder_reference.py reference [--out CSV] writes, at DEFAULT_RESOLUTION
 (N = 64000, gap basis (20, 4, 4), orders 0 ... 15) and every WIDE_FREQUENCIES, the fixed and the free rows of reference
@@ -360,10 +366,10 @@ reference's docstring), then the convergence table, then runs every check; exit 
     0.7e-4 (0.80) and the extrapolation to r = 0 is 5 to 6 times that span, and it assumes the error vanishes where
     the residual does, which nothing here tests (the residual does not fall with the basis). It is an estimate of
     the size, not a bound.
-- Run time, laptop: check (without uncertainty) 3 min 52 s. reference --out 15 min 19 s in a run where the laptop
-  was about 2.5 times slower than for that figure (its 22 rows took 191 s, 77 s before; convergence 208 s, 127 s
-  before): uncertainty took 453 s of it (six rows at N = 128000 that no other check computes), so expect about
-  6 to 7 min unloaded. A row pair (fixed and free) at the default costs about 6 s: they share the solves
+- Run time, laptop, measured once each: check (the 20 checks without SLOW_CHECKS) 4 min 49 s, most of it convergence
+  (146 s) and fx_identity (94 s, the 22 reference rows). reference --out 7 min 2 s for all 22 checks: the rows 92 s,
+  convergence 136 s, uncertainty 134 s (the rows at N = 128000 that no other check computes); compare_signs takes 0 s
+  there, since the rows are cached, and about 3 min alone. A row pair (fixed and free) at the default costs about 6 s: they share the solves
   (_solved), the inner products and radial ratios (_modes) and the solution-independent part of the body series
   (_series_context).
 
@@ -379,14 +385,32 @@ reference's stated uncertainty (uncertainty()). Each block is headed by the pane
 a ntheta-sided inscribed polygon (polygon_area_error: -6.4e-3 at 32 sides, -4.0e-4 at 128). A percentage is empty where
 abs(reference) is below drift_convergence.percent's floor, 1e-4 of the largest abs(reference) of the quantity and motion
 over the reference rows (for a term, of the term and its total). Rows within 5 % of an irregular frequency of the hull
-(irregular_frequencies: 1.548 and 1.939 rad/s; the 1.60 rows) are marked "irregular", not counted as HAMS errors. The
+(irregular_frequencies: 1.5483 and 1.9394 rad/s, the only two below the top of the scan, which compare asserts; the 1.60
+rows) are marked "irregular", not counted as HAMS errors. An a_sharp_ folder that is not a case of
+drift_convergence.study_cases, or that has no output/Wamit_format, is skipped with a printed note. The
 reference rows are computed at DEFAULT_RESOLUTION (cached; about 4 min) or read from a CSV of the reference subcommand.
 compare_signs, at the finest source mesh (7168 panels), tests the sign of every near-field term and of far-field F_x
 above the floor, and of the near-field totals where they are at least SIGN_CANCELLATION = 5 % of their largest term: the
 free F_z at 0.70 and 0.80 rad/s (1.4 and 1.0 % of their terms) and the free F_x at 0.60 and 0.70 rad/s are near
 cancellations whose sign HAMS's term errors of a few % can flip. Measured once against the study's results (not
 reproducible from the repository): every tested sign agrees (210 values); HAMS's free F_z at 0.70 rad/s is +0.059 against
--0.613, and its Richardson extrapolation from 448, 1792 and 7168 panels (source) is -0.65.
+-0.613, and its Richardson extrapolation from 448, 1792 and 7168 panels (source) is -0.65. compare_signs is in
+SLOW_CHECKS: it reads data outside the repository and computes the 22 reference rows.
+
+Sources.
+- Garrett, C.J.R. (1971). Wave forces on a circular dock. J. Fluid Mech. 46(1), 129-139. doi:10.1017/S0022112071000430.
+  Eigenfunction matching for a truncated cylinder (diffraction).
+- Yeung, R.W. (1981). Added mass and damping of a vertical cylinder in finite-depth waters. Appl. Ocean Res. 3(3),
+  119-133. doi:10.1016/0141-1187(81)90101-2. The same matching for the radiation problems.
+- Mavrakos, S.A. (1988). The vertical drift force and pitch moment on axisymmetric bodies in regular waves. Appl. Ocean
+  Res. 10(4), 207-218. doi:10.1016/S0141-1187(88)80005-1. Mean F_z and M_y of axisymmetric bodies by matched eigenfunctions.
+- MacCamy, R.C. and Fuchs, R.A. (1954). Wave forces on piles: a diffraction theory. Technical Memorandum 69, Beach
+  Erosion Board, US Army Corps of Engineers. The bottom-mounted limit.
+- Maruo, H. (1960). The drift of a body floating on waves. J. Ship Res. 4, 1-10. Far-field F_x.
+- Newman, J.N. (1967). The drift force and moment on ships in waves. J. Ship Res. 11(1), 51-60.
+  doi:10.5957/jsr.1967.11.1.51. Far-field drift force and moment.
+- WAMIT, Inc. WAMIT User Manual, Version 7.5, section 15.8, eqs. (15.54) to (15.57): mean drift by pressure integration.
+- DLMF 18.17.17 (Gegenbauer's integral) and 25.12.12 (polylogarithm), https://dlmf.nist.gov.
 """
 import argparse
 import csv
@@ -535,7 +559,7 @@ def _gram_transform(basis, cutoff=None):
 
 
 def basis_spec(p_max):
-    """The p_max of each family in FAMILIES: an int P is (P, -1, -1), the single family of Tasks 1 to 4; a tuple gives the
+    """The p_max of each family in FAMILIES: an int P is (P, -1, -1), the single lam = 1/6 family; a tuple gives the
     three (-1: the family is absent)."""
     if isinstance(p_max, (int, np.integer)):
         return (int(p_max), -1, -1)
@@ -1284,7 +1308,7 @@ def far_field_fx(cyl, omega, total):
 
 
 # Rule of the corner zone: "cube", Gauss-Legendre in (rho/L)**(1/3), the default, or "jacobi", Gauss-Jacobi for the weight
-# rho**(-2/3) (module docstring, "Near field", for why the default is not the brief's Gauss-Jacobi rule)
+# rho**(-2/3) (module docstring, "Quadrature", for why the default is not Gauss-Jacobi)
 CORNER_RULE = "cube"
 CORNER_EXPONENT = -2.0 / 3.0   # abs(grad phi)**2 ~ rho**(-2/3) at the 270 degree corner
 NEAR_THETA = 72                # trapezoidal points in theta: exact for trigonometric polynomials of degree < 72
@@ -1680,7 +1704,8 @@ def _surface_state(cyl, omega, sol, xi, quad, xr):
 
 
 def _pair(fi, gi, fj, gj):
-    """The kernel T- of spec 5.4 without c/2: (fi conj(gj) + conj(fj) gi)/4, elementwise; for i = j, Re(f conj(g))/2."""
+    """The difference-frequency kernel: (fi conj(gj) + conj(fj) gi)/4, elementwise; for i = j, Re(f conj(g))/2, the time
+    average of the product of two harmonic quantities f and g."""
     return 0.25 * (fi * np.conj(gj) + np.conj(fj) * gi)
 
 
@@ -1699,7 +1724,7 @@ def _load(vector, x):
 
 
 def near_field_terms(cyl, omega_i, sol_i, xi_i, omega_j, sol_j, xi_j, quad, xr=(0.0, 0.0, 0.0)):
-    """T-_ij of each near-field term (spec 5.3 and 5.4 of docs/superpowers/specs/2026-11-04-second-order-waves-design.md),
+    """T-_ij of each near-field term (WAMIT v7.5 user manual, eqs. 15.54 to 15.57, under the kernel _pair),
     over rho g, per unit wave amplitudes, as (6,) complex arrays (F_x, F_y, F_z, M_x, M_y, M_z, moments about xr), components
     1, 3, 5 filled; for i = j the real part is the mean load over rho g A**2. xi_i, xi_j: the motions (module convention,
     about the origin); xr in the x-z plane. See the module docstring for the terms as coded."""
@@ -1755,7 +1780,7 @@ def near_field_terms(cyl, omega_i, sol_i, xi_i, omega_j, sol_j, xi_j, quad, xr=(
 
 
 def _hydrostatic_term(cyl, si, sj, xr):
-    """V: F_S and M_S of Task 7 of docs/superpowers/plans/2026-11-04-mean-wave-drift.md (WAMIT eq. 15.56, 15.57), over
+    """V: F_S and M_S of the WAMIT v7.5 user manual, eqs. (15.56) and (15.57), the formula HAMS-MREL uses, over
     rho g, under the kernel, with xi = translation of xr, alpha = rotation, waterplane and buoyancy quantities relative to
     xr: area A, centre (x_f, y_f), L_ij = int (x - xr)_i (x - xr)_j dA, volume V, centre of buoyancy (x_b, y_b),
     Z_o = z of xr. F_S,x = F_S,y = 0; only F_S,z and M_S,y are filled."""
@@ -2594,8 +2619,8 @@ _TOTAL_OF = {"Fx": "Fx_near", "Fz": "Fz", "My": "My"}
 def irregular_frequencies(cyl, upto):
     """The irregular frequencies of a constant-panel BEM (no lid) on the cylinder below upto, rad/s: the eigenvalues of the
     interior problem with phi = 0 on the wetted surface and the free-surface condition on the waterplane, phi =
-    J_m(k r) sinh(k (z + d)) cos(m theta) with J_m(k a) = 0 and nu = k coth(k d). For the default cylinder 1.5487
-    (J_0) and 1.9398 (J_1) below 2 rad/s, the 1.548 and 1.939 of drift_convergence.IRREGULAR_FREQUENCIES (that tuple
+    J_m(k r) sinh(k (z + d)) cos(m theta) with J_m(k a) = 0 and nu = k coth(k d). For the default cylinder 1.5483
+    (J_0) and 1.9394 (J_1) below 2 rad/s, the 1.548 and 1.939 of drift_convergence.IRREGULAR_FREQUENCIES (that tuple
     also holds 1.10, 1.50 and 1.60, the frequencies of the study's irregular-frequency runs, which are not irregular)."""
     from scipy.special import jn_zeros
 
@@ -2675,7 +2700,7 @@ def _read_hams_case(folder):
     return values
 
 
-def _relative(value, ref, scale):
+def _compare_relative(value, ref, scale):
     """(value - ref)/abs(ref); None where drift_convergence.percent prints an empty field (abs(ref) below 1e-4 of scale),
     MISSING where HAMS has no value."""
     if value == MISSING:
@@ -2720,19 +2745,27 @@ def compare(results, reference_rows, names=None):
     ("irregular" within IRREGULAR_MARGIN of irregular_frequencies, "no reference" if the reference has no row at omega,
     else ""), and for each q of COMPARE_QUANTITIES: q (HAMS value or MISSING), q_ref, q_rel ((HAMS - reference)/
     abs(reference), None below the floor, MISSING), and for COMPARE_DRIFT q_unc (the reference's stated relative
-    uncertainty, uncertainty()). Cases are sorted by motion, velocity, multiple."""
+    uncertainty, uncertainty()). Cases are sorted by motion, velocity, multiple. A COMPARE_PREFIX folder that is not a case of
+    drift_convergence.study_cases, or has no output/Wamit_format, is skipped with a printed note."""
     cyl = Cylinder()
     by = {(r["motion"], round(r["omega"], 2)): r for r in reference_rows}
     scales = _floor_scales(by)
     cases = _sharp_cases()
-    folders = sorted(n for n in (names if names is not None else os.listdir(results))
-                     if n.startswith(COMPARE_PREFIX) and os.path.isdir(os.path.join(results, n)))
-    unknown = [n for n in folders if n not in cases]
-    if unknown:
-        raise ValueError("compare: %s not cases of drift_convergence.study_cases" % ", ".join(unknown))
+    folders = []
+    for n in sorted(names if names is not None else os.listdir(results)):
+        if not n.startswith(COMPARE_PREFIX) or not os.path.isdir(os.path.join(results, n)):
+            continue
+        if n not in cases:
+            print("compare: skipped %s: not a case of drift_convergence.study_cases" % n)
+        elif not os.path.isdir(os.path.join(results, n, "output", "Wamit_format")):
+            print("compare: skipped %s: no output/Wamit_format" % n)
+        else:
+            folders.append(n)
     folders.sort(key=lambda n: (cases[n].motion, cases[n].velocity, cases[n].multiple))
     top = max(drift_convergence.WIDE_FREQUENCIES) * (1.0 + IRREGULAR_MARGIN) / (1.0 - IRREGULAR_MARGIN)
     irregular = irregular_frequencies(cyl, top)
+    if len(irregular) != 2:   # 1.5483 and 1.9394 rad/s on the default cylinder; IRREGULAR_MARGIN was set for these two
+        raise ValueError("compare: expected 2 irregular frequencies below %.3f rad/s, found %s" % (top, irregular))
     table = []
     for name in folders:
         case = cases[name]
@@ -2755,7 +2788,7 @@ def compare(results, reference_rows, names=None):
                     row[q + "_ref"], row[q + "_rel"] = float("nan"), MISSING
                 else:
                     row[q + "_ref"] = source[_reference_of(q)]
-                    row[q + "_rel"] = _relative(values[q], row[q + "_ref"], scales[case.motion, q])
+                    row[q + "_rel"] = _compare_relative(values[q], row[q + "_ref"], scales[case.motion, q])
                 if q in COMPARE_DRIFT:
                     row[q + "_unc"] = uncertainty(case.motion, _UNCERTAINTY_OF[q], w2)
             table.append(row)
@@ -2880,10 +2913,28 @@ def _fixture_value(value):
     return "%23.15E" % value
 
 
+# The fixture writes every complex value with this phase, so that a reader that takes the wrong column (Re or Im for MOD,
+# MOD or Im for Re) sees a relative difference of at least 1 - cos(phase) = 0.17
+FIXTURE_PHASE = 0.6   # rad
+
+
+def _fixture_complex(mod=None, re=None):
+    """MOD, PHS (degrees), Re, Im of a WAMIT-format row with Re = MOD cos(phase), Im = MOD sin(phase): from its modulus
+    (first-order files, phase FIXTURE_PHASE) or from its real part (drift files, phase FIXTURE_PHASE or FIXTURE_PHASE +
+    pi, MOD = abs(re)/cos(FIXTURE_PHASE))."""
+    if mod is not None:
+        phase = FIXTURE_PHASE
+    else:
+        mod = abs(re) / math.cos(FIXTURE_PHASE)
+        phase = FIXTURE_PHASE + (math.pi if re < 0.0 else 0.0)
+    return mod, math.degrees(phase), mod * math.cos(phase), mod * math.sin(phase)
+
+
 def _write_hams_fixture(folder, rows, free_rows, terms=True, control_surface=True):
     """Write output/Wamit_format/ of a HAMS case under folder from reference rows (omega -> row), in the formats HAMS writes
     (see _read_hams_case), with 15 digits. free_rows give Motion.4. Rows at heading 30 hold other values, which compare
-    must not read. terms and control_surface: whether MeanDriftTerms.txt and MeanDriftControlSurface.7 are written."""
+    must not read. Every complex value has the phase FIXTURE_PHASE (_fixture_complex), so the readers' columns are tested.
+    terms and control_surface: whether MeanDriftTerms.txt and MeanDriftControlSurface.7 are written."""
     out = os.path.join(folder, "output", "Wamit_format")
     os.makedirs(out)
     v = _fixture_value
@@ -2897,16 +2948,16 @@ def _write_hams_fixture(folder, rows, free_rows, terms=True, control_surface=Tru
             for omega in sorted(rows):
                 for beta, factor in ((0.0, 1.0), (30.0, 2.0)):
                     for j in MOTION_MODES:
-                        mod = factor * source[omega]["%s%d" % (key, j)]
-                        f.write("%14.6E %14.6E %5d %s %s %s %s\n" % (omega, beta, j, v(mod), v(0.0), v(mod), v(0.0)))
+                        cols = _fixture_complex(mod=factor * source[omega]["%s%d" % (key, j)])
+                        f.write("%14.6E %14.6E %5d %s\n" % (omega, beta, j, " ".join(v(c) for c in cols)))
 
     def drift(name, entries):
         with open(os.path.join(out, name), "w") as f:
             for omega, row in sorted(rows.items()):
                 for beta, factor in ((0.0, 1.0), (30.0, 2.0)):
                     for index, key in entries:
-                        f.write("%14.6E %14.6E %14.6E %5d %s %s %s %s\n" % (omega, beta, beta, index, v(factor * row[key]),
-                                                                          v(0.0), v(factor * row[key]), v(0.0)))
+                        cols = _fixture_complex(re=factor * row[key])
+                        f.write("%14.6E %14.6E %14.6E %5d %s\n" % (omega, beta, beta, index, " ".join(v(c) for c in cols)))
 
     drift("MeanDriftMomentum.8", ((1, "Fx_far"),))
     drift("MeanDriftPressure.9", ((1, "Fx_near"), (3, "Fz"), (5, "My")))
@@ -2920,15 +2971,18 @@ def _write_hams_fixture(folder, rows, free_rows, terms=True, control_surface=Tru
                 for beta, factor in ((0.0, 1.0), (30.0, 2.0)):
                     for index, name in ((1, "Fx"), (3, "Fz"), (5, "My")):
                         for number, key in enumerate(NEAR_FIELD_TERMS, start=1):
+                            _, _, re, im = _fixture_complex(re=factor * row["%s_%s" % (name, key)])
                             f.write("%14.6E %14.6E %14.6E %5d %5d %5d %s %s\n"
-                                    % (omega, beta, beta, 1, index, number, v(factor * row["%s_%s" % (name, key)]), v(0.0)))
+                                    % (omega, beta, beta, 1, index, number, v(re), v(im)))
 
 
 def check_compare_fixture():
     """compare on a temporary RESULTS written from the reference itself (LIGHT_RESOLUTION, COMPARE_FIXTURE_FREQUENCIES), the
     rows passed through the reference CSV (write_reference_csv, read_reference_csv): a free case with every file, where
     every difference is 0 to 1e-9 and the control surface is read; a fixed case without MeanDriftTerms.txt and
-    MeanDriftControlSurface.7, whose columns are "missing" while the rest is 0; the 1.60 rad/s rows marked "irregular" and
+    MeanDriftControlSurface.7, whose columns are "missing" while the rest is 0; every complex value written with the phase
+    FIXTURE_PHASE, so a reader that takes the wrong column fails; an a_sharp_ folder that is not a study case and one
+    without output/Wamit_format, skipped; the 1.60 rad/s rows marked "irregular" and
     the others not; free F_x near and far at 0.40 rad/s (3e-6 of 0.11) empty, below the floor of
     drift_convergence.percent; and the irregular frequencies of irregular_frequencies equal to the 1.548 and 1.939 rad/s of
     drift_convergence.IRREGULAR_FREQUENCIES to 1e-3."""
@@ -2952,6 +3006,8 @@ def check_compare_fixture():
         _write_hams_fixture(os.path.join(results, "a_sharp_fixed_diff_m1"), fixed, free, terms=False,
                             control_surface=False)
         os.makedirs(os.path.join(results, "b_bottom_src_m1"))   # not a_sharp_: not read
+        os.makedirs(os.path.join(results, "a_sharp_free_src_m9", "output", "Wamit_format"))   # not a study case: skipped
+        os.makedirs(os.path.join(results, "a_sharp_free_src_m1"))   # no output/Wamit_format: skipped
         table = compare(results, rows)
     cases = sorted(set(r["case"] for r in table))
     if cases != ["a_sharp_fixed_diff_m1", "a_sharp_free_src_m2"]:
@@ -3041,9 +3097,11 @@ CHECKS = {"roots": check_roots, "inner_products": check_inner_products, "polylog
           "free_energy": check_free_energy, "long_wave_motions": check_long_wave_motions,
           "corner_limit": check_corner_limit, "reference_point": check_reference_point,
           "pair_symmetry": check_pair_symmetry, "fx_identity": check_fx_identity, "convergence": check_convergence,
-          "compare_fixture": check_compare_fixture, "compare_signs": check_compare_signs}
-# Run by name (check uncertainty) and by the reference subcommand, not by a bare check: nine rows at N = 128000
-SLOW_CHECKS = {"uncertainty": check_uncertainty}
+          "compare_fixture": check_compare_fixture}
+# Run by name (check uncertainty compare_signs) and by the reference subcommand, not by a bare check: uncertainty computes
+# nine rows at N = 128000 that no other check needs; compare_signs reads the study's results outside the repository and
+# computes the 22 reference rows (about 3 min)
+SLOW_CHECKS = {"uncertainty": check_uncertainty, "compare_signs": check_compare_signs}
 ALL_CHECKS = dict(CHECKS, **SLOW_CHECKS)
 
 

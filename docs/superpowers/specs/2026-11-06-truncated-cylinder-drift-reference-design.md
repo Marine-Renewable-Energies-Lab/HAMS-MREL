@@ -111,12 +111,22 @@ the same floor as `drift_convergence.py` where a value is near zero.
 
 ## 8. Sources
 
-- Garrett, C.J.R. (1971). Wave forces on a circular dock. J. Fluid Mech. 46, 129-139.
-- Yeung, R.W. (1981). Added mass and damping of a vertical cylinder in finite-depth waters. Appl. Ocean Res. 3, 119-133.
-- Mavrakos, S.A. (1988). The vertical drift force and pitch moment on axisymmetric bodies in regular waves. Appl. Ocean Res.
-  10, 207-218.
-- MacCamy, R.C. and Fuchs, R.A. (1954). Wave forces on piles: a diffraction theory. Beach Erosion Board TM 69.
-- Maruo, H. (1960). The drift of a body floating on waves. J. Ship Res. 4, 1-10.
-- WAMIT v7.5 user manual, eqs. 15.54-15.57, as used in the second-order spec.
+Verified on 2026-11-06 (Task 8). Authors, years, titles, volumes and pages were correct; issue numbers and DOIs added,
+Newman (1967) added, WAMIT section number added.
 
-The page ranges above are from memory and are to be confirmed before the docs cite them.
+- Garrett, C.J.R. (1971). Wave forces on a circular dock. J. Fluid Mech. 46(1), 129-139. doi:10.1017/S0022112071000430
+  (Cambridge Core article page).
+- Yeung, R.W. (1981). Added mass and damping of a vertical cylinder in finite-depth waters. Appl. Ocean Res. 3(3), 119-133.
+  doi:10.1016/0141-1187(81)90101-2 (Elsevier record via Scilit; ASCE reference list).
+- Mavrakos, S.A. (1988). The vertical drift force and pitch moment on axisymmetric bodies in regular waves. Appl. Ocean Res.
+  10(4), 207-218. doi:10.1016/S0141-1187(88)80005-1 (TRID, Scilit, NTUA repository).
+- MacCamy, R.C. and Fuchs, R.A. (1954). Wave forces on piles: a diffraction theory. Technical Memorandum 69, Beach Erosion
+  Board, December 1954 (ERDC library record, DTIC scan).
+- Maruo, H. (1960). The drift of a body floating on waves. J. Ship Res. 4, 1-10. Not in Crossref; volume and pages from
+  reference lists (Duan and Zhao 2011, an Osaka University dissertation). The issue is uncertain: one list gives No. 3, but
+  Crossref has another paper at 4(3) pp. 1-16, and 4(4) has a gap at pp. 1-10; so the issue is left out.
+- Newman, J.N. (1967). The drift force and moment on ships in waves. J. Ship Res. 11(1), 51-60. doi:10.5957/jsr.1967.11.1.51
+  (Crossref).
+- WAMIT User Manual, Version 7.5, section 15.8 "Mean drift forces based on pressure integration", eqs. (15.54) to
+  (15.57) (checked in https://www.wamit.com/manual7.x/v75_manual.pdf: 15.54 force, 15.55 moment, 15.56 and 15.57 the
+  hydrostatic parts).
