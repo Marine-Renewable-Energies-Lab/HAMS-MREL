@@ -4,13 +4,19 @@ HAMS-MREL (Hydrodynamic Analysis of Marine Structures – Marine Renewable Energ
 
 HAMS-MREL is developed as an extension of the original [HAMS solver](https://github.com/YingyiLiu/HAMS). While HAMS focuses on single-body hydrodynamic analysis, HAMS-MREL expands the framework to handle interactions among multiple bodies. Other features include free surface elevation and pressure fields, suppression of irregular frequencies, global symmetry, generalized modes, an optional GMRES iterative solver with H-matrix acceleration for large multi-body problems, and integration with WEC-Sim.
 
-Current version: 2.3.2 (The repository has migrated from https://github.com/vaibhavraghavan/HAMS-MREL to keep all open source tools from MREL under one unbrella. For v2.0 to v2.2, got to the old repository.)
+Current version: 2.3.3 (The repository has migrated from https://github.com/vaibhavraghavan/HAMS-MREL to keep all open source tools from MREL under one unbrella. For v2.0 to v2.2, got to the old repository.)
 
 The binary for Windows is available in the [Releases](https://github.com/Marine-Renewable-Energies-Lab/HAMS-MREL/releases). This was compiled using OneAPI 2022 (ifort) and Visual Studio 2019. 
 
 ## Release notes
 
-The changes made after the v2.3.2 release, including the corrections below, are not in v2.3.2 or its Windows binary. They will be added in v2.3.3.
+v2.3.3 contains the corrections below. They are not in v2.3.2 or earlier releases, or in their Windows binaries.
+
+**Correction to the free-surface image term (v2.3.3).** The image term 1/r1 of the Green function was taken at the centroid of the source panel, while the 1/r term was integrated over the panel. On a panel close to z = 0 compared with its size, the centroid is too close to its image: on a wall row 0.02 m high and 0.65 m wide the one-point value is 4.7 times the integral. For pairs within 50 panel sizes the image term is now integrated over the panel. This changes first-order results on all meshes, a little. On the `config1` test case, the shifts per output file are 8.6e-5 to 5.7e-3 in added mass, 8.4e-5 to 1.3e-2 in damping and 3.9e-7 to 6.5e-4 in excitation, apart from near-zero couplings at low frequency. The one-point and the integrated term converge to the same limit as the mesh is refined: on half-spheroids in deep water, from 144 to 9216 panels, A and B from both agree with the exact limits to within 0.13% at the finest mesh. See [the image term section](docs/developer_documentation.md#free-surface-image-term).
+
+**Stop on a hull panel with its centroid on z = 0 (v2.3.3).** Such a panel has no usable image term, since the distance from its centroid to its own image is zero. The run now stops with a message and exit code 1. Before, it ran to the end and wrote NaN.
+
+**Correction to finite depth at large kh (v2.3.3).** In finite depth the depth factor of the propagating mode overflowed at kh = 355.24, so A, B and X were all NaN, and from kh of about 354 the Green function lost its imaginary part. Above kh = 300 these factors are now computed in scaled form. Below kh = 300 the printed output is unchanged. The finite-depth series stay inaccurate at large kh, so a warning above kh = 100 suggests the deep-water solver. A run with NaN or Inf results now says so and exits with code 1, instead of reporting success.
 
 **Correction to triangular panels (v2.3.3).** A triangle with an obtuse angle at its second node was integrated over the wrong shape, in the 1/r term of the Green function. Results change for meshes with such a triangle on the hull, and depended on the order of its nodes. Other meshes are not affected. To check a mesh, look for a triangle where the projection of side 1-3 on side 1-2 is longer than side 1-2.
 
