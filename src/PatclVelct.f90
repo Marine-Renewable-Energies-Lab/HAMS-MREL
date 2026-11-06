@@ -67,8 +67,13 @@ CONTAINS
                                                                        ! For deep water it is Equation 5 
           VINP=-CI*AMP*G/W0*EXP(WK0*Z)*EXP(CI*WKX)
 	    ELSE
+          IF (WK0*H .LE. 300.D0) THEN
           DUM=-AMP*W0/(WK0*SINH(WK0*H))                                ! Shouldn't this be cosh based on Equation 6?
           VINP=CI*DUM*COSH( WK0*(Z+H) )*EXP(CI*WKX)
+          ELSE                                                         ! Above kh = 300 COSH/SINH in scaled form, as they overflow at kh = 710
+          DUM=-AMP*W0/WK0
+          VINP=CI*DUM*EXP(WK0*Z)*(1.D0+EXP(-2.D0*WK0*(Z+H)))*EXP(CI*WKX)
+          ENDIF
         ENDIF
 
         VINP=VINP/CI
@@ -109,8 +114,13 @@ CONTAINS
           DPOZ=-CI*W0*AMP*EXP(WK0*Z)*EXP(CI*WKX) 
         ELSE
 !         write(*,*)  z+H,COSH(WK*(z+H)),SINH(WK*H)           
+          IF (WK0*H .LE. 300.D0) THEN
           THKDH=   COSH(WK0*(Z+H))/SINH(WK0*H)
           THKDV=   SINH(WK0*(Z+H))/SINH(WK0*H)  
+          ELSE
+          THKDH=   EXP(WK0*Z)*(1.D0+EXP(-2.D0*WK0*(Z+H)))
+          THKDV=   EXP(WK0*Z)*(1.D0-EXP(-2.D0*WK0*(Z+H)))
+          ENDIF
           DPOX=    W0*AMP*THKDH*EXP(CI*WKX)*COS(SITA)
           DPOY=    W0*AMP*THKDH*EXP(CI*WKX)*SIN(SITA)
           DPOZ=-CI*W0*AMP*THKDV*EXP(CI*WKX) 
