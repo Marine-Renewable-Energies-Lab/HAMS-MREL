@@ -17,6 +17,7 @@ module test_integration_config1
     !   ifort 2022.1 vs ifx 2022.1        3.5e-6     3.1e-4
     !   Effect of the LINTON fix (eb6144a)    2.1e-4 to 8.7e-4 per file    up to 8.0e-4
     !   Effect of the image term integral     8.6e-5 to 5.7e-3 per file    up to 9.4e-1 (near-zero couplings)
+    !   Effect of LINTON below R/h 0.02       4.2e-5 to 8.5e-5 per file    up to 1.5e-4
     ! OAMASS is the sharp check: its limit is about 14x the build noise and 4x below
     ! the smallest change that fix made. Damping (~0.3) is small beside the added-mass
     ! scale (~1e5), so it carries more noise and its limit only catches larger errors.
