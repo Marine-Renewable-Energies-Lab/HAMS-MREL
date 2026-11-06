@@ -2,13 +2,14 @@
 Convergence study of the mean wave drift: generate the cases, write Slurm scripts, run one case, and collect a table.
 
 Usage:
-    python drift_convergence.py list [--tier full|small] [--markdown]
-    python drift_convergence.py generate <root> [--case NAME | --group GROUP]
+    python drift_convergence.py list [--tier full|small] [--markdown] [--control [full|cheap]]
+    python drift_convergence.py generate <root> [--case NAME | --group GROUP] [--control [full|cheap]]
     python drift_convergence.py run <root> --case NAME --hams <path> [--hams-grn8 <path>] [--nemoh-build <path>] [--threads N]
+                                [--control [full|cheap]]
     python drift_convergence.py calibrate <root> --hams <path> [--threads N]
     python drift_convergence.py slurm <root on the cluster> --repo <path on the cluster> [--out <local folder>]
-                                [--tier full|small] [--account NAME]
-    python drift_convergence.py collect <root> [--out table.csv]
+                                [--tier full|small] [--account NAME] [--control [full|cheap]]
+    python drift_convergence.py collect <root> [--out table.csv] [--control [full|cheap]]
 
 Each case is one run of HAMS-MREL or Nemoh, under <root>/<name>. Its input is written when it is first run. A run writes
 result.json with its wall time and peak memory.
@@ -18,6 +19,13 @@ cylinder it also gives F_x of both methods against the MacCamy-Fuchs value, wher
 
 The frequencies are set here before any result is seen, and stay as they are: a uniform grid with the three frequencies of the
 fixtures added. 1.6 rad/s is 3% from the first irregular frequency of the cylinder, 1.548 rad/s, without a lid.
+
+--control selects the study of the control-surface method (drift_methods = far near control). It runs the cases of groups A and B,
+the boxes of group C, and the two m3 cases of the rounded cylinder that have the green route. A case with velocity_method
+differencing takes cs_velocity = green, and one with velocity_method = source takes cs_velocity = source, so the near-field
+column of every case is the one of the first study and the source solve is shared. `cheap` gives the m4 cases of the green route
+only the three frequencies of the fixtures. `list --control` and `slurm --control` only print and write: nothing is submitted.
+The table then has the columns Fx_ctrl_green or Fx_ctrl_src (and Fy, Mz) next to the near-field ones.
 
 Nemoh runs as a separate program. Only its documented input and output files are used. Its source and binaries stay out of this
 repository. --nemoh-build is the folder holding its built programs.
@@ -97,7 +105,7 @@ class Case:
 
     def __init__(self, name, group, question, hull, multiple, motion="fixed", velocity="differencing", waterline="extrapolate",
                  frequencies=WIDE_FREQUENCIES, headings=(0.0, 30.0), grn=4, isolv=1, irsp=0, mean_drift=1, tier="both",
-                 solver="hams", where="snellius"):
+                 solver="hams", where="snellius", control=None):
         self.name = name
         self.group = group
         self.question = question
@@ -115,6 +123,7 @@ class Case:
         self.tier = tier
         self.solver = solver
         self.where = where
+        self.control = control   # None, "green" or "source": the cs_velocity of drift_methods = control
 
 
 def in_tier(case, tier):
@@ -241,6 +250,36 @@ def study_cases():
     return cases
 
 
+# The cases that carry the control-surface method. The m3 cases of the rounded cylinder with differencing are in groups D and N
+CONTROL_EXTRA = ("d_base_round_free_diff_m3", "n_round_fixed_diff_m3")
+
+
+def control_cases(subset="full"):
+    """The cases of the control-surface study. Each is a case of the first study with `far near control` in its SecondOrder.in,
+    so its near-field and far-field columns are those of the first study. The differencing cases take the green route and the
+    source cases take the source route. subset "cheap" gives the m4 cases of the green route the three frequencies of the fixtures."""
+    chosen = []
+    for case in study_cases():
+        if not in_tier(case, "full") or case.solver != "hams":
+            continue
+        if case.group in ("A", "B") or (case.group == "C" and case.hull in ("box", "round_box")) or case.name in CONTROL_EXTRA:
+            chosen.append(case)
+    # The sharp cylinder has no differencing case at m3: the first study ran the source solve there only
+    for motion in ("fixed", "free"):
+        chosen.append(Case("a_sharp_%s_diff_m3" % motion, "A", "1,2", "sharp", 3, motion, "differencing",
+                           frequencies=FIXTURE_FREQUENCIES))
+    for case in chosen:
+        case.control = "source" if case.velocity == "source" else "green"
+        if subset == "cheap" and case.control == "green" and case.multiple == 4 and len(case.frequencies) > len(FIXTURE_FREQUENCIES):
+            case.frequencies = FIXTURE_FREQUENCIES
+    return chosen
+
+
+def cases_of(control):
+    """The cases selected by --control: those of the control-surface study, or None for the first study."""
+    return control_cases(control) if control else study_cases()
+
+
 def nemoh_frequencies():
     low, high, count = NEMOH_FREQUENCY_RANGE
     return [low + (high - low) * i / (count - 1) for i in range(count)]
@@ -269,7 +308,7 @@ def wall_hours(case):
     """Estimated wall time on Snellius, or on the laptop for a case that runs there."""
     if case.solver == "nemoh":
         return nemoh_seconds(case) / 3600.0
-    return laptop_seconds(case) / SNELLIUS_SPEEDUP / 3600.0
+    return laptop_seconds(case) / SNELLIUS_SPEEDUP / 3600.0 + control_snellius_hours(case)
 
 
 def memory_gb(case):
@@ -285,7 +324,80 @@ def memory_gb(case):
         size += BYTES_SOURCE * n ** 2
     if case.isolv == 2:
         size += BYTES_GMRES * total ** 2
+    if case.control:
+        n_c, n_g = control_surface_counts(case)
+        size += BYTES_CONTROL_POINT * (n_c + n_g) * len(case.headings)
     return size / 1e9
+
+# Control-surface fields. The surface C is a cylinder around each body (cs_shape = cylinder, the default), of radius the largest
+# horizontal extent of the hull plus 4 median panel sizes, with panels of the median hull panel size. Its panel count is modelled
+# from the hull area, and fixed to the counts logged by the fixtures at one mesh (Task 8, `control_*` logs). The field time is
+# proportional to the Green calls of spec section 9: (6 N_C + 5 N_Gamma_c) N_hull for the green route, and (N_C + N_Gamma_c) N_hull
+# for the source route. Its rate per call is fixed to the logged field time of the same hull and water depth.
+CS_MARGIN_PANELS = 4.0
+# Hull: wall area, largest horizontal extent, draft (metres), whether the wall reaches the sea bed (then C has no bottom), and the
+# reference fixture whose log fixes the model. The rounded hulls take the factors of the sharp ones with their own area and extent
+CS_HULLS = {
+    "sharp": dict(area=942.5, radius=10.0, draft=10.0, bed=False, ref="cyl"),
+    "round": dict(area=857.5, radius=10.0, draft=10.0, bed=False, ref="cyl"),
+    "bottom": dict(area=314.2, radius=5.0, draft=10.0, bed=True, ref="bottom"),
+    "box": dict(area=500.0, radius=11.18, draft=5.0, bed=False, ref="box"),
+    "round_box": dict(area=500.0, radius=10.4, draft=5.0, bed=False, ref="box"),
+}
+# Logged by the fixtures: hull panels, panels on C, segments on Gamma_c, and the mean field time per frequency in seconds on the
+# laptop with 4 threads. cyl: control_cyl_free (2 headings, 45.3, 39.3 and 33.7 s). box: control_box (30.8 and 39.0 s). bottom:
+# control_bottom (33.1 and 24.8 s). The source route was logged on cyl only: 3.7, 4.7 and 3.5 s
+CS_REFERENCE = {
+    "cyl": dict(hull="sharp", panels=448, n_c=1160, n_g=58, green_s=39.4, source_s=3.95),
+    "box": dict(hull="box", panels=440, n_c=1804, n_g=82, green_s=34.9, source_s=None),
+    "bottom": dict(hull="bottom", panels=1024, n_c=1292, n_g=76, green_s=29.0, source_s=None),
+}
+# The source field time over the green one, from the cyl logs. Taken for the other hulls, which were logged on the green route only
+CS_SOURCE_OVER_GREEN = CS_REFERENCE["cyl"]["source_s"] / CS_REFERENCE["cyl"]["green_s"]
+# Bytes per point for the point list, and per point and heading for the fields (a complex potential and gradient)
+BYTES_CONTROL_POINT = 164.0
+
+
+def _surface_model(hull, panels):
+    """Unscaled panels on C and segments on Gamma_c of a cylinder surface around the hull."""
+    h = CS_HULLS[hull]
+    size2 = h["area"] / panels
+    size = math.sqrt(size2)
+    radius = h["radius"] + CS_MARGIN_PANELS * size
+    depth = h["draft"] + (0.0 if h["bed"] else CS_MARGIN_PANELS * size)
+    area = 2.0 * math.pi * radius * depth + (0.0 if h["bed"] else math.pi * radius ** 2)
+    return area / size2, 2.0 * math.pi * radius / size
+
+
+def control_surface_counts(case):
+    """Panels on C and segments on Gamma_c of a case. Modelled, and equal to the log of the fixture at its reference mesh."""
+    ref = CS_REFERENCE[CS_HULLS[case.hull]["ref"]]
+    model_c, model_g = _surface_model(case.hull, panels_of(case))
+    ref_c, ref_g = _surface_model(ref["hull"], ref["panels"])
+    return model_c * ref["n_c"] / ref_c, model_g * ref["n_g"] / ref_g
+
+
+def control_laptop_seconds(case):
+    """Field time of the control method on the laptop with 4 threads: the logged rate per Green call, times the calls."""
+    if not case.control:
+        return 0.0
+    ref = CS_REFERENCE[CS_HULLS[case.hull]["ref"]]
+    n_c, n_g = control_surface_counts(case)
+    n = panels_of(case)
+    if case.control == "green":
+        calls = (6.0 * n_c + 5.0 * n_g) * n
+        rate = ref["green_s"] / ((6.0 * ref["n_c"] + 5.0 * ref["n_g"]) * ref["panels"])
+    else:
+        calls = (n_c + n_g) * n
+        rate = CS_SOURCE_OVER_GREEN * ref["green_s"] / ((ref["n_c"] + ref["n_g"]) * ref["panels"])
+    return calls * rate * len(case.frequencies)
+
+
+def control_snellius_hours(case):
+    """The same on Snellius at 32 threads, at the speed-up of the first study. That speed-up is for 8 laptop threads, and the
+    fields were logged at 4, so this is on the high side."""
+    return control_laptop_seconds(case) / SNELLIUS_SPEEDUP / 3600.0
+
 
 
 def write_hams_hull(case, path):
@@ -329,6 +441,8 @@ def write_hams_case(case, root, threads):
     options = dict(mean_drift=case.mean_drift, drift_methods="far near", motion_state=case.motion,
                    write_terms=1 if case.mean_drift == 1 else 0, velocity_method=case.velocity,
                    waterline_method=case.waterline)
+    if case.control:
+        options.update(drift_methods="far near control", cs_velocity=case.control)
     fixtures.write_second_order(os.path.join(path, "SecondOrder.in"), **options)
     return path
 
@@ -568,6 +682,10 @@ def collect_hams(case, root, result):
     far = read_drift(os.path.join(folder, "MeanDriftMomentum.8"))
     near = read_drift(os.path.join(folder, "MeanDriftPressure.9"))
     terms = read_terms(os.path.join(folder, "MeanDriftTerms.txt"))
+    # Same format as MeanDriftPressure.9: rows I = 1, 2, 6 of the control-surface method
+    control_path = os.path.join(folder, "MeanDriftControlSurface.7")
+    control = read_drift(control_path) if case.control and os.path.exists(control_path) else {}
+    route = "green" if case.control == "green" else "src"
     rows = []
     for omega, beta1, beta2 in sorted(set(key[:3] for key in far)):
         if beta1 != beta2 and case.mean_drift == 1:
@@ -582,11 +700,17 @@ def collect_hams(case, root, result):
             row[label + "_near"] = "%.6g" % get(near, index)
             row[label + "_far"] = "%.6g" % get(far, index)
             row[label + "_err_pct"] = percent(get(near, index), get(far, index), scale if index < 3 else 10.0 * scale)
+            if control:
+                column = "%s_ctrl_%s" % (label, route)
+                row[column] = "%.6g" % get(control, index)
+                row[column + "_err_pct"] = percent(get(control, index), get(far, index), scale if index < 3 else 10.0 * scale)
         if case.hull == "bottom" and beta1 == 0.0:
             exact = maccamy_fuchs_fx(omega, BOTTOM_RADIUS, BOTTOM_DEPTH)
             row["Fx_exact"] = "%.6g" % exact
             row["Fx_near_exact_pct"] = percent(get(near, 1), exact, exact)
             row["Fx_far_exact_pct"] = percent(get(far, 1), exact, exact)
+            if control:
+                row["Fx_ctrl_%s_exact_pct" % route] = percent(get(control, 1), exact, exact)
         for number, value in enumerate(terms.get((omega, beta1, beta2), []), start=1):
             row["Fx_term%d" % number] = "%.5f" % value
         rows.append(row)
@@ -735,7 +859,7 @@ def write_csv(path, rows):
 def collect(args):
     """Write the table of drift values and errors for each finished case, and against Nemoh. Prints time and memory against the
     estimates."""
-    cases = {case.name: case for case in study_cases()}
+    cases = {case.name: case for case in cases_of(args.control)}
     hams_rows, nemoh_rows, first_rows = [], [], []
     print("| Case | Code | Panels | Wall (s) | Estimate (s) | Peak (GB) | Estimate (GB) |")
     print("| :--- | ---: | ---: | ---: | ---: | ---: | ---: |")
@@ -822,29 +946,7 @@ def time_limit(hours):
     return "%d:%02d:00" % (minutes // 60, minutes % 60)
 
 
-def write_slurm(args):
-    """Write the scripts of the study into <root>/jobs. Nothing is submitted."""
-    root = args.root.rstrip("/")
-    jobs = "%s/jobs" % root
-    logs = "%s/logs" % root
-    out = args.out or jobs
-    os.makedirs(out, exist_ok=True)
-    script = "%s/pre_postprocessing_python/SecondOrder/drift_convergence.py" % args.repo
-    extra = "#SBATCH -A %s\n" % args.account if args.account else ""
-    cases = [case for case in study_cases() if in_tier(case, args.tier) and case.where == "snellius"]
-    head = dict(partition=PARTITION, cpus=CPUS, memory=MEMORY_GB, logs=logs, extra=extra)
-
-    src = os.path.join(args.source or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."), "src")
-    order = " ".join(fortran_files_in_order([src]))
-    with open(os.path.join(out, "build.sbatch"), "w", newline="\n") as f:
-        f.write(SBATCH_HEAD.format(name="drift_build", limit="0:30:00", log="build_%j.log", **head))
-        f.write("set -e\nFLAGS=\"%s\"\nLIST=\"%s HAMS_Prog.f90\"\n" % (IFX_FLAGS, order))
-        f.write("# GRN_KIND is a compile-time constant, so the second build changes it in a copy of the source\n")
-        f.write("for kind in 4 8; do\n  d=%s/build_grn$kind; rm -rf $d; mkdir -p $d; cp %s/src/*.f90 $d/; cd $d\n" % (root, args.repo))
-        f.write("  sed -i \"s/GRN_KIND = 4/GRN_KIND = $kind/\" WavDynMods.f90\n")
-        f.write("  grep -q \"GRN_KIND = $kind\" WavDynMods.f90\n")
-        f.write("  ifx $FLAGS -o %s/hamsmrel_grn$kind $LIST\ndone\n" % root)
-
+def write_tests_script(args, out, root, logs, src, head):
     with open(os.path.join(out, "tests.sbatch"), "w", newline="\n") as f:
         f.write(SBATCH_HEAD.format(name="drift_tests", limit="1:00:00", log="tests_%j.log", **head))
         f.write("# Unit and integration tests under ifx on Linux, for the thin margins of the fixtures and the suite time\n")
@@ -862,6 +964,33 @@ def write_slurm(args):
         f.write("time timeout 600 $d/unit-tester > %s/unit.log 2>&1; echo unit rc=$?\n" % logs)
         f.write("time timeout 1800 $d/integration-tester %s/hamsmrel_grn4 > %s/integration.log 2>&1; echo integration rc=$?\n" % (root, logs))
 
+
+def write_slurm(args):
+    """Write the scripts of the study into <root>/jobs. Nothing is submitted."""
+    root = args.root.rstrip("/")
+    jobs = "%s/jobs" % root
+    logs = "%s/logs" % root
+    out = args.out or jobs
+    os.makedirs(out, exist_ok=True)
+    script = "%s/pre_postprocessing_python/SecondOrder/drift_convergence.py" % args.repo
+    extra = "#SBATCH -A %s\n" % args.account if args.account else ""
+    cases = [case for case in cases_of(args.control) if in_tier(case, args.tier) and case.where == "snellius"]
+    head = dict(partition=PARTITION, cpus=CPUS, memory=MEMORY_GB, logs=logs, extra=extra)
+
+    src = os.path.join(args.source or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."), "src")
+    order = " ".join(fortran_files_in_order([src]))
+    with open(os.path.join(out, "build.sbatch"), "w", newline="\n") as f:
+        f.write(SBATCH_HEAD.format(name="drift_build", limit="0:30:00", log="build_%j.log", **head))
+        f.write("set -e\nFLAGS=\"%s\"\nLIST=\"%s HAMS_Prog.f90\"\n" % (IFX_FLAGS, order))
+        f.write("# GRN_KIND is a compile-time constant, so the second build changes it in a copy of the source\n")
+        f.write("for kind in 4 8; do\n  d=%s/build_grn$kind; rm -rf $d; mkdir -p $d; cp %s/src/*.f90 $d/; cd $d\n" % (root, args.repo))
+        f.write("  sed -i \"s/GRN_KIND = 4/GRN_KIND = $kind/\" WavDynMods.f90\n")
+        f.write("  grep -q \"GRN_KIND = $kind\" WavDynMods.f90\n")
+        f.write("  ifx $FLAGS -o %s/hamsmrel_grn$kind $LIST\ndone\n" % root)
+
+    if not args.control:   # the control study needs the build only: its tests run on the laptop
+        write_tests_script(args, out, root, logs, src, head)
+
     # Arrays by the size of the run, since an array has one time limit
     classes = (("short", 0.0, 0.5), ("medium", 0.5, 2.0), ("long", 2.0, 1e9))
     for label, low, high in classes:
@@ -875,8 +1004,8 @@ def write_slurm(args):
             f.write(SBATCH_HEAD.format(name="drift_" + label, limit=limit, log="%A_%a.log",
                                        **dict(head, extra="#SBATCH --array=1-%d%%8\n%s" % (len(chosen), extra))))
             f.write("CASE=$(sed -n \"${SLURM_ARRAY_TASK_ID}p\" %s/%s.txt)\n" % (jobs, label))
-            f.write("python3 %s run %s --case \"$CASE\" --hams %s/hamsmrel_grn4 --hams-grn8 %s/hamsmrel_grn8 --threads %d\n" % (
-                script, root, root, root, CPUS))
+            f.write("python3 %s run %s --case \"$CASE\" --hams %s/hamsmrel_grn4 --hams-grn8 %s/hamsmrel_grn8 --threads %d%s\n" % (
+                script, root, root, root, CPUS, " --control " + args.control if args.control else ""))
 
     # Nemoh is run with one thread per case, as many at a time as there are cases, in one allocation
     chosen = [case for case in cases if case.solver == "nemoh"]
@@ -894,8 +1023,8 @@ def write_slurm(args):
     print("Scripts in %s, for %s on the cluster, with logs in %s. Nothing was submitted." % (out, jobs, logs))
 
 
-def job_table(tier, markdown):
-    cases = [case for case in study_cases() if in_tier(case, tier)]
+def job_table(tier, markdown, control=None):
+    cases = [case for case in cases_of(control) if in_tier(case, tier)]
     head = ("Case", "Group", "Q", "Hull", "Motion", "Velocity", "Setting", "Panels", "Freq", "Head", "Wall (h)", "Mem (GB)", "Runs on")
     rows = []
     for case in cases:
@@ -910,6 +1039,8 @@ def job_table(tier, markdown):
             setting.append("field")
         if case.mean_drift == 2:
             setting.append("pairs")
+        if case.control:
+            setting.append("ctrl-" + case.control)
         if case.solver == "nemoh":
             setting.append("Nemoh")
         count = NEMOH_FREQUENCY_RANGE[2] if case.solver == "nemoh" else len(case.frequencies)
@@ -946,14 +1077,18 @@ def main():
     sub = parser.add_subparsers(dest="command")
     sub.required = True
 
+    control_help = "the control-surface study: all frequencies, or `cheap` with three at the m4 cases of the green route"
+
     p = sub.add_parser("list")
     p.add_argument("--tier", choices=("full", "small"), default="full")
     p.add_argument("--markdown", action="store_true")
+    p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
 
     p = sub.add_parser("generate")
     p.add_argument("root")
     p.add_argument("--case")
     p.add_argument("--group")
+    p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
 
     for command in ("run", "calibrate"):
         p = sub.add_parser(command)
@@ -964,6 +1099,7 @@ def main():
         p.add_argument("--nemoh-build")
         if command == "run":
             p.add_argument("--case", required=True)
+            p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
 
     p = sub.add_parser("slurm")
     p.add_argument("root", help="folder of the study on the cluster")
@@ -972,16 +1108,18 @@ def main():
     p.add_argument("--out", help="local folder for the scripts, by default <root>/jobs")
     p.add_argument("--tier", choices=("full", "small"), default="full")
     p.add_argument("--account", help="Slurm account, by default that of the user")
+    p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
 
     p = sub.add_parser("collect")
     p.add_argument("root")
     p.add_argument("--out")
+    p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
 
     args = parser.parse_args()
     if args.command == "list":
-        job_table(args.tier, args.markdown)
+        job_table(args.tier, args.markdown, args.control)
     elif args.command == "generate":
-        for case in study_cases():
+        for case in cases_of(args.control):
             if (args.case and case.name != args.case) or (args.group and case.group != args.group):
                 continue
             if case.solver == "nemoh":
@@ -989,7 +1127,7 @@ def main():
             else:
                 write_hams_case(case, args.root, CPUS)
     elif args.command == "run":
-        found = [case for case in study_cases() if case.name == args.case]
+        found = [case for case in cases_of(args.control) if case.name == args.case]
         if not found:
             raise SystemExit("no case named " + args.case)
         sys.exit(1 if run_case(found[0], args)["code"] else 0)
