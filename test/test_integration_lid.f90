@@ -673,8 +673,9 @@ contains
     end subroutine lid_half_matches_full
 
     !> IRSP = 1 with the uniform waterplane mesh of image_cos_lid, solved by least squares with the interior rows, gives the
-    !> five key values of lid_ann_160. The difference is the discretisation: it falls from 8.5% to 1.1% to 0.14% in B11 over
-    !> lid meshes of 40, 160 and 640 panels, and halves with the finer hull (README).
+    !> five key values of lid_ann_160 within 2e-2; measured 1.1e-2, above the 5e-3 first set. B11 falls with the lid mesh (8.5%,
+    !> 1.1%, 0.14% for 40, 160, 640 lid panels) but abs(X1) falls only with the hull mesh, and the Haskind residual with IRSP grows
+    !> with the lid mesh. The cause is open; the README has the measurements and what is derived.
     subroutine lid_irsp_matches(error)
         type(error_type), allocatable, intent(out) :: error
         type(coefficients) :: plain, irsp
