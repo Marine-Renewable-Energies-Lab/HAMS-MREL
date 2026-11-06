@@ -26,7 +26,7 @@ MODULE SecondOrderTypes
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: so_options, panel_mesh, first_order_state, surface_geom, cs_points
+   PUBLIC :: so_options, panel_mesh, first_order_state, surface_geom, cs_points, cs_fields
    PUBLIC :: CS_WALL, CS_LINE, CS_FREE
 
    INTEGER, PARAMETER :: CS_WALL = 1, CS_LINE = 2, CS_FREE = 3   ! C panel, Gamma_c segment midpoint, F panel
@@ -92,5 +92,11 @@ MODULE SecondOrderTypes
       REAL(8), ALLOCATABLE :: x(:,:), nrm(:,:), w(:), psize(:)   ! (3,n), (3,n), (n), (n)
       INTEGER, ALLOCATABLE :: kind(:), body(:)                   ! (n), (n)
    END TYPE cs_points
+
+   TYPE :: cs_fields
+      ! Total first-order potential and its gradient at the points of a cs_points set, for one state. Filled by fields_green
+      ! (FieldVelocity). phi is zero at CS_WALL points below the stencil reach of z = 0, where it is not computed.
+      COMPLEX(8), ALLOCATABLE :: phi(:), grad(:,:)   ! (n), (3,n)
+   END TYPE cs_fields
 
 END MODULE SecondOrderTypes

@@ -24,6 +24,7 @@ program unit_tester
     use test_waterline_field, only : collect_waterline_field
     use test_source_velocity, only : collect_source_velocity
     use test_control_surface_mesh, only : collect_control_surface_mesh
+    use test_field_velocity, only : collect_field_velocity
 
     implicit none
     integer :: stat, is
@@ -55,7 +56,8 @@ program unit_tester
         new_testsuite("second_order_output", collect_second_order_output), &
         new_testsuite("waterline_field", collect_waterline_field), &
         new_testsuite("source_velocity", collect_source_velocity), &
-        new_testsuite("control_surface_mesh", collect_control_surface_mesh) &
+        new_testsuite("control_surface_mesh", collect_control_surface_mesh), &
+        new_testsuite("field_velocity", collect_field_velocity) &
     ]
 
     stat = 0
@@ -70,7 +72,8 @@ program unit_tester
                                      .and. testsuites(is)%name /= "first_order_state_serial" &
                                      .and. testsuites(is)%name /= "waterline_field" &
                                      .and. testsuites(is)%name /= "source_velocity" &
-                                     .and. testsuites(is)%name /= "control_surface_mesh"))
+                                     .and. testsuites(is)%name /= "control_surface_mesh" &
+                                     .and. testsuites(is)%name /= "field_velocity"))
     end do
 
     if (stat > 0) then

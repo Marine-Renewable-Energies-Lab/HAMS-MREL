@@ -52,17 +52,25 @@ MODULE WaterlineField
 
 CONTAINS
 
-   SUBROUTINE field_influence_row(mesh, xp, is_multi, row_g, row_dg)
+   SUBROUTINE field_influence_row(mesh, xp, is_multi, row_g, row_dg, x_decide)
       ! G and dG/dn at xp, integrated over each base panel for each image. The panels stay in place and xp is mirrored, as in
       ! CalPotential. is_multi selects the panel integrals that read the combined multi-body arrays.
+      ! A panel within 50 panel sizes of the point gets panel integrals of 1/r and of its image, and one further away the
+      ! centroid value. x_decide, if present, is the point of that decision instead of xp. The points of one difference
+      ! stencil pass its centre, so that they all take the same branch: otherwise the jump between the two would enter the
+      ! difference, divided by the step (design spec, section 4.1).
       !   row_g, row_dg   (nbase, nsys)
       TYPE(panel_mesh), INTENT(IN) :: mesh
       REAL(8), INTENT(IN) :: xp(3)
       LOGICAL, INTENT(IN) :: is_multi
       COMPLEX(8), INTENT(OUT) :: row_g(:, :), row_dg(:, :)
-      REAL(8) :: xq(3), xf(3), nrm(3), area, rkn(4)
+      REAL(8), INTENT(IN), OPTIONAL :: x_decide(3)
+      REAL(8) :: xq(3), xf(3), xd(3), nrm(3), area, rkn(4)
       COMPLEX(8) :: grn(4)
       INTEGER :: jel, is, flag
+
+      xd = xp
+      IF (PRESENT(x_decide)) xd = x_decide
 
       !$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(jel, is, flag, xq, xf, nrm, area, rkn, grn) SCHEDULE(DYNAMIC, 16)
       DO jel = 1, mesh%nbase
@@ -71,7 +79,7 @@ CONTAINS
          area = mesh%area(jel)
          DO is = 1, mesh%nsys
             xf = image_signs(is, ISX, ISY)*xp
-            flag = MERGE(1, 0, NORM2(xf - xq) <= 50D0*mesh%psize(jel))
+            flag = MERGE(1, 0, NORM2(image_signs(is, ISX, ISY)*xd - xq) <= 50D0*mesh%psize(jel))
 
             IF (H < 0D0) THEN
                CALL INFGREEN3D(xq(1), xf(1), xq(2), xf(2), xq(3), xf(3), V, grn, flag)

@@ -86,6 +86,7 @@
 		<File RelativePath=".\src\FarFieldDrift.f90"/>
 		<File RelativePath=".\src\NearFieldDrift.f90"/>
 		<File RelativePath=".\src\WaterlineField.f90"/>
+		<File RelativePath=".\src\FieldVelocity.f90"/>
 		<File RelativePath=".\src\SecondOrderOutput.f90"/>
 		<File RelativePath=".\src\SecondOrderDriver.f90"/>
 		<File RelativePath=".\src\SingularIntgr.f90"/>
