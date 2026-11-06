@@ -100,7 +100,7 @@ def off_centroid_points(lid_text):
             + [(0.0, 8.0, 0.0), (20.0, 0.0, 0.0)])
 
 
-def control_text(lid, solver=None, depth=None, limits=None, points=None):
+def control_text(lid, solver=None, depth=None, limits=None, points=None, irsp=0):
     """The image_cos control file with Damping_lid inserted after 'Number of threads', and Solver_type when given. depth
     replaces the water depth, limits the 0_inf_frequency_limits switch, and points the field points."""
     with open(os.path.join(SOURCE, "ControlFile.in"), "rb") as f:
@@ -117,6 +117,8 @@ def control_text(lid, solver=None, depth=None, limits=None, points=None):
             line = "   Waterdepth  %.1fD0" % depth
         if limits is not None and "0_inf_frequency_limits" in line:
             line = "    0_inf_frequency_limits      %d" % limits
+        if irsp and "If_remove_irr_freq" in line:
+            line = "    If_remove_irr_freq       %d" % irsp
         if points is not None and "Number_of_field_points" in line:
             out.append("    Number_of_field_points     %d" % len(points))
             out.extend("    %.12f  %.12f  %.12f" % p for p in points)
@@ -130,15 +132,20 @@ def control_text(lid, solver=None, depth=None, limits=None, points=None):
     return EOL.join(out)
 
 
-def write_case(name, lid_text, lid_flag=1, solver=None, depth=None, limits=None, points=None):
+def write_case(name, lid_text, lid_flag=1, solver=None, depth=None, limits=None, points=None, hull=None, water_plane=None,
+               irsp=0):
+    """hull replaces the folder of the hull and hydrostatics (default image_cos), water_plane is the path of a WaterPlaneMesh.pnl
+    to copy, used with irsp = 1."""
     folder = os.path.join(TARGET, name, "input")
     if os.path.isdir(folder):
         shutil.rmtree(folder)
     os.makedirs(folder)
     for f in ("HullMesh.pnl", "Hydrostatic.in"):
-        shutil.copy(os.path.join(SOURCE, f), os.path.join(folder, f))
+        shutil.copy(os.path.join(hull or SOURCE, f), os.path.join(folder, f))
+    if water_plane is not None:
+        shutil.copy(water_plane, os.path.join(folder, "WaterPlaneMesh.pnl"))
     with open(os.path.join(folder, "ControlFile.in"), "wb") as f:
-        f.write(control_text(lid_flag, solver, depth, limits, points).encode("ascii"))
+        f.write(control_text(lid_flag, solver, depth, limits, points, irsp).encode("ascii"))
     if lid_text is not None:
         with open(os.path.join(folder, "DampingLid.pnl"), "wb") as f:
             f.write(lid_text.encode("ascii"))
@@ -177,6 +184,18 @@ def main():
     ann = annulus(6.0, 10.0, 40, 4)
     write_case("lid_hull_160", ann)
     write_case("lid_field_off_centroid", ann, points=off_centroid_points(ann))
+
+    # Symmetry and IRSP (test_integration_lid.f90). The half cases use the half hull of image_cos_half (y >= 0, ISY = 1) and the
+    # half annulus of the same 40 x 4 mesh, whose panels at angles 0 to 180 degrees are the first 80 of the full one. The points
+    # are the 10 first centroids, then points at y < 0 on the lid plane, outside it, and in the fluid.
+    half_hull = os.path.join(ROOT, "test", "data", "image_term", "image_cos_half", "input")
+    plane = os.path.join(ROOT, "test", "data", "image_term", "image_cos_lid", "input", "WaterPlaneMesh.pnl")
+    full = annulus(6.0, 10.0, 40, 4)
+    points = centroids(full, 10) + [(8.0, -3.0, 0.0), (-7.0, -4.0, 0.0), (12.0, -3.0, 0.0), (4.0, -2.0, -2.0), (-3.0, -4.0, -8.0),
+                                    (7.0, -5.0, -3.0), (-9.0, 2.0, -1.0), (6.5, 1.0, -0.5)]
+    write_case("lid_ann_160_pts", full, points=points)
+    write_case("lid_ann_160_half", annulus(6.0, 10.0, 40, 4, isy=1, sectors=[(0.0, 180.0)]), points=points, hull=half_hull)
+    write_solve_case("lid_ann_160_irsp", full, irsp=1, water_plane=plane)
 
 
 if __name__ == "__main__":

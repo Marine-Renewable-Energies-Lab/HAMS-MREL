@@ -21,12 +21,16 @@ module test_integration_lid
     real(8), parameter :: centroid_limit = 1d-6       ! diffraction elevation at lid centroids over the incident amplitude; measured 7.0e-8
     real(8), parameter :: radiation_centroid_limit = 5d-6    ! the same for radiation, over the largest value off the lid; measured 1.9e-6
     real(8), parameter :: off_centroid_limit = 3d-3   ! |elevation| at node, edge and inside points over the incident amplitude; measured 7.6e-4
+    real(8), parameter :: half_limit = 1d-4           ! A, B, X of half against full, relative to the largest entry; measured 1.8e-5
+    real(8), parameter :: half_field_limit = 1d-5     ! diffraction and radiation values at the same 18 points; measured 5.8e-7
+    real(8), parameter :: irsp_limit = 2d-2           ! A11, A33, B11, B33, abs(X1) with IRSP against without; measured 1.1e-2
     real(8), parameter :: collocation_limit = 1d-6    ! force from the field pressures against ExcForce.3; measured 7.2e-8, printed to 7 digits
 
     !> The cases that solve with a lid, all run by setup_lid.
-    character(len=24), parameter :: solve_cases(14) = [character(len=24) :: "lid_ann_40", "lid_ann_160", "lid_ann_640", &
+    character(len=24), parameter :: solve_cases(17) = [character(len=24) :: "lid_ann_40", "lid_ann_160", "lid_ann_640", &
         "lid_ann_160_rev", "lid_ann_tri", "lid_touch", "lid_patches", "lid_shrink_1", "lid_shrink_2", "lid_deep", "lid_limits", &
-        "lid_limits_off", "lid_hull_160", "lid_field_off_centroid"]
+        "lid_limits_off", "lid_hull_160", "lid_field_off_centroid", &
+        "lid_ann_160_pts", "lid_ann_160_half", "lid_ann_160_irsp"]
 
     !> A, B and X at one frequency: the full 6 x 6 matrices and the six forces of heading 0.
     type :: coefficients
@@ -65,7 +69,9 @@ contains
             new_unittest("lid_limits_finite", lid_limits_finite), &
             new_unittest("lid_elevation_zero_at_centroids", lid_elevation_zero_at_centroids), &
             new_unittest("lid_field_off_centroid", lid_field_off_centroid), &
-            new_unittest("lid_field_matches_collocation", lid_field_matches_collocation) &
+            new_unittest("lid_field_matches_collocation", lid_field_matches_collocation), &
+            new_unittest("lid_half_matches_full", lid_half_matches_full), &
+            new_unittest("lid_irsp_matches", lid_irsp_matches) &
             ]
     end subroutine collect_tests_lid
 
@@ -636,6 +642,50 @@ contains
         end do
         call check_below(error, "lid_field_matches_collocation: force from field points", worst, collocation_limit)
     end subroutine lid_field_matches_collocation
+
+    !> The half hull with the half lid (ISY = 1) gives the A, B and X of the full hull with the full lid, and the field values at
+    !> the same 18 points, which lie on both sides of y = 0, on the lid plane and in the fluid. Differences are relative to the
+    !> largest entry of A, of B and of X, and of the diffraction and of the radiation values.
+    subroutine lid_half_matches_full(error)
+        type(error_type), allocatable, intent(out) :: error
+        type(coefficients) :: full, half
+        complex(8), allocatable :: dif_f(:), rad_f(:,:), dif_h(:), rad_h(:,:)
+        real(8) :: worst
+
+        call read_coefficients("lid_ann_160_pts", omega, full, error)
+        if (allocated(error)) return
+        call read_coefficients("lid_ann_160_half", omega, half, error)
+        if (allocated(error)) return
+        worst = max(maxval(abs(half%a - full%a))/maxval(abs(full%a)), maxval(abs(half%b - full%b))/maxval(abs(full%b)), &
+                    maxval(abs(half%x - full%x))/maxval(abs(full%x)))
+        call check_below(error, "lid_half_matches_full: A, B, X", worst, half_limit)
+        if (allocated(error)) return
+
+        call read_field("lid_ann_160_pts", dif_f, rad_f, error)
+        if (allocated(error)) return
+        call read_field("lid_ann_160_half", dif_h, rad_h, error)
+        if (allocated(error)) return
+        call check(error, size(dif_f) == 18 .and. size(dif_h) == 18 .and. size(rad_f, 1) == 18 .and. size(rad_h, 1) == 18, &
+                   "lid_half_matches_full: not 18 points in each")
+        if (allocated(error)) return
+        worst = max(maxval(abs(dif_h - dif_f))/maxval(abs(dif_f)), maxval(abs(rad_h - rad_f))/maxval(abs(rad_f)))
+        call check_below(error, "lid_half_matches_full: field values", worst, half_field_limit)
+    end subroutine lid_half_matches_full
+
+    !> IRSP = 1 with the uniform waterplane mesh of image_cos_lid, solved by least squares with the interior rows, gives the
+    !> five key values of lid_ann_160. The difference is the discretisation: it falls from 8.5% to 1.1% to 0.14% in B11 over
+    !> lid meshes of 40, 160 and 640 panels, and halves with the finer hull (README).
+    subroutine lid_irsp_matches(error)
+        type(error_type), allocatable, intent(out) :: error
+        type(coefficients) :: plain, irsp
+
+        call read_coefficients("lid_ann_160", omega, plain, error)
+        if (allocated(error)) return
+        call read_coefficients("lid_ann_160_irsp", omega, irsp, error)
+        if (allocated(error)) return
+        call check_below(error, "lid_irsp_matches", maxval(abs(key_values(irsp) - key_values(plain))/abs(key_values(plain))), &
+                         irsp_limit)
+    end subroutine lid_irsp_matches
 
     !> Panel centroids, areas and unit normals out of the body, from the hull of the cylinder of the image term cases (copied
     !> from test_integration_image, whose own copy is private).

@@ -204,3 +204,27 @@ Measured:
 | `lid_field_matches_collocation`, relative force from the field pressures against X1 and X3 | 1e-6 | 7.2e-8 |
 
 The first limit of the plan for the centroids, 1e-6, holds for diffraction (14 times). For radiation it was 1.9e-6, so the limit is 5e-6: the residual at the centroids is the accuracy of the single-layer integrals (README above, 1e-5 of G at small distances), not a sign or a missing term. Before the lid term was added the same test gave a force error of 12 in `lid_field_matches_collocation`. The off-centroid limit was 0.1 at first and is tightened to about four times the measurement.
+
+## Symmetry and IRSP
+
+New cases (`make_lid_fixtures.py`): `lid_ann_160_pts` is `lid_ann_160` with 18 field points: the 10 first centroids, then (8, -3, 0), (-7, -4, 0), (12, -3, 0), (4, -2, -2), (-3, -4, -8), (7, -5, -3), (-9, 2, -1) and (6.5, 1, -0.5), so that both sides of y = 0, the lid plane, the outside and the fluid are covered. `lid_ann_160_half` has the same points, the hull of `image_term/image_cos_half` (90 panels, y >= 0, `ISY = 1`) and the lid panels of `lid_ann_160` at 0 to 180 degrees (80 panels, header `ISY = 1`; the 120 unused nodes stay in the file). `lid_ann_160_irsp` is `lid_ann_160` with `If_remove_irr_freq 1` and the waterplane mesh of `image_cos_lid`.
+
+Measured (1.35 rad/s, heading 0):
+
+| Test | Limit | Measured |
+| :--- | ---: | ---: |
+| `lid_half_matches_full`, A, B, X of half against full, relative to the largest entry | 1e-4 | A 5.4e-7, B 6.6e-6, X 1.8e-5 (worst 1.8e-5) |
+| the same, diffraction and radiation values of `PressureElevation.6p` at the 18 points, relative to the largest value | 1e-5 | 5.8e-7 |
+| `lid_irsp_matches`, worst relative change of A11, A33, B11, B33, abs(X1) | 2e-2 | 1.1e-2 (B11 1.1%, abs(X1) 1.1%, A11 0.09%, A33 0.005%, B33 0.06%) |
+
+The IRSP limit of the plan, 5e-3, is not met: B11 and abs(X1) change by 1.1%. This was checked before accepting a larger limit, with scratch runs (not committed) of the same case at other meshes, `lid_ann_40`, `lid_ann_160` and `lid_ann_640` each with and without IRSP, and the fine hull `image_cos_fine` (390 panels) with a 30 x 6 waterplane:
+
+| Hull | Lid | B11 change with IRSP | abs(X1) change with IRSP |
+| :--- | :--- | ---: | ---: |
+| 180 | 40 x 2 | 8.5% | 0.9% |
+| 180 | 40 x 4 | 1.1% | 1.1% |
+| 180 | 80 x 8 | 0.14% | 1.0% |
+| 390 | 40 x 4 | 0.94% | 0.57% |
+| 390 | 80 x 8 | 0.07% | 0.45% |
+
+B11 converges with the lid mesh, and the abs(X1) change halves with the hull mesh, so both are discretisation differences of the least-squares solution, not a missing term. Without a lid, IRSP changes abs(X1) of `image_cos` by 0.1% and B11 by 0.3%. Haskind for heave holds with IRSP to 4.4e-3 (`lid_ann_160_irsp`) and 8.1e-3 (`lid_ann_640` with IRSP), against 4.6e-4 and 3.1e-3 without. Derived, not tested: the remaining abs(X1) change at the finest meshes (0.45%) is probably still the hull mesh, since the hull is the same 180 panels as in the cases of the table above.
