@@ -36,6 +36,7 @@ MODULE DampingLidMulti
    USE PatcVelct,       ONLY: VINP,DINP
    USE AssbMatxMulti,   ONLY: FILL_HULL_LEFT_MULTI,ASSB_RBC_MULTI,ASSB_DBC_MULTI
    USE DampingLid,      ONLY: LID_SINGLE_LAYER,SYM_SIGNS,REFLECTED
+   ! SYM_SIGNS and REFLECTED read SX and SY, which hold the same DATA as SX_MULTI and SY_MULTI (WavDynMods.f90).
 
    IMPLICIT NONE
 

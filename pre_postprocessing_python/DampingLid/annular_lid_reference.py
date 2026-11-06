@@ -11,8 +11,8 @@ azimuthal order m at a time, with no boundary element and no Green function:
   and the evanescent modes Z_n = cos k_n(z + h)/cos k_n h with K_m(k_n r), n = 1..N-1, k_n tan(k_n h) = -nu.
 - matching at r = b: phi and dphi/dr continuous on -h < z < 0. Both equations are projected on the N lid modes L_j ('lid',
   the reference values). The script also solves with both projected on the outer modes ('outer'), and with the two mixed
-  choices, and prints the spread between them. 'lid' is used because it is the only one whose pointwise mismatch of both phi
-  and dphi/dr at r = b falls with N (check 3): with 'outer' the lid coefficients c_j gamma_j do not decay with j, and the
+  choices, and prints the spread between them. 'lid' is used because it is the one whose pointwise mismatch of both phi
+  and dphi/dr at r = b falls fastest with N (check 3; the two mixed choices fall too, more slowly): with 'outer' the lid coefficients c_j gamma_j do not decay with j, and the
   pointwise dphi/dr of the lid side stays wrong (even in sign) although every projected quantity converges. All four give the
   same extrapolated force and elevations to 2e-5.
 

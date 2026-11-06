@@ -98,7 +98,7 @@ This section begines on the next line after the previous one.
 | next | `23x,i16` | `IRSP` | Irregular frequencies: 1 for to remove them, 0 to keep them |
 | next | `23x,i16` | `NTHREAD` | Number of OpenMP threads; setting it to 1 removes parallelization |
 | (optional) | keyword, then free-format integer | `ISOLV` | Linear solver: 1 = direct LU (default), 2 = GMRES with H-matrix acceleration. Line is detected by the `Solver_type` keyword; the first integer after it is read and a trailing `# comment` is allowed. If the line is absent, ISOLV defaults to 1; if the value cannot be read, a warning is printed and ISOLV defaults to 1. See [iterative_solvers.md](iterative_solvers.md) for full details. |
-| (optional) | keyword, then free-format integer | `LIDON` | Damping lid: 0 = none (default), 1 = read `DampingLid.pnl`. The line sits after `Solver_type`, or in its place when `Solver_type` is absent, and is read the same way: the `Damping_lid` keyword, the first integer after it, a trailing `# comment` allowed. A value other than 0 or 1 prints a warning and uses 0. See [DampingLid.pnl](#dampinglidpnl). |
+| (optional) | keyword, then free-format integer | `LIDON` | Damping lid: 0 = none (default), 1 = read `DampingLid.pnl`. The line sits after `Solver_type`, or in its place when `Solver_type` is absent, and is read the same way: the `Damping_lid` keyword, the first integer after it, a trailing `# comment` allowed. When both lines are present, `Damping_lid` must follow `Solver_type`; in the other order the field-point section is misread and the run fails with a Fortran read error. A value other than 0 or 1, or no readable integer, stops the run (`Damping_lid must be 0 or 1`). See [DampingLid.pnl](#dampinglidpnl). |
 
 **Pressure and Elevation**
 
@@ -179,7 +179,7 @@ The node coordinates of the waterplane mesh are stored in `iXYZ_LOCAL_MULTI(body
 
 ## DampingLid.pnl
 
-Read only when `ControlFile.in` has `Damping_lid 1`. GMRES (`Solver_type 2`) is not supported with a lid. `If_remove_irr_freq 1` is supported with a lid for a single body, and stops for several bodies.
+Read only when `ControlFile.in` has `Damping_lid 1`. GMRES (`Solver_type 2`) is not supported with a lid. `If_remove_irr_freq 1` with a lid is experimental for a single body (see below), and stops for several bodies.
 
 The lid is a list of triangular or quadrilateral panels on the free surface z = 0, with the same file structure as `WaterPlaneMesh.pnl` (three header lines, then `NELEM NTND ISX ISY`, the nodes, the panels). There is one file for any number of bodies, because a lid belongs to no body. Its nodes are in global coordinates, not in the local frame of a body. Holes and separate patches are allowed, since the lid is only a list of panels. The vertex order of a panel does not matter, because the lid has no normal.
 
@@ -197,10 +197,18 @@ The run stops with a message and exit code 1 when:
 | `Solver_type 2` | `damping lid needs Solver_type 1` |
 | a lid panel centroid lies inside a hull | `lid panel inside a hull` |
 | more than one body and `If_remove_irr_freq 1` | `damping lid with several bodies needs If_remove_irr_freq 0` |
+| `Damping_lid` other than 0 or 1, or no integer after it | `Damping_lid must be 0 or 1` |
+| a line of `DampingLid.pnl` that cannot be read (header, counts, node, panel) | `cannot read DampingLid.pnl`, with the kind of line and its number |
+| a lid panel with other than 3 or 4 vertices | `a lid panel in DampingLid.pnl must have 3 or 4 vertices` |
+| a vertex number outside 1 to the number of nodes | `a vertex of a lid panel in DampingLid.pnl is not a node number` |
+| a lid panel with a repeated vertex | `a lid panel in DampingLid.pnl has a repeated vertex` |
+| a lid panel of zero area (area below 1e-12 times the square of its size) | `a lid panel in DampingLid.pnl has zero area` |
 
-The last check sums the hull's double-layer Rankine integrals and their images in z = 0 at each lid centroid. This is a solid angle: 4 pi in magnitude inside a closed hull and 0 outside, and the run stops above 2 pi. A lid inside a hull is what the water plane mesh with `If_remove_irr_freq` is for.
+The inside-hull check sums the hull's double-layer Rankine integrals and their images in z = 0 at each lid centroid. This is a solid angle: 4 pi in magnitude inside a closed hull and 0 outside, and the run stops above 2 pi. A lid inside a hull is what the water plane mesh with `If_remove_irr_freq` is for. Only the centroids are tested, so a panel that straddles the waterline with its centroid outside the hull passes.
 
-Finite depth: the self term of the lid takes the finite-depth part as a smooth remainder sampled at R/h of at least 0.03, because `FINGREEN3D` is unreliable at small R/h. The scaled error in the finite-depth G was 68 at R/h = 0.0005, 2.0 at 0.005, 0.14 at 0.01 and 7e-4 at 0.03, measured against a direct eigenfunction-series reference in separate work on this solver. Lid panels with centroid spacing below about 0.01 h are still exposed to this scatter through the one-point term. See [developer_documentation.md](developer_documentation.md#damping-lid).
+Finite depth: every integral over a lid panel takes the finite-depth part as a smooth remainder sampled at R/h of at least 0.03, because `FINGREEN3D` is unreliable at small R/h. Measured on z = 0 against a direct sum of the eigenfunction series ([README](../test/data/damping_lid/README.md), "Remainder"): `FINGREEN3D` is off by a near constant 7.9e-6 between 0.0005 h and 0.05 h, and below 0.003 h it scatters, to 1.1e-2 at 0.001 h and nu = 1. Lid-to-lid pairs are protected by the 0.03 h floor. Derived: the hull panels are not, since the lid rows and the field output evaluate them with `FINGREEN3D` at the true distance, so lid centroids or field points within about 0.01 h of a hull panel centroid get the scatter. See [developer_documentation.md](developer_documentation.md#damping-lid).
+
+`If_remove_irr_freq 1` with a single-body lid is experimental. The system then has more rows than unknowns and is solved by least squares (`ZGELS`), so phi = 0 on the lid holds only approximately: the elevation at the lid centroids is about 2e-5 of the incident amplitude at 160 lid panels and 1e-5 at 640, against 1e-8 to 1e-7 without `If_remove_irr_freq`. B11 and abs(X1) shift by about 1.1% at 160 lid panels, and the Haskind heave residual grows with lid refinement (4.4e-3 at 160 and 8.1e-3 at 640 lid panels, against 3.1e-3 at 640 without `If_remove_irr_freq`). The cause is open ([README](../test/data/damping_lid/README.md), "Symmetry and IRSP").
 
 Output with a lid: field points at z = 0 get radiation elevation rows in `PressureElevation.6p` only when a lid is on; they are not written without one. The field potential includes the lid's single layer.
 
