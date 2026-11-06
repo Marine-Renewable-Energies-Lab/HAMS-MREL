@@ -25,6 +25,20 @@ module test_integration_lid
     real(8), parameter :: half_field_limit = 1d-5     ! diffraction and radiation values at the same 18 points; measured 5.8e-7
     real(8), parameter :: irsp_limit = 2d-2           ! A11, A33, B11, B33, abs(X1) with IRSP against without; measured 1.1e-2
     real(8), parameter :: collocation_limit = 1d-6    ! force from the field pressures against ExcForce.3; measured 7.2e-8, printed to 7 digits
+    real(8), parameter :: maccamy_fuchs_limit = 2d-2  ! abs(X1 - X1_MF)/abs(X1_MF) of mm_cyl_nolid; measured 8.5e-3
+    real(8), parameter :: reference_limit = 3d-2      ! the same against the eigenfunction reference, mm_cyl_lid_b; measured 2.95e-2
+
+    !> The bottom-mounted cylinder of the reference cases (mm_cyl_*): radius 2, depth 10, k = 0.15 given as a wave number, so
+    !> omega = sqrt(g k tanh(kh)), heading 0, field points (0, 8, 0) and (8, 0, 0).
+    real(8), parameter :: mm_omega = 1.1538937638d0
+    !> Reference values in the convention of ExcForce.3 and PressureElevation.6p (over rho g A and over A), from
+    !> pre_postprocessing_python/DampingLid/annular_lid_reference.py: MacCamy-Fuchs for the bare cylinder, and for the lid
+    !> r 2 to 4 the eigenfunction matching with both conditions projected on the outer modes, extrapolated linearly in 1/N from
+    !> N = 160 and 320 (spread 1.2e-4 at most, over the extrapolation from N = 40, 80 and the three other projections).
+    complex(8), parameter :: maccamy_fuchs_x1 = (1.65550518d0, 23.42095485d0)
+    complex(8), parameter :: reference_lid(3) = [(-0.74007304d0, 12.76317525d0), &   ! X1
+                                                 (0.76378722d0, 0.40871563d0), &     ! elevation at (0, 8, 0)
+                                                 (0.19230822d0, -0.42071136d0)]      ! elevation at (8, 0, 0)
 
     !> The cases that solve with a lid, all run by setup_lid.
     character(len=24), parameter :: solve_cases(17) = [character(len=24) :: "lid_ann_40", "lid_ann_160", "lid_ann_640", &
@@ -45,7 +59,8 @@ contains
         testsuite = [ &
             new_unittest("run_lid_flag_off", run_lid_flag_off), &
             new_unittest("run_lid_reference", run_lid_reference), &
-            new_unittest("run_lid_solves", run_lid_solves) &
+            new_unittest("run_lid_solves", run_lid_solves), &
+            new_unittest("run_lid_mm", run_lid_mm) &
             ]
     end subroutine setup_lid
 
@@ -71,7 +86,9 @@ contains
             new_unittest("lid_field_off_centroid", lid_field_off_centroid), &
             new_unittest("lid_field_matches_collocation", lid_field_matches_collocation), &
             new_unittest("lid_half_matches_full", lid_half_matches_full), &
-            new_unittest("lid_irsp_matches", lid_irsp_matches) &
+            new_unittest("lid_irsp_matches", lid_irsp_matches), &
+            new_unittest("mm_nolid_matches_maccamy_fuchs", mm_nolid_matches_maccamy_fuchs), &
+            new_unittest("mm_lid_matches_reference", mm_lid_matches_reference) &
             ]
     end subroutine collect_tests_lid
 
@@ -168,6 +185,25 @@ contains
         end do
         call check(error, len_trim(failed) == 0, "HAMS failed for"//trim(failed))
     end subroutine run_lid_solves
+
+    !> The bottom-mounted cylinder without lid and with the lid at two meshes, for the independent reference.
+    subroutine run_lid_mm(error)
+        type(error_type), allocatable, intent(out) :: error
+        type(error_type), allocatable :: one
+        character(len=12), parameter :: names(3) = [character(len=12) :: "mm_cyl_nolid", "mm_cyl_lid_a", "mm_cyl_lid_b"]
+        character(len=128) :: failed
+        integer :: k
+
+        failed = ""
+        do k = 1, size(names)
+            call run_case("damping_lid", trim(names(k)), one)
+            if (allocated(one)) then
+                failed = trim(failed)//" "//trim(names(k))
+                deallocate (one)
+            end if
+        end do
+        call check(error, len_trim(failed) == 0, "HAMS failed for"//trim(failed))
+    end subroutine run_lid_mm
 
     ! -------------------------------------------------------------------------------------------- tests
 
@@ -687,6 +723,53 @@ contains
         call check_below(error, "lid_irsp_matches", maxval(abs(key_values(irsp) - key_values(plain))/abs(key_values(plain))), &
                          irsp_limit)
     end subroutine lid_irsp_matches
+
+    ! -------------------------------------------------------------------------------------------- independent reference
+
+    !> The bare bottom-mounted cylinder (24 x 10 panels, open at the sea bed) gives the MacCamy-Fuchs surge force within 2%.
+    !> This checks the hull on the sea bed and the output convention before the lid is compared.
+    subroutine mm_nolid_matches_maccamy_fuchs(error)
+        type(error_type), allocatable, intent(out) :: error
+        type(coefficients) :: c
+
+        call read_coefficients("mm_cyl_nolid", mm_omega, c, error)
+        if (allocated(error)) return
+        call check_below(error, "mm_nolid_matches_maccamy_fuchs", abs(c%x(1) - maccamy_fuchs_x1)/abs(maccamy_fuchs_x1), &
+                         maccamy_fuchs_limit)
+    end subroutine mm_nolid_matches_maccamy_fuchs
+
+    !> The lid r 2 to 4 around the same cylinder: X1 and the elevations at (0, 8, 0) and (8, 0, 0) of mm_cyl_lid_b (lid 48 x 4)
+    !> within 3% of the eigenfunction reference, as complex numbers, so magnitude and phase, and each closer than mm_cyl_lid_a
+    !> (lid 24 x 2).
+    subroutine mm_lid_matches_reference(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=12), parameter :: names(2) = [character(len=12) :: "mm_cyl_lid_a", "mm_cyl_lid_b"]
+        character(len=*), parameter :: labels(3) = [character(len=13) :: "X1", "eta(0, 8, 0)", "eta(8, 0, 0)"]
+        type(coefficients) :: c
+        complex(8), allocatable :: dif(:), rad(:,:)
+        complex(8) :: got(3)
+        real(8) :: diff(3, 2)
+        integer :: k, i
+
+        do k = 1, 2
+            call read_coefficients(trim(names(k)), mm_omega, c, error)
+            if (allocated(error)) return
+            call read_field(trim(names(k)), dif, rad, error)
+            if (allocated(error)) return
+            call check(error, size(dif) == 2, trim(names(k))//": not 2 field points")
+            if (allocated(error)) return
+            got = [c%x(1), dif(1), dif(2)]
+            diff(:, k) = abs(got - reference_lid)/abs(reference_lid)
+            write (*, '(4x, a, 3(2x, a, " ", es10.3))') trim(names(k)), (trim(labels(i)), diff(i, k), i = 1, 3)
+        end do
+        call check_below(error, "mm_lid_matches_reference: worst of mm_cyl_lid_b", maxval(diff(:, 2)), reference_limit)
+        if (allocated(error)) return
+        do i = 1, 3
+            call check(error, diff(i, 2) < diff(i, 1), "mm_lid_matches_reference: "//trim(labels(i))// &
+                       " of mm_cyl_lid_b is not closer than mm_cyl_lid_a")
+            if (allocated(error)) return
+        end do
+    end subroutine mm_lid_matches_reference
 
     !> Panel centroids, areas and unit normals out of the body, from the hull of the cylinder of the image term cases (copied
     !> from test_integration_image, whose own copy is private).
