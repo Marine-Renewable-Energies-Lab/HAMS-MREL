@@ -179,7 +179,7 @@ The node coordinates of the waterplane mesh are stored in `iXYZ_LOCAL_MULTI(body
 
 ## DampingLid.pnl
 
-Read only when `ControlFile.in` has `Damping_lid 1`. This task covers the input, the geometry and the stops. The lid does not yet enter the solution: a run that passes the checks below solves the hull alone.
+Read only when `ControlFile.in` has `Damping_lid 1`. GMRES (`Solver_type 2`) is not supported with a lid. `If_remove_irr_freq 1` is supported with a lid for a single body, and stops for several bodies.
 
 The lid is a list of triangular or quadrilateral panels on the free surface z = 0, with the same file structure as `WaterPlaneMesh.pnl` (three header lines, then `NELEM NTND ISX ISY`, the nodes, the panels). There is one file for any number of bodies, because a lid belongs to no body. Its nodes are in global coordinates, not in the local frame of a body. Holes and separate patches are allowed, since the lid is only a list of panels. The vertex order of a panel does not matter, because the lid has no normal.
 
@@ -196,10 +196,13 @@ The run stops with a message and exit code 1 when:
 | `ISX` or `ISY` of the lid differ from the hull's | `lid symmetry differs from the hull` |
 | `Solver_type 2` | `damping lid needs Solver_type 1` |
 | a lid panel centroid lies inside a hull | `lid panel inside a hull` |
+| more than one body and `If_remove_irr_freq 1` | `damping lid with several bodies needs If_remove_irr_freq 0` |
 
 The last check sums the hull's double-layer Rankine integrals and their images in z = 0 at each lid centroid. This is a solid angle: 4 pi in magnitude inside a closed hull and 0 outside, and the run stops above 2 pi. A lid inside a hull is what the water plane mesh with `If_remove_irr_freq` is for.
 
-Finite depth: lid panels below about 0.01 h share the scatter of `FINGREEN3D` measured in `limes-measurement-result.md`.
+Finite depth: the self term of the lid takes the finite-depth part as a smooth remainder sampled at R/h of at least 0.03, because `FINGREEN3D` is unreliable at small R/h. The scaled error in the finite-depth G was 68 at R/h = 0.0005, 2.0 at 0.005, 0.14 at 0.01 and 7e-4 at 0.03, measured against a direct eigenfunction-series reference in separate work on this solver. Lid panels with centroid spacing below about 0.01 h are still exposed to this scatter through the one-point term. See [developer_documentation.md](developer_documentation.md#damping-lid).
+
+Output with a lid: field points at z = 0 get radiation elevation rows in `PressureElevation.6p` only when a lid is on; they are not written without one. The field potential includes the lid's single layer.
 
 The number of lid panels is printed next to the hull panel counts and written to `ErrorCheck.txt`, only when the lid is on, so the output of a run without a lid does not change.
 

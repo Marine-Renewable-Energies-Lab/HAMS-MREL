@@ -4,6 +4,7 @@ This page contains information for the developers and mantainers of HAMS-MREL:
 
 - [Tests](https://github.com/vaibhavraghavan/HAMS-MREL/edit/develop/docs/developer_documentation.md#tests)
 - [Continous Integration](https://github.com/vaibhavraghavan/HAMS-MREL/edit/develop/docs/developer_documentation.md#continous-integration-in-github-actions)
+- [Damping lid](https://github.com/vaibhavraghavan/HAMS-MREL/edit/develop/docs/developer_documentation.md#damping-lid)
 - [Profiling Results](https://github.com/vaibhavraghavan/HAMS-MREL/edit/develop/docs/developer_documentation.md#profiling-results)
 
 ## Tests
@@ -122,6 +123,82 @@ The `ACA_TOL` and `ITER_TOL` constants are both `1e-4`, matched to the ~`1e-7` p
 **Adding a new iterative test:**
 
 Small multi-body test cases with `ISOLV = 2` can be added to `test/integration_tester.f90`. The recommended check is that `ISOLV = 2` output agrees with an `ISOLV = 1` baseline to `1e-3` relative on the WAMIT `.1` (`AmssDamp.1`) file peak-magnitude entries.
+
+## Damping lid
+
+The damping lid holds the total potential at zero on a user-given set of panels on the free surface z = 0 (`DampingLid.pnl`, see [input_files.md](input_files.md#dampinglidpnl)). Design: [the spec](superpowers/specs/2026-11-05-damping-lid-design.md). Measurements: [test/data/damping_lid/README.md](../test/data/damping_lid/README.md). Code: `src/DampingLid.f90` (one body), `src/DampingLidMulti.f90` (several bodies). Each claim below is marked measured (source in the README) or derived.
+
+### What the lid does
+
+Derived: the mean power through the free surface per unit area is proportional to Im(phi* dphi/dz), which is zero where phi = 0. The lid absorbs no energy. It reflects the wave, as a pressure-release surface does, despite the name of the file. Energy balance and the Haskind relation still hold, and the tests use them.
+
+Measured (README, "Single-body solve with a lid"): B >= 0 in every case, and the Haskind heave residual is 0.32% at 640 lid panels. For the ring r 6 to 10 around the draft 5 cylinder, the lid cuts B11 by a factor of 100 and abs(X1) by 10.
+
+### Formulation
+
+Derived (spec, "Formulation"). The wave Green function obeys dG/dz = nu G on z = 0, so the free-surface integral leaves a single layer on the lid with the unknown q = dphi/dz - nu phi. With D the double layer, S the single layer, j over hull panels and l over lid panels:
+
+    hull row i:  2 pi phi_i + sum_j D_ij phi_j - sum_l S_il q_l = sum_j S_ij V_j
+    lid row l:               sum_j D_lj phi_j - sum_l' S_ll' q_l' = sum_j S_lj V_j + T_l
+
+Radiation has T_l = 0. Diffraction solves for the scattered potential, which cancels the incident one on the lid, so T_l = 4 pi phi_I(p_l). The unknowns are hull phi and lid q. The system is square and is solved by direct LU.
+
+The sign of q is not observable in A, B or X (README, "Field output with a lid"). It rests on the derivation and on the test `lid_elevation_zero_at_centroids`: with the opposite sign the elevation at a lid centroid would be about twice the incident one, not about zero. Measured: 7.0e-8 for diffraction. The independent check of the signs and of the size of the lid's effect is the eigenfunction-matching comparison below.
+
+### Why the IRSP rows alone fail
+
+Derived: `IRSP` adds rows and no unknowns. Inside a body the rows state the null-field identity, which the solution satisfies. On open water the same rows state 4 pi phi(p) = 0, which the hull solution does not satisfy. The lid needs the extra column q and the incident term T_l.
+
+Measured (spec, "Why the IRSP rows cannot be reused unchanged"; binary from 0a77224, not a build of main): `IRSP = 1` with an open-water annulus r 6 to 10 as the waterplane mesh; cylinder r = 5, draft 5, depth 50, 1.35 rad/s.
+
+| Lid panels | A11 | B11 | A33 | B33 |
+| ---: | ---: | ---: | ---: | ---: |
+| none | 253.4 | 206.3 | 210.2 | 21.9 |
+| 40 | 434.3 | -186.3 | 88.1 | 14.3 |
+| 160 | -255.9 | -374.7 | 65.1 | 1327 |
+| 640 | -337.2 | -102.6 | 602.9 | 239.1 |
+
+The results do not converge with refinement, B11 is negative, and the runs gave no warning.
+
+### Self term and its accuracy
+
+Derived (spec, "Panel integrals"): the Rankine and image parts are exact panel integrals. For panels apart the wave term is one point at the centroid. For a field point inside the panel, the deep-water wave term is integrated by a Duffy rule after splitting the panel at the field point, and the finite-depth remainder G_finite - G_deep is added as a smooth term sampled at R/h of at least 0.03.
+
+Measured (README, "Single-layer integral of G over a lid panel"):
+
+- Duffy rule, deep water, nu = 0.19, 6 x 6 against 24 x 24 (the rule used, u = s**2 with the split): 6.4e-7 to 8.6e-7 for the square and 6.3e-7 to 7.9e-7 for the triangle over the field points tried. The plain rule gave 6.8e-5 at the square's centroid.
+- One-point wave term for panels apart: the error is about (nu side)**2/24, 1.5e-3 at side 1, and does not fall with distance. Derived: the hull's one-point wave term has the same error.
+- Finite depth: `FINGREEN3D` matches the series to 2e-10 or better from rho/H = 0.05. Between 0.0005 H and 0.05 H it is off by a near constant 7.9e-6, and below 0.003 H it scatters, to 1.1e-2 at 0.001 H and nu = 1. It returns NaN from kh = 360.
+- Electrified disc (nu = 0, relative error of the density against 1/pi): -7.80e-2, -2.58e-2, -9.31e-3 for nt = nr = 8, 16, 32. The error falls by 3.0 and 2.8 per doubling. The density has a 1/sqrt singularity at the rim, so the ring count matters as much as the panel count.
+
+### Convergence
+
+Measured (README, "Single-body solve with a lid"): from 40 to 160 to 640 lid panels the change falls by 2.1 (A11), 4.6 (A33), 7.6 (B11) and 2.7 (abs(X1)). The ring count drives the results. From 4 rings on, the changes of B33 fall as 0.15, 0.084, 0.043, about first order in the ring width. Derived: first order is expected of constant panels with the 1/sqrt edge singularity of q. The approach to no lid is slow for a narrow ring (a ring 0.25 m wide still changes B11 by 83%). A likely reason, not checked, is that a phi = 0 strip acts like a conductor, whose capacity falls only as 1/log(1/width).
+
+Symmetry, measured: the half hull with the half lid gives A, B and X of the full model to 5.4e-7, 6.6e-6 and 1.8e-5 (relative to the largest entry).
+
+### Independent check: eigenfunction matching
+
+Measured (README, "Independent reference"): a bottom-mounted cylinder (radius 2 m, depth 10 m, kh = 1.5) with an annular lid r 2 to 4, against `pre_postprocessing_python/DampingLid/annular_lid_reference.py`, which shares no code with the solver. The reference converges as 1/N, and its projections agree to 8e-5. The relative error of HAMS-MREL in X1 is 3.14%, 1.07% and 0.28% for 2, 4 and 8 lid rings (in eta(8, 0, 0): 6.54%, 2.95%, 1.48%). The reference gives abs(X1) 0.5445 of the bare cylinder and HAMS-MREL 0.5499 at 8 rings. The phase shift of X1 caused by the lid agrees to 0.3 deg. This checks the signs and the size of the lid's effect. It does not check the factor of 100 on B11 of the `lid_ann_*` cases, which have another geometry.
+
+### Several bodies
+
+One lid file serves all bodies, since the lid belongs to no body. Measured (README, "Several bodies"): with the second body 5 km away, body 1 differs from the single-body lid result by 5.0e-4 at most in A11, A33, B11, B33 and abs(X1). The elevation on the lid between two boxes (`lid_gap`) is 9.4e-15 at most. B of `lid_gap` has a lowest eigenvalue of -5.5e-5 relative to max(abs(B)); the same boxes without the lid have -2.3e-5. Derived: these come from the hull discretisation, since they fall by 4 to 9 per halving of the panel size.
+
+### Limits
+
+- No GMRES: `Solver_type 2` with a lid stops (`damping lid needs Solver_type 1`). Derived: the H-matrix assumes hull geometry, and the lid rows would need their own preconditioner.
+- `IRSP` with a single-body lid is supported. With several bodies it stops (`damping lid with several bodies needs If_remove_irr_freq 0`), because the multi-body interior rows are not combined with the lid.
+- The lid reflects and absorbs no energy (above).
+- Finite depth: lid panels with centroid spacing below about 0.01 h are exposed to the scatter of `FINGREEN3D` through the one-point term. Measured scaled error in G: 68 at R/h = 0.0005, 2.0 at 0.005, 0.14 at 0.01, 7e-4 at 0.03.
+- Accuracy is set by the number of lid rings, first order in the ring width (measured, above). The solver does not flag an under-resolved lid.
+- Field points at z = 0 get radiation elevation rows in `PressureElevation.6p` only when the lid is on.
+
+### Open questions
+
+- IRSP with a single-body lid: against the same run without IRSP, A11 changes by 0.09% and B33 by 0.06%, but B11 and abs(X1) change by 1.1% for `lid_ann_160`. The Haskind heave residual with IRSP grows with the lid mesh, 4.4e-3 at 160 and 8.1e-3 at 640 panels, against 4.6e-4 and 3.1e-3 without IRSP (measured, README "Symmetry and IRSP"). The cause is open. Derived and unproven: a discretisation difference of the least-squares system. A check that would settle it: hulls finer than 390 panels with IRSP.
+- A multi-body lid with symmetry (`ISX` or `ISY`) is untested.
+- Why the elevation at lid centroids is about 1e-8 in the annular cases and about 1e-14 in `lid_gap` was not looked for.
 
 ## Profiling Results
 
