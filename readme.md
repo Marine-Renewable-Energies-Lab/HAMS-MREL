@@ -61,6 +61,8 @@ HAMS-MREL requires a set of input files to run. These files contain the general 
 
 **A full description of each inout file is provided in [docs/input_files.md](docs/input_files.md)**.
 
+Optional damping lid: `Damping_lid 1` in `ControlFile.in` reads `DampingLid.pnl`, panels on the free surface where the potential is held at zero. The lid reflects waves and absorbs no energy. See [DampingLid.pnl](docs/input_files.md#dampinglidpnl).
+
 
 ### Output
 
