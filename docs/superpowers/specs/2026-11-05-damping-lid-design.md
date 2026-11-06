@@ -1,3 +1,5 @@
+Superseded by docs/superpowers/specs/2026-11-06-epsilon-damping-lid-design.md (dissipative lid).
+
 # Damping lid on the free surface: design
 
 Status: awaiting review. Base: `origin/main` at 6f4cc3b. Branch: `feature/damping-lid`.

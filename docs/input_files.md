@@ -233,9 +233,13 @@ The run stops with a message and exit code 1 when:
 | a lid panel in no damper | `lid panel in no damper`, with the panel number |
 | a negative epsilon | `negative damping`, with the line number |
 | a damper line that cannot be read | `cannot read the damping`, with the line number |
+| an infinite epsilon (`Inf`; a large finite value such as 1e6 m/s gives the rigid lid) | `infinite damping epsilon on line`, with the line number |
+| `ISX` or `ISY` = 1 and a vertex of a lid panel on the image side of the symmetry plane (x < 0 or y < 0 when the hull is given on x >= 0 or y >= 0) by more than 1e-6 times the largest lid panel size | `lid on the image side of the symmetry plane`, with the panel and node number |
 | a zero frequency in the frequency list | `zero frequency with a damping lid`, with its number in the list |
 
-The zero frequency that `0_inf_frequency_limits 1` adds to the run is not in the list and does not stop it, since the infinite-frequency limit cannot be given without it (see Zero frequency below).
+The zero frequency that `0_inf_frequency_limits 1` adds to the run is not in the list and does not stop it, since the infinite-frequency limit cannot be given without it (see Zero frequency below). The frequency list is checked before the first frequency is solved, so a zero anywhere in the list stops the run with no frequency written. A zero period or wave length (`Input_frequency_type` 4 or 5) is an infinite frequency, not a zero one, and is not caught by this check.
+
+With `ISX` or `ISY` = 1 the lid must be given on the same half as the hull, since its images are added for it as for the hull. The kept side is that of the hull panel centroids; nodes that no lid panel uses are not checked. The tolerance, 1e-6 times the largest lid panel size, is well above the round-off of nodes written on the plane and well below any panel size. A full lid given with the flag set would be counted twice, and is stopped.
 
 The inside-hull check sums the hull's double-layer Rankine integrals and their images in z = 0 at each lid centroid. This is a solid angle: 4 pi in magnitude inside a closed hull and 0 outside, and the run stops above 2 pi. A lid inside a hull is what the water plane mesh with `If_remove_irr_freq` is for. Only the centroids are tested, so a panel that straddles the waterline with its centroid outside the hull passes.
 
@@ -245,11 +249,12 @@ Finite depth: every integral over a lid panel takes the finite-depth part as a s
 
 Zero frequency: a zero in the frequency list stops a run with the lid on, as in WAMIT (WAMIT User Manual v7.5, Section 12.8). The zero frequency that `0_inf_frequency_limits 1` adds is exempt: there, and at the infinite frequency, the lid is skipped and the hull is solved alone. Derived: at omega = 0 the lid term alpha = i omega epsilon nu/(g - i omega epsilon) is 0, so the lid has no effect there.
 
-Output with a lid. No file format changes. A, B, the excitation and the RAOs are integrated over the hull only, as in WAMIT (WAMIT User Manual v7.5, Section 12.8). Field points:
+Output with a lid. The file formats do not change, with one exception: a single-body run with the lid on also writes the radiation elevation rows of field points at z = 0 to `PressureElevation.6p` (last item below), so a lid run and a no-lid run of the same input give `.6p` files with different row sets. The output of runs without a lid does not change. A, B, the excitation and the RAOs are integrated over the hull only, as in WAMIT (WAMIT User Manual v7.5, Section 12.8). Field points:
 
 - The field potential includes the lid term, a single layer of strength alpha_l (phi_l + phi_I,l) on each lid panel, with phi_I,l the incident potential in diffraction only.
 - On z = 0 inside or on the edge of a lid panel of epsilon > 0, the elevation is eta = i omega phi/(g - i omega epsilon), with phi the total potential; elsewhere it is i omega phi/g, as without a lid. The pressure in the fluid has its usual form.
-- Field points at z = 0 get radiation elevation rows in `PressureElevation.6p` only when a lid is on; they are not written without one.
+- With `Wave_diffrac_solution 2` (`ISOL = 2`, scattered potential only) the diffraction elevation on a lid panel of epsilon > 0 is i omega phi_S/(g - i omega epsilon), the same factor applied to the scattered potential phi_S. It is not the total elevation less the incident one (that would be i omega phi_T/(g - i omega epsilon) - i omega phi_I/g). Off the lid it is i omega phi_S/g, as without a lid.
+- Field points at z = 0 get radiation elevation rows in `PressureElevation.6p` of a single-body run only when a lid is on; they are not written without one. The multi-body output writes them with or without a lid.
 
 What changes in the results, derived (spec, "Limits that follow"): B is the power radiated to the far field plus the power absorbed on the lid. B can still fall when the lid is added, because the lid can cut the far-field radiation by more than it absorbs (measured: B11 of `lid_ann_160` falls from 206.25 without the lid to 199.71 at 0.2 m/s, README "Single-body solve with a lid"). The Haskind relation over the hull does not hold for epsilon > 0, because the lid absorbs: do not compute the excitation from the radiation potentials when a lid is on (measured heave residual 4.6e-2 at 0.2 m/s, against 2.1e-3 without the lid).
 
