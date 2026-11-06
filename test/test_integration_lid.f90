@@ -18,11 +18,15 @@ module test_integration_lid
     real(8), parameter :: order_limit = 1d-9          ! relative to max(abs(A)), max(abs(B)), max(abs(X)); measured 5.8e-10
     real(8), parameter :: tri_limit = 2d-2            ! measured 1.2e-2
     real(8), parameter :: limits_limit = 1d-10        ! measured 0
+    real(8), parameter :: centroid_limit = 1d-6       ! diffraction elevation at lid centroids over the incident amplitude; measured 7.0e-8
+    real(8), parameter :: radiation_centroid_limit = 5d-6    ! the same for radiation, over the largest value off the lid; measured 1.9e-6
+    real(8), parameter :: off_centroid_limit = 3d-3   ! |elevation| at node, edge and inside points over the incident amplitude; measured 7.6e-4
+    real(8), parameter :: collocation_limit = 1d-6    ! force from the field pressures against ExcForce.3; measured 7.2e-8, printed to 7 digits
 
     !> The cases that solve with a lid, all run by setup_lid.
-    character(len=16), parameter :: solve_cases(12) = [character(len=16) :: "lid_ann_40", "lid_ann_160", "lid_ann_640", &
+    character(len=24), parameter :: solve_cases(14) = [character(len=24) :: "lid_ann_40", "lid_ann_160", "lid_ann_640", &
         "lid_ann_160_rev", "lid_ann_tri", "lid_touch", "lid_patches", "lid_shrink_1", "lid_shrink_2", "lid_deep", "lid_limits", &
-        "lid_limits_off"]
+        "lid_limits_off", "lid_hull_160", "lid_field_off_centroid"]
 
     !> A, B and X at one frequency: the full 6 x 6 matrices and the six forces of heading 0.
     type :: coefficients
@@ -58,7 +62,10 @@ contains
             new_unittest("lid_order_free", lid_order_free), &
             new_unittest("lid_tri_close", lid_tri_close), &
             new_unittest("lid_shrink_to_none", lid_shrink_to_none), &
-            new_unittest("lid_limits_finite", lid_limits_finite) &
+            new_unittest("lid_limits_finite", lid_limits_finite), &
+            new_unittest("lid_elevation_zero_at_centroids", lid_elevation_zero_at_centroids), &
+            new_unittest("lid_field_off_centroid", lid_field_off_centroid), &
+            new_unittest("lid_field_matches_collocation", lid_field_matches_collocation) &
             ]
     end subroutine collect_tests_lid
 
@@ -501,5 +508,190 @@ contains
         call check_below(error, "lid_limits_finite: infinite-frequency A against no lid", &
                          maxval(abs(lid%a - bare%a))/maxval(abs(bare%a)), limits_limit)
     end subroutine lid_limits_finite
+
+    ! -------------------------------------------------------------------------------------------- field output
+
+    !> The rows of PressureElevation.6p of a lid case: dif(ip) the diffraction value of point ip (7 columns, value in the last
+    !> two), rad(ip, m) the radiation value of mode m (14 columns, mode m in columns 2m + 1 and 2m + 2). All non-dimensional.
+    !> The radiation rows of points on z = 0 are written when the lid is on.
+    subroutine read_field(name, dif, rad, error)
+        character(len=*), intent(in) :: name
+        complex(8), allocatable, intent(out) :: dif(:), rad(:,:)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=512) :: line
+        real(8) :: row(14)
+        complex(8), allocatable :: bigger(:,:)
+        integer :: unit, stat, n, ip, m
+
+        allocate (dif(0), rad(0, 6))
+        open (newunit=unit, file=output_dir(name)//"Wamit_format/PressureElevation.6p", status="old", action="read", iostat=stat)
+        if (stat /= 0) then
+            call test_failed(error, "No PressureElevation.6p for "//name)
+            return
+        end if
+        do
+            read (unit, '(a)', iostat=stat) line
+            if (stat /= 0) exit
+            n = columns(line)
+            if (n == 7) then
+                read (line, *) row(1:7)
+                ip = nint(row(3))
+                if (ip > size(dif)) dif = [dif, (cmplx(0d0, 0d0, kind=8), stat = size(dif) + 1, ip)]
+                dif(ip) = cmplx(row(6), row(7), kind=8)
+            else if (n == 14) then
+                read (line, *) row(1:14)
+                ip = nint(row(2))
+                if (ip > size(rad, 1)) then
+                    allocate (bigger(ip, 6))
+                    bigger = (0d0, 0d0)
+                    bigger(1:size(rad, 1), :) = rad
+                    call move_alloc(bigger, rad)
+                end if
+                do m = 1, 6
+                    rad(ip, m) = cmplx(row(2*m + 1), row(2*m + 2), kind=8)
+                end do
+            end if
+        end do
+        close (unit)
+    end subroutine read_field
+
+    !> The lid rows ask for phi = 0 at the lid, so the elevation at a lid centroid must be zero: the total field in diffraction
+    !> (the incident amplitude is 1 in the non-dimensional output, whose elevation is divided by AMP), and the radiated one.
+    !> With the wrong sign of the lid term the diffraction value would be about twice the incident one. Radiation is
+    !> compared with the largest value at the two field points off the lid, at 12 and 20 m.
+    subroutine lid_elevation_zero_at_centroids(error)
+        type(error_type), allocatable, intent(out) :: error
+        complex(8), allocatable :: dif(:), rad(:,:)
+        real(8) :: big
+
+        call read_field("lid_ann_640", dif, rad, error)
+        if (allocated(error)) return
+        call check(error, size(dif) == 12 .and. size(rad, 1) == 12, "lid_elevation_zero_at_centroids: not 12 points in each")
+        if (allocated(error)) return
+        big = maxval(abs(rad(11:12, :)))
+        write (*, '(4x, "incident amplitude 1; |elevation| at 12 and 20 m: ", 2es10.3, ", largest radiation there ", es10.3)') &
+            abs(dif(11)), abs(dif(12)), big
+        call check(error, maxval(abs(dif(11:12))) > 0.1d0 .and. big > 0d0, "lid_elevation_zero_at_centroids: no wave outside the lid")
+        if (allocated(error)) return
+        call check_below(error, "lid_elevation_zero_at_centroids: diffraction", maxval(abs(dif(1:10))), centroid_limit)
+        if (allocated(error)) return
+        call check_below(error, "lid_elevation_zero_at_centroids: radiation", maxval(abs(rad(1:10, :)))/big, radiation_centroid_limit)
+    end subroutine lid_elevation_zero_at_centroids
+
+    !> At a lid node, in the middle of a lid edge, inside a panel off its centroid, at a node of the radius 8 ring (0, 8, 0) and
+    !> far away, the field is finite, and at the first three of these of the size of the incident wave.
+    subroutine lid_field_off_centroid(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=10), parameter :: labels(15) = [character(len=10) :: "node", "edge", "inside", "c1", "c2", "c3", "c4", &
+            "c5", "c6", "c7", "c8", "c9", "c10", "(0, 8, 0)", "(20, 0, 0)"]
+        complex(8), allocatable :: dif(:), rad(:,:)
+        real(8) :: worst
+        integer :: ip
+
+        call read_field("lid_field_off_centroid", dif, rad, error)
+        if (allocated(error)) return
+        call check(error, size(dif) == 15 .and. size(rad, 1) == 15, "lid_field_off_centroid: not 15 points in each")
+        if (allocated(error)) return
+        worst = 0d0
+        do ip = 1, 15
+            write (*, '(4x, a10, " diffraction ", 2es13.5, "  |radiation| ", 6es10.3)') labels(ip), dif(ip), abs(rad(ip, :))
+            if (dif(ip) /= dif(ip) .or. any(rad(ip, :) /= rad(ip, :))) then
+                call test_failed(error, "lid_field_off_centroid: NaN at "//trim(labels(ip)))
+                return
+            end if
+            if (ip <= 3) worst = max(worst, abs(dif(ip)))
+        end do
+        call check_below(error, "lid_field_off_centroid: |elevation| at node, edge, inside", worst, off_centroid_limit)
+    end subroutine lid_field_off_centroid
+
+    !> As field_points_match_collocation of the image term suite: the pressure at every hull centroid, integrated over the hull,
+    !> is the excitation force, here with a lid.
+    subroutine lid_field_matches_collocation(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: xc(:,:), area(:), normal(:,:)
+        complex(8), allocatable :: dif(:), rad(:,:)
+        type(coefficients) :: c
+        complex(8) :: force(3)
+        real(8) :: worst
+        integer :: i, k
+
+        call read_panels(xc, area, normal, error)
+        if (allocated(error)) return
+        call read_field("lid_hull_160", dif, rad, error)
+        if (allocated(error)) return
+        call check(error, size(dif) == size(area), "lid_field_matches_collocation: not every panel has a pressure")
+        if (allocated(error)) return
+        call read_coefficients("lid_hull_160", omega, c, error)
+        if (allocated(error)) return
+        force = (0d0, 0d0)
+        do i = 1, size(area)
+            do k = 1, 3
+                force(k) = force(k) + dif(i)*area(i)*normal(k, i)
+            end do
+        end do
+        worst = 0d0
+        do k = 1, 3, 2
+            ! The sign of the force follows the normal of the solver, which points into the body
+            worst = max(worst, abs(abs(force(k) + c%x(k)))/abs(c%x(k)))
+        end do
+        call check_below(error, "lid_field_matches_collocation: force from field points", worst, collocation_limit)
+    end subroutine lid_field_matches_collocation
+
+    !> Panel centroids, areas and unit normals out of the body, from the hull of the cylinder of the image term cases (copied
+    !> from test_integration_image, whose own copy is private).
+    subroutine read_panels(xc, area, normal, error)
+        real(8), allocatable, intent(out) :: xc(:,:), area(:), normal(:,:)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=512) :: line
+        real(8), allocatable :: node(:,:)
+        real(8) :: p(3,4), v(3), scale_v
+        integer :: unit, stat, np, nn, isx, isy, i, k, id, nv, ids(4)
+
+        open (newunit=unit, file=input_dir("image_term", "image_cos")//"HullMesh.pnl", status="old", action="read", iostat=stat)
+        if (stat /= 0) then
+            call test_failed(error, "No hull mesh of image_cos")
+            return
+        end if
+        read (unit, '(a)') line
+        read (unit, '(a)') line
+        read (unit, '(a)') line
+        read (unit, *) np, nn, isx, isy
+        allocate (node(3, nn), xc(3, np), area(np), normal(3, np))
+        read (unit, '(a)') line
+        read (unit, '(a)') line
+        do i = 1, nn
+            read (unit, *) id, node(:, i)
+        end do
+        read (unit, '(a)') line
+        read (unit, '(a)') line
+        read (unit, '(a)') line
+        do i = 1, np
+            read (unit, *) id, nv, ids(1:nv)
+            do k = 1, nv
+                p(:, k) = node(:, ids(k))
+            end do
+            xc(:, i) = sum(p(:, 1:nv), dim=2)/real(nv, 8)
+            if (nv == 3) then
+                v = 0.5d0*cross(p(:, 2) - p(:, 1), p(:, 3) - p(:, 1))
+            else
+                v = 0.5d0*cross(p(:, 3) - p(:, 1), p(:, 4) - p(:, 2))
+            end if
+            area(i) = norm2(v)
+            scale_v = 1d0/area(i)
+            ! A cylinder on the z axis: out of the body is away from the axis, and down on the bottom
+            if (abs(v(3)) > 0.5d0*area(i)) then
+                normal(:, i) = merge(-1d0, 1d0, v(3) > 0d0)*scale_v*v
+            else
+                normal(:, i) = merge(1d0, -1d0, v(1)*xc(1, i) + v(2)*xc(2, i) > 0d0)*scale_v*v
+            end if
+        end do
+        close (unit)
+    end subroutine read_panels
+
+    pure function cross(a, b) result(c)
+        real(8), intent(in) :: a(3), b(3)
+        real(8) :: c(3)
+        c = [a(2)*b(3) - a(3)*b(2), a(3)*b(1) - a(1)*b(3), a(1)*b(2) - a(2)*b(1)]
+    end function cross
 
 end module test_integration_lid

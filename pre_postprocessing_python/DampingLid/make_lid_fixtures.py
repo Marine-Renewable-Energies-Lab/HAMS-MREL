@@ -92,6 +92,14 @@ def centroids(lid_text, count):
     return out
 
 
+def off_centroid_points(lid_text):
+    """Field points on z = 0 of the annulus r 6 to 10, 40 x 4: a lid node, the middle of a radial edge, a point inside the first
+    panel off its centroid, the 10 first centroids, then (0, 8, 0) and (20, 0, 0)."""
+    a = math.radians(2.0)
+    return ([(7.0, 0.0, 0.0), (7.5, 0.0, 0.0), (6.25 * math.cos(a), 6.25 * math.sin(a), 0.0)] + centroids(lid_text, 10)
+            + [(0.0, 8.0, 0.0), (20.0, 0.0, 0.0)])
+
+
 def control_text(lid, solver=None, depth=None, limits=None, points=None):
     """The image_cos control file with Damping_lid inserted after 'Number of threads', and Solver_type when given. depth
     replaces the water depth, limits the 0_inf_frequency_limits switch, and points the field points."""
@@ -136,9 +144,10 @@ def write_case(name, lid_text, lid_flag=1, solver=None, depth=None, limits=None,
             f.write(lid_text.encode("ascii"))
 
 
-def write_solve_case(name, lid_text, **kwargs):
-    """A lid case that runs to the end, with its field points at the centroids of the first 10 lid panels."""
-    write_case(name, lid_text, points=centroids(lid_text, 10), **kwargs)
+def write_solve_case(name, lid_text, far=(), **kwargs):
+    """A lid case that runs to the end, with its field points at the centroids of the first 10 lid panels, then the points in
+    far."""
+    write_case(name, lid_text, points=centroids(lid_text, 10) + list(far), **kwargs)
 
 
 def main():
@@ -153,7 +162,7 @@ def main():
     # Single-body solves (test_integration_lid.f90). Annulus r = 6 to 10 unless said.
     write_solve_case("lid_ann_40", annulus(6.0, 10.0, 20, 2))
     write_solve_case("lid_ann_160", annulus(6.0, 10.0, 40, 4))
-    write_solve_case("lid_ann_640", annulus(6.0, 10.0, 80, 8))
+    write_solve_case("lid_ann_640", annulus(6.0, 10.0, 80, 8), far=[(12.0, 0.0, 0.0), (20.0, 0.0, 0.0)])
     write_solve_case("lid_ann_160_rev", annulus(6.0, 10.0, 40, 4, reverse=True))
     write_solve_case("lid_ann_tri", annulus(6.0, 10.0, 40, 4, tri=True))
     write_solve_case("lid_touch", annulus(5.0, 9.0, 40, 4))
@@ -163,6 +172,11 @@ def main():
     write_solve_case("lid_deep", annulus(6.0, 10.0, 40, 4), depth=-1.0)
     write_solve_case("lid_limits", annulus(6.0, 10.0, 20, 2), limits=1)
     write_solve_case("lid_limits_off", annulus(6.0, 10.0, 20, 2), limits=1, lid_flag=0)
+
+    # Field output (test_integration_lid.f90). lid_hull_160 keeps the hull centroids of image_cos as field points.
+    ann = annulus(6.0, 10.0, 40, 4)
+    write_case("lid_hull_160", ann)
+    write_case("lid_field_off_centroid", ann, points=off_centroid_points(ann))
 
 
 if __name__ == "__main__":
