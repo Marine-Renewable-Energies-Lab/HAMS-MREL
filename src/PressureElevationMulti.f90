@@ -38,8 +38,8 @@ MODULE PressureElevationMulti
    USE SingularIntgrMulti
    USE PatcVelct
    USE FieldOutput_mod
-   USE Lid_mod, ONLY: LIDON,LNELEM,MXLPOT
-   USE DampingLid, ONLY: LID_SINGLE_LAYER
+   USE Lid_mod, ONLY: LIDON,LNELEM,MXLPOT,LEPS,LXYZ_P
+   USE DampingLid, ONLY: LID_SINGLE_LAYER,LID_ALPHA,LID_EPS_AT,REFLECTED
 
    IMPLICIT NONE
 
@@ -67,7 +67,8 @@ CONTAINS
       REAL*8   XPB(3),EN3(3),EV(3),WV(3),CX3,CY3,CZ3,SVAL,SMIN,SMAX,DPLN,TOLP,TOLA
       LOGICAL  ONBODY
       INTEGER  LEL,MDQ
-      COMPLEX*16  SLID
+      COMPLEX*16  SLID,ALID,PHII
+      REAL*8   XL(3)
       COMPLEX*16  F0,DPOX,DPOY,DPOZ,DINCP,TERM1,TERM2,GRN(4),DUM(2)
       COMPLEX*16, ALLOCATABLE:: XPOT(:)
 
@@ -200,8 +201,9 @@ CONTAINS
        POT=POT+XPOT(JEL)
       ENDDO
 
-      ! Damping lid: 4 pi phi(p) = sum_hull (S V - D phi) + sum_lid S q, as in CalPotential. The q of radiation mode MD of body
-      ! PHIDOF is in column 6*(PHIDOF-1)+MD of MXLPOT, that of diffraction in column 6*NBODY+1 (DampingLidMulti.f90).
+      ! Damping lid: 4 pi phi(p) = sum_hull (S V - D phi) + sum_lid alpha_l S (phi_l + phi_I,l), as in CalPotential, phi_I,l in
+      ! diffraction only. The lid phi of radiation mode MD of body PHIDOF is in column 6*(PHIDOF-1)+MD of MXLPOT, that of
+      ! diffraction (scattered) in column 6*NBODY+1 (DampingLidMulti.f90).
       IF (LIDON.EQ.1) THEN
        IF (MD.EQ.(6*NBODY+1)) THEN
         MDQ=MD
@@ -219,8 +221,15 @@ CONTAINS
          XP(3)=         XET(3)
         ENDIF
         DO LEL=1, LNELEM
+         ALID=LID_ALPHA(LEPS(LEL))
+         IF (ALID.EQ.(0.D0,0.D0)) CYCLE
          CALL LID_SINGLE_LAYER(XP,LEL,SLID)
-         POT=POT+SLID*MXLPOT(LEL,MDQ,IS)
+         PHII=(0.D0,0.D0)
+         IF (MD.EQ.(6*NBODY+1)) THEN
+          XL=REFLECTED(LXYZ_P(LEL,:),IS)
+          PHII=VINP(XL(1),XL(2),XL(3),XW(1),XW(2),BETA)
+         ENDIF
+         POT=POT+ALID*SLID*(MXLPOT(LEL,MDQ,IS)+PHII)
         ENDDO
        ENDDO
       ENDIF
@@ -366,11 +375,19 @@ CONTAINS
       CHARACTER(*),INTENT(IN)::RDFLG
       
       COMPLEX*16  XPOT
-      
+      REAL*8   EPS
+      LOGICAL  ON
+
       CALL CalPotentialMulti(XP,RDFLG,MD,XPOT,NBODY,PHIDOF,FACTOR_NORMAL)
-      
+
+      ! On a lid panel of epsilon > 0, eta = i omega phi / (g - i omega epsilon), as in CalElevation.
+      ON=.FALSE.
+      EPS=0.D0
+      IF (LIDON.EQ.1) EPS=LID_EPS_AT(XP,ON)
       IF (ABS(TP+1.D0).LT.1.E-6.OR.ABS(TP).LT.1.E-6) THEN
        ELV=XPOT
+      ELSEIF (ON.AND.EPS.NE.0.D0) THEN
+       ELV=CI*W1*XPOT/(G-CI*W1*EPS)
       ELSE
        ELV=CI*W1/G*XPOT
       ENDIF

@@ -179,10 +179,10 @@
         END MODULE Inerfs_mod
 
 !---------------------------------------------------------------------------------------------
-!        Data module for the damping lid: panels on z = 0 where the potential is held at zero (docs/input_files.md)
+!        Data module for the damping lid: panels on z = 0 with the dissipative condition p/rho = epsilon dphi/dz (docs/input_files.md)
 !        LNELEM, LNTND, LNCN, LNCON and LXYZ are read from DampingLid.pnl. LXYZ_P, LDS and LPNSZ are the centroids, areas and
 !        chart lengths. MXLPOT is the lid potential phi on the lid panels for the 6*NBODY radiation modes and the diffraction
-!        problem. Until the epsilon lid is in (docs/superpowers/plans), it still holds q = dphi/dz - nu*phi, the phi = 0 lid unknown.
+!        problem, the scattered potential for diffraction, as MXPOT.
 !        NDAMP dampers, panels IDAMP(k,1) to IDAMP(k,2) with epsilon EDAMP(k) (m/s), read from the damping block of DampingLid.pnl;
 !        LEPS(l) is the epsilon of lid panel l.
 !---------------------------------------------------------------------------------------------
