@@ -25,6 +25,7 @@ program unit_tester
     use test_source_velocity, only : collect_source_velocity
     use test_control_surface_mesh, only : collect_control_surface_mesh
     use test_field_velocity, only : collect_field_velocity
+    use test_control_drift, only : collect_control_drift
 
     implicit none
     integer :: stat, is
@@ -57,7 +58,8 @@ program unit_tester
         new_testsuite("waterline_field", collect_waterline_field), &
         new_testsuite("source_velocity", collect_source_velocity), &
         new_testsuite("control_surface_mesh", collect_control_surface_mesh), &
-        new_testsuite("field_velocity", collect_field_velocity) &
+        new_testsuite("field_velocity", collect_field_velocity), &
+        new_testsuite("control_drift", collect_control_drift) &
     ]
 
     stat = 0

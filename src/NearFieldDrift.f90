@@ -34,7 +34,7 @@ MODULE NearFieldDrift
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: pair_minus, waterline_point, waterline_extrapolate, near_field_pair
+   PUBLIC :: pair_minus, waterline_point, waterline_extrapolate, near_field_pair, elevation, force_and_moment
    PUBLIC :: T_WATERLINE, T_FLARE, T_VELOCITY, T_DISPLACEMENT, T_ROTATION, T_HYDROSTATIC
 
    ! Term index of near_field_pair
