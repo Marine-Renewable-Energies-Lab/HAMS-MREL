@@ -49,7 +49,8 @@ module IO
         use Body_mod
         use WaveDyn_mod
         use FieldOutput_mod
-      
+        use Lid_mod, only : LIDON
+
         implicit none
         character(len=*), intent(in) :: dir
         logical, intent(out) :: success
@@ -200,6 +201,31 @@ module IO
             if (err == 0) backspace(1)
         end if
 
+        ! Optional Damping_lid (LIDON) line — backward compatible, read the same way as Solver_type.
+        ! Values: 0 = no lid (default), 1 = the lid in DampingLid.pnl.
+        LIDON = 0
+        read(1, '(A)', IOSTAT=err) line
+        if (err == 0 .and. index(line, "Damping_lid") > 0) then
+            ! Accepts "Damping_lid 1", "Damping_lid (LIDON): 1" and a trailing "# comment".
+            IPOS = index(line, "Damping_lid") + len("Damping_lid")
+            ICOM = index(line, "#")
+            if (ICOM == 0) ICOM = len(line) + 1
+            I = scan(line(IPOS:ICOM-1), "+-0123456789")
+            err = 1
+            if (I > 0) read(line(IPOS+I-1:ICOM-1), *, IOSTAT=err) LIDON
+            if (err /= 0) then
+                print*, 'Warning: could not read Damping_lid value. Using default (0 = no lid).'
+                LIDON = 0
+            end if
+            err = 0
+            if (LIDON < 0 .or. LIDON > 1) then
+                print*, 'Warning: Damping_lid must be 0 or 1. Using default (0 = no lid).'
+                LIDON = 0
+            end if
+        else
+            if (err == 0) backspace(1)
+        end if
+
         ! Field Points
         read(1,*)
         read(1,*)
@@ -234,11 +260,12 @@ module IO
     end subroutine ReadControlFile
 
     subroutine VerifyInputFilesExist(dir, numbodies, irrfreq, success)
+        use Lid_mod, only : LIDON
         implicit none
         character(len=*), intent(in) :: dir
         integer, intent(in) :: numbodies, irrfreq
         logical, intent(out) :: success
-        logical :: hullexists, hydroexists, wpmexists
+        logical :: hullexists, hydroexists, wpmexists, lidexists
         integer :: i
         character(len=5) :: istr ! len=5 assumes <= 99999 bodies
 
@@ -277,6 +304,13 @@ module IO
         if (.not. wpmexists) then
             print *, "WaterPlaneMesh.pnl input file missing for body ", istr, new_line('a')
             success = .false.
+        end if
+        if (LIDON == 1) then
+            inquire(file=dir//"/DampingLid.pnl", exist=lidexists)
+            if (.not. lidexists) then
+                print *, "DampingLid.pnl input file missing", new_line('a')
+                success = .false.
+            end if
         end if
 
     end subroutine VerifyInputFilesExist
@@ -405,6 +439,7 @@ module IO
         use Body_mod, only : XR, XR_MULTI, XG, XG_MULTI     ! WavDynMods.f90
         use HAMS_mod, only : WK1, DWK                   ! WavDynMods.f90
         use WaveDyn_mod, only : H                       ! WavDynMods.f90
+        use Lid_mod, only : LIDON, LNELEM               ! WavDynMods.f90
 
         implicit none
         character(len=*), intent(in) :: dir
@@ -435,6 +470,11 @@ module IO
             do i = 1, numbodies
                 write(9,'(3f12.3)') (XG_MULTI(i,j), j=1,3)
             end do
+        end if
+
+        if (LIDON == 1) then
+            write(9,*)
+            write(9,*) "Number of panels on the damping lid: ", LNELEM
         end if
 
         close(9)

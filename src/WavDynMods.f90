@@ -177,6 +177,24 @@
         REAL*8,ALLOCATABLE,PUBLIC:: iDS(:),iPNSZ(:)
 !
         END MODULE Inerfs_mod
+
+!---------------------------------------------------------------------------------------------
+!        Data module for the damping lid: panels on z = 0 where the potential is held at zero (docs/input_files.md)
+!        LNELEM, LNTND, LNCN, LNCON and LXYZ are read from DampingLid.pnl. LXYZ_P, LDS and LPNSZ are the centroids, areas and
+!        chart lengths. MXQ holds q = dphi/dz - nu*phi on the lid for the 6*NBODY radiation modes and the diffraction problem.
+!---------------------------------------------------------------------------------------------
+!
+        MODULE Lid_mod
+!
+        INTEGER,PUBLIC:: LIDON=0                                                    ! 1 when ControlFile.in has Damping_lid 1
+        INTEGER,PUBLIC:: LNELEM=0,LNTND=0
+!
+        INTEGER,ALLOCATABLE,PUBLIC:: LNCN(:),LNCON(:,:)
+        REAL*8,ALLOCATABLE,PUBLIC:: LXYZ(:,:),LXYZ_P(:,:)
+        REAL*8,ALLOCATABLE,PUBLIC:: LDS(:),LPNSZ(:)
+        COMPLEX*16,ALLOCATABLE,PUBLIC:: MXQ(:,:,:)
+!
+        END MODULE Lid_mod
     
 !---------------------------------------------------------------------------------------------
 !        Data module for declaring variables in linear algeraic system - This is for solving the final linear algebraic equations

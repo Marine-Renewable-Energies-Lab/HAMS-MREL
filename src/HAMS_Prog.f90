@@ -87,6 +87,8 @@ program HAMS_MREL
     use PressureElevation
     use PressureElevationMulti
     use FieldOutput_mod
+    use Lid_mod, only : LIDON, LNELEM
+    use DampingLid, only : READ_LID_MESH, LID_GEOMETRY, CHECK_LID, ALLOCATE_LID_UNKNOWNS
     use omp_lib
 
     implicit none  
@@ -142,7 +144,7 @@ program HAMS_MREL
     call VerifyInputFilesExist(trim(inputdir), NBODY, IRSP, success)
     if (.not. success) then
         print*, "Input files missing. Terminating application."
-        stop
+        stop 1
     end if
 
     ! Create output files and directories
@@ -238,9 +240,17 @@ program HAMS_MREL
      
         CALL ReadHydroStatic
 
+        IF (LIDON.EQ.1) CALL READ_LID_MESH(TRIM(inputdir))                ! Needs ISX and ISY of the hull, and LNELEM for ErrorCheck.txt
+
         call CreateErrorCheckFile(trim(outputdir), NBODY)
        
         CALL CalNormals(IRSP,TRIM(inputdir))
+
+        IF (LIDON.EQ.1) THEN
+            CALL LID_GEOMETRY
+            CALL CHECK_LID(1)
+            CALL ALLOCATE_LID_UNKNOWNS(1)
+        ENDIF
 
         DO MD1=1,5
             CLOSE(MD1)
@@ -249,6 +259,7 @@ program HAMS_MREL
         write(*,*) ' Number of geometrical symmetries:',ISYS
         write(*,*) ' Number of panels on the hull:   ',NELEM
         write(*,*) ' Number of panels on waterplanes:',INELEM
+        IF (LIDON.EQ.1) write(*,*) ' Number of panels on the damping lid:',LNELEM
         PRINT*
         write(*,*) ' Radiation-diffraction computation starts...'
        
@@ -574,6 +585,14 @@ program HAMS_MREL
             DEALLOCATE(iXYZ_GLOBAL_MULTI, iXYZ_MULTI_P, iDS_MULTI, iPNSZ_MULTI, iNCN_MULTI, iNCON_MULTI, iDXYZ_MULTI_P)
         ENDIF
 
+        ! The lid is read and checked once the combined hull arrays and normals exist. It is the same lid for every body.
+        IF (LIDON.EQ.1) THEN
+            CALL READ_LID_MESH(TRIM(inputdir))
+            CALL LID_GEOMETRY
+            CALL CHECK_LID(NBODY)
+            CALL ALLOCATE_LID_UNKNOWNS(NBODY)
+        ENDIF
+
         call CreateErrorCheckFile(trim(outputdir), NBODY)
 
 
@@ -593,6 +612,7 @@ program HAMS_MREL
                 WRITE(*,'(A45,I2,A1,I10)') 'Number of panels on the water plane of body',FILE_M,':',iNELEM_MULTI(FILE_M)
             ENDDO
         ENDIF
+        IF (LIDON.EQ.1) WRITE(*,'(A38,I10)') 'Number of panels on the damping lid:',LNELEM
         PRINT*
         WRITE(*,*) ' Radiation-diffraction computation starts...'
        

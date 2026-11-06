@@ -98,6 +98,7 @@ This section begines on the next line after the previous one.
 | next | `23x,i16` | `IRSP` | Irregular frequencies: 1 for to remove them, 0 to keep them |
 | next | `23x,i16` | `NTHREAD` | Number of OpenMP threads; setting it to 1 removes parallelization |
 | (optional) | keyword, then free-format integer | `ISOLV` | Linear solver: 1 = direct LU (default), 2 = GMRES with H-matrix acceleration. Line is detected by the `Solver_type` keyword; the first integer after it is read and a trailing `# comment` is allowed. If the line is absent, ISOLV defaults to 1; if the value cannot be read, a warning is printed and ISOLV defaults to 1. See [iterative_solvers.md](iterative_solvers.md) for full details. |
+| (optional) | keyword, then free-format integer | `LIDON` | Damping lid: 0 = none (default), 1 = read `DampingLid.pnl`. The line sits after `Solver_type`, or in its place when `Solver_type` is absent, and is read the same way: the `Damping_lid` keyword, the first integer after it, a trailing `# comment` allowed. A value other than 0 or 1 prints a warning and uses 0. See [DampingLid.pnl](#dampinglidpnl). |
 
 **Pressure and Elevation**
 
@@ -175,6 +176,32 @@ The files are read in [HAMS_Prog.f90](../src/HAMS_Prog.f90) and in the subroutin
 
 The node coordinates of the waterplane mesh are stored in `iXYZ_LOCAL_MULTI(bodyID,nodeID,1:3)`. The number of vertices in each panel is stored in `iNCN_MULTI(bodyID,nodeID)` and the vertices (vertex1, vertex2, ...) are stored in `iNCON_MULTI(bodyID,nodeID,1:numvertices)`.
 
+
+## DampingLid.pnl
+
+Read only when `ControlFile.in` has `Damping_lid 1`. This task covers the input, the geometry and the stops. The lid does not yet enter the solution: a run that passes the checks below solves the hull alone.
+
+The lid is a list of triangular or quadrilateral panels on the free surface z = 0, with the same file structure as `WaterPlaneMesh.pnl` (three header lines, then `NELEM NTND ISX ISY`, the nodes, the panels). There is one file for any number of bodies, because a lid belongs to no body. Its nodes are in global coordinates, not in the local frame of a body. Holes and separate patches are allowed, since the lid is only a list of panels. The vertex order of a panel does not matter, because the lid has no normal.
+
+The lid may touch a body or lie away from every body. The file is read by `READ_LID_MESH` in [DampingLid.f90](../src/DampingLid.f90). Unlike the `WaterPlaneMesh.pnl` read in `HAMS_Prog.f90`, it does not overwrite `ISX` and `ISY`: it compares them with the hull's.
+
+What the lid does: the potential is held at zero on it. This is the total potential, so for diffraction the scattered potential cancels the incident one there. The mean power through the free surface per unit area is proportional to Im(phi* dphi/dz), which is zero where phi = 0, so the lid absorbs no energy. It suppresses the wave on the lid by reflecting it, as a pressure-release surface does. The name is the one of the file, not of the physics.
+
+The run stops with a message and exit code 1 when:
+
+| Condition | Message contains |
+| :--- | :--- |
+| `Damping_lid 1` and no `DampingLid.pnl` | `DampingLid.pnl input file missing` |
+| a node with abs(z) > 1e-10 | `lid node is not on z = 0` |
+| `ISX` or `ISY` of the lid differ from the hull's | `lid symmetry differs from the hull` |
+| `Solver_type 2` | `damping lid needs Solver_type 1` |
+| a lid panel centroid lies inside a hull | `lid panel inside a hull` |
+
+The last check sums the hull's double-layer Rankine integrals and their images in z = 0 at each lid centroid. This is a solid angle: 4 pi in magnitude inside a closed hull and 0 outside, and the run stops above 2 pi. A lid inside a hull is what the water plane mesh with `If_remove_irr_freq` is for.
+
+Finite depth: lid panels below about 0.01 h share the scatter of `FINGREEN3D` measured in `limes-measurement-result.md`.
+
+The number of lid panels is printed next to the hull panel counts and written to `ErrorCheck.txt`, only when the lid is on, so the output of a run without a lid does not change.
 
 ## gen_mod (Optional)
 
