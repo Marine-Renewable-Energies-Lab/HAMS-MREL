@@ -2122,7 +2122,7 @@ contains
         integer :: p, q, matched
 
         call rows_against("control_pairs diagonal", output_dir("control_pairs")//control_file, &
-                          output_dir("control_cyl_free")//control_file, [1, 2, 6], worst, error, skip_small=.false.)
+                          output_dir("control_cyl_free")//control_file, [1, 2, 3, 4, 5, 6], worst, error, skip_small=.false.)
         if (allocated(error)) return
         call read_control_horizontal(output_dir("control_pairs")//control_file, pairs, error)
         if (allocated(error)) return
