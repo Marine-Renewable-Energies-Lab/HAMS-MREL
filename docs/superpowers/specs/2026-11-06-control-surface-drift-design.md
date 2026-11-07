@@ -192,7 +192,7 @@ New modules, on explicit arrays with an `NBODY`-independent interface (earlier s
 
 | Module | Does | Uses |
 | :--- | :--- | :--- |
-| `ControlSurfaceMesh.f90` | Generate or read C, F and the seabed patch per body; checks; Γc via `build_surface_geom`; write for inspection | `SecondOrderTypes`, `SurfaceGeometry`, `ReadPanelMesh` reader |
+| `ControlSurfaceMesh.f90` | Generate or read C and F per body (no seabed patch, section 5.1); checks; Γc via `build_surface_geom`; write for inspection | `SecondOrderTypes`, `SurfaceGeometry`, `ReadPanelMesh` reader |
 | `FieldVelocity.f90` | φ and ∇φ at points for all headings, by the green or source route | `WaterlineField` (`field_influence_row`, `field_potential`), `SurfaceVelocity` (`source_panel_integrals`, σ from `velocity_source`), `FirstOrderState` (incident φ and ∇φ) |
 | `ControlSurfaceDrift.f90` | `control_surface_pair(cs, fields1, fields2, ...)`: the six components per body for one state pair, and each term apart | `NearFieldDrift` (`pair_minus`; Phase B: `waterline_point`, waterline φ, hydrostatic term if section 3.3 confirms it) |
 

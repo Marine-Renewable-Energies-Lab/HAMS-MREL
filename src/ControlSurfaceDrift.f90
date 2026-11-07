@@ -122,7 +122,9 @@ CONTAINS
          CASE (CS_FREE)
             ! Phi_zt has the amplitude -i omega dphi/dz. On z = 0 the fields give dphi/dz by the free-surface condition, nu
             ! phi_P for the perturbation and the exact incident gradient for the incident wave (FieldVelocity), so this is
-            ! -i omega nu phi wherever the two parts have the same nu
+            ! -i omega nu phi wherever the two parts have the same nu. The condition dphi/dz = nu phi_P on z = 0 holds exactly
+            ! for cs_velocity = green (the fields come from the Green function, which satisfies it); with cs_velocity = source
+            ! it holds only to the accuracy of the Green function.
             z1 = elevation(s1, f1%phi(ip))
             z2 = elevation(s2, f2%phi(ip))
             g1 = f1%grad(:, ip)
