@@ -9,7 +9,7 @@ Usage:
     python drift_convergence.py calibrate <root> --hams <path> [--threads N]
     python drift_convergence.py slurm <root on the cluster> --repo <path on the cluster> [--out <local folder>]
                                 [--tier full|small] [--account NAME] [--control [full|cheap]]
-    python drift_convergence.py collect <root> [--out table.csv] [--control [full|cheap]]
+    python drift_convergence.py collect <root> [--out table.csv] [--control [full|cheap]] [--reference <root>]
 
 Each case is one run of HAMS-MREL or Nemoh, under <root>/<name>. Its input is written when it is first run. A run writes
 result.json with its wall time and peak memory.
@@ -25,7 +25,12 @@ the boxes of group C, and the two m3 cases of the rounded cylinder that have the
 differencing takes cs_velocity = green, and one with velocity_method = source takes cs_velocity = source, so the near-field
 column of every case is the one of the first study and the source solve is shared. `cheap` gives the m4 cases of the green route
 only the three frequencies of the fixtures. `list --control` and `slurm --control` only print and write: nothing is submitted.
-The table then has the columns Fx_ctrl_green or Fx_ctrl_src (and Fy, Mz) next to the near-field ones.
+The table then has the columns Fx_ctrl_green or Fx_ctrl_src (and Fy, Mz) next to the near-field ones, and Fz, Mx, My of the
+control-surface method against near-field of the same run and against near-field at m4 of the same hull and motion, the converged
+reference. That m4 case is read from <root>, or from --reference (the results of the first study) when <root> does not hold it.
+`collect --control` also prints the errors per case over the tolerance of the gates, |control - reference| over
+max(1% |reference|, 0.001 rho g A^2 a^k), a = 10 m, k = 1 for forces and 2 for moments, and the Phase B gate: F_z, M_x, M_y
+within that tolerance of near-field on the rounded cylinder at m3.
 
 Nemoh runs as a separate program. Only its documented input and output files are used. Its source and binaries stay out of this
 repository. --nemoh-build is the folder holding its built programs.
@@ -677,14 +682,48 @@ def percent(value, reference, scale):
     return "%+.3f" % (100.0 * (value - reference) / abs(reference))
 
 
-def collect_hams(case, root, result):
+# Tolerance of the control-surface gates: 1% of the reference, with a floor for loads near zero. The .7, .8 and .9 values are per
+# rho g A^2 L^k with L = 1 m, so the floor is 0.001 a^k, a = 10 m the radius of the cylinders, k = 1 for forces and 2 for moments
+GATE_RELATIVE = 0.01
+GATE_FLOOR = 0.001
+GATE_LENGTH = 10.0
+VERTICAL = (("Fz", 3), ("Mx", 4), ("My", 5))
+
+
+def gate_ratio(value, reference, index):
+    """|value - reference| over the tolerance of the gates. Above 1 fails."""
+    power = 1 if index <= 3 else 2
+    return abs(value - reference) / max(GATE_RELATIVE * abs(reference), GATE_FLOOR * GATE_LENGTH ** power)
+
+
+def m4_reference_name(case):
+    """The near-field reference of a green-route case: the m4 differencing case of the same cylinder and motion in group A."""
+    if case.hull not in ("round", "sharp") or case.velocity != "differencing":
+        return None
+    return "a_%s_%s_diff_m4" % (case.hull, case.motion)
+
+
+def read_m4_near(case, roots):
+    """Near-field rows of the m4 reference, from the first of the roots that holds them, or {}."""
+    name = m4_reference_name(case)
+    for root in roots:
+        if name and root:
+            path = os.path.join(root, name, "output", "Wamit_format", "MeanDriftPressure.9")
+            if os.path.exists(path):
+                return read_drift(path)
+    return {}
+
+
+def collect_hams(case, root, result, reference_roots=()):
     folder = os.path.join(root, case.name, "output", "Wamit_format")
     far = read_drift(os.path.join(folder, "MeanDriftMomentum.8"))
     near = read_drift(os.path.join(folder, "MeanDriftPressure.9"))
     terms = read_terms(os.path.join(folder, "MeanDriftTerms.txt"))
-    # Same format as MeanDriftPressure.9: rows I = 1, 2, 6 of the control-surface method
+    # Same format as MeanDriftPressure.9: rows I = 1 to 6 of the control-surface method, or I = 1, 2, 6 alone where the
+    # vertical loads are not computed (C reaches the sea bed, or F could not be built). Rows are keyed by I, so either works
     control_path = os.path.join(folder, "MeanDriftControlSurface.7")
     control = read_drift(control_path) if case.control and os.path.exists(control_path) else {}
+    near_m4 = read_m4_near(case, (root,) + tuple(reference_roots)) if control else {}
     route = "green" if case.control == "green" else "src"
     rows = []
     for omega, beta1, beta2 in sorted(set(key[:3] for key in far)):
@@ -711,6 +750,22 @@ def collect_hams(case, root, result):
             row["Fx_far_exact_pct"] = percent(get(far, 1), exact, exact)
             if control:
                 row["Fx_ctrl_%s_exact_pct" % route] = percent(get(control, 1), exact, exact)
+        # Phase B: the vertical loads of the control-surface method, against near-field of this run and at m4
+        for label, index in VERTICAL:
+            key = (omega, beta1, beta2, index)
+            if key not in control:
+                continue
+            column = "%s_ctrl_%s" % (label, route)
+            scale_v = scale if index == 3 else 10.0 * scale
+            row[label + "_near"] = "%.6g" % get(near, index)
+            row[column] = "%.6g" % control[key]
+            row[column + "_near_pct"] = percent(control[key], get(near, index), scale_v)
+            row[column + "_near_gate"] = "%.4f" % gate_ratio(control[key], get(near, index), index)
+            if key in near_m4:
+                row[label + "_near_m4"] = "%.6g" % near_m4[key]
+                row[label + "_near_m4_pct"] = percent(get(near, index), near_m4[key], scale_v)
+                row[column + "_m4_pct"] = percent(control[key], near_m4[key], scale_v)
+                row[column + "_m4_gate"] = "%.4f" % gate_ratio(control[key], near_m4[key], index)
         for number, value in enumerate(terms.get((omega, beta1, beta2), []), start=1):
             row["Fx_term%d" % number] = "%.5f" % value
         rows.append(row)
@@ -856,9 +911,52 @@ def write_csv(path, rows):
         writer.writerows(rows)
 
 
+def gate_lines(cases, rows):
+    """Lines of the control-surface gates: per case and load, the worst error over the tolerance, with where it is.
+    Horizontal loads against far-field (Phase A), vertical loads against near-field of the run and at m4 (Phase B)."""
+    worst = {}
+    for row in rows:
+        case = cases[row["case"]]
+        if not case.control:
+            continue
+        route = "green" if case.control == "green" else "src"
+        checks = [(label, index, "far", label + "_far") for label, index in (("Fx", 1), ("Fy", 2), ("Mz", 6))]
+        checks += [(label, index, ref, label + ("_near" if ref == "near" else "_near_m4"))
+                   for label, index in VERTICAL for ref in ("near", "near_m4")]
+        for label, index, ref, ref_column in checks:
+            column = "%s_ctrl_%s" % (label, route)
+            if column not in row or ref_column not in row:
+                continue
+            value, reference = float(row[column]), float(row[ref_column])
+            if math.isnan(value) or math.isnan(reference):
+                continue
+            ratio = gate_ratio(value, reference, index)
+            key = (row["case"], label, ref)
+            count, best = worst.get(key, (0, -1.0))[:2]
+            if ratio > best:
+                worst[key] = (count + 1, ratio, row["omega"], row["beta1"], reference, value)
+            else:
+                worst[key] = (count + 1,) + worst[key][1:]
+    lines = ["Case load reference | n | worst err/tol | omega beta reference control"]
+    for (name, label, ref), (count, ratio, omega, beta, reference, value) in sorted(worst.items()):
+        lines.append("%s %s %s | %d | %.3f | %g %g %.6g %.6g %s" % (name, label, ref, count, ratio, omega, beta, reference, value,
+                                                                    "FAIL" if ratio > 1.0 else ""))
+    # Phase B gate: the rounded cylinder at m3, green route, F_z, M_x, M_y within the tolerance of near-field of the same run
+    gate = [(key, item) for key, item in worst.items() if key[2] == "near" and cases[key[0]].hull == "round"
+            and cases[key[0]].multiple == 3 and cases[key[0]].control == "green"]
+    lines.append("")
+    lines.append("Phase B gate (F_z, M_x, M_y of control against near-field, rounded cylinder, m3, green route):")
+    if not gate:
+        lines.append("  no case: not checked")
+    for name in sorted(set(key[0] for key, _ in gate)):
+        ratio = max(item[1] for key, item in gate if key[0] == name)
+        lines.append("  %s: worst %.3f of the tolerance: %s" % (name, ratio, "pass" if ratio <= 1.0 else "FAIL"))
+    return lines
+
+
 def collect(args):
     """Write the table of drift values and errors for each finished case, and against Nemoh. Prints time and memory against the
-    estimates."""
+    estimates, and with --control the lines of the control-surface gates."""
     cases = {case.name: case for case in cases_of(args.control)}
     hams_rows, nemoh_rows, first_rows = [], [], []
     print("| Case | Code | Panels | Wall (s) | Estimate (s) | Peak (GB) | Estimate (GB) |")
@@ -878,7 +976,7 @@ def collect(args):
             nemoh_rows += rows
             first_rows += first
         else:
-            hams_rows += collect_hams(cases[name], args.root, result)
+            hams_rows += collect_hams(cases[name], args.root, result, (args.reference,) if args.reference else ())
     out = args.out or os.path.join(args.root, "drift_table.csv")
     write_csv(out, hams_rows)
     print("%d rows in %s" % (len(hams_rows), out))
@@ -887,6 +985,13 @@ def collect(args):
             other = out.replace(".csv", "_%s.csv" % label)
             write_csv(other, rows)
             print("%d rows in %s" % (len(rows), other))
+    if args.control:
+        lines = gate_lines(cases, hams_rows)
+        gate_path = out.replace(".csv", "_gate.txt")
+        with open(gate_path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        print("\n".join(lines))
+        print("Gate lines in %s" % gate_path)
 
 
 def fortran_files_in_order(folders):
@@ -1113,6 +1218,7 @@ def main():
     p = sub.add_parser("collect")
     p.add_argument("root")
     p.add_argument("--out")
+    p.add_argument("--reference", help="results of the first study, for near-field at m4 where <root> does not hold it")
     p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
 
     args = parser.parse_args()
