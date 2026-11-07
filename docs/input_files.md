@@ -181,6 +181,15 @@ The file has exactly the structure of `HullMesh.pnl` (see above), with these rul
 
 `write_control_surface` writes the generated C in this format, so a generated file can be edited and read back.
 
+## FSMesh.pnl (optional, with the control-surface method)
+
+The vertical force and the roll and pitch moments of the control-surface method also need the free surface F between the hull waterline and Γc, the line where C meets z = 0 (Chen 2007, §3.1). By default F of body `b` is generated: quadrilateral strips from each hull waterline segment out to Γc, along rays from the centre of the waterplane bounding box, with `cs_fs_rows` rows graded towards the hull (the inner row is 1/4 of the outer). The rays only cover F when the waterline is star-shaped about that centre. If it is not, the run stops with `body <b>: the waterline is not star-shaped about its centre; give FSMesh_<b>.pnl.`
+
+`FSMesh_{b}.pnl` in the input directory replaces the generated F of body `b`. It has the structure of `CSMesh_{b}.pnl` (`ISX = ISY = 0`, 3 or 4 vertices, global coordinates), with these rules:
+- All nodes lie in z = 0. The run stops with `FSMesh_<b>.pnl: F must lie in the free surface z = 0.` otherwise.
+- The node order does not matter: the normal of F is always (0, 0, −1), into the fluid.
+- F must fill the free surface between the hull waterline and Γc. The run does not test this.
+
 ## WaterPlaneMesh.pnl
 
 Node and element data on the inner water plane for multiple bodies are specified in the `WaterPlaneMesh[_i].pnl` files. There is one file per body.
@@ -257,7 +266,7 @@ Each line is `key = value`. Text after `!` is a comment, blank lines are ignored
 | `cs_bottom_margin` | real, at least 0 | `0` | With `control`: the gap in metres below the deepest hull point. 0 means 4 times the median hull panel size. |
 | `cs_panel_size` | real, at least 0 | `0` | With `control`: the panel size of the control surface in metres. 0 means the median hull panel size. |
 | `cs_fd_step` | real, above 0 and at most 0.5 | `0.02` | With `cs_velocity = green`: the finite-difference step, as a fraction of the local control-surface panel size. |
-| `cs_fs_rows` | integer, at least 0 | `0` | Number of free-surface rows. 0 sets it from `cs_panel_size`. |
+| `cs_fs_rows` | integer, at least 0 | `0` | Number of rows of the free-surface patch F between the waterline and the control surface. 0 means the nearest integer to (distance of Γc − distance of the waterline)/`cs_panel_size`, at least 2; the distances are mean distances from the centre of the waterplane bounding box. Not used when `FSMesh_{b}.pnl` is given. |
 
 Example:
 
