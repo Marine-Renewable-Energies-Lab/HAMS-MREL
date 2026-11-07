@@ -234,11 +234,11 @@ The control-surface fixtures other than `control_cyl` run on 4 threads (`Number 
 
 | Test | Reference | Measured | Limit and its rule |
 | :--- | :--- | :--- | :--- |
-| `control_far_sharp`, fixed (`control_cyl`) | far-field | F_x 0.229%, 0.379%, 0.220% at 0.70, 0.95, 1.10 rad/s, the same at both headings | 2.9%: 2x the worst of the two hulls, capped at 3% |
-| `control_far_sharp`, free (`control_cyl_free`) | far-field | F_x 0.75% (0.77% at heading 30), 1.02%, 1.43% | as above |
-| `control_independent_of_c` | `control_cyl` | F_x 0.754% with C 30 m out (3999 panels on C, against 1160) | 1%, the plan's |
-| `control_cylinder_box` | `control_cyl` | F_x 0.255% with C a box | 1%, the plan's |
-| `control_maccamy_fuchs` | MacCamy-Fuchs, `maccamy_fuchs_drift` | F_x -0.091%, -0.137% at 1.0, 1.6 rad/s (far-field: -0.21%, -0.42%); F_y and M_z at most 2.0e-8 of F_x | 0.28%: 2x measured, cap 2%; 1e-4 for F_y and M_z |
+| `control_far_sharp`, fixed (`control_cyl`) | far-field | F_x 0.236%, 0.380%, 0.219% at 0.70, 0.95, 1.10 rad/s, the same at both headings | 2.9%: 2x the worst of the two hulls, capped at 3% |
+| `control_far_sharp`, free (`control_cyl_free`) | far-field | F_x 0.78%, 1.02%, 1.43%, the same at both headings | as above |
+| `control_independent_of_c` | `control_cyl` | F_x 0.753% with C 30 m out (3999 panels on C, against 1160) | 1%, the plan's |
+| `control_cylinder_box` | `control_cyl` | F_x 0.257% with C a box | 1%, the plan's |
+| `control_maccamy_fuchs` | MacCamy-Fuchs, `maccamy_fuchs_drift` | F_x -0.091%, -0.138% at 1.0, 1.6 rad/s (far-field: -0.21%, -0.42%); F_y and M_z at most 2.6e-13 of F_x | 0.28%: 2x measured, cap 2%; 1e-4 for F_y and M_z |
 | `control_far_box` | far-field | F_x 0.140%, 0.220%; F_y 0.141%, 0.324%; M_z 0.054%, 0.216% at 0.8, 1.0 rad/s | 0.44%, 0.65%, 0.44%: 2x measured, cap 3% |
 | `control_two_body_total`, sum over bodies, `cs_panel_size=0.75` | far-field | F_x 0.579%, 0.514% at headings 0, 30; force vector 0.579%, 0.489% (2.28% and 2.06% F_x with the default C) | 2%, the plan's |
 | `control_two_body_total`, each body, `cs_panel_size=0.75` | near-field of the same run | force vector (F_x, F_y) 0.568% at heading 0; 1.18% (body 1) and 0.374% (body 2) at heading 30 | 5%: `near_far_limit`, the near-against-far limit of this hull in `drift_two_round`, since near-field at 220 panels per body is not a 2% reference |
@@ -246,7 +246,7 @@ The control-surface fixtures other than `control_cyl` run on 4 threads (`Number 
 | `control_far_apart_isolated` | `control_isolated` | F_x 0.475% | 0.5%, the plan's |
 | `control_irsp_stable` | `control_irsp_ref` | F_x 0.044%, 0.179% at 0.95, 1.10 rad/s | 0.5%, the plan's |
 | `control_irsp_stable`, 1.548 rad/s | far-field, both `IRSP=1` | F_x 2.40% (with `IRSP=0`: 2.65%) | 3%, the plan's |
-| `control_half_matches_full` | `control_cyl_free` | F_x and F_y 1.19e-6 (F_x at heading 30); far-field of the same runs 3.46e-7 | max(1e-6, 5x the far-field difference) = 1.73e-6 |
+| `control_half_matches_full` | `control_cyl_free` | F_x and F_y 0 to the 7 printed digits; far-field of the same runs 3.46e-7 | max(1e-6, 5x the far-field difference) = 1.73e-6 |
 | `control_gmres_agrees` | `control_cyl_free` | 2.19e-5; far-field of the same runs 2.22e-5 | max(1e-5, 5x the far-field difference) = 1.11e-4 |
 | `control_pairs_match_unidirectional` | `control_cyl_free` | diagonal 0 and conjugate symmetry 0, as printed | 1e-10, the plan's |
 | `control_source_far` | far-field | F_x 18.9%, 0.636%, 3.74% at 0.70, 0.95, 1.10 rad/s | 24%, 0.80%, 4.7%: a recorded regression, 1.25x measured per frequency, not an accuracy claim |
@@ -254,30 +254,56 @@ The control-surface fixtures other than `control_cyl` run on 4 threads (`Number 
 | `control_deep_far` | far-field | F_x 0.340% at both headings | 0.68%: 2x measured, cap 3% |
 | `control_step_plateau` | `control_cyl` (0.02) | see the table below | 0.2%, the plan's |
 
-**Half mesh and GMRES: the limit follows the first-order solution.** The far-field values of `control_half` and `control_gmres` differ from those of `control_cyl_free` by as much as their control-surface values do: F_x 3.5e-7 and 2.2e-5, and the surge excitation of `control_half` by 5.8e-7 [measured]. So the first-order solution differs between the solver paths at that level, below which the plan's 1e-6 and 1e-5 lie. Control is quadratic in the field, as far is, so the tests take 5 times the far-field difference of the same two runs where that is larger than the plan's limit.
+**Half mesh and GMRES: the limit follows the first-order solution.** The far-field values of `control_half` and `control_gmres` differ from those of `control_cyl_free` by F_x 3.5e-7 and 2.2e-5, and the surge excitation of `control_half` by 5.8e-7 [measured]. The control-surface values of `control_gmres` differ by 2.2e-5 as well; those of `control_half` agree to the printed digits [measured]. So the first-order solution differs between the solver paths at that level, below which the plan's 1e-6 and 1e-5 lie. Control is quadratic in the field, as far is, so the tests take 5 times the far-field difference of the same two runs where that is larger than the plan's limit.
 
-**The two-body loads are set by the panels of C.** With the default C panel size (the median hull panel), the sum over the bodies is 2.28% from far-field, against 0.58% at half that size, so the default may be too coarse for small hulls; this is to be checked in the Snellius study [measured]. With `cs_panel_size = 0.75`, half the default, the sum is 0.58% and 0.51% from far-field (F_x) at headings 0 and 30, against 2.28% and 2.06% with the default [measured]. `control_two_round` uses 0.75. The F_y of each body at heading 0 is 2% of its F_x, and it moves from 2.720e-2 to 2.013e-2 with the finer C, against 2.766e-2 by near-field, so that check does not converge to near-field on these two meshes. M_z of each body about its own axis does not change with C (3.70e-3 against 3.65e-3), so it belongs to the 20-sided hull, not to C [inferred].
+**The two-body loads are set by the panels of C.** With the default C panel size (the median hull panel), the sum over the bodies is 2.28% from far-field, against 0.58% at half that size, so the default may be too coarse for small hulls [measured]. The Snellius study below has one body per run, so it does not settle this. With `cs_panel_size = 0.75`, half the default, the sum is 0.58% and 0.51% from far-field (F_x) at headings 0 and 30, against 2.28% and 2.06% with the default [measured]. `control_two_round` uses 0.75. The F_y of each body at heading 0 is 2% of its F_x, and it moves from 2.720e-2 to 2.013e-2 with the finer C, against 2.766e-2 by near-field, so that check does not converge to near-field on these two meshes. M_z of each body about its own axis does not change with C (3.70e-3 against 3.65e-3), so it belongs to the 20-sided hull, not to C [inferred].
 
-**The source route is a recorded regression, not an accuracy claim.** The optional `cs_velocity = source` is 0.6% to 3.7% from far-field at 448 panels (18.9% at 0.70 rad/s, where far-field F_x is small, 0.119 rho g A^2), against 0.2% to 1.4% for the green route on the same hulls [measured]. A run held fixed, outside CI (Task 7), gave 3.25%, 3.85% and 2.82%. The Snellius study measures its convergence.
+**The source route is a recorded regression, not an accuracy claim.** The optional `cs_velocity = source` is 0.6% to 3.7% from far-field at 448 panels (18.9% at 0.70 rad/s, where far-field F_x is small, 0.119 rho g A^2), against 0.2% to 1.4% for the green route on the same hulls [measured]. A run held fixed, outside CI (Task 7), gave 3.25%, 3.85% and 2.82%. In the Snellius study below it converges more slowly than the green route, and it is still outside the tolerance in five of the seven cases run at m4 [measured].
 
 **The finite-difference step does not matter between 0.005 and 0.1.** F_x at 0.95 rad/s, `control_cyl`, per rho g A^2:
 
 | cs_fd_step | 0.005 | 0.01 | 0.02 | 0.05 | 0.1 |
 | :--- | ---: | ---: | ---: | ---: | ---: |
-| heading 0 | 5.470956 | 5.470949 | 5.470978 | 5.471000 | 5.470803 |
-| heading 30 | 4.737998 | 4.738100 | 4.737997 | 4.738021 | 4.737845 |
+| heading 0 | 5.471027 | 5.471025 | 5.471018 | 5.470968 | 5.470790 |
+| heading 30 | 4.738048 | 4.738047 | 4.738040 | 4.737995 | 4.737832 |
 
-The spread over 0.01 to 0.05 is 2.2e-5 of F_x, and over all five 3.6e-5. The plateau covers the whole range, so the default stays at 0.02.
+The spread over 0.01 to 0.05 is 1.1e-5 of F_x, and over all five 4.3e-5. The plateau covers the whole range, so the default stays at 0.02.
 
-**Sway force and yaw moment at heading 0 on the symmetric cylinder.** On `control_cyl`, far-field gives F_y of about 1e-11 of F_x, and control gives:
+**Sway force and yaw moment at heading 0 on the symmetric cylinder.** On `control_cyl`, per rho g A^2 (M_z per rho g A^2 m):
 
 | | 0.70 rad/s | 0.95 rad/s | 1.10 rad/s |
 | :--- | ---: | ---: | ---: |
-| F_y / F_x | 2.0e-4 | 1.2e-6 | 1.5e-6 |
-| M_z, N m | 17.7 | 0.58 | 2.9 |
+| F_y / F_x, control | 2.3e-11 | -7.1e-9 | -1.9e-9 |
+| F_y / F_x, far-field | 2.2e-11 | -7.1e-9 | -2.0e-9 |
+| M_z, control | -1.7e-9 | -7.7e-7 | -1.6e-7 |
+| M_z, far-field | -1.6e-9 | -7.6e-7 | -1.6e-7 |
 
-- C is mirror-symmetric about y = 0 to the 12 printed digits of `CSMesh_1.pnl`, and so is the hull [measured].
-- The same hull and C in deep water (`H = -1`, outside CI) give F_y / F_x of 1e-14 to 8e-14 at the three frequencies [measured]. The decision between the exact panel integral and the centroid rule is the same in both depths, so it is not the cause [inferred].
-- F_y does not grow as the step falls: at 0.95 rad/s it is 1.17e-5, 5.9e-6, 6.6e-6, -2.9e-6, 3.8e-6 per rho g A^2 for steps 0.005 to 0.1 [measured]. So it is not round-off in G amplified by 1/delta [inferred].
-- The bottom-mounted cylinder in 10 m of water (`control_bottom`) has F_y / F_x of 1e-9 or less [measured].
-- So the asymmetry comes from the finite-depth Green function at h = 100, at the R/h of the C points, and it is largest at the lowest frequency [inferred, not traced to a branch of `FINGREEN3D`]. The control-surface code is not shown to be at fault, and no solver code was changed for it.
+Control now gives the same small asymmetry as far-field [measured]. Before the field evaluations of the finite-depth Green function stopped using the epsilon algorithm (Limes) of `FINGREEN3D`, control gave F_y / F_x of 2.0e-4, 1.2e-6 and 1.5e-6 and M_z of 1.8e-3, 6.7e-5 and 3.0e-4 here [measured]. Limes keeps the table entry of largest magnitude, so dG/dz can jump between field points 5e-6 m apart (7.367e-3 against 6.122e-3, measured), and the central difference divides that jump by 2 delta. The field mode sums the eigenfunction series directly; see the comments at `FIELD_SERIES` in `src/FinGreen3D.f90`. First-order results do not use it and are unchanged to the last digit [measured].
+
+### Convergence study on Snellius
+
+The control-surface F_x, F_y and M_z (Chen 2007, eqs. 39-41) against far-field, at mesh multiples m1 to m4 of the fixture hulls (panel counts x1, x4, x9, x16), finite depth 100 m, 11 frequencies from 0.4 to 1.8 rad/s; headings 0 and 30 for the cylinders, 30 for the boxes, 0 for the bottom-mounted cylinder [measured, Snellius `fat_genoa`, 32 threads, 2026-11-06 and 2026-11-07]. The error is the worst over frequencies, headings and the three components of |control - far| / max(1% |far|, 1e-3 rho g A^2 a^k), with a = 10 m and k = 1 for forces, 2 for M_z; above 1 fails. The tolerance floor keeps small far-field values, such as F_x at 0.4 rad/s, from setting the result. Cases are run with `pre_postprocessing_python/SecondOrder/drift_convergence.py`.
+
+| Hull, motion | Velocity | m1 | m2 | m3 | m4 |
+| :--- | :--- | ---: | ---: | ---: | ---: |
+| sharp cylinder, fixed | green | 2.80 | **0.70** | 0.02 | 0.14 |
+| sharp cylinder, free | green | 2.80 | **0.55** | 0.11 | 0.17 |
+| sharp box, fixed | green | 1.71 | **0.59** | | 0.05 |
+| sharp box, free | green | 1.87 | **0.58** | | |
+| round cylinder, fixed | green | 2.79 | 0.68 | 0.02 | 0.12 |
+| round cylinder, free | green | 2.80 | 0.53 | 0.12 | 0.16 |
+| round-corner box, fixed | green | 1.42 | 0.29 | | 0.06 |
+| round-corner box, free | green | 1.65 | 0.22 | | |
+| bottom-mounted cylinder | green | 1.75 | 0.31 | | 0.16 |
+| sharp cylinder, fixed | source | 4.02 | 1.90 | 1.18 | 0.91 |
+| sharp cylinder, free | source | 6.53 | 2.64 | 1.02 | 1.21 |
+| sharp box, fixed | source | 2.30 | 1.16 | | 0.57 |
+| sharp box, free | source | 70.5 | 34.4 | | |
+
+m3 runs 0.70, 0.95 and 1.10 rad/s only, and the m4 boxes 0.8, 1.0 and 1.4 rad/s. The round-cylinder m3 entries come from the default-settings runs that the study's settings and Nemoh groups add (`d_base_round_free_diff_m3`, `n_round_fixed_diff_m3`). Blank: not run.
+
+- The green route is within the tolerance at m2 on every hull, and at worst 0.17 at m4 [measured]. The bold entries are the acceptance gate of the green route: sharp cylinder and sharp box at m2, all frequencies.
+- At m1 the green route fails on every hull, at 1.4 to 2.8 times the tolerance, so the m1 meshes (256 to 500 panels, the CI fixtures) are coarser than this tolerance allows [measured]. The CI limits above are set from measured values at those meshes, not from this tolerance.
+- The source route converges more slowly, and its M_z on the free sharp box is 34 times the tolerance at m2 [measured]. It stays an option, not the default.
+- Before the field-mode fix, the green route failed on the fixed sharp box at m2 (3.8 times the tolerance, F_x at 0.6 rad/s), and the free round cylinder at m4 was 2.7 [measured]. The fix left far-field, near-field and first-order values unchanged in every row [measured].
+- The green-route runs took about 30% longer in the second study than in the first on the same partition (882 s against 675 s for the sharp cylinder at m2) [measured]. A laptop run of the box at m1 gave the same field time before and after the fix, so the cause is not isolated [measured].
