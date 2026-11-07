@@ -1,0 +1,8 @@
+! Mean drift options of this integration test
+mean_drift = 1
+drift_methods = far near control
+motion_state = free
+write_terms = 1
+! 8 median hull panel sizes (1.9603 m), against the default 4
+cs_margin = 15.6828
+cs_bottom_margin = 15.6828

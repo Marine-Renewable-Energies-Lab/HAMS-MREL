@@ -35,6 +35,7 @@ MODULE NearFieldDrift
    PRIVATE
 
    PUBLIC :: pair_minus, waterline_point, waterline_extrapolate, near_field_pair, elevation, force_and_moment
+   PUBLIC :: vertical_motion, rigid_displacement, add_hydrostatic_term
    PUBLIC :: T_WATERLINE, T_FLARE, T_VELOCITY, T_DISPLACEMENT, T_ROTATION, T_HYDROSTATIC
 
    ! Term index of near_field_pair
@@ -218,7 +219,9 @@ CONTAINS
    END SUBROUTINE dynamic_pressure_load
 
    SUBROUTINE add_hydrostatic_term(mesh, geom, s1, s2, terms)
-      ! V: F_S and M_S of eq. 15.56 and 15.57, with waterplane and volume properties about xr and Z_o = xr(3).
+      ! V: F_S and M_S of eq. 15.56 and 15.57, with waterplane and volume properties about xr and Z_o = xr(3). Fills
+      ! terms(3:5, T_HYDROSTATIC, :) only. The same rows as Lee (2006) eqs. 16 and 21, term by term [derived]; the
+      ! control-surface method uses them too (ControlSurfaceDrift).
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       TYPE(first_order_state), INTENT(IN) :: s1, s2

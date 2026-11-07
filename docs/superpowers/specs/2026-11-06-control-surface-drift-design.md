@@ -79,7 +79,9 @@ with Ξ = (η² − 2ηζ₃) n₃/|cos γ| − 2η (X·n̄) on the hull waterli
 
 To these add the second-order hydrostatic loads (F_S, M_S) [paper, eq. 14]. They are non-zero only for F_z, M_x and M_y, and depend only on hull geometry and motions [paper, p. 65]. The Γ and F terms also contribute only to F_z, M_x and M_y [paper, p. 69], so Phase B does not change the Phase A rows.
 
-**Open item before Phase B is built.** Chen takes (F_S, M_S) from Molin and Hairault (1983) [paper, ref. 6]. `NearFieldDrift` uses WAMIT eq. 15.56 and 15.57 for its hydrostatic term. Check whether these are the same quantity, with the same split between the waterline and hydrostatic terms, before reusing `T_HYDROSTATIC`. The gate in section 8.3 tests this.
+**The hydrostatic term [derived, 2026-11-07].** Chen takes (F_S, M_S) from Molin and Hairault (1983) [paper, ref. 6], which was not available. Lee, C.-H. (2006), *On the evaluation of quadratic forces on stationary bodies* (WAMIT Inc.), derives all six control-surface components by momentum, eqs. (9) and (10), and states that they equal Chen's [paper]. Expanding Lee's F_S, eq. (16), and M_S, eq. (21), term by term gives exactly the rows 3, 4 and 5 of `NearFieldDrift::add_hydrostatic_term` (WAMIT eqs. 15.56 and 15.57): 3 terms in F_z, 12 in M_x and 11 in M_y, each with the same coefficient [derived]. Molin (2022), *Offshore Structure Hydrodynamics*, §7.2.3, eqs. (7.17) and (7.23), gives the same F_HS for near-field and the momentum form, for the force [paper].
+
+Lee assumes the hull meets z = 0 at a right angle. On such a hull Chen's Ξ is −2η(X·n̄), and −(ρg/2)∮Ξ k = −ρg∮η(X·n′)k with n′ = −n̄, into the body, which is Lee's waterline term if his n′ points into the body (his text does not say; the sign was not checked against his eq. 17) [derived]. For a flared hull, Chen's near-field waterline term, eqs. (17) and (18), is η(2ζ₃ − η)n′, while `NearFieldDrift` terms I and Ia (WAMIT 15.54) square the relative elevation, (ζ − X₃)², in the flare term. The hull integrals of the two forms match term by term (II, III, IV), so the two near-field totals agree only if Chen's F_S holds the difference, (ρg/2)∮ P(X₃, X₃) n_z/√(1 − n_z²) r″ dl with n out of the fluid [derived]. So `CS_T_HYDROSTATIC` is term V plus that flare part, which is zero on a wall-sided hull. No validation hull is flared at the waterline, so the flare part is not tested.
 
 ### 3.4 Complex amplitudes and the mean
 
@@ -158,7 +160,7 @@ Differencing turns any jump of G in the field point into a velocity error of ord
   - The wall rows are graded towards z = 0, with the top row about half the nominal size. Chen notes that higher frequencies need a finer mesh near the free surface [paper, p. 76].
 - **Reaching the seabed.** If d_C would reach the seabed (d_C ≥ h − cs_bottom_margin), the wall goes down to z = −h and there is no bottom panel. This is needed for bodies standing on the seabed.
   - On the seabed patch Φ_n = 0 and n = ±k, so it adds nothing to F_x, F_y or M_z [derived].
-  - It does add ½|∇Φ|² n_z terms to the vertical components. Phase B integrates the seabed patch between the body and C for that case.
+  - It does add ½|∇Φ|² n_z terms to the vertical components. Phase B does not integrate this seabed patch: it needs the hull's seabed contact line, which no current routine gives, and no Phase B validation case needs it. For a body whose C reaches the seabed, F_z, M_x and M_y are not written, and the log says so (narrowed 2026-11-07).
 - **Normals.** They point towards the body (into D), as in section 3.1.
 
 **User file (`file`).**
@@ -182,7 +184,7 @@ Differencing turns any jump of G in the field point into a velocity error of ord
 
 **File.** F comes from `Input/FSMesh_{b}.pnl`, needed for waterlines that are not star-shaped (moonpools, several waterlines on one body). WAMIT's automatic surfaces also fail on concave waterlines and moonpools [doc, ch. 11].
 
-**Seabed.** For a body standing on the seabed, the seabed annulus between the body and C is generated in the same way as F.
+**Seabed.** Not built (section 5.1): for a body whose C reaches the seabed, F_z, M_x and M_y are not written.
 
 ## 6. Code structure
 

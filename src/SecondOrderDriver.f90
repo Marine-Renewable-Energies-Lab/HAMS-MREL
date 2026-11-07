@@ -34,6 +34,10 @@ MODULE SecondOrderDriver
    ! fields on C are computed in one pass over the points at the end of the frequency, for every heading (design spec
    ! docs/superpowers/specs/2026-11-06-control-surface-drift-design.md, section 4.3). So with it the states of every heading are
    ! kept, as for mean_drift = 2.
+   !
+   ! Its F_z, M_x and M_y (Phase B) also need the free surface F inside C and the hull waterline potential. They are written for
+   ! each body whose C has a bottom, when F could be built. The hull waterline potential then comes from waterline_method, with
+   ! the hull velocity of velocity_method when it is extrapolated, as for the near-field method.
 
    USE Const_mod, ONLY: G, RHO
    USE HAMS_mod, ONLY: IRSP
@@ -47,7 +51,8 @@ MODULE SecondOrderDriver
    USE Inerfs_mod, ONLY: NELEM_PE, iXYZ, iNCN, iNCON
    USE Potentials_mod, ONLY: MXPOT, MXPOT_MULTI_COMB
    USE IO, ONLY: CreateDirectory
-   USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom, cs_points, cs_fields, CS_WALL, CS_LINE
+   USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom, cs_points, cs_fields, CS_WALL, CS_LINE, &
+                               CS_FREE
    USE FirstOrderState, ONLY: expand_images, build_state
    USE SurfaceGeometry, ONLY: build_surface_geom, DEFAULT_SHARP_DEG
    USE SurfaceVelocity, ONLY: velocity_differencing, source_operator, build_source_operator, velocity_source
@@ -56,7 +61,7 @@ MODULE SecondOrderDriver
    USE WaterlineField, ONLY: waterline_rows, waterline_field, field_point_inside_body
    USE ControlSurfaceMesh, ONLY: build_control_surface, check_control_surface, write_control_surface
    USE FieldVelocity, ONLY: fields_green, fields_source
-   USE ControlSurfaceDrift, ONLY: control_surface_pair, CS_T_LINE, CS_T_PRESSURE
+   USE ControlSurfaceDrift, ONLY: control_surface_pair, CS_T_LINE, CS_T_PRESSURE, CS_T_HYDROSTATIC
    USE SecondOrderOutput, ONLY: write_drift_row, write_terms_row
    IMPLICIT NONE
    PRIVATE
@@ -70,7 +75,8 @@ MODULE SecondOrderDriver
    TYPE(panel_mesh) :: mesh
    TYPE(surface_geom) :: geom
    TYPE(first_order_state), ALLOCATABLE :: states(:)   ! one per heading for mean_drift = 2 or control, otherwise the current
-   COMPLEX(8), ALLOCATABLE :: phi_wl(:,:)              ! (nwl, size(states)), total potential on the waterline segments
+   COMPLEX(8), ALLOCATABLE :: phi_wl(:,:)              ! (nwl, size(states)), total potential on the waterline segments; allocated
+                                                       ! for the near-field method and for the Phase B control-surface loads
    COMPLEX(8), ALLOCATABLE :: rows_g(:,:,:), rows_dg(:,:,:)   ! (nbase, nsys, nwl), of the current frequency, for waterline_method = field
    LOGICAL :: multi_arrays = .FALSE.                   ! the solver's mesh is in the combined multi-body arrays
    INTEGER :: unit_far = 0, unit_near = 0, unit_terms = 0, unit_diag = 0   ! 0: not open (NEWUNIT gives negative numbers)
@@ -79,9 +85,11 @@ MODULE SecondOrderDriver
    COMPLEX(8), ALLOCATABLE :: phi_source(:)            ! (n), potential of the sources of the current state, for the diagnostics
    INTEGER :: n_source_builds = 0, n_source_solves = 0 ! over the run, logged by so_finish with the two times
    REAL(8) :: source_build_seconds = 0D0, source_solve_seconds = 0D0
-   LOGICAL :: near_uses_source = .FALSE.               ! velocity_method = source for the near-field method
+   LOGICAL :: hull_uses_source = .FALSE.               ! velocity_method = source for the hull velocity (phi_wl allocated)
    ! Control-surface method
-   TYPE(cs_points) :: cs_pts                           ! points of C and Gamma_c of all bodies
+   TYPE(cs_points) :: cs_pts                           ! points of C, Gamma_c and (for Phase B) F of all bodies
+   LOGICAL :: have_free = .FALSE.                      ! F was built: the Phase B loads are computed
+   LOGICAL, ALLOCATABLE :: cs_vertical(:)              ! (nbody), F_z, M_x and M_y are written: F was built and C has a bottom
    COMPLEX(8), ALLOCATABLE :: cs_sigma(:,:)            ! (n, NBETA), source strengths of each heading, for cs_velocity = source
    COMPLEX(8), ALLOCATABLE :: far_diag(:,:)            ! (3, NBETA), far-field F_x, F_y, M_z of each heading, for the log
    INTEGER :: unit_control = 0
@@ -145,8 +153,10 @@ CONTAINS
          END IF
          IF (LEN_TRIM(msg) > 0) WRITE (*, *) 'Mean drift warning: ', msg
       END IF
-      IF (opts%do_near) THEN
-         near_uses_source = opts%velocity_method == 2
+      IF (opts%do_control) CALL control_setup(opts, inputdir, outputdir)
+      ! The hull waterline potential, for the near-field method and the Phase B control-surface loads
+      IF (opts%do_near .OR. have_free) THEN
+         hull_uses_source = opts%velocity_method == 2
          ALLOCATE (phi_wl(geom%nwl, SIZE(states)))
          IF (opts%velocity_method == 2 .AND. opts%write_terms == 2) ALLOCATE (phi_source(mesh%n))
          IF (opts%waterline_method == 2) THEN
@@ -164,6 +174,8 @@ CONTAINS
                WRITE (*, '(a)') 'A link between the two is not shown.'
             END IF
          END IF
+      END IF
+      IF (opts%do_near) THEN
          OPEN (NEWUNIT=unit_near, FILE=outputdir//'/Wamit_format/MeanDriftPressure.9', STATUS='REPLACE', ACTION='WRITE')
       END IF
       IF ((opts%do_near .OR. opts%do_control) .AND. opts%write_terms >= 1) THEN
@@ -173,10 +185,12 @@ CONTAINS
             WRITE (unit_terms, '(a)') '# term: 1 waterline, 2 flare, 3 velocity, 4 displacement, 5 rotation, 6 hydrostatic'
          END IF
          IF (opts%do_control) THEN
-            WRITE (unit_terms, '(a)') '# term: 11 control-surface line Gamma_c, 12 flux through C, 13 pressure on C (I = 1, 2, 6)'
+            WRITE (unit_terms, '(a)') '# term: 11 control-surface line Gamma_c, 12 flux through C, 13 pressure on C (I = 1 to 6)'
+            IF (have_free) THEN
+               WRITE (unit_terms, '(a)') '# term: 14 hull waterline Gamma, 15 free surface F, 16 hydrostatic (I = 3, 4, 5)'
+            END IF
          END IF
       END IF
-      IF (opts%do_control) CALL control_setup(opts, inputdir, outputdir)
       IF (opts%do_far) THEN
          OPEN (NEWUNIT=unit_far, FILE=outputdir//'/Wamit_format/MeanDriftMomentum.8', STATUS='REPLACE', ACTION='WRITE')
       END IF
@@ -208,14 +222,23 @@ CONTAINS
    END FUNCTION keep_all_headings
 
    SUBROUTINE control_setup(opts, inputdir, outputdir)
-      ! Builds and checks C of every body, writes it as CSMesh_<b>.pnl to outputdir, and opens MeanDriftControlSurface.7.
+      ! Builds and checks C and F of every body, writes C as CSMesh_<b>.pnl to outputdir, and opens MeanDriftControlSurface.7.
+      ! If F cannot be built (a waterline that is not star-shaped about the body centre, and no FSMesh_<b>.pnl), the run goes
+      ! on with C alone: F_x, F_y and M_z are written, and the log says why F_z, M_x and M_y are not.
       TYPE(so_options), INTENT(IN) :: opts
       CHARACTER(LEN=*), INTENT(IN) :: inputdir, outputdir
       TYPE(panel_mesh), ALLOCATABLE :: cms(:)
       CHARACTER(LEN=:), ALLOCATABLE :: msg
       LOGICAL :: ok
+      INTEGER :: b
 
-      CALL build_control_surface(mesh, geom, opts, H, inputdir, cs_pts, cms, ok, msg)
+      CALL build_control_surface(mesh, geom, opts, H, inputdir, cs_pts, cms, ok, msg, with_free=.TRUE.)
+      have_free = ok
+      IF (.NOT. ok) THEN
+         WRITE (*, '(a,a)') ' Mean drift control surface: ', msg
+         WRITE (*, '(a)') ' Mean drift control surface: no free surface F, so F_z, M_x, M_y are not computed.'
+         CALL build_control_surface(mesh, geom, opts, H, inputdir, cs_pts, cms, ok, msg)
+      END IF
       IF (.NOT. ok) THEN
          WRITE (*, '(a,a)') ' Mean drift control surface: ', msg
          ERROR STOP 1
@@ -228,8 +251,19 @@ CONTAINS
          ERROR STOP 1
       END IF
       CALL write_control_surface(outputdir, cms)
-      WRITE (*, '(a,I0,a,I0,a,I0,a)') ' Mean drift control surface: ', COUNT(cs_pts%kind == CS_WALL), ' panels on C and ', &
-         COUNT(cs_pts%kind == CS_LINE), ' segments on Gamma_c, for ', mesh%nbody, ' bodies'
+      WRITE (*, '(a,I0,a,I0,a,I0,a,I0,a)') ' Mean drift control surface: ', COUNT(cs_pts%kind == CS_WALL), ' panels on C, ', &
+         COUNT(cs_pts%kind == CS_LINE), ' segments on Gamma_c and ', COUNT(cs_pts%kind == CS_FREE), ' panels on F, for ', &
+         mesh%nbody, ' bodies'
+      ! A C that reaches the sea bed has no bottom panel, whose normal points up towards the body. Its domain is then also
+      ! bounded by the sea bed between the body and C, which the vertical loads would need (not implemented).
+      ALLOCATE (cs_vertical(mesh%nbody))
+      DO b = 1, mesh%nbody
+         cs_vertical(b) = have_free .AND. ANY(cs_pts%kind == CS_WALL .AND. cs_pts%body == b .AND. cs_pts%nrm(3, :) > 0.5D0)
+         IF (have_free .AND. .NOT. cs_vertical(b)) THEN
+            WRITE (*, '(a,I0,a)') ' Mean drift: control surface of body ', b, &
+               ' reaches the sea bed: F_z, M_x, M_y not computed.'
+         END IF
+      END DO
       IF (opts%cs_velocity == 2) ALLOCATE (cs_sigma(mesh%n, NBETA))
       IF (opts%do_far) ALLOCATE (far_diag(3, NBETA))
       OPEN (NEWUNIT=unit_control, FILE=outputdir//'/Wamit_format/MeanDriftControlSurface.7', STATUS='REPLACE', ACTION='WRITE')
@@ -289,13 +323,14 @@ CONTAINS
       control_source = opts%do_control .AND. opts%cs_velocity == 2
       CALL build_state(mesh, W1, WK, V, H, 1D0, BETA, G, RHO, mxpot_in, dspl_in, opts%motion_fixed, states(slot))
       ! As for the waterline rows below: the operator holds for all the headings of a frequency
-      IF (ib == 1 .AND. (near_uses_source .OR. control_source)) CALL timed_source_build()
-      IF (control_source .AND. .NOT. near_uses_source) THEN
+      IF (ib == 1 .AND. (hull_uses_source .OR. control_source)) CALL timed_source_build()
+      IF (control_source .AND. .NOT. hull_uses_source) THEN
          ! Only sigma is wanted: the solve also overwrites grad_p, which the near-field method may take from differencing
          scratch = states(slot)
          CALL timed_source_velocity(scratch, cs_sigma(:, slot))
       END IF
-      IF (opts%do_near) THEN
+      ! The hull velocity and waterline potential, for the near-field method and the Phase B control-surface loads
+      IF (ALLOCATED(phi_wl)) THEN
          IF (opts%velocity_method == 2) THEN
             IF (control_source) THEN
                CALL timed_source_velocity(states(slot), cs_sigma(:, slot))
@@ -438,25 +473,32 @@ CONTAINS
    END SUBROUTINE control_frequency
 
    SUBROUTINE control_output(fields, i1, i2, beta1_deg, beta2_deg, far)
-      ! Writes the control-surface load of the state pair (i1, i2), per body, about XR of each body: I = 1, 2, 6 (Phase A).
-      ! With far, logs the difference from it, with M_z moved to the origin as in near_field_output.
+      ! Writes the control-surface load of the state pair (i1, i2), per body, about XR of each body: I = 1, 2, 6 (Phase A),
+      ! and I = 3, 4, 5 (Phase B) for the bodies of cs_vertical. The terms file has terms 11 to 13 for I = 1, 2, 6, which
+      ! the Phase B terms do not change, and 11 to 16 for I = 3, 4, 5. With far, logs the difference from it, with M_z moved
+      ! to the origin as in near_field_output.
       TYPE(cs_fields), INTENT(IN) :: fields(:)
       INTEGER, INTENT(IN) :: i1, i2
       REAL(8), INTENT(IN) :: beta1_deg, beta2_deg
       COMPLEX(8), INTENT(IN), OPTIONAL :: far(3)
-      INTEGER, PARAMETER :: ROWS(3) = [1, 2, 6]
       COMPLEX(8) :: terms(6, 6, mesh%nbody), total(6), control(3)
-      INTEGER :: b, k, i, term
+      INTEGER :: b, i, term, last
 
-      CALL control_surface_pair(cs_pts, mesh%xr, states(i1), states(i2), fields(i1), fields(i2), terms)
+      IF (have_free) THEN
+         CALL control_surface_pair(cs_pts, mesh%xr, states(i1), states(i2), fields(i1), fields(i2), terms, mesh, geom, &
+                                   phi_wl(:, i1), phi_wl(:, i2))
+      ELSE
+         CALL control_surface_pair(cs_pts, mesh%xr, states(i1), states(i2), fields(i1), fields(i2), terms)
+      END IF
       control = (0D0, 0D0)
       DO b = 1, mesh%nbody
          total = SUM(terms(:, :, b), DIM=2)
-         DO k = 1, SIZE(ROWS)
-            i = ROWS(k)
+         DO i = 1, 6
+            IF (i >= 3 .AND. i <= 5 .AND. .NOT. cs_vertical(b)) CYCLE
             CALL write_drift_row(unit_control, OUFR, beta1_deg, beta2_deg, 6*(b - 1) + i, total(i), REFL, i > 3)
             IF (unit_terms == 0) CYCLE
-            DO term = CS_T_LINE, CS_T_PRESSURE
+            last = MERGE(CS_T_HYDROSTATIC, CS_T_PRESSURE, i >= 3 .AND. i <= 5)
+            DO term = CS_T_LINE, last
                CALL write_terms_row(unit_terms, OUFR, beta1_deg, beta2_deg, b, i, 10 + term, terms(i, term, b), REFL, i > 3)
             END DO
          END DO
@@ -478,7 +520,7 @@ CONTAINS
             ' s to assemble and factorize at ', n_source_builds, ' frequencies, ', source_solve_seconds, &
             ' s to solve ', n_source_solves, ' first-order solutions'
       END IF
-      IF (unit_near /= 0 .AND. .NOT. near_uses_source) THEN
+      IF (ALLOCATED(phi_wl) .AND. .NOT. hull_uses_source) THEN
          WRITE (*, '(a,I0,a,I0,a)') ' Mean drift velocity fallback: ', n_fallback_total, &
             ' panel values over ', n_velocity_fields, ' first-order solutions have only the normal part of the velocity'
       END IF

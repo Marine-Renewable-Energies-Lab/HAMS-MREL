@@ -81,11 +81,11 @@ module test_integration_drift
 
     ! Control-surface fixtures of the physics tests, run by run_control_cases. Each test names the values measured when its
     ! limit was set, and test/data/drift_cyl/README.md has them all
-    character(len=*), parameter :: control_cases(20) = [character(len=18) :: "control_cyl_free", "control_cyl_wide", &
+    character(len=*), parameter :: control_cases(23) = [character(len=19) :: "control_cyl_free", "control_cyl_wide", &
         "control_cyl_box", "control_bottom", "control_box", "control_two_round", "control_far_apart", "control_isolated", &
         "control_irsp", "control_irsp_ref", "control_half", "control_gmres", "control_pairs", "control_source", &
         "control_source_ref", "control_deep", "control_step_0p005", "control_step_0p01", "control_step_0p05", &
-        "control_step_0p1"]
+        "control_step_0p1", "control_round", "control_round_fixed", "control_round_wide"]
     ! The finite-difference steps of the control_step_* fixtures, then 0.02 (control_cyl), and the frequency they run at
     character(len=*), parameter :: step_cases(5) = [character(len=18) :: "control_step_0p005", "control_step_0p01", &
         "control_cyl", "control_step_0p05", "control_step_0p1"]
@@ -133,6 +133,14 @@ module test_integration_drift
     real(8), parameter :: control_deep_limit = 6.8d-3
     ! The spread of F_x over cs_fd_step 0.01 to 0.05 over F_x, 2.2e-5 measured: the plan's 0.2%
     real(8), parameter :: control_step_limit = 2d-3
+    ! Phase B, F_z, M_x and M_y: recorded regressions at the m1 resolution of the fixtures (480 hull panels), not accuracy
+    ! claims. The accuracy gate is the Snellius m3 study: within 1% of near-field on the rounded hulls. At m1 the field on F next
+    ! to the hull is coarse, and near-field is itself not converged (free F_z 1.876 at m1 against 1.627 at m4, 0.95 rad/s).
+    ! Against near-field of the same run, worst over rows: free 16.2%, fixed 28.9% (measured): 1.5x measured
+    real(8), parameter :: control_vertical_free_limit = 2.5d-1
+    real(8), parameter :: control_vertical_fixed_limit = 4.4d-1
+    ! C at 8 against 4 median hull panel sizes, free: 10.2% (measured): 1.5x measured
+    real(8), parameter :: control_vertical_c_limit = 1.6d-1
 
 contains
 
@@ -248,7 +256,10 @@ contains
             new_unittest("control_source_far", control_source_far), &
             new_unittest("control_source_leaves_near", control_source_leaves_near), &
             new_unittest("control_deep_far", control_deep_far), &
-            new_unittest("control_step_plateau", control_step_plateau) &
+            new_unittest("control_step_plateau", control_step_plateau), &
+            new_unittest("control_vertical_round", control_vertical_round), &
+            new_unittest("control_vertical_independent_of_c", control_vertical_independent_of_c), &
+            new_unittest("control_seabed_rows_absent", control_seabed_rows_absent) &
         ]
     end subroutine collect_tests_drift
 
@@ -494,6 +505,8 @@ contains
         do c = 1, size(control_cases)
             if (control_cases(c) == "control_source_ref") then
                 call run_case(trim(control_cases(c)), [character(len=40) :: far_file, near_file], one)
+            else if (index(control_cases(c), "control_round") == 1) then
+                call run_case(trim(control_cases(c)), [character(len=40) :: far_file, near_file, control_file, terms_file], one)
             else
                 call run_case(trim(control_cases(c)), [character(len=40) :: far_file, control_file], one)
             end if
@@ -1745,48 +1758,50 @@ contains
         call check_below(error, "terms_sum_to_total", worst, printed_limit)
     end subroutine terms_sum_to_total
 
-    !> The control-surface method writes I = 1, 2, 6 for each frequency and heading, its terms sum to each load, C is written
-    !> as CSMesh_1.pnl, and the log has the difference from far-field. The difference is reported here, not limited: its
-    !> accuracy is checked in its own tests.
+    !> The control-surface method writes I = 1 to 6 for each frequency and heading (C has a bottom), its terms sum to each load
+    !> (11 to 13 for I = 1, 2, 6, and 11 to 16 for I = 3, 4, 5), C is written as CSMesh_1.pnl, and the log has the difference
+    !> from far-field. The difference is reported here, not limited: its accuracy is checked in its own tests.
     subroutine control_runs(error)
         type(error_type), allocatable, intent(out) :: error
         real(8), allocatable :: rows(:,:), terms(:,:), far(:,:)
         real(8) :: worst, total(2), scale_row, worst_fx
-        integer :: r, t, n, ntheta
+        integer :: r, t, n, ntheta, nterm
 
         call check_no_bad_numbers(output_dir("control_cyl")//control_file, error)
         if (allocated(error)) return
         call read_drift(output_dir("control_cyl")//control_file, rows, error)
         if (allocated(error)) return
-        call check(error, size(rows, 1) == 3*2*3, "Expected 3 frequencies x 2 headings x 3 rows in the control-surface file")
+        call check(error, size(rows, 1) == 3*2*6, "Expected 3 frequencies x 2 headings x 6 rows in the control-surface file")
         if (allocated(error)) return
-        call check(error, all(nint(rows(:,4)) == 1 .or. nint(rows(:,4)) == 2 .or. nint(rows(:,4)) == 6), &
-                   "The control-surface file has a row other than I = 1, 2, 6")
+        call check(error, all(nint(rows(:,4)) >= 1 .and. nint(rows(:,4)) <= 6), &
+                   "The control-surface file has a row other than I = 1 to 6")
         if (allocated(error)) return
         call check(error, log_has("control_cyl", "control vs far"), "The log has no control vs far row")
         if (allocated(error)) return
         call check(error, log_has("control_cyl", "Mean drift control surface fields"), "The log has no field time")
         if (allocated(error)) return
 
-        ! The terms 11 to 13 of each load sum to it
+        ! The terms of each load sum to it: 11 to 13 for I = 1, 2, 6, and 11 to 16 for I = 3, 4, 5
         call read_terms(output_dir("control_cyl")//terms_file, terms, error)
         if (allocated(error)) return
-        call check(error, size(terms, 1) == 3*size(rows, 1), "Expected three terms for each control-surface load")
+        call check(error, size(terms, 1) == (3*3 + 3*6)*size(rows, 1)/6, "Expected 3 or 6 terms for each control-surface load")
         if (allocated(error)) return
         worst = 0d0
         do r = 1, size(rows, 1)
             total = 0d0
             n = 0
+            nterm = merge(6, 3, nint(rows(r,4)) >= 3 .and. nint(rows(r,4)) <= 5)
             do t = 1, size(terms, 1)
                 if (same(terms(t,1), rows(r,1)) .and. terms(t,2) == rows(r,2) .and. terms(t,3) == rows(r,3) &
                     .and. 6*(nint(terms(t,4)) - 1) + nint(terms(t,5)) == nint(rows(r,4))) then
-                    call check(error, nint(terms(t,6)) >= 11 .and. nint(terms(t,6)) <= 13, "A control term index is not 11 to 13")
+                    call check(error, nint(terms(t,6)) >= 11 .and. nint(terms(t,6)) <= 10 + nterm, &
+                               "A control term index is out of its range")
                     if (allocated(error)) return
                     total = total + terms(t,7:8)
                     n = n + 1
                 end if
             end do
-            call check(error, n == 3, "A control-surface load does not have its three terms")
+            call check(error, n == nterm, "A control-surface load does not have all its terms")
             if (allocated(error)) return
             scale_row = maxval(abs(terms(:,7)), mask=abs(terms(:,1) - rows(r,1)) < 1d-6 .and. &
                                ((nint(terms(:,5)) <= 3) .eqv. (nint(rows(r,4)) <= 3)))
@@ -1848,7 +1863,7 @@ contains
         if (allocated(error)) return
         call read_drift(path, rows, error)
         if (allocated(error)) return
-        call check(error, size(rows, 1) == 3*(2*2)*3, "Expected rows for the 3 real frequencies and 4 heading pairs only")
+        call check(error, size(rows, 1) == 3*(2*2)*6, "Expected rows for the 3 real frequencies and 4 heading pairs only")
         if (allocated(error)) return
         call check(error, all(rows(:,1) > 0.5d0), "A limit frequency has rows in the control-surface file")
     end subroutine control_skips_limits
@@ -1952,7 +1967,7 @@ contains
         real(8) :: worst_fx, worst_f, worst_mz, worst_near, worst_own, fmag
         integer :: r, b
 
-        call read_drift(output_dir("control_two_round")//control_file, rows, error)
+        call read_control_horizontal(output_dir("control_two_round")//control_file, rows, error)
         if (allocated(error)) return
         call check(error, size(rows, 1) == 2*2*3, "Expected 2 headings x 2 bodies x 3 rows")
         if (allocated(error)) return
@@ -2033,9 +2048,9 @@ contains
         real(8) :: worst
         integer :: r
 
-        call read_drift(output_dir("control_far_apart")//control_file, pair, error)
+        call read_control_horizontal(output_dir("control_far_apart")//control_file, pair, error)
         if (allocated(error)) return
-        call read_drift(output_dir("control_isolated")//control_file, alone, error)
+        call read_control_horizontal(output_dir("control_isolated")//control_file, alone, error)
         if (allocated(error)) return
         call check(error, size(pair, 1) == 6 .and. size(alone, 1) == 3, "Expected 3 rows per body")
         if (allocated(error)) return
@@ -2109,7 +2124,7 @@ contains
         call rows_against("control_pairs diagonal", output_dir("control_pairs")//control_file, &
                           output_dir("control_cyl_free")//control_file, [1, 2, 6], worst, error, skip_small=.false.)
         if (allocated(error)) return
-        call read_drift(output_dir("control_pairs")//control_file, pairs, error)
+        call read_control_horizontal(output_dir("control_pairs")//control_file, pairs, error)
         if (allocated(error)) return
         call check(error, size(pairs, 1) == (2*2)*3, "Expected 4 heading pairs x 3 rows")
         if (allocated(error)) return
@@ -2205,6 +2220,76 @@ contains
         call check_below(error, "control_step_plateau", spread, control_step_limit)
     end subroutine control_step_plateau
 
+    !> Phase B on the rounded cylinder of drift_round, free (control_round) and fixed (control_round_fixed): F_z, M_x and M_y
+    !> against near-field of the same run, as a recorded regression at m1 resolution (see control_vertical_free_limit). A row
+    !> that is zero by symmetry (M_x at heading 0) is skipped, as rows_against does.
+    subroutine control_vertical_round(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: free, fixed
+
+        call rows_against("control_vertical_round free", output_dir("control_round")//control_file, &
+                          output_dir("control_round")//near_file, [3, 4, 5], free, error)
+        if (allocated(error)) return
+        call rows_against("control_vertical_round fixed", output_dir("control_round_fixed")//control_file, &
+                          output_dir("control_round_fixed")//near_file, [3, 4, 5], fixed, error)
+        if (allocated(error)) return
+        call check_below(error, "control_vertical_round free (m1 regression)", free, control_vertical_free_limit)
+        if (allocated(error)) return
+        call check_below(error, "control_vertical_round fixed (m1 regression)", fixed, control_vertical_fixed_limit)
+    end subroutine control_vertical_round
+
+    !> Gauss's theorem makes the exact result independent of C: F_z, M_x and M_y with C at 8 median hull panel sizes
+    !> (control_round_wide) against 4 (control_round). At m1 they differ by up to 10%, so this is a recorded regression.
+    subroutine control_vertical_independent_of_c(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst
+
+        call rows_against("control_vertical_independent_of_c", output_dir("control_round_wide")//control_file, &
+                          output_dir("control_round")//control_file, [3, 4, 5], worst, error)
+        if (allocated(error)) return
+        call check_below(error, "control_vertical_independent_of_c (m1 regression)", worst, control_vertical_c_limit)
+    end subroutine control_vertical_independent_of_c
+
+    !> The bottom-mounted cylinder of control_bottom: C reaches the sea bed, so F_z, M_x and M_y are not written, and the log
+    !> says so.
+    subroutine control_seabed_rows_absent(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: rows(:,:)
+
+        call read_drift(output_dir("control_bottom")//control_file, rows, error)
+        if (allocated(error)) return
+        call check(error, size(rows, 1) > 0, "control_bottom wrote no control-surface rows")
+        if (allocated(error)) return
+        call check(error, .not. any(nint(rows(:,4)) >= 3 .and. nint(rows(:,4)) <= 5), &
+                   "control_bottom has a row I = 3, 4 or 5")
+        if (allocated(error)) return
+        call check(error, log_has("control_bottom", &
+                   "control surface of body 1 reaches the sea bed: F_z, M_x, M_y not computed."), &
+                   "The log of control_bottom does not say that F_z, M_x, M_y are not computed")
+    end subroutine control_seabed_rows_absent
+
+    !> The rows I = 1, 2, 6 of each body of a control-surface file (Phase A), without the Phase B rows I = 3, 4, 5.
+    subroutine read_control_horizontal(path, rows, error)
+        character(len=*), intent(in) :: path
+        real(8), allocatable, intent(out) :: rows(:,:)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: all_rows(:,:)
+        logical, allocatable :: keep(:)
+        integer :: local, c
+
+        call read_drift(path, all_rows, error)
+        if (allocated(error)) return
+        allocate (keep(size(all_rows, 1)))
+        do c = 1, size(all_rows, 1)
+            local = mod(nint(all_rows(c,4)) - 1, 6) + 1
+            keep(c) = local == 1 .or. local == 2 .or. local == 6
+        end do
+        allocate (rows(count(keep), 8))
+        do c = 1, 8
+            rows(:, c) = pack(all_rows(:, c), keep)
+        end do
+    end subroutine read_control_horizontal
+
     !> As near_against_far, for the control-surface file: per body I = 1, 2, 6 about XR of the body, summed over the bodies
     !> and moved to the origin, against far-field. worst_fy is the F_y difference, with the same rule for zero components.
     subroutine control_against_far(name, xr, worst_fx, worst_f, worst_mz, error, only_omega, worst_fy)
@@ -2226,7 +2311,7 @@ contains
         if (present(worst_fy)) worst_fy = 0d0
         call read_drift(output_dir(name)//far_file, far, error)
         if (allocated(error)) return
-        call read_drift(output_dir(name)//control_file, control, error)
+        call read_control_horizontal(output_dir(name)//control_file, control, error)
         if (allocated(error)) return
         call check(error, size(control, 1) == size(far, 1)*size(xr, 2), "Expected 3 control-surface rows per body")
         if (allocated(error)) return
