@@ -324,11 +324,11 @@ The vertical force and the roll and pitch moments of the control-surface method 
 | :--- | :--- | :--- |
 | M_x, M_y | near-field at m4, tolerance max(1% of the reference, 1e-3 rho g A^2 a^2) | within the tolerance on both hulls at m3 and m4; worst 0.44 of it (rounded, m3) and 0.57 (sharp, m3) |
 | F_z, rounded | extrapolated near-field limit f0 + C h^p, fitted over m2 to m4 (h = 1/2, 1/3, 1/4) | control at m3 (0.70, 0.95, 1.10 rad/s): fixed 0.4%, 0.9%, 1.9%; free 0.0%, 0.5%, 0.8%. At m4 fixed 1.10 rad/s is 1.2% |
-| F_z, sharp, fixed | extrapolated near-field limit | control -4.021, -2.596, -1.455 (m4); limit -4.02 to -4.06, -2.58 to -2.61, -1.42 to -1.45; control changes by less than 0.5% from m1 to m4 |
+| F_z, sharp, fixed | extrapolated near-field limit | control -4.021, -2.596, -1.455 (m4); limit -4.02 to -4.06, -2.58 to -2.61, -1.42 to -1.45 (3-point fit over m2 to m4, and p = 2/3 from m3 and m4); control changes by 0.8% or less from m3 to m4 (it moves up to 20% from m1 to m4) |
 | F_z, sharp, free | extrapolated near-field limit | control 2.171, 1.926 at 0.95, 1.10 rad/s against limits 2.06 and 1.91; at 0.70 rad/s the limit lies between -0.43 and -1.08 and control gives -0.617 |
 
 - The rounded-hull limits of near-field and control agree within 0.4% at all six (motion, frequency) pairs, so the m3 and m4 differences are mesh error in both methods [measured].
-- Near-field F_z on the sharp hull still moves with the mesh: the fitted order is 0.6 to 0.76 at every frequency, with term 3 (velocity) dominant. At m4 (7168 panels) it is 10% to 20% off the limit, and the free hull at 0.70 rad/s has the wrong sign [measured]. The cause is the right-angled bottom edge, where the velocity is singular [inferred].
+- Near-field F_z on the sharp hull still moves with the mesh: the 3-point fitted order is 0.66 to 0.76 at every frequency, with term 3 (velocity) dominant. At m4 (7168 panels) it is 13% to 19% off on the fixed hull and 24% to 68% off on the free hull (against the control-surface value), with the wrong sign at 0.70 rad/s [measured]. The cause is the right-angled bottom edge, where the velocity is singular [inferred].
 - Advice: on hulls with sharp edges, use the control-surface F_z, and do not take near-field F_z at these meshes as the reference. Near-field F_z needs a much finer mesh there.
-- Not covered: at m2 the moments at 1.6 to 1.8 rad/s are about 25% off, and m3 and m4 were not run at those frequencies [measured].
+- Not covered: at m2 (1920 and 1792 panels), F_z, M_x and M_y at 1.6 to 1.8 rad/s differ from near-field of the same run by up to about 30%, and m3 and m4 were not run at those frequencies [measured].
 - Numbers are as measured; no convergence order of the control-surface method is claimed.
