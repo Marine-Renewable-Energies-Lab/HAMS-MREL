@@ -1157,7 +1157,7 @@ def write_slurm(args):
                 "export OMP_NUM_THREADS=%d" % CPUS, "export OMP_NUM_THREADS=1"))
             f.write("# Needs a build of Nemoh on Snellius, kept outside the repository. Set NEMOH_BUILD to its build folder.\n")
             f.write("NEMOH_BUILD=${NEMOH_BUILD:?set NEMOH_BUILD}\n")
-            f.write("xargs -P %d -I{} python3 %s run %s --case {} --hams none --nemoh-build $NEMOH_BUILD --threads 1 < %s/nemoh.txt\n" % (
+            f.write("xargs -P %d -I{} python3 %s run %s --case {} --hams none --nemoh-build $NEMOH_BUILD --threads 1%s < %s/nemoh.txt\n" % (
                 len(chosen), script, root, " --qtf" if args.qtf else "", jobs))
     print("Scripts in %s, for %s on the cluster, with logs in %s. Nothing was submitted." % (out, jobs, logs))
 
