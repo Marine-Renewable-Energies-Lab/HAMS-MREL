@@ -293,6 +293,30 @@ On the sharp truncated cylinder (radius 10 m, draft 10 m, depth 100 m), near-fie
 - The free hull at 0.70 rad/s, near the heave resonance, stays off by 38% or more on every mesh. Its F_z is a small difference of large terms.
 - The control-surface F_z on the cosine mesh (4032 and 7168 panels) is within 2.3% and 1.4% of the reference in every case (see [above](#vertical-force-and-roll-and-pitch-moments-f_z-m_x-and-m_y)). It stays the advised value on sharp hulls.
 
+## Quadratic QTFs
+
+The quadratic part of the QTFs (`qtf` in `SecondOrder.in`) uses the near-field terms of the mean drift with two frequencies. Its checks:
+
+- In the tests, the diagonal of `QTF_Quadratic.10d` equals `MeanDriftPressure.9` row for row, `.10d` is Hermitian and `.10s` symmetric over frequencies, headings and two bodies, and the kernel reproduces the product of two bichromatic signals at any time (`test/test_near_field.f90`, `test/test_qtf.f90`, `test/test_integration_drift.f90`).
+- The off-diagonal values are compared with the [semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder) (`truncated_cylinder_reference.py qtf`, the same near-field terms of the eigenfunction solution, for every pair of the 21 frequencies 0.40 to 1.40 rad/s), and with Nemoh v3.0.3's quadratic part (`DUOK`) on the same mesh and grid, by `qtf_compare.py`.
+
+The reference's first-order solutions take HAMS's stored incident potential `VINP` as the physical one, so their wave has elevation −iA at the origin instead of A (spec convention: the physical potential is i·`VINP`). That factor cancels in the mean drift and in the difference QTF, and gives −1 in the sum QTF, so the sum rows of the reference are negated. Before that was found, HAMS and Nemoh agreed with each other and both had the opposite sign of the reference on every sum value.
+
+Sharp cylinder, 448 panels, `velocity_method = source`, heading 0. Error per pair |value − exact| / max |exact| over the pairs, median and largest, in percent; difference pairs with ω_j − ω_i ≤ 0.3 rad/s, sum pairs all:
+
+| Body | QTF | HAMS F_x | HAMS F_z | HAMS M_y | Nemoh F_x | Nemoh F_z | Nemoh M_y |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fixed | difference | 0.96 / 5.7 | 5.4 / 7.0 | 5.9 / 7.9 | 1.7 / 4.9 | 5.0 / 6.3 | 5.9 / 8.0 |
+| fixed | sum | 1.1 / 3.8 | 3.2 / 6.7 | 9.0 / 14 | 1.1 / 6.1 | 3.1 / 6.8 | 8.9 / 13 |
+| free | difference | 0.93 / 46 | 1.2 / 66 | 0.13 / 13 | 0.88 / 40 | 1.1 / 67 | 0.17 / 15 |
+| free | sum | 0.44 / 27 | 0.07 / 15 | 0.08 / 10 | 0.51 / 26 | 0.05 / 8.2 | 0.08 / 5.5 |
+
+- HAMS and Nemoh are within about one point of each other everywhere, and Nemoh's values need neither a conjugate nor a sign change against this convention.
+- The fixed body is off by the mesh error of the mean drift at this mesh (F_z and M_y 5% to 9%, as on the diagonal).
+- On the free body the median is small, and the largest errors sit at pairs with a frequency near the heave resonance, where the mean drift is also steep (see [above](#comparison-with-nemoh)).
+
+Finer meshes run on Snellius.
+
 ## Open items
 
 - A free sharp body at low frequency has no good near-field result from HAMS. Far-field is the number to use for F_x, and the control-surface method for F_z. For the sharp cylinder, the [semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder) gives near-field F_x, F_z and M_y, with stated uncertainties.

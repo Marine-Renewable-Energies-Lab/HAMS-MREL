@@ -267,6 +267,9 @@ Each line is `key = value`. Text after `!` is a comment, blank lines are ignored
 | `cs_panel_size` | real, at least 0 | `0` | With `control`: the panel size of the control surface in metres. 0 means the median hull panel size. |
 | `cs_fd_step` | real, above 0 and at most 0.5 | `0.02` | With `cs_velocity = green`: the finite-difference step, as a fraction of the local control-surface panel size. Above about 0.3, the centroids of the top row of C (a quarter panel below z = 0) come within one step of z = 0, and their dφ/dz is then taken from the free-surface condition, which is off by order k z below z = 0 [derived]. Keep the default. |
 | `cs_fs_rows` | integer, at least 0 | `0` | Number of rows of the free-surface patch F between the waterline and the control surface. 0 means the nearest integer to (distance of Γc − distance of the waterline)/`cs_panel_size`, at least 2; the distances are mean distances from the centre of the waterplane bounding box. Not used when `FSMesh_{b}.pnl` is given. |
+| `qtf` | `0`, `1`, `2`, `3` | `0` | Quadratic part of the second-order QTFs: 0 off, 1 difference frequency (`QTF_Quadratic.10d`), 2 sum frequency (`QTF_Quadratic.10s`), 3 both. Needs `mean_drift = 1` or `2` and `near` in `drift_methods`. Heading pairs follow `mean_drift`: β1 = β2 for 1, every pair for 2. The first-order state of every frequency and heading is kept in memory, 128 bytes per panel each; the log gives the size. See [QTFs](#qtfs-quadratic-part). |
+| `qtf_terms` | `quadratic` | `quadratic` | Which parts of the QTF. Only the quadratic part (products of first-order quantities) is implemented; `body` and `full` (second-order potential) stop the run. |
+| `qtf_max_dw` | real, at least 0 | `0` | Largest \|ω_i − ω_j\| in rad/s written to `QTF_Quadratic.10d`. 0 writes every pair. The sum-frequency file always has every pair. |
 
 Example:
 
@@ -285,6 +288,7 @@ The options are checked against `ControlFile.in` and the mesh files. A run is re
 - `drift_methods` includes `control` and any generalized mode file is present.
 - `cs_velocity = source` with `ISOLV = 2` (GMRES), or with `IRSP = 1` (irregular frequency removal).
 - `cs_margin`, `cs_bottom_margin`, `cs_panel_size` or `cs_fs_rows` is negative, or `cs_fd_step` is outside (0, 0.5].
+- `qtf` is above 0 with `mean_drift = 0`, or without `near` in `drift_methods`; `qtf` is outside 0 to 3, `qtf_max_dw` is negative, or `qtf_terms` is `body` or `full`.
 
 ### Methods and outputs
 
@@ -330,6 +334,14 @@ The evidence is in [Second-order validation](second_order_validation.md).
 - **Multi-body:** far-field gives only the total of all bodies. Near-field and control per body are checked against the far-field total in the two-body fixtures.
 - **`waterline_method = field` in finite depth:** term I has been seen to jump with the mesh or the offset: on 32 x 16 rows at depth 10 and offset 0.01, -11.40% at 1.0 rad/s against -1.93% and -2.06% at offsets 0.005 and 0.05 (see [the fixtures](../test/data/drift_cyl/README.md)). That was measured before the finite-depth Green function used Linton's method for R/h < 0.02 (v2.3.3), which replaces the series behind such jumps for ν·h ≤ 50. It has not been measured again since. The run logs a warning when this method is used in finite depth.
 - **Control surface, F_z, M_x, M_y:** validated with `cs_shape = cylinder` only, and on finer meshes at 0.70 to 1.10 rad/s only. Not computed when C reaches the sea bed or the free surface between the hull and C cannot be built (the log says why).
-- **Second-order QTFs** (difference and sum frequency) are not implemented. Only the mean drift is.
+- **QTFs:** only the quadratic part, from the near-field method. The second-order potential (WAMIT's indirect method, Nemoh's HASBO and HASFS) is not implemented, so the difference-frequency QTF misses the potential part, which is zero on the diagonal and grows away from it (WAMIT v7.5 user manual, ch. 11), and the sum-frequency QTF is incomplete: use it as the quadratic part only. See [QTFs](#qtfs-quadratic-part).
 
-Source: Chen, X.-B. (2007). Middle-field formulation for the computation of wave-drift loads. J. Eng. Math. 59, 61-82.
+### QTFs, quadratic part
+
+With `qtf` set, the near-field terms are evaluated for every pair of frequencies (ω_i, ω_j) of `ControlFile.in`, not only for ω_i = ω_j. Every term of the mean drift is a product of two first-order quantities, so the same formulas give the difference-frequency part (with the conjugate of the second factor) and the sum-frequency part (without it); the diagonal of `QTF_Quadratic.10d` is the mean drift of `MeanDriftPressure.9`. The definition, the conjugation and the scaling are in [Output Files](output_files.md#wamit-format). The zero and infinite frequencies of `0_inf_frequency_limits = 1` are left out.
+
+- Use a uniform frequency list fine enough for the slow-drift periods of interest: the QTF is only known on the grid.
+- The same mesh guidance as for near-field mean drift applies, with `velocity_method = source` on hulls with sharp edges, as for the mean drift. On a sharp cylinder at 448 panels both QTFs are within about one point of Nemoh's quadratic part, and their median error against an exact reference is 0.1% to 9% ([validation](second_order_validation.md#quadratic-qtfs)).
+- `pre_postprocessing_python/SecondOrder/qtf_tools.py` reads the files, gives Newman's approximation from the diagonal (Newman 1974) and the spectrum of the slowly varying force.
+
+Sources: Chen, X.-B. (2007). Middle-field formulation for the computation of wave-drift loads. J. Eng. Math. 59, 61-82. Newman, J. N. (1974). Second-order, slowly-varying forces on vessels in irregular waves. Proc. Int. Symp. Dynamics of Marine Vehicles and Structures in Waves, London, 182-186.
