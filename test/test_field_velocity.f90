@@ -193,8 +193,9 @@ contains
     ! Panel q and field point p of each sample, and Re, Im of GRN(1:4) from the code before FIELD, built with the fpm flags.
     ! Samples 1, 4 and 5 were regenerated after the merge of main (LINTON in units of the depth, 18a3e9c, and the large-kh
     ! fix, d2e1066), which changed them by round-off only (at most 1.4e-17, 1.5e-16 relative).
-    ! Limes amplifies a 1-ulp change of the compiler output (sample 3 sits on a spike), so regenerate these values when the
-    ! compiler or its flags change.
+    ! The values come from ifort on Windows. Another compiler rounds differently (ifx on Linux moved sample 1 by 1.4e-17,
+    ! one ulp), so each sample is compared to 1e-12 of its largest value, which still catches any change of the route.
+    ! Sample 3 sits on a Limes spike, which amplifies a 1-ulp change of the input, so it gets 1e-8.
     real(8), parameter :: q(3, 5) = reshape([0.5d0, 0d0, -3d0, 1.5d0, 0d0, -3d0, -4.5d0, 0.5d0, -5d0, 15d0, 0d0, -3d0, &
       40d0, 0d0, -3d0], [3, 5])
     real(8), parameter :: p(3, 5) = reshape([0d0, 0d0, -8d0, 0d0, 0d0, -8d0, &
@@ -212,7 +213,7 @@ contains
       0.00000000000000000d+000, 0.00000000000000000d+000, 2.90773069836218977d-004, 1.22088014525407779d-003 &
       ], [8, 5])
     complex(8) :: g(4)
-    real(8) :: now(8)
+    real(8) :: now(8), tol
     integer :: k, m
     character(len=200) :: info
 
@@ -220,7 +221,8 @@ contains
       call FINGREEN3D(q(1, k), p(1, k), q(2, k), p(2, k), q(3, k), p(3, k), nu, wvn_local, size(wvn_local), depth, g, 1)
       now = [(real(g(m), 8), aimag(g(m)), m = 1, 4)]
       write (info, '(a,i0,a,8es9.1)') "default route changed at sample ", k, ": ", now - before(:, k)
-      call check(error, all(now == before(:, k)), trim(info))
+      tol = merge(1d-8, 1d-12, k == 3)*maxval(abs(before(:, k)))
+      call check(error, all(abs(now - before(:, k)) <= tol), trim(info))
       if (allocated(error)) return
     end do
   end subroutine check_default_route

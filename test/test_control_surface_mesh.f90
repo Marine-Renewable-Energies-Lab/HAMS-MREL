@@ -26,6 +26,7 @@ subroutine collect_control_surface_mesh(testsuite)
     new_unittest("gamma_c_line", test_gamma_c_line), &
     new_unittest("generated_c_rejects_other_body", test_generated_c_rejects_other_body), &
     new_unittest("separate_bodies_accepted", test_separate_bodies_accepted), &
+    new_unittest("node_level_with_corner_outside", test_node_level_with_corner_outside), &
     new_unittest("close_c_rejected_by_distance", test_close_c_rejected_by_distance), &
     new_unittest("box_built_for_each_body", test_box_built_for_each_body), &
     new_unittest("file_c_missing_file_stops", test_file_c_missing_file_stops), &
@@ -248,6 +249,30 @@ subroutine test_separate_bodies_accepted(error)
   ! C of body 2 is centred on body 2
   call check(error, abs(sum(cms(2)%xnode(1, :))/cms(2)%nnode - 40d0) < 1d0, "C of body 2 around body 2")
 end subroutine test_separate_bodies_accepted
+
+!> A node of body 1 at y = 0, level with two corners of the C of body 2, lies outside that C at every offset. With the
+!> corners rebuilt from the segment midpoint and length, ifort counted it inside from dx = 60.62 to 62.77.
+subroutine test_node_level_with_corner_outside(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: m1, mesh
+  type(so_options) :: opts
+  type(cs_points) :: pts
+  type(panel_mesh), allocatable :: cms(:)
+  logical :: okb, okc
+  character(len=:), allocatable :: msg
+  real(8) :: dx
+  integer :: k
+
+  call make_cylinder(5d0, 3d0, 16, 2, 2, m1, .true.)
+  opts%cs_margin = 6d0
+  do k = 0, 400
+    dx = 55d0 + 0.025d0*k
+    call two_bodies(m1, dx, mesh)
+    call build_and_check(mesh, opts, .true., pts, cms, okb, okc, msg)
+    call check(error, okb .and. okc, "well separated bodies pass at every offset: "//msg)
+    if (allocated(error)) return
+  end do
+end subroutine test_node_level_with_corner_outside
 
 subroutine test_close_c_rejected_by_distance(error)
   type(error_type), allocatable, intent(out) :: error

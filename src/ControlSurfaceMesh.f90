@@ -967,7 +967,10 @@ CONTAINS
       !   generated  .true. for a C from cylinder_surface or box_surface: every node of another body must lie outside
       !              body b's C. C counts as containing a node when the node is inside the horizontal polygon of the
       !              Gamma_c segments of body b and above the bottom of C (or anywhere, if C goes down to the seabed).
-      !              The polygon is built from the exact segment ends, so the test is exact for a cylinder or box.
+      !              The polygon is built from the waterline nodes of C (build_surface_geom), so neighbouring segments
+      !              share their corners bit for bit and the crossing count has no gap or overlap at a corner. Corners
+      !              rebuilt from the segment midpoint and length differ in the last bit, and a node level with a corner
+      !              was then counted inside or outside depending on the compiler.
       !   always     no C point (wall panel or Gamma_c segment) may lie within one local panel size of a hull panel
       !              centroid. The local size is the larger of the sizes of the two panels.
       ! ok = .false. when a check fails, and msg names the bodies and the point.
@@ -978,28 +981,25 @@ CONTAINS
       LOGICAL, INTENT(OUT) :: ok
       CHARACTER(LEN=:), ALLOCATABLE, INTENT(OUT) :: msg
       REAL(8), ALLOCATABLE :: sx1(:,:), sx2(:,:)
-      REAL(8) :: zbot, d2, lim, t(2), x(3)
-      INTEGER :: b, a, i, m, p, nseg, k
-      LOGICAL, ALLOCATABLE :: bodyline(:)
+      REAL(8) :: zbot, d2, lim, x(3)
+      INTEGER :: b, a, i, m, p, nseg
+      TYPE(surface_geom) :: g
+      LOGICAL :: okg
+      CHARACTER(LEN=:), ALLOCATABLE :: msgg
       CHARACTER(LEN=300) :: line
 
       ok = .TRUE.
       msg = ''
       IF (generated) THEN
          DO b = 1, MIN(SIZE(cms), mesh%nbody)
-            ! Gamma_c segments of body b, from the stored midpoint, normal and length.
-            bodyline = pts%kind == CS_LINE .AND. pts%body == b
-            nseg = COUNT(bodyline)
+            ! Gamma_c segments of body b, with their ends at the waterline nodes of C.
+            CALL build_surface_geom(cms(b), WL_TOL, DEFAULT_SHARP_DEG, g, okg, msgg)
+            IF (.NOT. okg) CYCLE
+            nseg = g%nwl
             IF (nseg == 0) CYCLE
             ALLOCATE (sx1(2, nseg), sx2(2, nseg))
-            k = 0
-            DO p = 1, pts%n
-               IF (.NOT. bodyline(p)) CYCLE
-               k = k + 1
-               t = [-pts%nrm(2, p), pts%nrm(1, p)]
-               sx1(:, k) = pts%x(1:2, p) - 0.5D0*pts%w(p)*t
-               sx2(:, k) = pts%x(1:2, p) + 0.5D0*pts%w(p)*t
-            END DO
+            sx1 = g%wl_x1(1:2, :)
+            sx2 = g%wl_x2(1:2, :)
             zbot = -HUGE(1D0)
             IF (ANY(cms(b)%nrm(3, :) > 0.5D0)) zbot = MINVAL(cms(b)%xnode(3, :))
             DO i = 1, mesh%n
