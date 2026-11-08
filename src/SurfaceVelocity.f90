@@ -216,14 +216,16 @@ CONTAINS
       END DO
    END SUBROUTINE build_source_operator
 
-   SUBROUTINE velocity_source(mesh, op, s, phi_source)
+   SUBROUTINE velocity_source(mesh, op, s, phi_source, sigma_full)
       ! Fills s%grad_p, the same quantity as velocity_differencing, from s%dphi_p_dn. The even and odd parts of a state are solved
       ! apart. A panel and its image take their sum and difference, and the gradient at the image is mirrored.
       ! phi_source, if given, is (1/4 pi) int sigma G dS at the panels, for which op must hold the potential.
+      ! sigma_full, if given, is sigma on every panel, rebuilt from the blocks as grad_p is, without the image sign (sigma is a
+      ! scalar): sigma at image im of base panel i is sum_ip RXY(im, ip) sigma(i, ip)/ns, at full index (im-1) nb + i.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(source_operator), INTENT(IN) :: op
       TYPE(first_order_state), INTENT(INOUT) :: s
-      COMPLEX(8), INTENT(OUT), OPTIONAL :: phi_source(:)
+      COMPLEX(8), INTENT(OUT), OPTIONAL :: phi_source(:), sigma_full(:)
       COMPLEX(8) :: sigma(mesh%nbase, mesh%nsys), block_grad(3, mesh%nbase, mesh%nsys)
       COMPLEX(8) :: block_phi(mesh%nbase, mesh%nsys)
       INTEGER :: nb, ns, i, j, im, ip, info
@@ -264,6 +266,7 @@ CONTAINS
             END DO
             s%grad_p(:, (im - 1)*nb + i) = image_signs(im, ISX, ISY)*s%grad_p(:, (im - 1)*nb + i)/(4D0*PI*ns)
             IF (PRESENT(phi_source)) phi_source((im - 1)*nb + i) = SUM(RXY(im, 1:ns)*block_phi(i, 1:ns))/(4D0*PI*ns)
+            IF (PRESENT(sigma_full)) sigma_full((im - 1)*nb + i) = SUM(RXY(im, 1:ns)*sigma(i, 1:ns))/ns
          END DO
       END DO
    END SUBROUTINE velocity_source

@@ -1,0 +1,6 @@
+! Mean drift options of this integration test
+mean_drift = 1
+drift_methods = far control
+write_terms = 0
+motion_state = fixed
+cs_fd_step = 0.1

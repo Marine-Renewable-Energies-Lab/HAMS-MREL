@@ -52,31 +52,52 @@ MODULE WaterlineField
 
 CONTAINS
 
-   SUBROUTINE field_influence_row(mesh, xp, is_multi, row_g, row_dg)
+   SUBROUTINE field_influence_row(mesh, xp, is_multi, row_g, row_dg, x_decide, field_mode)
       ! G and dG/dn at xp, integrated over each base panel for each image. The panels stay in place and xp is mirrored, as in
       ! CalPotential. is_multi selects the panel integrals that read the combined multi-body arrays.
+      ! A panel within 50 panel sizes of the point gets panel integrals of 1/r and of its image, and one further away the
+      ! centroid value. x_decide, if present, is the point of that decision instead of xp. The points of one difference
+      ! stencil pass its centre, so that they all take the same branch: otherwise the jump between the two would enter the
+      ! difference, divided by the step (fields_green in FieldVelocity.f90). For the same reason they also take the series that
+      ! FINGREEN3D picks at the centre (RR_DECIDE): the series do not agree exactly at the switches (FINGREEN3D_R).
+      ! field_mode, if present and true, passes FIELD to FINGREEN3D: its Limes returns isolated outliers, which a difference
+      ! takes over 2 delta. Only fields_green passes it, so the waterline rows (waterline_rows) keep the default route.
       !   row_g, row_dg   (nbase, nsys)
       TYPE(panel_mesh), INTENT(IN) :: mesh
       REAL(8), INTENT(IN) :: xp(3)
       LOGICAL, INTENT(IN) :: is_multi
       COMPLEX(8), INTENT(OUT) :: row_g(:, :), row_dg(:, :)
-      REAL(8) :: xq(3), xf(3), nrm(3), area, rkn(4)
+      REAL(8), INTENT(IN), OPTIONAL :: x_decide(3)
+      LOGICAL, INTENT(IN), OPTIONAL :: field_mode
+      REAL(8) :: xq(3), xf(3), xd(3), xdi(3), nrm(3), area, rkn(4), rr_decide
       COMPLEX(8) :: grn(4)
       INTEGER :: jel, is, flag
+      LOGICAL :: field
 
-      !$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(jel, is, flag, xq, xf, nrm, area, rkn, grn) SCHEDULE(DYNAMIC, 16)
+      xd = xp
+      IF (PRESENT(x_decide)) xd = x_decide
+      field = .FALSE.
+      IF (PRESENT(field_mode)) field = field_mode
+
+      !$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(jel, is, flag, xq, xf, xdi, nrm, area, rkn, grn, rr_decide) &
+      !$OMP SCHEDULE(DYNAMIC, 16)
       DO jel = 1, mesh%nbase
          xq = mesh%xc(:, jel)
          nrm = mesh%nrm(:, jel)
          area = mesh%area(jel)
          DO is = 1, mesh%nsys
             xf = image_signs(is, ISX, ISY)*xp
-            flag = MERGE(1, 0, NORM2(xf - xq) <= 50D0*mesh%psize(jel))
+            xdi = image_signs(is, ISX, ISY)*xd
+            flag = MERGE(1, 0, NORM2(xdi - xq) <= 50D0*mesh%psize(jel))
 
             IF (H < 0D0) THEN
                CALL INFGREEN3D(xq(1), xf(1), xq(2), xf(2), xq(3), xf(3), V, grn, flag)
+            ELSE IF (PRESENT(x_decide)) THEN
+               rr_decide = SQRT((xq(1) - xdi(1))**2 + (xq(2) - xdi(2))**2)   ! as RR of FINGREEN3D for xf
+               CALL FINGREEN3D(xq(1), xf(1), xq(2), xf(2), xq(3), xf(3), V, WVN, NK, H, grn, flag, RR_DECIDE=rr_decide, &
+                               FIELD=field)
             ELSE
-               CALL FINGREEN3D(xq(1), xf(1), xq(2), xf(2), xq(3), xf(3), V, WVN, NK, H, grn, flag)
+               CALL FINGREEN3D(xq(1), xf(1), xq(2), xf(2), xq(3), xf(3), V, WVN, NK, H, grn, flag, FIELD=field)
             END IF
 
             rkn = 0D0

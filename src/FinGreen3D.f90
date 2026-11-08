@@ -7,6 +7,9 @@
       ! ..... Public Subroutines ...................................................................................................
 
       PUBLIC :: FINGREEN3D
+
+      ! Limit of nu*h for LINTON, shared by the ladders of FINGREEN3D_R and FIELD_SERIES, see FINGREEN3D_R
+      REAL*8,PARAMETER,PRIVATE:: VHLIN=50.D0
    
       CONTAINS
 ! ==================================================================================
@@ -78,9 +81,11 @@
 !                      Level-1 (Top-level) driver subroutine                      !
 !!-------------------------------------------------------------------------------!!
 
-      SUBROUTINE FINGREEN3D(XF,XP,YF,YP,ZF,ZP,V,WVN,NK,H,GRN,FLAG)
+      SUBROUTINE FINGREEN3D(XF,XP,YF,YP,ZF,ZP,V,WVN,NK,H,GRN,FLAG,RR_DECIDE,FIELD)
 
       INTEGER,INTENT(IN):: NK,FLAG
+      REAL*8,INTENT(IN),OPTIONAL:: RR_DECIDE                       ! Horizontal distance at which the series is chosen, see FINGREEN3D_R
+      LOGICAL,INTENT(IN),OPTIONAL:: FIELD                          ! Field points of a difference stencil, see FINGREEN3D_R
       REAL*8 R,R1,RR,XPQ,YPQ,ZPQ
       REAL*8,INTENT(IN):: XF,XP,YF,YP,ZF,ZP,V,WVN(1:NK),H
       COMPLEX*16,INTENT(OUT):: GRN(4)
@@ -107,7 +112,7 @@
 
         ELSE
             
-          CALL FINGREEN3D_R(RR,ZF,ZP,V,WVN,NK,H,FG,FLAG)
+          CALL FINGREEN3D_R(RR,ZF,ZP,V,WVN,NK,H,FG,FLAG,RR_DECIDE,FIELD)
           
           IF(RR.GT.1.E-6) THEN
           GRN(2)=FG(2)*XPQ/RR
@@ -157,14 +162,18 @@
 !                      Level-1 (Top-level) driver subroutine                      !
 !!-------------------------------------------------------------------------------!!
 
-      SUBROUTINE FINGREEN3D_R(RR,ZF,ZP,V,WVN,NK,H,GRN,TAG)
+      SUBROUTINE FINGREEN3D_R(RR,ZF,ZP,V,WVN,NK,H,GRN,TAG,RR_DECIDE,FIELD)
 
         IMPLICIT NONE
         INTEGER TAG,NK
+        REAL*8,INTENT(IN),OPTIONAL:: RR_DECIDE
+        LOGICAL,INTENT(IN),OPTIONAL:: FIELD
+        LOGICAL PLAIN
         REAL*8 R,R1,RR,ZPQ,PI4,G,RHP,WK
         REAL*8,INTENT(IN)::ZF,ZP,V,WVN(1:NK),H
         COMPLEX*16,INTENT(OUT):: GRN(3)
         COMPLEX*16 FG(3)
+        REAL*8,PARAMETER:: RLIN=0.02D0                                           ! Limit of R/h for LINTON (nu*h: VHLIN), see below
 
         DATA  G,PI4 /9.807D0,12.56637061435917D0/
          
@@ -180,14 +189,32 @@
 ! based on the value of RHP (R/h)                                                                   ! This is the domain decomposition
 !  
         RHP=DABS(RR/H)                                                           ! RR - Horizontal distance between the source point and the field point, H - Depth
-         IF (RHP.LT.0.0005D0) THEN
-          CALL LINTON(RR,ZF,ZP,V,WK,WVN,NK,H,FG)
+! The series do not agree exactly at the switches below. RR_DECIDE, if present, sets the choice, so that the points of a
+! difference stencil all take the series of its centre: the series is still evaluated at RR.
+        IF (PRESENT(RR_DECIDE)) RHP=DABS(RR_DECIDE/H)
+! FIELD, for the field points of a difference stencil: Limes in EIGENE and PIDCOCK returns isolated outliers, which a
+! difference takes over 2*delta. With FIELD true FIELD_SERIES picks series without Limes, except PIDCOCK for
+! nu*h > VHLIN, which keeps Limes (see FIELD_SERIES). Absent or false: as before.
+        PLAIN=.FALSE.
+        IF (PRESENT(FIELD)) PLAIN=FIELD
+        IF (PLAIN) THEN
+          CALL FIELD_SERIES(RR,RHP,ZF,ZP,V,WK,WVN,NK,H,FG)
+        ELSE
+! LINTON is used up to R/h = RLIN when nu*h <= VHLIN. Below R/h of about 0.02 the 100 terms
+! of PIDCOCK have not started to decay, and the epsilon algorithm (Limes) picks a table entry
+! that jumps when R moves by rounding size: dG/dR*h^2 then scatters by up to 1e5. Around
+! R/h = 0.02 the two are about equally accurate. Above nu*h = 50 the errors of LINTON grow
+! quickly (dG/dz*h^2 of 1.5 at nu*h = 80, 12 at 100), likely because its Ewald parameter
+! is clamped at A*k*h = 5 from nu*h = 51, so PIDCOCK is kept there.
+         IF (RHP.LT.0.0005D0.OR.(RHP.LT.RLIN.AND.V*H.LE.VHLIN)) THEN
+          CALL LINTON_SCALED(RR,ZF,ZP,V,WVN,NK,H,FG)
         ELSEIF (RHP.GE.0.0005D0.AND.RHP.LT.0.05D0) THEN
           CALL PIDCOCK(RR,ZF,ZP,V,WK,WVN,NK,H,FG)
          ELSEIF (RHP.GE.0.05D0.AND.RHP.LT.0.5D0) THEN
           CALL EIGENE(RR,ZF,ZP,WK,WVN,NK,H,FG)
          ELSE
           CALL EIGEN(RR,ZF,ZP,WK,WVN,NK,H,FG)
+        ENDIF
         ENDIF
         
 ! Post-process the Green function's value
@@ -224,6 +251,65 @@
 
         RETURN
         END SUBROUTINE FINGREEN3D_R
+
+!!-------------------------------------------------------------------------------!!
+!       The series choice of FINGREEN3D_R with FIELD                              !
+!!-------------------------------------------------------------------------------!!
+! As the ladder of FINGREEN3D_R, but with no Limes: Limes returns isolated outliers, which a difference stencil takes
+! over 2*delta. EIGENE_DIRECT replaces EIGENE. LINTON also takes R/h from 0.02 to 0.05 when nu*h <= VHLIN, in place of
+! PIDCOCK: a direct PIDCOCK sum of 199 roots is 6.4e-4 off a direct sum of the series in dG/dR at R/h = 0.02 and
+! nu*h = 25, against at most 6.5e-7 for LINTON on [0.02, 0.05] up to nu*h = 25 (measured, probe against
+! direct_sum_green of the tests). For nu*h from 25 to 50 LINTON is less accurate there: 1.8e-3 in dG/dR at
+! nu*h = 49.9, against 1.4e-3 for the direct PIDCOCK sum, and the same as LINTON below R/h = 0.02 (measured the
+! same way). Above nu*h = 50 PIDCOCK with Limes is kept: at nu*h = 62 a direct PIDCOCK sum is off
+! by up to 1e5 in dG/dR at R/h = 0.0006 and LINTON by 0.1 (measured the same way).
+! RHP is the R/h of the choice (RR_DECIDE or RR), RR the distance at which the series is evaluated.
+
+      SUBROUTINE FIELD_SERIES(RR,RHP,ZF,ZP,V,WK,WVN,NK,H,FG)
+!DIR$ ATTRIBUTES NOINLINE :: FIELD_SERIES
+
+        IMPLICIT NONE
+        INTEGER,INTENT(IN):: NK
+        REAL*8,INTENT(IN):: RR,RHP,ZF,ZP,V,WK,WVN(1:NK),H
+        COMPLEX*16,INTENT(OUT):: FG(3)
+        REAL*8,PARAMETER:: RLIN_FIELD=0.05D0
+
+        IF (RHP.LT.0.0005D0.OR.(RHP.LT.RLIN_FIELD.AND.V*H.LE.VHLIN)) THEN
+          CALL LINTON_SCALED(RR,ZF,ZP,V,WVN,NK,H,FG)
+        ELSEIF (RHP.LT.0.05D0) THEN
+          CALL PIDCOCK(RR,ZF,ZP,V,WK,WVN,NK,H,FG)
+        ELSEIF (RHP.LT.0.5D0) THEN
+          CALL EIGENE_DIRECT(RR,ZF,ZP,WK,WVN,NK,H,FG)
+        ELSE
+          CALL EIGEN(RR,ZF,ZP,WK,WVN,NK,H,FG)
+        ENDIF
+
+      END SUBROUTINE FIELD_SERIES
+
+!!-------------------------------------------------------------------------------!!
+!       LINTON run in units of the depth                                          !
+!!-------------------------------------------------------------------------------!!
+! The tolerances in LINTON (EPS = 1E-6 in its series, AQUADF and AQUAD) are absolute,
+! so in metres its errors in G*h grow with h: up to 1 at h = 1000, against 3e-5 at h = 10.
+! Run in units of h (h = 1, lengths over h, nu*h, k*h) and scaled back, G*h, dG/dR*h^2 and
+! dG/dz*h^2 are the same at every depth, within 3e-5, 4e-4 and 1.1e-3 of a direct sum of
+! the eigenfunction series up to nu*h = 50.
+
+      SUBROUTINE LINTON_SCALED(RR,ZF,ZP,V,WVN,NK,H,GRN)
+
+        IMPLICIT NONE
+        INTEGER,INTENT(IN):: NK
+        REAL*8,INTENT(IN):: RR,ZF,ZP,V,WVN(NK),H
+        COMPLEX*16,INTENT(OUT):: GRN(3)
+        REAL*8 WVNH(NK)
+
+        WVNH=WVN*H
+        CALL LINTON(RR/H,ZF/H,ZP/H,V*H,WVNH(1),WVNH,NK,1.D0,GRN)
+        GRN(1)=GRN(1)/H
+        GRN(2)=GRN(2)/H**2
+        GRN(3)=GRN(3)/H**2
+
+      END SUBROUTINE LINTON_SCALED
 
 !!-------------------------------------------------------------------------------!!
 !                Belows are Level-2 (intermediate-level) subroutines              !
@@ -364,7 +450,7 @@
 ! ==================================================================================
 !       Purpose: This program computes Green function and its derivatives 
 !                using series expansion, with epsilon algorithm, in the region 
-!                R/H.GT.0.01 and R/H.LT.0.5. The terms needed is 10~80 to  
+!                R/H.GE.0.05 and R/H.LT.0.5. The terms needed is 10~80 to  
 !                10^-5 accuracy, with a maximum number of term 80.
 !
 !  License:
@@ -504,12 +590,98 @@
 
         RETURN
         END SUBROUTINE EIGENE
+
+! ==================================================================================
+!       EIGENE without the epsilon algorithm, for FIELD (FINGREEN3D_R). Limes returns
+!       isolated outliers, which a difference stencil takes over 2*delta, so the
+!       evanescent series is summed directly, over at most NK roots. It stops once the
+!       bound of every term (PM*K0 or PM*KM*K1, the cosines left out) is below TOL of
+!       its partial sum. Otherwise the same as EIGENE.
+! ==================================================================================
+
+        SUBROUTINE EIGENE_DIRECT(R,ZF,ZP,WK,WVN,NK,H,GRN)
+
+         IMPLICIT  NONE
+
+         INTEGER I,NK
+         REAL*8 J0,J1,Y0,Y1,K0,K1
+         REAL*8 PI,KM,PM,SG,SGR,SGZ
+         REAL*8 SR,SR1,DSRR,DSRZ,DSR1R,DSR1Z
+         REAL*8 ZFH,ZPH,TWOKMH,CKZF,CKZP,SKZF
+         REAL*8,INTENT(IN)::R,ZF,ZP,H,WK,WVN(1:NK)
+         REAL*8,PARAMETER:: TOL=1.D-12
+
+         COMPLEX*16,INTENT(OUT):: GRN(3)
+         COMPLEX*16 CI,P0,DP0,NM0
+
+         DATA  PI,CI/3.141592653589793d0,(0.D0,1.0D0)/
+
+         ZFH = ZF + H
+         ZPH = ZP + H
+
+! the propagating mode, as in EIGENE
+         NM0=H/2.D0*(1.D0+DSINH(2.D0*WK*H)/(2.D0*WK*H))
+         P0=PI/NM0*DCOSH(WK*ZFH)*DCOSH(WK*ZPH)
+         DP0=PI/NM0*DSINH(WK*ZFH)*DCOSH(WK*ZPH)
+
+         CALL JY01B(WK*R,J0,J1,Y0,Y1)
+
+         GRN(1)=P0*(CI*J0-Y0)
+         GRN(2)=-WK*P0*(CI*J1-Y1)
+         GRN(3)=WK*DP0*(CI*J0-Y0)
+
+! the evanescent modes, summed directly
+         SG=0.D0
+         SGR=0.D0
+         SGZ=0.D0
+
+         DO I=2,NK
+
+         KM=WVN(I)
+         TWOKMH = 2.D0*KM*H
+         PM = 4.D0/(1.D0+DSIN(TWOKMH)/TWOKMH)/H
+
+         CALL IK01A(KM*R,K0,K1)
+
+         CKZF = DCOS(KM*ZFH)
+         CKZP = DCOS(KM*ZPH)
+         SKZF = DSIN(KM*ZFH)
+
+         SG = SG + PM*K0*CKZF*CKZP
+         SGR = SGR - PM*KM*K1*CKZF*CKZP
+         SGZ = SGZ - PM*KM*K0*SKZF*CKZP
+
+         IF (PM*K0.LT.TOL*DABS(SG).AND.PM*KM*K1.LT.TOL*DABS(SGR).AND.PM*KM*K0.LT.TOL*DABS(SGZ)) EXIT
+
+         ENDDO
+
+         GRN(1)= GRN(1)+SG
+         GRN(2)= GRN(2)+SGR
+         GRN(3)= GRN(3)+SGZ
+
+! exclude the singular terms, as in EIGENE
+         SR=DSQRT(R**2+(ZF-ZP)**2)
+         SR1=DSQRT(R**2+(ZF+ZP)**2)
+
+         DSRR=R/SR
+         DSRZ=(ZF-ZP)/SR
+         DSR1R=R/SR1
+         DSR1Z=(ZF+ZP)/SR1
+
+         GRN(1)=GRN(1)-(1.D0/SR+1.D0/SR1)
+         GRN(2)=GRN(2)+(DSRR/SR**2+DSR1R/SR1**2)
+         GRN(3)=GRN(3)+(DSRZ/SR**2+DSR1Z/SR1**2)
+
+        RETURN
+        END SUBROUTINE EIGENE_DIRECT
         
 
 ! ==================================================================================
 !       Purpose: This program computes Green function and its derivatives 
 !                using Pidcock's method, with epsilon algorithm, in the region 
-!                R/H.GT.0.0005 and R/H.LT.0.01. The terms needed is 50~100 to 
+!                R/H.GE.0.0005 and R/H.LT.0.05 (from R/H = 0.02 when nu*h <= 50,
+!                where LINTON is used below; with FIELD, FIELD_SERIES uses it only
+!                for nu*h > 50). The terms needed is 50~100 to 
 !                10^-4 accuracy, with a maximum number of term 100.
 ! 
 !  License:
@@ -663,7 +835,7 @@
 ! ==================================================================================
 !       Purpose: This program computes Green function and its derivatives 
 !                using Linton's method, with epsilon algorithm, in the region 
-!                R/H.LT.0.0005. The terms needed is about 3~10 to 
+!                R/H.LT.0.0005, and R/H.LT.0.02 when nu*h <= 50. The terms needed is about 3~10 to 
 !                10^-6 accuracy, with a maximum number of term 10.
 ! 
 !  License:

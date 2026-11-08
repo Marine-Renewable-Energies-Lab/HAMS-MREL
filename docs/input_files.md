@@ -167,6 +167,29 @@ A few notes:
 | next `NTND` lines | free | `M`, `NCN_MULTI(bodyID,nodeID)` and `NCON_MULTI(bodyID,nodeID,1:numvertices)`| Panel definitions. Each line contains: panel number, number of vertices and (vertex1, vertex2, ...)
 
 
+## CSMesh.pnl (only with `cs_shape = file`)
+
+With the control-surface mean drift and `cs_shape = file`, the control surface C of body `b` is read from `CSMesh_{b}.pnl` in the input directory. There is one file per body, numbered `1 … numberofbodies` without leading zeros, also for a single body (`CSMesh_1.pnl`). If a file is missing, the run stops with `cs_shape = file needs CSMesh_<b>.pnl in the input directory.`
+
+The file has exactly the structure of `HullMesh.pnl` (see above), with these rules:
+- `ISX = ISY = 0`. C is always given in full.
+- Panels have 3 or 4 vertices.
+- The coordinates are global, not body-local.
+- **The panel normals must point towards the body.** HAMS takes the normal of a quadrilateral as (x4 - x2) x (x3 - x1) and of a triangle as (x1 - x2) x (x3 - x2), so the node order sets the direction. The run checks the sign of the sum over the panels of n . (x_c - x_b) A, with x_b the centre of the waterplane bounding box of the body; if it is not negative, the run stops with `CSMesh_<b>.pnl: the panel normals must point towards the body.`
+- **Containment is the user's job.** C must enclose the body and no other body. The run does not test this for a file. It only checks that no point of C lies within one panel size of a hull panel centroid.
+- C must cut the free surface z = 0 in a closed line. Gaps in that waterline are reported as warnings.
+
+`write_control_surface` writes the generated C in this format, so a generated file can be edited and read back.
+
+## FSMesh.pnl (optional, with the control-surface method)
+
+The vertical force and the roll and pitch moments of the control-surface method also need the free surface F between the hull waterline and Γc, the line where C meets z = 0 (Chen 2007, §3.1). By default F of body `b` is generated: quadrilateral strips from each hull waterline segment out to Γc, along rays from the centre of the waterplane bounding box, with `cs_fs_rows` rows graded towards the hull (the inner row is 1/4 of the outer). The rays only cover F when the waterline is star-shaped about that centre. If it is not, the run goes on without F for that body: its F_z, M_x and M_y are not written, and the log says `Warning, body <b>: the waterline is not star-shaped about its centre; give FSMesh_<b>.pnl. No free surface F, so F_z, M_x, M_y of body <b> are not computed.` The other bodies keep their F and their rows I = 3, 4, 5.
+
+`FSMesh_{b}.pnl` in the input directory replaces the generated F of body `b`. It has the structure of `CSMesh_{b}.pnl` (`ISX = ISY = 0`, 3 or 4 vertices, global coordinates), with these rules. A given file is a request for F, so a file that cannot be read or breaks the first rule stops the run with its message:
+- All nodes lie in z = 0. The run stops with `FSMesh_<b>.pnl: F must lie in the free surface z = 0.` otherwise.
+- The node order does not matter: the normal of F is always (0, 0, −1), into the fluid.
+- F must fill the free surface between the hull waterline and Γc. The run does not test this.
+
 ## WaterPlaneMesh.pnl
 
 Node and element data on the inner water plane for multiple bodies are specified in the `WaterPlaneMesh[_i].pnl` files. There is one file per body.
@@ -228,7 +251,7 @@ Each line is `key = value`. Text after `!` is a comment, blank lines are ignored
 | Key | Values | Default | Description |
 | :-- | :----- | :------ | :---------- |
 | `mean_drift` | `0`, `1`, `2` | `0` | 0 is off, 1 is unidirectional, 2 is all heading pairs. |
-| `drift_methods` | `far`, `near`, or both separated by a blank or comma | `far` | Far-field (momentum) and near-field (pressure integration) methods. |
+| `drift_methods` | any of `far`, `near`, `control`, separated by blanks or commas | `far` | Far-field (momentum), near-field (pressure integration) and control-surface methods. For the vertical force on a hull with sharp edges (a right-angled bottom edge), prefer `control`: on a truncated cylinder (radius 10 m, draft 10 m, depth 100 m, 7168 panels, 0.70 to 1.10 rad/s), control F_z is within 1.44% of a semi-analytical reference, where near-field is 12% to 17% off on the fixed hull and 23% to 506% off on the free hull, with the wrong sign at 0.70 rad/s (see [the accuracy of the vertical loads](../test/data/drift_cyl/README.md#control-surface-method)). |
 | `velocity_method` | `differencing`, `source` | `differencing` | How the velocity on the body surface is obtained, for the near-field method. `differencing` takes the tangential part from the potential on the neighbouring panels, and the normal part from the known normal derivative. `source` solves for a source distribution with the same normal derivative, and takes the velocity from its integral: one more dense factorization and one more set of Green function evaluations per frequency. The potential itself stays that of the direct solve. The solve keeps the factorization and the gradient integrals of every symmetry block in memory, 64 nb^2 ns bytes with nb panels in the base mesh and ns symmetry blocks: 236 MB at 1920 panels and 1.2 GB at 4320 with no symmetry, about as much again as the first-order arrays. Irregular frequencies are not removed for this method, since `IRSP = 1` is rejected, and the run stops if a matrix is exactly singular. |
 | `waterline_method` | `extrapolate`, `field` | `extrapolate` | How the potential at the waterline is obtained, for the near-field method. `extrapolate` takes it from the adjacent panel and its gradient. `field` evaluates the boundary integral formula at a point close to the waterline, out from the body and down. The point is in the fluid if the wall at the waterline widens downward by no more than 45 degrees from the vertical, and if no other body is closer to it than `waterline_offset` times the segment length, so keep the gap between bodies larger than that. On a wider wall the run stops with a message. It costs one set of Green function evaluations per waterline segment and frequency. It converges more slowly than `extrapolate`, and in finite depth it can jump with the mesh or the offset: see `test/data/drift_cyl/README.md`. |
 | `waterline_offset` | positive real | `0.01` | With `waterline_method = field`: how far the point lies from the waterline, out from the body and down, each as a fraction of the waterline segment length. |
@@ -237,6 +260,13 @@ Each line is `key = value`. Text after `!` is a comment, blank lines are ignored
 | `far_tolerance` | real | `1d-4` | Tolerance of the far-field integration. |
 | `write_terms` | `0`, `1`, `2` | `1` | 0 writes nothing extra, 1 writes the term file, 2 also writes panel diagnostics. |
 | `wl_z_tolerance` | real | `1d-6` | Tolerance for panels at the waterline, relative to the body size. |
+| `cs_velocity` | `green`, `source` | `green` | With `control`: how the velocity on the control surface is obtained. `green` differentiates the potential by finite differences of the Green function. `source` solves for a source distribution and takes the velocity from its integral. In finite depth above ν·h = 50 (ν = ω²/g), the Green function of `green` still uses the series acceleration (Limes) that makes field values jump at small horizontal distances, so its values on C may scatter, and the log warns at each such frequency; there, check against `far`, or use deep water (`H < 0`) where kh is large. |
+| `cs_shape` | `cylinder`, `box`, `file` | `cylinder` | With `control`: the shape of the control surface. `cylinder` and `box` are generated around each body. `file` reads `CSMesh_{b}.pnl` for each body. |
+| `cs_margin` | real, at least 0 | `0` | With `control`: the horizontal gap in metres between the hull and the control surface. 0 means 4 times the median hull panel size. |
+| `cs_bottom_margin` | real, at least 0 | `0` | With `control`: the gap in metres below the deepest hull point. 0 means 4 times the median hull panel size. |
+| `cs_panel_size` | real, at least 0 | `0` | With `control`: the panel size of the control surface in metres. 0 means the median hull panel size. |
+| `cs_fd_step` | real, above 0 and at most 0.5 | `0.02` | With `cs_velocity = green`: the finite-difference step, as a fraction of the local control-surface panel size. Above about 0.3, the centroids of the top row of C (a quarter panel below z = 0) come within one step of z = 0, and their dφ/dz is then taken from the free-surface condition, which is off by order k z below z = 0 [derived]. Keep the default. |
+| `cs_fs_rows` | integer, at least 0 | `0` | Number of rows of the free-surface patch F between the waterline and the control surface. 0 means the nearest integer to (distance of Γc − distance of the waterline)/`cs_panel_size`, at least 2; the distances are mean distances from the centre of the waterplane bounding box. Not used when `FSMesh_{b}.pnl` is given. |
 
 Example:
 
@@ -252,3 +282,6 @@ The options are checked against `ControlFile.in` and the mesh files. A run is re
 - The water depth `H` is above 500 m. Set `H < 0` for infinite depth instead, because the incident-wave velocity routines treat depths above 500 m differently.
 - `drift_methods` includes `near` and any generalized mode file (`gen_mod_{body}_{dof}.txt`) is present.
 - `velocity_method = source` with `ISOLV = 2` (GMRES), or with `IRSP = 1` (irregular frequency removal).
+- `drift_methods` includes `control` and any generalized mode file is present.
+- `cs_velocity = source` with `ISOLV = 2` (GMRES), or with `IRSP = 1` (irregular frequency removal).
+- `cs_margin`, `cs_bottom_margin`, `cs_panel_size` or `cs_fs_rows` is negative, or `cs_fd_step` is outside (0, 0.5].

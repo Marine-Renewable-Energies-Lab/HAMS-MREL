@@ -6,7 +6,7 @@ module second_order_fixtures
   private
 
   public :: make_cylinder, set_panel, maccamy_fuchs_a, maccamy_fuchs_state, maccamy_fuchs_phi, maccamy_fuchs_drift, &
-            maccamy_fuchs_waterline
+            maccamy_fuchs_waterline, maccamy_fuchs_field
 
 contains
 
@@ -250,6 +250,47 @@ complex(8) function maccamy_fuchs_phi(x, a_rad, h, k, omega, amp, beta, g)
   call depth_factor(k, x(3), h, zf, dzf)
   maccamy_fuchs_phi = cmplx(0d0, -g * amp / omega, kind=8) * zf * ssum
 end function maccamy_fuchs_phi
+
+!> Exact total potential and gradient at x(3), r >= a_rad, of a fixed bottom-mounted cylinder about the z axis (MacCamy and
+!> Fuchs 1954):
+!>   phi = -(i g amp / omega) Z(z) sum_n eps_n i^n [J_n(kr) - (J_n'(ka)/H_n'(ka)) H_n(kr)] cos n(theta - beta)
+!> with Z from depth_factor (h < 0 is deep water). At r = a the bracket is the Wronskian 2i/(pi ka H_n'(ka)), so phi reduces
+!> to the c_n of maccamy_fuchs_coefficients [derived]. The series runs to n = int(k max(r, a)) + 20, past which J_n(kr) and
+!> the scattered term (a/r)^n are negligible.
+subroutine maccamy_fuchs_field(x, a_rad, h, k, omega, amp, beta, g, phi, grad)
+  real(8), intent(in) :: x(3), a_rad, h, k, omega, amp, beta, g
+  complex(8), intent(out) :: phi, grad(3)
+  complex(8), parameter :: ci = (0d0, 1d0)
+  complex(8) :: pref, ratio, radial, dradial, ssum, dsum_r, dsum_t, coef
+  real(8) :: r, th, tr, zf, dzf, eps, ka, kr
+  integer :: n, nmax
+
+  r = sqrt(x(1)**2 + x(2)**2)
+  th = atan2(x(2), x(1))
+  tr = th - beta
+  ka = k * a_rad
+  kr = k * r
+  nmax = int(k * max(r, a_rad)) + 20
+  ssum = (0d0, 0d0)
+  dsum_r = (0d0, 0d0)
+  dsum_t = (0d0, 0d0)
+  do n = 0, nmax
+    eps = merge(1d0, 2d0, n == 0)
+    coef = eps * ci**n
+    ratio = bessel_j_prime(n, ka) / hankel1_prime(n, ka)
+    radial = bessel_jn(n, kr) - ratio * hankel1(n, kr)
+    dradial = k * (bessel_j_prime(n, kr) - ratio * hankel1_prime(n, kr))
+    ssum = ssum + coef * radial * cos(real(n, 8) * tr)
+    dsum_r = dsum_r + coef * dradial * cos(real(n, 8) * tr)
+    dsum_t = dsum_t - coef * radial * real(n, 8) * sin(real(n, 8) * tr) / r
+  end do
+  call depth_factor(k, x(3), h, zf, dzf)
+  pref = cmplx(0d0, -g * amp / omega, kind=8)
+  phi = pref * zf * ssum
+  grad(1) = pref * zf * (dsum_r * cos(th) - dsum_t * sin(th))
+  grad(2) = pref * zf * (dsum_r * sin(th) + dsum_t * cos(th))
+  grad(3) = pref * dzf * ssum
+end subroutine maccamy_fuchs_field
 
 !> Analytic first-order state of a fixed bottom-mounted cylinder (axis z, radius a_rad), no BEM solve. The total
 !> potential on r = a is evaluated at each panel centroid's azimuth and z; phi_i and grad_i are the incident wave

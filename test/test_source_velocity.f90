@@ -37,6 +37,9 @@ module test_source_velocity
   ! The same, against deep water, where only the sea bed differs. The largest value measured at the points of the loop is 1.73e-3.
   real(8), parameter :: limit_against_deep = 5d-3
   real(8), parameter :: solve_limit = 1d-9
+  ! sigma_full against grad_p: the same sums in another order, in double precision
+  real(8), parameter :: sigma_full_limit = 1d-10
+  real(8), parameter :: pi = 3.141592653589793d0
   ! Whole mesh against half mesh: the two sum the same terms in another order
   real(8), parameter :: symmetry_limit = 1d-8
   ! MacCamy-Fuchs: rms over the wall of the velocity difference, relative to the rms total velocity. Measured 1.68% on 32 x 8
@@ -57,7 +60,8 @@ contains
       new_unittest("solve_recovers_normal_derivative", test_solve_normal), &
       new_unittest("half_mesh_y_matches_whole", test_half_y), &
       new_unittest("half_mesh_x_matches_whole", test_half_x), &
-      new_unittest("maccamy_fuchs_velocity", test_maccamy_fuchs) &
+      new_unittest("maccamy_fuchs_velocity", test_maccamy_fuchs), &
+      new_unittest("sigma_full_reproduces_velocity", test_sigma_full) &
       ]
   end subroutine collect_source_velocity
 
@@ -275,6 +279,46 @@ contains
     if (allocated(error)) return
     call check(error, worst <= symmetry_limit, "Half mesh against whole mesh")
   end subroutine compare_half
+
+  !> With a symmetry plane (ISY = 1), the gradient at every panel centroid, base and image, from sigma_full: the jump term
+  !> 2 pi sigma n, plus the sum over every panel (image is of base panel j, full index (is-1) nbase + j) of sigma M grad_int at
+  !> the mirrored centroid, over 4 pi. It must equal grad_p of velocity_source.
+  subroutine test_sigma_full(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: mesh
+    type(first_order_state) :: s
+    type(source_operator) :: op
+    complex(8), allocatable :: sigma_full(:)
+    complex(8) :: g_int, grad_int(3), grad(3)
+    real(8) :: xf(3), f(3), worst, scale
+    integer :: i, is, j, flag
+
+    call set_wave(10d0)
+    call load_single(0, 1, mesh)
+    call fixed_body_state(mesh, s)
+    allocate (sigma_full(mesh%n))
+    call build_source_operator(mesh, .false., .false., op)
+    call velocity_source(mesh, op, s, sigma_full=sigma_full)
+    call check(error, mesh%nsys == 2, "The fixture should have one symmetry plane")
+    if (allocated(error)) return
+    scale = maxval(abs(s%grad_p))
+    worst = 0d0
+    do i = 1, mesh%n
+      grad = 2d0*pi*sigma_full(i)*mesh%nrm(:, i)
+      do is = 1, mesh%nsys
+        f = image_signs(is, ISX, ISY)
+        xf = f*mesh%xc(:, i)
+        do j = 1, mesh%nbase
+          flag = merge(1, 0, norm2(xf - mesh%xc(:, j)) <= 50d0*mesh%psize(j))
+          call source_panel_integrals(mesh, xf, j, flag, .false., g_int, grad_int)
+          grad = grad + sigma_full((is - 1)*mesh%nbase + j)*f*grad_int
+        end do
+      end do
+      worst = max(worst, maxval(abs(grad/(4d0*pi) - s%grad_p(:, i)))/scale)
+    end do
+    print '(4x,a,es10.2)', "sigma_full: worst difference to grad_p, relative to the largest ", worst
+    call check(error, worst <= sigma_full_limit, "sigma_full does not reproduce grad_p")
+  end subroutine test_sigma_full
 
   subroutine test_maccamy_fuchs(error)
     type(error_type), allocatable, intent(out) :: error

@@ -26,7 +26,10 @@ MODULE SecondOrderTypes
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: so_options, panel_mesh, first_order_state, surface_geom
+   PUBLIC :: so_options, panel_mesh, first_order_state, surface_geom, cs_points, cs_fields
+   PUBLIC :: CS_WALL, CS_LINE, CS_FREE
+
+   INTEGER, PARAMETER :: CS_WALL = 1, CS_LINE = 2, CS_FREE = 3   ! C panel, Gamma_c segment midpoint, F panel
 
    TYPE :: so_options
       LOGICAL :: active = .FALSE.
@@ -40,6 +43,13 @@ MODULE SecondOrderTypes
       REAL(8) :: far_tolerance = 1D-4
       INTEGER :: write_terms = 1         ! 0 none, 1 term file, 2 also panel diagnostics
       REAL(8) :: wl_z_tolerance = 1D-6   ! relative to body size
+      ! Control-surface method (drift_methods = control)
+      LOGICAL :: do_control = .FALSE.
+      INTEGER :: cs_velocity = 1         ! 1 green, 2 source
+      INTEGER :: cs_shape = 1            ! 1 cylinder, 2 box, 3 file
+      REAL(8) :: cs_margin = 0D0, cs_bottom_margin = 0D0, cs_panel_size = 0D0   ! m; 0 sets the default
+      REAL(8) :: cs_fd_step = 0.02D0     ! fraction of the local control-surface panel size
+      INTEGER :: cs_fs_rows = 0          ! free-surface rows; 0 sets the default
    END TYPE so_options
 
    TYPE :: panel_mesh
@@ -74,5 +84,19 @@ MODULE SecondOrderTypes
       REAL(8), ALLOCATABLE :: awp(:), xf(:), yf(:), l11(:), l12(:), l22(:), vol(:), xb(:), yb(:), zb(:)   ! (nbody)
       INTEGER, ALLOCATABLE :: n_wl_gaps(:)            ! (nbody)
    END TYPE surface_geom
+
+   TYPE :: cs_points
+      ! Evaluation points of the control-surface method, all bodies together. w is the panel area or segment length.
+      ! On CS_LINE points nrm holds n-bar (horizontal, into F); on CS_FREE points it holds (0, 0, -1).
+      INTEGER :: n = 0
+      REAL(8), ALLOCATABLE :: x(:,:), nrm(:,:), w(:), psize(:)   ! (3,n), (3,n), (n), (n)
+      INTEGER, ALLOCATABLE :: kind(:), body(:)                   ! (n), (n)
+   END TYPE cs_points
+
+   TYPE :: cs_fields
+      ! Total first-order potential and its gradient at the points of a cs_points set, for one state. Filled by fields_green
+      ! (FieldVelocity). phi is zero at CS_WALL points below the stencil reach of z = 0, where it is not computed.
+      COMPLEX(8), ALLOCATABLE :: phi(:), grad(:,:)   ! (n), (3,n)
+   END TYPE cs_fields
 
 END MODULE SecondOrderTypes

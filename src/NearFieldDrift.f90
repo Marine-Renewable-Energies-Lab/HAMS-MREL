@@ -22,10 +22,9 @@
 !  ------------------------------------------------------------------------------------------------------
 MODULE NearFieldDrift
    ! Near-field mean drift force and moment on each body, from pressure integration over the mean wetted surface:
-   ! WAMIT v7.5 eq. 15.54 to 15.57, as listed in docs/superpowers/specs/2026-11-04-second-order-waves-design.md,
-   ! section 5.3. Time factor e^{-i omega t}, normals out of the fluid, moments about the body reference point xr.
+   ! WAMIT v7.5 eq. 15.54 to 15.57. Time factor e^{-i omega t}, normals out of the fluid, moments about the body reference point xr.
    !
-   ! Every product of two first-order quantities goes through pair_minus, section 5.4, so one state pair (s1, s2) gives
+   ! Every product of two first-order quantities goes through pair_minus, so one state pair (s1, s2) gives
    ! the mean load for s1 = s2 and the pair term of bidirectional drift otherwise. Terms with products inside an integral
    ! are evaluated panel by panel; only term IV multiplies integrated quantities, because G and H are themselves factors.
 
@@ -34,7 +33,8 @@ MODULE NearFieldDrift
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: pair_minus, waterline_point, waterline_extrapolate, near_field_pair
+   PUBLIC :: pair_minus, waterline_point, waterline_extrapolate, near_field_pair, elevation, force_and_moment
+   PUBLIC :: vertical_motion, rigid_displacement, add_hydrostatic_term
    PUBLIC :: T_WATERLINE, T_FLARE, T_VELOCITY, T_DISPLACEMENT, T_ROTATION, T_HYDROSTATIC
 
    ! Term index of near_field_pair
@@ -218,7 +218,9 @@ CONTAINS
    END SUBROUTINE dynamic_pressure_load
 
    SUBROUTINE add_hydrostatic_term(mesh, geom, s1, s2, terms)
-      ! V: F_S and M_S of eq. 15.56 and 15.57, with waterplane and volume properties about xr and Z_o = xr(3).
+      ! V: F_S and M_S of eq. 15.56 and 15.57, with waterplane and volume properties about xr and Z_o = xr(3). Fills
+      ! terms(3:5, T_HYDROSTATIC, :) only. The same rows as Lee (2006) eqs. 16 and 21, term by term [derived]; the
+      ! control-surface method uses them too (ControlSurfaceDrift).
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       TYPE(first_order_state), INTENT(IN) :: s1, s2
