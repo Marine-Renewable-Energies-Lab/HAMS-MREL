@@ -298,24 +298,34 @@ On the sharp truncated cylinder (radius 10 m, draft 10 m, depth 100 m), near-fie
 The quadratic part of the QTFs (`qtf` in `SecondOrder.in`) uses the near-field terms of the mean drift with two frequencies. Its checks:
 
 - In the tests, the diagonal of `QTF_Quadratic.10d` equals `MeanDriftPressure.9` row for row, `.10d` is Hermitian and `.10s` symmetric over frequencies, headings and two bodies, and the kernel reproduces the product of two bichromatic signals at any time (`test/test_near_field.f90`, `test/test_qtf.f90`, `test/test_integration_drift.f90`).
-- The off-diagonal values are compared with the [semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder) (`truncated_cylinder_reference.py qtf`, the same near-field terms of the eigenfunction solution, for every pair of the 21 frequencies 0.40 to 1.40 rad/s), and with Nemoh v3.0.3's quadratic part (`DUOK`) on the same mesh and grid, by `qtf_compare.py`.
+- The off-diagonal values are compared with the [semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder) (`truncated_cylinder_reference.py qtf`, the same near-field terms of the eigenfunction solution, for every pair of the 101 frequencies 0.40 to 1.40 rad/s, step 0.01), and with Nemoh v3.0.3's quadratic part (`DUOK`) on the same meshes and grid, by `qtf_compare.py`. `qtf_plots.py` draws the curves and the mesh convergence.
 
 The reference's first-order solutions take HAMS's stored incident potential `VINP` as the physical one, so their wave has elevation −iA at the origin instead of A (spec convention: the physical potential is i·`VINP`). That factor cancels in the mean drift and in the difference QTF, and gives −1 in the sum QTF, so the sum rows of the reference are negated. Before that was found, HAMS and Nemoh agreed with each other and both had the opposite sign of the reference on every sum value.
 
-Sharp cylinder, 448 panels, `velocity_method = source`, heading 0. Error per pair |value − exact| / max |exact| over the pairs, median and largest, in percent; difference pairs with ω_j − ω_i ≤ 0.3 rad/s, sum pairs all:
+Sharp cylinder, `velocity_method = source`, heading 0, meshes m1 to m4 (448, 1792, 4032, 7168 panels). Error per pair |value − exact| / max |exact| over the pairs, median / largest, in percent; difference pairs with ω_j − ω_i ≤ 0.3 rad/s (2666 pairs), sum pairs all (5151). Nemoh ran at m1 and m2:
 
-| Body | QTF | HAMS F_x | HAMS F_z | HAMS M_y | Nemoh F_x | Nemoh F_z | Nemoh M_y |
-| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| fixed | difference | 0.96 / 5.7 | 5.4 / 7.0 | 5.9 / 7.9 | 1.7 / 4.9 | 5.0 / 6.3 | 5.9 / 8.0 |
-| fixed | sum | 1.1 / 3.8 | 3.2 / 6.7 | 9.0 / 14 | 1.1 / 6.1 | 3.1 / 6.8 | 8.9 / 13 |
-| free | difference | 0.93 / 46 | 1.2 / 66 | 0.13 / 13 | 0.88 / 40 | 1.1 / 67 | 0.17 / 15 |
-| free | sum | 0.44 / 27 | 0.07 / 15 | 0.08 / 10 | 0.51 / 26 | 0.05 / 8.2 | 0.08 / 5.5 |
+| Body | QTF | Panels | HAMS F_x | HAMS F_z | HAMS M_y | Nemoh F_x | Nemoh F_z | Nemoh M_y |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| fixed | difference | 448 | 0.94 / 5.7 | 5.6 / 7.0 | 5.9 / 7.9 | 1.7 / 4.9 | 5.1 / 6.3 | 5.9 / 8.1 |
+| | | 1792 | 0.49 / 3.0 | 2.7 / 3.4 | 2.9 / 3.7 | 0.86 / 4.4 | 2.6 / 3.3 | 2.9 / 3.7 |
+| | | 4032 | 0.34 / 2.1 | 1.8 / 2.2 | 1.9 / 2.4 | | | |
+| | | 7168 | 0.26 / 1.6 | 1.3 / 1.6 | 1.4 / 1.8 | | | |
+| fixed | sum | 448 | 1.1 / 3.8 | 3.3 / 6.7 | 9.0 / 14 | 1.1 / 6.2 | 3.1 / 6.8 | 8.9 / 13 |
+| | | 1792 | 0.40 / 1.5 | 1.7 / 3.7 | 4.5 / 7.1 | 0.42 / 2.4 | 1.7 / 3.7 | 4.5 / 7.0 |
+| | | 4032 | 0.24 / 0.89 | 1.2 / 2.6 | 3.0 / 4.8 | | | |
+| | | 7168 | 0.17 / 0.64 | 0.86 / 2.0 | 2.2 / 3.6 | | | |
+| free | difference | 448 | 0.66 / 99 | 0.24 / 112 | 0.04 / 14 | 0.59 / 103 | 0.22 / 95 | 0.05 / 13 |
+| | | 1792 | 0.30 / 41 | 0.12 / 59 | 0.02 / 5.9 | 0.38 / 52 | 0.12 / 48 | 0.03 / 7.4 |
+| | | 4032 | 0.19 / 24 | 0.08 / 39 | 0.02 / 3.6 | | | |
+| | | 7168 | 0.14 / 16 | 0.06 / 28 | 0.01 / 2.5 | | | |
+| free | sum | 448 | 0.14 / 37 | 0.01 / 33 | 0.02 / 15 | 0.15 / 31 | 0.01 / 16 | 0.02 / 5.1 |
+| | | 1792 | 0.08 / 23 | 0.01 / 17 | 0.01 / 5.3 | 0.09 / 20 | 0.00 / 8.5 | 0.01 / 3.3 |
+| | | 4032 | 0.06 / 17 | 0.00 / 11 | 0.01 / 2.8 | | | |
+| | | 7168 | 0.05 / 13 | 0.00 / 7.6 | 0.01 / 1.7 | | | |
 
-- HAMS and Nemoh are within about one point of each other everywhere, and Nemoh's values need neither a conjugate nor a sign change against this convention.
-- The fixed body is off by the mesh error of the mean drift at this mesh (F_z and M_y 5% to 9%, as on the diagonal).
-- On the free body the median is small, and the largest errors sit at pairs with a frequency near the heave resonance, where the mean drift is also steep (see [above](#comparison-with-nemoh)).
-
-Finer meshes run on Snellius.
+- Every error falls with the mesh, roughly as the panel size (a factor of about 4 from 448 to 7168 panels), for HAMS and Nemoh alike. HAMS and Nemoh are close at the same mesh, and Nemoh's values need neither a conjugate nor a sign change against this convention.
+- Fixed body: the largest errors at 7168 panels are below 4%. They sit at the highest frequency (1.40 rad/s, fewest panels per wavelength) for F_x and the difference M_y, and in the middle of the range for F_z and the sum M_y.
+- Free body: the medians are below 0.2%. The largest errors all sit at pairs with a frequency at the heave resonance, 0.76 to 0.77 rad/s. There the response is steep, so a small shift of the computed resonance gives a large error at single pairs; the QTF, quadratic in the motion, amplifies it. At 4032 panels only 55 of 2666 difference pairs of F_x, and 15 of F_z, are off by more than 5%, all next to the resonance. Nemoh's largest errors sit at the same pairs.
 
 ## Open items
 
