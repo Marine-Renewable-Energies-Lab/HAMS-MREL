@@ -54,13 +54,14 @@ MODULE QTFDriver
 
 CONTAINS
 
-   SUBROUTINE qtf_init(opts, nfreq, beta_in_deg, nwl, outputdir)
-      ! Allocates the store for up to nfreq frequencies and the headings beta_in_deg. outputdir holds Wamit_format.
+   SUBROUTINE qtf_init(opts, nfreq, beta_in_deg, nwl, n_panels, nbody, outputdir)
+      ! Allocates the whole store for up to nfreq frequencies, the headings beta_in_deg, n_panels panels and nbody bodies,
+      ! so that a run that does not fit stops here, before the first-order solves. outputdir holds Wamit_format.
       TYPE(so_options), INTENT(IN) :: opts
-      INTEGER, INTENT(IN) :: nfreq, nwl
+      INTEGER, INTENT(IN) :: nfreq, nwl, n_panels, nbody
       REAL(8), INTENT(IN) :: beta_in_deg(:)
       CHARACTER(LEN=*), INTENT(IN) :: outputdir
-      INTEGER :: st
+      INTEGER :: st, i, b
 
       active = opts%qtf > 0
       IF (.NOT. active) RETURN
@@ -75,6 +76,22 @@ CONTAINS
       IF (ALLOCATED(store_oufr)) DEALLOCATE (store_oufr)
       ALLOCATE (store(nfreq, nbeta), store_wl(nwl, nfreq, nbeta), store_oufr(nfreq), STAT=st)
       IF (st /= 0) CALL out_of_memory()
+      DO b = 1, nbeta
+         DO i = 1, nfreq
+            ASSOCIATE (c => store(i, b))
+               ALLOCATE (c%phi_i(n_panels), c%phi_p(n_panels), c%grad_i(3, n_panels), c%grad_p(3, n_panels), &
+                         c%xi(6, nbody), STAT=st)
+               IF (st /= 0) CALL out_of_memory()
+               ! Touch the arrays, so that memory that is only promised (overcommit) is taken now
+               c%phi_i = (0D0, 0D0)
+               c%phi_p = (0D0, 0D0)
+               c%grad_i = (0D0, 0D0)
+               c%grad_p = (0D0, 0D0)
+               c%xi = (0D0, 0D0)
+            END ASSOCIATE
+         END DO
+      END DO
+      store_wl = (0D0, 0D0)
       beta_deg = beta_in_deg
    END SUBROUTINE qtf_init
 
@@ -85,9 +102,11 @@ CONTAINS
       TYPE(first_order_state), INTENT(IN) :: s
       COMPLEX(8), INTENT(IN) :: phi_wl(:)
       REAL(8), INTENT(IN) :: oufr
-      INTEGER :: st, n
-
       IF (.NOT. active) RETURN
+      IF (ib < 1 .OR. ib > nbeta .OR. (ib /= 1 .AND. nkept == 0)) THEN
+         WRITE (*, '(a,I0)') ' QTF: qtf_keep called out of order, heading ', ib
+         ERROR STOP 1
+      END IF
       IF (ib == 1) THEN
          nkept = nkept + 1
          IF (nkept > SIZE(store, 1)) THEN
@@ -96,7 +115,10 @@ CONTAINS
          END IF
          store_oufr(nkept) = oufr
       END IF
-      n = SIZE(s%phi_p)
+      IF (SIZE(s%phi_p) /= SIZE(store(nkept, ib)%phi_p) .OR. SIZE(s%xi, 2) /= SIZE(store(nkept, ib)%xi, 2)) THEN
+         WRITE (*, '(a)') ' QTF: the state does not have the size the store was set up for.'
+         ERROR STOP 1
+      END IF
       ASSOCIATE (c => store(nkept, ib))
          c%omega = s%omega
          c%k = s%k
@@ -106,8 +128,6 @@ CONTAINS
          c%beta = s%beta
          c%g = s%g
          c%rho = s%rho
-         ALLOCATE (c%phi_i(n), c%phi_p(n), c%grad_i(3, n), c%grad_p(3, n), c%xi(SIZE(s%xi, 1), SIZE(s%xi, 2)), STAT=st)
-         IF (st /= 0) CALL out_of_memory()
          c%phi_i = s%phi_i
          c%phi_p = s%phi_p
          c%grad_i = s%grad_i

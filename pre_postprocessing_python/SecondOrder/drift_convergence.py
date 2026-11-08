@@ -285,7 +285,8 @@ def qtf_cases():
     """The cases of the QTF study (--qtf): quadratic QTFs (qtf = 3) on the grid of the Nemoh runs, heading 0, on the
     meshes of the first study, so the diagonal is the mean drift of the a_* cases and Nemoh's nemoh_* runs have the same
     panels. Velocity by source solve (the method that agreed with Nemoh and the exact reference for F_z), and the
-    differencing velocity once, at m2 of the free sharp hull."""
+    differencing velocity once, at m2 of the free sharp hull. `collect --qtf` collects their mean drift only;
+    qtf_compare.py reads the QTF files in place, under q_*/output/Wamit_format."""
     grid = tuple(round(w, 4) for w in nemoh_frequencies())
     chosen = []
     for motion in ("fixed", "free"):

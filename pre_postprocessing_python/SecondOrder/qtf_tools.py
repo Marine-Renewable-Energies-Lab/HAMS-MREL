@@ -94,6 +94,9 @@ def slow_drift_spectrum(spectrum, qtf_minus, dw):
     s = np.asarray(spectrum, dtype=float)
     t = np.abs(np.asarray(qtf_minus)) ** 2
     n = s.size
+    if np.any(np.isnan(t)):
+        raise ValueError("slow_drift_spectrum: the QTF has missing pairs (NaN), for example from qtf_max_dw > 0; pass "
+                         "the pairs of every mu, or a matrix cut to the band that was written")
     mu = dw * np.arange(1, n)
     sf = np.array([8.0 * np.sum(s[:n - k] * s[k:] * np.diagonal(t, offset=k)) * dw for k in range(1, n)])
     return mu, sf

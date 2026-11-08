@@ -65,7 +65,7 @@ subroutine fill_store(opts, mesh, geom, states, wls, error)
   call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
   call check(error, ok, "build_surface_geom stopped: "//msg)
   if (allocated(error)) return
-  call qtf_init(opts, size(omegas), betas, geom%nwl, root)
+  call qtf_init(opts, size(omegas), betas, geom%nwl, mesh%n, mesh%nbody, root)
   allocate(wls(geom%nwl, size(omegas), size(betas)))
   do i = 1, size(omegas)
     k = wave_number(omegas(i), depth)

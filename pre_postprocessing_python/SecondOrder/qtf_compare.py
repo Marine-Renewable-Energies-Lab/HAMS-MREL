@@ -15,7 +15,8 @@ pairs, per mesh. Normalising by the largest value of the set keeps pairs where t
 
 Nemoh. OUT_QTFM_N.dat and OUT_QTFP_N.dat (w1 w2 beta1 beta2 DOF Mod Pha Re/(rho g) Im/(rho g)) list w1 >= w2. Nemoh's
 documentation does not fix the conjugation of the off-diagonal values against this convention, so both readings, the value
-as T(w1, w2) and as its conjugate, are compared with the exact reference and the closer one is reported and used. Only the
+as T(w1, w2), its conjugate, and both with the sign changed (a wave of another phase flips T+), are compared with the exact
+reference, and the closest is reported and used, with a warning if even that one has a median error above 50%. Only the
 documented output files are read.
 """
 import argparse
@@ -98,13 +99,16 @@ def errors(values, ref, motion, kernel, quantity, max_dw):
     return max(errs), statistics.median(errs), len(errs), len(ps)
 
 
-def nemoh_values(table, index, kernel, conjugate):
-    """(wi, wj) -> T(wi, wj) under the reading of Nemoh's value as T(w1, w2) (conjugate False) or conj T(w1, w2)."""
+READINGS = (("as-is", False, 1.0), ("conj", True, 1.0), ("-1", False, -1.0), ("-conj", True, -1.0))
+
+
+def nemoh_values(table, index, kernel, conjugate, sign=1.0):
+    """(wi, wj) -> T(wi, wj) under the reading of Nemoh's value v as T(w1, w2) = sign * v, or sign * conj(v)."""
     out = {}
     for (w1, w2, dof), v in table.items():
         if dof != index:
             continue
-        t = v.conjugate() if conjugate else v
+        t = sign * (v.conjugate() if conjugate else v)
         out[(w1, w2)] = t
         out[(w2, w1)] = t.conjugate() if kernel == "diff" else t
     return out
@@ -145,16 +149,18 @@ def main(argv=None):
                 if not table:
                     continue
                 best = None
-                for conjugate in (False, True):
+                for label, conjugate, sign in READINGS:
                     cells, medians = [], []
                     for quantity, index in QUANTITIES:
-                        e = errors(nemoh_values(table, index, kernel, conjugate), ref, motion, kernel, quantity, args.max_dw)
+                        e = errors(nemoh_values(table, index, kernel, conjugate, sign), ref, motion, kernel, quantity,
+                                   args.max_dw)
                         cells.append("%7.2f %7.2f" % (100 * e[0], 100 * e[1]) if e else "-")
                         medians.append(e[1] if e else np.inf)
                     score = sum(medians)
                     if best is None or score < best[0]:
-                        best = (score, conjugate, cells)
-                print("%-24s %-5s %-4s %16s %16s %16s" % (name, kernel, "conj" if best[1] else "as-is", *best[2]))
+                        best = (score, label, cells, max(medians))
+                print("%-24s %-5s %-6s %16s %16s %16s%s" % (name, kernel, best[1], *best[2],
+                                                            "  WARNING: no reading within 50%" if best[3] > 0.5 else ""))
     return 0
 
 

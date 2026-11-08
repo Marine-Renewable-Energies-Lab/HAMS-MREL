@@ -40,6 +40,7 @@ MODULE SecondOrderDriver
    ! the hull velocity of velocity_method when it is extrapolated, as for the near-field method.
 
    USE Const_mod, ONLY: G, RHO
+   USE HAMS_mod, ONLY: SYBO
    USE WaveDyn_mod, ONLY: AMP, BETA, BLNR, H, NBETA, NBODY, NPER, OUFR, TP, V, W1, WK, WVHD, AMAS, BDMP, EXFC, DSPL, &
                           AMAS_MULTI_COMB, BDMP_MULTI_COMB, BLNR_MULTI, EXFC_MULTI_COMB, DSPL_MULTI_COMB
    USE Body_mod, ONLY: CRS, KSTF, MATX, REFL, XR, XR_MULTI, CRS_MULTI, KSTF_MULTI, MATX_MULTI
@@ -135,6 +136,7 @@ CONTAINS
       CHARACTER(LEN=*), INTENT(IN) :: inputdir, outputdir
       CHARACTER(LEN=:), ALLOCATABLE :: msg
       LOGICAL :: ok
+      INTEGER :: nqtf
 
       IF (ABS(AMP - 1D0) > 1D-12) THEN
          WRITE (*, *) 'Mean drift needs first-order results per unit wave amplitude, but AMP = ', AMP
@@ -179,9 +181,11 @@ CONTAINS
       END IF
       IF (opts%qtf > 0) THEN
          ! validate_second_order makes sure the near-field method, and so phi_wl, is there
-         CALL qtf_init(opts, NPER, WVHD(1:NBETA), geom%nwl, outputdir)
-         WRITE (*, '(a,F10.1,a,I0,a,I0,a)') ' QTF: the first-order states take up to', &
-            qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, NPER, NBETA), ' MB for ', NPER, ' frequencies and ', NBETA, ' headings'
+         ! The zero and infinite frequencies of SYBO = 1 are not kept
+         nqtf = NPER - MERGE(2, 0, SYBO == 1)
+         WRITE (*, '(a,F10.1,a,I0,a,I0,a)') ' QTF: the first-order states take', &
+            qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA), ' MB for ', nqtf, ' frequencies and ', NBETA, ' headings'
+         CALL qtf_init(opts, nqtf, WVHD(1:NBETA), geom%nwl, mesh%n, mesh%nbody, outputdir)
       END IF
       IF ((opts%do_near .OR. opts%do_control) .AND. opts%write_terms >= 1) THEN
          OPEN (NEWUNIT=unit_terms, FILE=outputdir//'/Wamit_format/MeanDriftTerms.txt', STATUS='REPLACE', ACTION='WRITE')

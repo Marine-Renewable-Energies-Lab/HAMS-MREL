@@ -1730,8 +1730,8 @@ def _pair(fi, gi, fj, gj):
 
 def _pair_sum(fi, gi, fj, gj):
     """The sum-frequency kernel T+: (fi gj + fj gi)/4, elementwise, with the normalisation of _pair: the products
-    f g exp(-i (omega_i + omega_j) t), no conjugate, so symmetric in i and j. Only check_pair_symmetry uses it (that
-    symmetry through near_field_terms); its values are for the QTF work and are not tested here."""
+    f g exp(-i (omega_i + omega_j) t), no conjugate, so symmetric in i and j. Used by check_pair_symmetry and qtf_table;
+    the values of qtf_table are compared with HAMS-MREL and Nemoh by qtf_compare.py."""
     return 0.25 * (fi * gj + fj * gi)
 
 
@@ -2437,8 +2437,9 @@ def qtf_table(cyl, frequencies, motion, n_modes, p_max, orders, xr=(0.0, 0.0, 0.
 
 
 def check_qtf_diagonal():
-    """The diagonal of qtf_table (kernel diff) is the mean drift of near_field, and its sum-kernel off-diagonal rows are
-    symmetric in construction; fixed and free at 0.70 and 0.95 rad/s, LIGHT_RESOLUTION, to 1e-12."""
+    """The diagonal of qtf_table (kernel diff) is the mean drift of near_field, fixed and free at 0.70 and 0.95 rad/s,
+    LIGHT_RESOLUTION, to 1e-12. Both go through near_field_terms_states, so this checks the table's bookkeeping only; the
+    sign of its sum rows is checked against HAMS-MREL and Nemoh by qtf_compare.py (docs/second_order_validation.md)."""
     cyl, res = Cylinder(), LIGHT_RESOLUTION
     quad = body_quadrature(cyl, NEAR_QUADRATURE["n_corner"], NEAR_QUADRATURE["n_far"])
     worst = 0.0
