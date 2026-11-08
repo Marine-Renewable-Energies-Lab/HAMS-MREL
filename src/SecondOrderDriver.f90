@@ -88,7 +88,7 @@ MODULE SecondOrderDriver
    LOGICAL :: hull_uses_source = .FALSE.               ! velocity_method = source for the hull velocity (phi_wl allocated)
    ! Control-surface method
    TYPE(cs_points) :: cs_pts                           ! points of C, Gamma_c and (for Phase B) F of all bodies
-   LOGICAL :: have_free = .FALSE.                      ! F was built: the Phase B loads are computed
+   LOGICAL :: have_free = .FALSE.                      ! F was built for a body: the Phase B loads are computed
    LOGICAL, ALLOCATABLE :: cs_vertical(:)              ! (nbody), F_z, M_x and M_y are written: F was built and C has a bottom
    COMPLEX(8), ALLOCATABLE :: cs_sigma(:,:)            ! (n, NBETA), source strengths of each heading, for cs_velocity = source
    COMPLEX(8), ALLOCATABLE :: far_diag(:,:)            ! (3, NBETA), far-field F_x, F_y, M_z of each heading, for the log
@@ -223,27 +223,24 @@ CONTAINS
 
    SUBROUTINE control_setup(opts, inputdir, outputdir)
       ! Builds and checks C and F of every body, writes C as CSMesh_<b>.pnl to outputdir, and opens MeanDriftControlSurface.7.
-      ! If F cannot be built (a waterline that is not star-shaped about the body centre, and no FSMesh_<b>.pnl), the run goes
-      ! on with C alone: F_x, F_y and M_z are written, and the log says why F_z, M_x and M_y are not.
+      ! If the generated F of a body cannot be built (for example a waterline that is not star-shaped about the body centre),
+      ! the run goes on without F for that body: its F_x, F_y and M_z are written, and the log says why its F_z, M_x and M_y
+      ! are not. The other bodies keep their F. A FSMesh_<b>.pnl that cannot be used stops the run, as a failing C does.
       TYPE(so_options), INTENT(IN) :: opts
       CHARACTER(LEN=*), INTENT(IN) :: inputdir, outputdir
       TYPE(panel_mesh), ALLOCATABLE :: cms(:)
       CHARACTER(LEN=:), ALLOCATABLE :: msg
       LOGICAL :: ok
+      LOGICAL, ALLOCATABLE :: free_built(:)
       INTEGER :: b
 
-      CALL build_control_surface(mesh, geom, opts, H, inputdir, cs_pts, cms, ok, msg, with_free=.TRUE.)
-      have_free = ok
-      IF (.NOT. ok) THEN
-         WRITE (*, '(a,a)') ' Mean drift control surface: ', msg
-         WRITE (*, '(a)') ' Mean drift control surface: no free surface F, so F_z, M_x, M_y are not computed.'
-         CALL build_control_surface(mesh, geom, opts, H, inputdir, cs_pts, cms, ok, msg)
-      END IF
+      CALL build_control_surface(mesh, geom, opts, H, inputdir, cs_pts, cms, ok, msg, with_free=.TRUE., free_built=free_built)
       IF (.NOT. ok) THEN
          WRITE (*, '(a,a)') ' Mean drift control surface: ', msg
          ERROR STOP 1
       END IF
-      ! For a C read from a file, msg holds the warnings of its waterline
+      have_free = ANY(free_built)
+      ! msg holds the warnings: the waterline of a C read from a file, and each body without F
       IF (LEN(msg) > 0) WRITE (*, '(a,a)') ' Mean drift control surface: ', msg
       CALL check_control_surface(mesh, cs_pts, cms, opts%cs_shape /= 3, ok, msg)
       IF (.NOT. ok) THEN
@@ -258,10 +255,11 @@ CONTAINS
       ! bounded by the sea bed between the body and C, which the vertical loads would need (not implemented).
       ALLOCATE (cs_vertical(mesh%nbody))
       DO b = 1, mesh%nbody
-         cs_vertical(b) = have_free .AND. ANY(cs_pts%kind == CS_WALL .AND. cs_pts%body == b .AND. cs_pts%nrm(3, :) > 0.5D0)
-         IF (have_free .AND. .NOT. cs_vertical(b)) THEN
-            WRITE (*, '(a,I0,a)') ' Mean drift: control surface of body ', b, &
-               ' reaches the sea bed: F_z, M_x, M_y not computed.'
+         cs_vertical(b) = free_built(b) .AND. ANY(cs_pts%kind == CS_WALL .AND. cs_pts%body == b .AND. cs_pts%nrm(3, :) > 0.5D0)
+         IF (free_built(b) .AND. .NOT. cs_vertical(b)) THEN
+            WRITE (*, '(a,I0,a,a,a)') ' Mean drift: control surface of body ', b, ' has no bottom (it reaches the sea bed, or', &
+               ' the file has none): F_z, M_x, M_y not computed. For a generated C, set cs_bottom_margin below h minus', &
+               ' the draft to keep a bottom.'
          END IF
       END DO
       IF (opts%cs_velocity == 2) ALLOCATE (cs_sigma(mesh%n, NBETA))
@@ -445,11 +443,19 @@ CONTAINS
       ! The fields on C of every heading of the frequency in one pass over the points, then the control-surface load of each
       ! pair: (i, i) for mean_drift = 1, all pairs for mean_drift = 2. The states are at the current global frequency, which
       ! fields_green and fields_source read.
+      ! Above nu*h = 50 (VHLIN in FinGreen3D.f90) the field mode of FINGREEN3D keeps the Limes acceleration of PIDCOCK
+      ! (FIELD_SERIES), whose isolated outliers a central difference takes over (FieldVelocity.f90), so the green route warns.
       TYPE(so_options), INTENT(IN) :: opts
       TYPE(cs_fields), ALLOCATABLE :: fields(:)
+      REAL(8), PARAMETER :: LIMES_NUH = 50D0
       INTEGER(8) :: t0, t1, rate
       INTEGER :: i, j
 
+      IF (opts%cs_velocity /= 2 .AND. H >= 0D0 .AND. states(1)%nu*H > LIMES_NUH) THEN
+         WRITE (*, '(a,F10.5,a,F8.2,a)') ' Mean drift control surface warning: omega', W1, ', nu*h =', states(1)%nu*H, &
+            ' > 50: the finite-depth field values on C may scatter (the Green function series still uses Limes there).'
+         WRITE (*, '(a)') ' Check against drift_methods = far, or use deep water (H < 0) where kh is large.'
+      END IF
       ALLOCATE (fields(SIZE(states)))
       CALL SYSTEM_CLOCK(t0, rate)
       IF (opts%cs_velocity == 2) THEN

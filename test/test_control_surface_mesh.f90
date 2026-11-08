@@ -37,7 +37,8 @@ subroutine collect_control_surface_mesh(testsuite)
     new_unittest("not_star_shaped_stops", test_not_star_shaped_stops), &
     new_unittest("with_free_appends_f", test_with_free_appends_f), &
     new_unittest("fs_rows_default", test_fs_rows_default), &
-    new_unittest("fs_file_takes_precedence", test_fs_file_takes_precedence) &
+    new_unittest("fs_file_takes_precedence", test_fs_file_takes_precedence), &
+    new_unittest("fs_file_off_free_surface_stops", test_fs_file_off_free_surface_stops) &
     ]
 end subroutine collect_control_surface_mesh
 
@@ -592,6 +593,7 @@ subroutine test_with_free_appends_f(error)
   type(cs_points) :: p0, p1
   type(panel_mesh), allocatable :: cms(:)
   logical :: ok
+  logical, allocatable :: built(:)
   character(len=:), allocatable :: msg
   integer :: n0
 
@@ -602,8 +604,10 @@ subroutine test_with_free_appends_f(error)
   call build_control_surface(mesh, geom, opts, -1d0, '.', p0, cms, ok, msg)
   call check(error, ok .and. count(p0%kind == CS_FREE) == 0, "no F without with_free")
   if (allocated(error)) return
-  call build_control_surface(mesh, geom, opts, -1d0, '.', p1, cms, ok, msg, with_free=.true.)
+  call build_control_surface(mesh, geom, opts, -1d0, '.', p1, cms, ok, msg, with_free=.true., free_built=built)
   call check(error, ok, "build with F: "//msg)
+  if (allocated(error)) return
+  call check(error, size(built) == 1 .and. all(built), "free_built is set for the body")
   if (allocated(error)) return
   n0 = p0%n
   call check(error, p1%n > n0 .and. count(p1%kind == CS_FREE) == p1%n - n0, "F points appended after C")
@@ -682,5 +686,44 @@ subroutine test_fs_file_takes_precedence(error)
   if (allocated(error)) return
   call check(error, abs(sum(pts%w, mask=pts%kind == CS_FREE) - 4d0) < 1d-9, "its area")
 end subroutine test_fs_file_takes_precedence
+
+!> An FSMesh_1.pnl with a node at z = 0.5 is not in the free surface: the user asked for that F, so the build fails with
+!> the message of add_free_surface instead of going on without F.
+subroutine test_fs_file_off_free_surface_stops(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(so_options) :: opts
+  type(cs_points) :: pts
+  type(panel_mesh), allocatable :: cms(:)
+  logical :: ok
+  logical, allocatable :: built(:)
+  character(len=:), allocatable :: msg
+  integer :: u, ios
+
+  open (newunit=u, file='./FSMesh_1.pnl', status='replace', action='write')
+  write (u, '(a)') '    --------------Hull Mesh File---------------', ' ', &
+                   '    # Number of Panels, Nodes, X-Symmetry and Y-Symmetry'
+  write (u, '(4i12)') 1, 4, 0, 0
+  write (u, '(a)') ' ', '    # Start Definition of Node Coordinates'
+  write (u, '(i5,3f20.12)') 1, 6d0, -1d0, 0d0
+  write (u, '(i5,3f20.12)') 2, 6d0, 1d0, 0d0
+  write (u, '(i5,3f20.12)') 3, 8d0, 1d0, 0.5d0
+  write (u, '(i5,3f20.12)') 4, 8d0, -1d0, 0d0
+  write (u, '(a)') '    # End Definition of Node Coordinates', ' ', '  # Start Definition of Node Relations'
+  write (u, '(i5,i9,4i14)') 1, 4, 1, 2, 3, 4
+  write (u, '(a)') '    # End Definition of Node Relations', ' ', '    --------------End Hull Mesh File---------------'
+  close (u)
+
+  call make_cylinder(5d0, 3d0, 32, 2, 2, mesh, .true.)
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  opts%cs_margin = 6d0
+  call build_control_surface(mesh, geom, opts, -1d0, '.', pts, cms, ok, msg, with_free=.true., free_built=built)
+  open (newunit=u, file='./FSMesh_1.pnl', status='old', iostat=ios)
+  if (ios == 0) close (u, status='delete')
+  call check(error, .not. ok, "an FSMesh file off z = 0 stops the build")
+  if (allocated(error)) return
+  call check(error, msg == 'FSMesh_1.pnl: F must lie in the free surface z = 0.', "message: "//msg)
+end subroutine test_fs_file_off_free_surface_stops
 
 end module test_control_surface_mesh

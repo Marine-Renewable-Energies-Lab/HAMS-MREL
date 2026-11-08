@@ -391,13 +391,15 @@ CONTAINS
 
    ! ------------------------------------------------------------------------------------------------ build
 
-   SUBROUTINE build_control_surface(mesh, geom, opts, h, inputdir, pts, cms, ok, msg, with_free)
+   SUBROUTINE build_control_surface(mesh, geom, opts, h, inputdir, pts, cms, ok, msg, with_free, free_built)
       ! Generates C for every body and turns it into evaluation points (default margins 4 x the median hull panel size).
       ! h < 0 is deep water.
       ! cs_shape = 3 reads C of body b from inputdir/CSMesh_<b>.pnl and checks that its normals point towards the body.
       ! For a file C, ok stays .true. when build_surface_geom only warns, and the warnings are returned in msg.
       ! with_free (default .false.) also appends F of each body, after the C points of that body: see add_free_surface.
-      ! F is built also when C reaches the seabed.
+      ! F is built also when C reaches the seabed. When a generated F of body b cannot be built (free_surface_strips), ok
+      ! stays .true., msg says why and free_built(b) is .false.; the other bodies keep their F. An FSMesh_<b>.pnl that
+      ! cannot be read or is not in z = 0 sets ok = .false.: the user asked for that F.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       TYPE(so_options), INTENT(IN) :: opts
@@ -408,10 +410,11 @@ CONTAINS
       LOGICAL, INTENT(OUT) :: ok
       CHARACTER(LEN=:), ALLOCATABLE, INTENT(OUT) :: msg
       LOGICAL, INTENT(IN), OPTIONAL :: with_free
+      LOGICAL, ALLOCATABLE, INTENT(OUT), OPTIONAL :: free_built(:)   ! (nbody), F of body b was appended
       REAL(8), ALLOCATABLE :: psz(:)
       REAL(8) :: lo(2), hi(2), c(2), zmin, med, margin, bmargin, ps, radius, half(2), depth, xy(3)
       INTEGER :: b, i, m, nfound
-      LOGICAL :: ok1, wf
+      LOGICAL :: ok1, wf, from_file
       CHARACTER(LEN=:), ALLOCATABLE :: msg1
       CHARACTER(LEN=200) :: line
       CHARACTER(LEN=16) :: istr
@@ -420,9 +423,13 @@ CONTAINS
       msg = ''
       wf = .FALSE.
       IF (PRESENT(with_free)) wf = with_free
+      IF (PRESENT(free_built)) THEN
+         ALLOCATE (free_built(mesh%nbody))
+         free_built = .FALSE.
+      END IF
       IF (opts%cs_shape /= 1 .AND. opts%cs_shape /= 2 .AND. opts%cs_shape /= 3) THEN
          ok = .FALSE.
-         WRITE (line, '(a,i0,a)') 'cs_shape = ', opts%cs_shape, ' is not known; use 1 (cylinder) or 2 (box)'
+         WRITE (line, '(a,i0,a)') 'cs_shape = ', opts%cs_shape, ' is not known; use cylinder, box or file'
          msg = TRIM(line)
          RETURN
       END IF
@@ -465,12 +472,9 @@ CONTAINS
                msg = msg//TRIM(line)//msg1
             END IF
             IF (wf) THEN
-               CALL add_free_surface(mesh, geom, b, opts%cs_fs_rows, ps, inputdir, pts, ok1, msg1)
-               IF (.NOT. ok1) THEN
-                  ok = .FALSE.
-                  msg = msg1
-                  RETURN
-               END IF
+               CALL add_free_surface(mesh, geom, b, opts%cs_fs_rows, ps, inputdir, pts, ok1, msg1, from_file)
+               CALL free_result(b, ok1, msg1, from_file)
+               IF (.NOT. ok) RETURN
             END IF
             CYCLE
          END IF
@@ -506,14 +510,34 @@ CONTAINS
             RETURN
          END IF
          IF (wf) THEN
-            CALL add_free_surface(mesh, geom, b, opts%cs_fs_rows, ps, inputdir, pts, ok1, msg1)
-            IF (.NOT. ok1) THEN
-               ok = .FALSE.
-               msg = msg1
-               RETURN
-            END IF
+            CALL add_free_surface(mesh, geom, b, opts%cs_fs_rows, ps, inputdir, pts, ok1, msg1, from_file)
+            CALL free_result(b, ok1, msg1, from_file)
+            IF (.NOT. ok) RETURN
          END IF
       END DO
+
+   CONTAINS
+
+      SUBROUTINE free_result(b, ok1, msg1, from_file)
+         ! The outcome of add_free_surface for body b: a failing FSMesh file stops the build, a failing generated F is a
+         ! warning in msg.
+         INTEGER, INTENT(IN) :: b
+         LOGICAL, INTENT(IN) :: ok1, from_file
+         CHARACTER(LEN=*), INTENT(IN) :: msg1
+         CHARACTER(LEN=16) :: bstr
+
+         IF (ok1) THEN
+            IF (PRESENT(free_built)) free_built(b) = .TRUE.
+         ELSE IF (from_file) THEN
+            ok = .FALSE.
+            msg = msg1
+         ELSE
+            WRITE (bstr, '(i0)') b
+            IF (LEN(msg) > 0) msg = msg//NEW_LINE('a')
+            msg = msg//'Warning, '//msg1//' No free surface F, so F_z, M_x, M_y of body '//TRIM(bstr)//' are not computed.'
+         END IF
+      END SUBROUTINE free_result
+
    END SUBROUTINE build_control_surface
 
    SUBROUTINE waterline_box(geom, b, lo, hi, nfound)
@@ -537,12 +561,13 @@ CONTAINS
 
    ! ------------------------------------------------------------------------------------------------ free surface
 
-   SUBROUTINE add_free_surface(mesh, geom, b, rows, ps, inputdir, pts, ok, msg)
+   SUBROUTINE add_free_surface(mesh, geom, b, rows, ps, inputdir, pts, ok, msg, from_file)
       ! Appends F of body b to pts as CS_FREE points with nrm = (0, 0, -1), weight the panel area. F is read from
       ! inputdir/FSMesh_<b>.pnl when that file exists (its nodes must lie in z = 0; the node order does not matter),
       ! else it is built by free_surface_strips. The strips have rows rows; rows = 0 takes the default: the nearest
       ! integer to (d_c - d_w)/ps, at least 2, with d_c and d_w the mean distances from the centre of the Gamma_c
       ! segment midpoints and of the hull waterline segment midpoints, and ps the panel size of C.
+      ! from_file is .true. when F came, or was to come, from FSMesh_<b>.pnl.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       INTEGER, INTENT(IN) :: b, rows
@@ -551,6 +576,7 @@ CONTAINS
       TYPE(cs_points), INTENT(INOUT) :: pts
       LOGICAL, INTENT(OUT) :: ok
       CHARACTER(LEN=:), ALLOCATABLE, INTENT(OUT) :: msg
+      LOGICAL, INTENT(OUT) :: from_file
       TYPE(panel_mesh) :: fm
       CHARACTER(LEN=16) :: istr
       CHARACTER(LEN=:), ALLOCATABLE :: name
@@ -561,6 +587,7 @@ CONTAINS
       WRITE (istr, '(i0)') b
       name = 'FSMesh_'//TRIM(istr)//'.pnl'
       INQUIRE (FILE=TRIM(inputdir)//'/'//name, EXIST=exists)
+      from_file = exists
       IF (exists) THEN
          CALL read_control_mesh(TRIM(inputdir)//'/'//name, fm, ok, msg)
          IF (.NOT. ok) RETURN

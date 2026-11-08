@@ -2265,7 +2265,8 @@ contains
                    "control_bottom has a row I = 3, 4 or 5")
         if (allocated(error)) return
         call check(error, log_has("control_bottom", &
-                   "control surface of body 1 reaches the sea bed: F_z, M_x, M_y not computed."), &
+                   "control surface of body 1 has no bottom (it reaches the sea bed, or the file has none): "// &
+                   "F_z, M_x, M_y not computed."), &
                    "The log of control_bottom does not say that F_z, M_x, M_y are not computed")
     end subroutine control_seabed_rows_absent
 
