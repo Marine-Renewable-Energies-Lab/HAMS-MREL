@@ -110,7 +110,7 @@ class Case:
 
     def __init__(self, name, group, question, hull, multiple, motion="fixed", velocity="differencing", waterline="extrapolate",
                  frequencies=WIDE_FREQUENCIES, headings=(0.0, 30.0), grn=4, isolv=1, irsp=0, mean_drift=1, tier="both",
-                 solver="hams", where="snellius", control=None):
+                 solver="hams", where="snellius", control=None, qtf=0):
         self.name = name
         self.group = group
         self.question = question
@@ -129,6 +129,7 @@ class Case:
         self.solver = solver
         self.where = where
         self.control = control   # None, "green" or "source": the cs_velocity of drift_methods = control
+        self.qtf = qtf           # qtf of SecondOrder.in: 0 off, 3 both quadratic QTFs
 
 
 def in_tier(case, tier):
@@ -280,8 +281,29 @@ def control_cases(subset="full"):
     return chosen
 
 
-def cases_of(control):
-    """The cases selected by --control: those of the control-surface study, or None for the first study."""
+def qtf_cases():
+    """The cases of the QTF study (--qtf): quadratic QTFs (qtf = 3) on the grid of the Nemoh runs, heading 0, on the
+    meshes of the first study, so the diagonal is the mean drift of the a_* cases and Nemoh's nemoh_* runs have the same
+    panels. Velocity by source solve (the method that agreed with Nemoh and the exact reference for F_z), and the
+    differencing velocity once, at m2 of the free sharp hull."""
+    grid = tuple(round(w, 4) for w in nemoh_frequencies())
+    chosen = []
+    for motion in ("fixed", "free"):
+        for m in (1, 2, 3, 4):
+            chosen.append(Case("q_sharp_%s_src_%s" % (motion, tag(m)), "Q", "4", "sharp", m, motion, "source",
+                               frequencies=grid, headings=(0.0,), qtf=3))
+    for m in (1, 2):
+        chosen.append(Case("q_round_free_src_%s" % tag(m), "Q", "4", "round", m, "free", "source", frequencies=grid,
+                           headings=(0.0,), qtf=3))
+    chosen.append(Case("q_sharp_free_diff_m2", "Q", "4", "sharp", 2, "free", "differencing", frequencies=grid,
+                       headings=(0.0,), qtf=3))
+    return chosen
+
+
+def cases_of(control, qtf=False):
+    """The cases selected by --control (the control-surface study) or --qtf (the QTF study); otherwise the first study."""
+    if qtf:
+        return qtf_cases()
     return control_cases(control) if control else study_cases()
 
 
@@ -448,6 +470,8 @@ def write_hams_case(case, root, threads):
                    waterline_method=case.waterline)
     if case.control:
         options.update(drift_methods="far near control", cs_velocity=case.control)
+    if case.qtf:
+        options.update(qtf=case.qtf)
     fixtures.write_second_order(os.path.join(path, "SecondOrder.in"), **options)
     return path
 
@@ -957,7 +981,7 @@ def gate_lines(cases, rows):
 def collect(args):
     """Write the table of drift values and errors for each finished case, and against Nemoh. Prints time and memory against the
     estimates, and with --control the lines of the control-surface gates."""
-    cases = {case.name: case for case in cases_of(args.control)}
+    cases = {case.name: case for case in cases_of(args.control, args.qtf)}
     hams_rows, nemoh_rows, first_rows = [], [], []
     print("| Case | Code | Panels | Wall (s) | Estimate (s) | Peak (GB) | Estimate (GB) |")
     print("| :--- | ---: | ---: | ---: | ---: | ---: | ---: |")
@@ -1079,7 +1103,7 @@ def write_slurm(args):
     os.makedirs(out, exist_ok=True)
     script = "%s/pre_postprocessing_python/SecondOrder/drift_convergence.py" % args.repo
     extra = "#SBATCH -A %s\n" % args.account if args.account else ""
-    cases = [case for case in cases_of(args.control) if in_tier(case, args.tier) and case.where == "snellius"]
+    cases = [case for case in cases_of(args.control, args.qtf) if in_tier(case, args.tier) and case.where == "snellius"]
     head = dict(partition=PARTITION, cpus=CPUS, memory=MEMORY_GB, logs=logs, extra=extra)
 
     src = os.path.join(args.source or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."), "src")
@@ -1110,7 +1134,8 @@ def write_slurm(args):
                                        **dict(head, extra="#SBATCH --array=1-%d%%8\n%s" % (len(chosen), extra))))
             f.write("CASE=$(sed -n \"${SLURM_ARRAY_TASK_ID}p\" %s/%s.txt)\n" % (jobs, label))
             f.write("python3 %s run %s --case \"$CASE\" --hams %s/hamsmrel_grn4 --hams-grn8 %s/hamsmrel_grn8 --threads %d%s\n" % (
-                script, root, root, root, CPUS, " --control " + args.control if args.control else ""))
+                script, root, root, root, CPUS,
+                " --control " + args.control if args.control else " --qtf" if args.qtf else ""))
 
     # Nemoh is run with one thread per case, as many at a time as there are cases, in one allocation
     chosen = [case for case in cases if case.solver == "nemoh"]
@@ -1128,8 +1153,8 @@ def write_slurm(args):
     print("Scripts in %s, for %s on the cluster, with logs in %s. Nothing was submitted." % (out, jobs, logs))
 
 
-def job_table(tier, markdown, control=None):
-    cases = [case for case in cases_of(control) if in_tier(case, tier)]
+def job_table(tier, markdown, control=None, qtf=False):
+    cases = [case for case in cases_of(control, qtf) if in_tier(case, tier)]
     head = ("Case", "Group", "Q", "Hull", "Motion", "Velocity", "Setting", "Panels", "Freq", "Head", "Wall (h)", "Mem (GB)", "Runs on")
     rows = []
     for case in cases:
@@ -1146,6 +1171,8 @@ def job_table(tier, markdown, control=None):
             setting.append("pairs")
         if case.control:
             setting.append("ctrl-" + case.control)
+        if case.qtf:
+            setting.append("qtf %d" % case.qtf)
         if case.solver == "nemoh":
             setting.append("Nemoh")
         count = NEMOH_FREQUENCY_RANGE[2] if case.solver == "nemoh" else len(case.frequencies)
@@ -1183,17 +1210,20 @@ def main():
     sub.required = True
 
     control_help = "the control-surface study: all frequencies, or `cheap` with three at the m4 cases of the green route"
+    qtf_help = "the QTF study: quadratic QTFs on the Nemoh grid (qtf_cases)"
 
     p = sub.add_parser("list")
     p.add_argument("--tier", choices=("full", "small"), default="full")
     p.add_argument("--markdown", action="store_true")
     p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
+    p.add_argument("--qtf", action="store_true", help=qtf_help)
 
     p = sub.add_parser("generate")
     p.add_argument("root")
     p.add_argument("--case")
     p.add_argument("--group")
     p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
+    p.add_argument("--qtf", action="store_true", help=qtf_help)
 
     for command in ("run", "calibrate"):
         p = sub.add_parser(command)
@@ -1205,6 +1235,7 @@ def main():
         if command == "run":
             p.add_argument("--case", required=True)
             p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
+            p.add_argument("--qtf", action="store_true", help=qtf_help)
 
     p = sub.add_parser("slurm")
     p.add_argument("root", help="folder of the study on the cluster")
@@ -1214,18 +1245,20 @@ def main():
     p.add_argument("--tier", choices=("full", "small"), default="full")
     p.add_argument("--account", help="Slurm account, by default that of the user")
     p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
+    p.add_argument("--qtf", action="store_true", help=qtf_help)
 
     p = sub.add_parser("collect")
     p.add_argument("root")
     p.add_argument("--out")
     p.add_argument("--reference", help="results of the first study, for near-field at m4 where <root> does not hold it")
     p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
+    p.add_argument("--qtf", action="store_true", help=qtf_help)
 
     args = parser.parse_args()
     if args.command == "list":
-        job_table(args.tier, args.markdown, args.control)
+        job_table(args.tier, args.markdown, args.control, args.qtf)
     elif args.command == "generate":
-        for case in cases_of(args.control):
+        for case in cases_of(args.control, args.qtf):
             if (args.case and case.name != args.case) or (args.group and case.group != args.group):
                 continue
             if case.solver == "nemoh":
@@ -1233,7 +1266,7 @@ def main():
             else:
                 write_hams_case(case, args.root, CPUS)
     elif args.command == "run":
-        found = [case for case in cases_of(args.control) if case.name == args.case]
+        found = [case for case in cases_of(args.control, getattr(args, "qtf", False)) if case.name == args.case]
         if not found:
             raise SystemExit("no case named " + args.case)
         sys.exit(1 if run_case(found[0], args)["code"] else 0)
