@@ -50,6 +50,9 @@ MODULE SecondOrderTypes
       REAL(8) :: cs_margin = 0D0, cs_bottom_margin = 0D0, cs_panel_size = 0D0   ! m; 0 sets the default
       REAL(8) :: cs_fd_step = 0.02D0     ! fraction of the local control-surface panel size
       INTEGER :: cs_fs_rows = 0          ! free-surface rows; 0 sets the default
+      ! Quadratic part of the QTFs (near-field method)
+      INTEGER :: qtf = 0                 ! 0 off, 1 difference frequency, 2 sum frequency, 3 both
+      REAL(8) :: qtf_max_dw = 0D0        ! rad/s, largest |omega_i - omega_j| of QTF_Quadratic.10d; 0: all pairs
    END TYPE so_options
 
    TYPE :: panel_mesh

@@ -29,7 +29,8 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("validate_accepts", test_validate_accepts), &
     new_unittest("control_keys_parse", test_control_keys), &
     new_unittest("control_defaults", test_control_defaults), &
-    new_unittest("control_rejections", test_control_rejections) &
+    new_unittest("control_rejections", test_control_rejections), &
+    new_unittest("qtf_keys", test_qtf_keys) &
     ]
 
 end subroutine collect_second_order_input
@@ -421,5 +422,64 @@ subroutine remove_directory(root)
     call execute_command_line("rm -rf "//root, exitstat=estat)
   end if
 end subroutine remove_directory
+
+subroutine test_qtf_keys(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf"
+  type(so_options) :: opts, far_only
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 3", &
+                          "qtf_terms = quadratic", "qtf_max_dw = 0.3"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf, 3, "qtf")
+  if (allocated(error)) return
+  call check(error, abs(opts%qtf_max_dw - 0.3d0) < 1d-12, "qtf_max_dw")
+  if (allocated(error)) return
+  call validate_second_order(opts, 1, -1d0, 1, 0, .false., ok, msg)
+  call check(error, ok, "qtf with near rejected: "//trim(msg))
+  if (allocated(error)) return
+
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 4"], &
+                           "qtf must be 0, 1, 2 or 3 in SecondOrder.in.")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = body"], &
+                           "qtf_terms = body and full are not implemented (Phase 5); use quadratic.")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_max_dw = -1"], &
+                           "qtf_max_dw must not be negative in SecondOrder.in.")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 0", "qtf = 1"], "qtf needs mean_drift = 1 or 2.")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf_terms = all"], &
+                           'Invalid value "all" for key "qtf_terms" in SecondOrder.in.')
+  if (allocated(error)) return
+
+  far_only%active = .true.; far_only%mean_drift = 1; far_only%do_far = .true.; far_only%qtf = 1
+  call validate_second_order(far_only, 1, -1d0, 1, 0, .false., ok, msg)
+  call check(error, .not. ok, "qtf without near accepted")
+  if (allocated(error)) return
+  call check(error, trim(msg) == "qtf needs drift_methods to include near.", "near message: "//trim(msg))
+  call remove_directory(root)
+end subroutine test_qtf_keys
+
+subroutine expect_read_message(error, root, lines, expected)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), intent(in) :: root, lines(:), expected
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call write_input(root, lines)
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, .not. ok, "accepted: "//expected)
+  if (allocated(error)) return
+  call check(error, trim(msg) == expected, "message: "//trim(msg))
+end subroutine expect_read_message
 
 end module test_second_order_input

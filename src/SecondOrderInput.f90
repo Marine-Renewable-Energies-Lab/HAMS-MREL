@@ -97,6 +97,15 @@ CONTAINS
       ELSE IF (opts%wl_z_tolerance <= 0D0) THEN
          ok = .FALSE.
          msg = 'wl_z_tolerance must be positive in SecondOrder.in.'
+      ELSE IF (opts%qtf < 0 .OR. opts%qtf > 3) THEN
+         ok = .FALSE.
+         msg = 'qtf must be 0, 1, 2 or 3 in SecondOrder.in.'
+      ELSE IF (opts%qtf_max_dw < 0D0) THEN
+         ok = .FALSE.
+         msg = 'qtf_max_dw must not be negative in SecondOrder.in.'
+      ELSE IF (opts%qtf > 0 .AND. opts%mean_drift == 0) THEN
+         ok = .FALSE.
+         msg = 'qtf needs mean_drift = 1 or 2.'
       END IF
       IF (.NOT. ok) RETURN
 
@@ -165,6 +174,18 @@ CONTAINS
          READ(value, *, IOSTAT=ios) opts%cs_fd_step
       CASE ('cs_fs_rows')
          READ(value, *, IOSTAT=ios) opts%cs_fs_rows
+      CASE ('qtf')
+         READ(value, *, IOSTAT=ios) opts%qtf
+      CASE ('qtf_max_dw')
+         READ(value, *, IOSTAT=ios) opts%qtf_max_dw
+      CASE ('qtf_terms')
+         IF (value == 'body' .OR. value == 'full') THEN
+            ok = .FALSE.
+            msg = 'qtf_terms = body and full are not implemented (Phase 5); use quadratic.'
+            RETURN
+         ELSE IF (value /= 'quadratic') THEN
+            ios = 1
+         END IF
       CASE DEFAULT
          ok = .FALSE.
          msg = 'Unknown key "'//key//'" in SecondOrder.in.'
@@ -267,6 +288,8 @@ CONTAINS
          msg = 'cs_fd_step must be above 0 and at most 0.5 in SecondOrder.in.'
       ELSE IF (opts%cs_fs_rows < 0) THEN
          msg = 'cs_fs_rows must not be negative in SecondOrder.in.'
+      ELSE IF (opts%qtf > 0 .AND. .NOT. opts%do_near) THEN
+         msg = 'qtf needs drift_methods to include near.'
       ELSE
          ok = .TRUE.
       END IF

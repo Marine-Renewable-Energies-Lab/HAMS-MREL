@@ -26,6 +26,7 @@ program unit_tester
     use test_control_surface_mesh, only : collect_control_surface_mesh
     use test_field_velocity, only : collect_field_velocity
     use test_control_drift, only : collect_control_drift
+    use test_qtf, only : collect_qtf
 
     implicit none
     integer :: stat, is
@@ -59,14 +60,16 @@ program unit_tester
         new_testsuite("source_velocity", collect_source_velocity), &
         new_testsuite("control_surface_mesh", collect_control_surface_mesh), &
         new_testsuite("field_velocity", collect_field_velocity), &
-        new_testsuite("control_drift", collect_control_drift) &
+        new_testsuite("control_drift", collect_control_drift), &
+        new_testsuite("qtf", collect_qtf) &
     ]
 
     stat = 0
 
     do is = 1, size(testsuites)
         write(error_unit, fmt) "Testing:", testsuites(is)%name
-        ! These suites share module state (HMAT_READY, the preconditioner, the mesh arrays, WaveDyn_mod globals), so they can't run in parallel.
+        ! These suites share module state (HMAT_READY, the preconditioner, the mesh arrays, WaveDyn_mod globals, the QTF store),
+        ! so they can't run in parallel.
         call run_testsuite(testsuites(is)%collect, error_unit, stat, &
                            parallel=(testsuites(is)%name /= "iterative_solvers" .and. testsuites(is)%name /= "image_term" &
                                      .and. testsuites(is)%name /= "generalized_modes" &
@@ -75,7 +78,8 @@ program unit_tester
                                      .and. testsuites(is)%name /= "waterline_field" &
                                      .and. testsuites(is)%name /= "source_velocity" &
                                      .and. testsuites(is)%name /= "control_surface_mesh" &
-                                     .and. testsuites(is)%name /= "field_velocity"))
+                                     .and. testsuites(is)%name /= "field_velocity" &
+                                     .and. testsuites(is)%name /= "qtf"))
     end do
 
     if (stat > 0) then
