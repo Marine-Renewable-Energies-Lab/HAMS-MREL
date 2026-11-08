@@ -376,7 +376,8 @@
          REAL*8,INTENT(IN)::R,ZF,ZP,H,WK,WVN(1:NK)
 
          COMPLEX*16,INTENT(OUT):: GRN(3)
-         COMPLEX*16 CI,P0,DP0,NM0
+         COMPLEX*16 CI,P0,DP0
+         REAL*8 P0R,DP0R
 
          DATA  PI,CI/3.141592653589793d0,(0.D0,1.0D0)/
 
@@ -386,9 +387,9 @@
          ZFH = ZF + H                                       ! Loop-invariant — used inside the I loop.
          ZPH = ZP + H
 
-         NM0=H/2.D0*(1.D0+DSINH(2.D0*WK*H)/(2.D0*WK*H))
-         P0=PI/NM0*DCOSH(WK*ZFH)*DCOSH(WK*ZPH)
-         DP0=PI/NM0*DSINH(WK*ZFH)*DCOSH(WK*ZPH)
+         CALL WAVE_DEPTH_FACTORS(WK,H,ZF,ZP,P0R,DP0R)
+         P0=P0R
+         DP0=DP0R
 
 ! calculate the imaginary part of the Green function
 !
@@ -509,7 +510,8 @@
          REAL*8,INTENT(IN)::R,ZF,ZP,H,WK,WVN(1:NK)
 
          COMPLEX*16,INTENT(OUT):: GRN(3)
-         COMPLEX*16 CI,P0,DP0,NM0
+         COMPLEX*16 CI,P0,DP0
+         REAL*8 P0R,DP0R
 
          DATA  PI,CI/3.141592653589793d0,(0.D0,1.0D0)/
 
@@ -520,9 +522,9 @@
          ZFH = ZF + H                                       ! Loop-invariant — used inside the I loop.
          ZPH = ZP + H
 
-         NM0=H/2.D0*(1.D0+DSINH(2.D0*WK*H)/(2.D0*WK*H))
-         P0=PI/NM0*DCOSH(WK*ZFH)*DCOSH(WK*ZPH)
-         DP0=PI/NM0*DSINH(WK*ZFH)*DCOSH(WK*ZPH)
+         CALL WAVE_DEPTH_FACTORS(WK,H,ZF,ZP,P0R,DP0R)
+         P0=P0R
+         DP0=DP0R
 
 ! calculate the imaginary part of the Green function
 !
@@ -734,7 +736,7 @@
          INTEGER NK,NT,I,I_PADE,K_PADE
 
          REAL*8 J0,J1,Y0,Y1,K0,K0T,K1,K1T
-         REAL*8 NM0,P0,DP0,X,PI,GA
+         REAL*8 P0,DP0,X,PI,GA
          REAL*8 RM(3),SM(3),RL(3),ERR,RHP
          REAL*8 UM,UMT,MP,AC,AM,AMT,DAM,DAMT
          REAL*8 SR,SR1,DSRR,DSRZ,DSR1R,DSR1Z
@@ -750,9 +752,8 @@
          
 ! initialize some important parameters
 ! 
-         NM0=H/2.D0*(1.D0+DSINH(2.D0*WK*H)/(2.D0*WK*H))         
-         P0=PI/NM0*DCOSH(WK*(ZF+H))*DCOSH(WK*(ZP+H))
-         DP0=WK*PI/NM0*DSINH(WK*(ZF+H))*DCOSH(WK*(ZP+H))
+         CALL WAVE_DEPTH_FACTORS(WK,H,ZF,ZP,P0,DP0)
+         DP0=WK*DP0
          
 ! calculate the imaginary part of the Green function
 !  
@@ -889,7 +890,7 @@
          REAL*8 PA,A,PI,EPS,SQPI
          REAL*8 SR,SR1,SR2,DSRR,DSRZ,DSR1R,DSR1Z,DSR2R,DSR2Z
          REAL*8 RO(4),DROR(4),DROZ(4),ERRSUM(3),BJ0,BJ1
-         REAL*8 COF(NK),DCOF(NK)
+         REAL*8 COF(NK),DCOF(NK),P0,DP0
          REAL*8,INTENT(IN)::R,ZF,ZP,H,V,WK,WVNO(NK)
          COMPLEX*16,INTENT(OUT):: GRN(3)
          COMPLEX*16 KM,RM(3),CI
@@ -956,18 +957,21 @@
 
          CALL COEF(R,PA,A,NT,WVNO,WK,COF)
          CALL DCOEF(R,PA,A,NT,WVNO,WK,DCOF)
+         CALL WAVE_DEPTH_FACTORS(WK,H,ZF,ZP,P0,DP0)
          
          DO I=1,NT
    
          IF (I.EQ.1) THEN
-          KM=-CI*WK
+          ! The propagating mode, KM = -i*WK, with the cosh and sinh factors in scaled form.
+          RM(1)= -COF(1)*P0/PI
+          RM(2)= -DCOF(1)*P0/PI
+          RM(3)= -COF(1)*WK*DP0/PI
          ELSE
           KM=WVNO(I)
+          RM(1)= -COF(I)/NM(H,KM)*CDCOS(KM*(ZF+H))*CDCOS(KM*(ZP+H))
+          RM(2)= -DCOF(I)/NM(H,KM)*CDCOS(KM*(ZF+H))*CDCOS(KM*(ZP+H))
+          RM(3)= COF(I)*KM/NM(H,KM)*CDSIN(KM*(ZF+H))*CDCOS(KM*(ZP+H))
          ENDIF
-          
-         RM(1)= -COF(I)/NM(H,KM)*CDCOS(KM*(ZF+H))*CDCOS(KM*(ZP+H))
-         RM(2)= -DCOF(I)/NM(H,KM)*CDCOS(KM*(ZF+H))*CDCOS(KM*(ZP+H))
-         RM(3)= COF(I)*KM/NM(H,KM)*CDSIN(KM*(ZF+H))*CDCOS(KM*(ZP+H))
          
          GRN(1)= GRN(1)+RM(1)
          GRN(2)= GRN(2)+RM(2)
@@ -1025,10 +1029,9 @@
          CALL JY01BJ(WK*R,BJ0,BJ1)
 
          
-         KM=-CI*WK
-         GRN(1)= GRN(1)-CI/4.D0/NM(H,KM)*BJ0*DCOSH(WK*(ZF+H))*DCOSH(WK*(ZP+H))
-         GRN(2)= GRN(2)+CI*WK/4.D0/NM(H,KM)*BJ1*DCOSH(WK*(ZF+H))*DCOSH(WK*(ZP+H))
-         GRN(3)= GRN(3)-CI*WK/4.D0/NM(H,KM)*BJ0*DSINH(WK*(ZF+H))*DCOSH(WK*(ZP+H))
+         GRN(1)= GRN(1)-CI/4.D0*BJ0*P0/PI
+         GRN(2)= GRN(2)+CI*WK/4.D0*BJ1*P0/PI
+         GRN(3)= GRN(3)-CI*WK/4.D0*BJ0*DP0/PI
 
          
          GRN(1)= -4.D0*PI*GRN(1)
@@ -1042,7 +1045,43 @@
 !!-------------------------------------------------------------------------------!!
 !             Belows are Level-3 (low level) self-contained subroutines           !
 !!-------------------------------------------------------------------------------!!
-        
+
+! ==================================================================================
+!       Purpose: The depth factors of the propagating mode,
+!                  P0  = PI/N0*COSH(K*(ZF+H))*COSH(K*(ZP+H))
+!                  DP0 = PI/N0*SINH(K*(ZF+H))*COSH(K*(ZP+H))
+!                with N0 = H/2*(1+SINH(2*K*H)/(2*K*H)).
+!                SINH(2*K*H) overflows at K*H = 355.24, though P0 and DP0 stay finite.
+!                With E = EXP(-2*K*H) negligible, N0 = EXP(2*K*H)/(8*K), so
+!                  P0  = 2*PI*K*EXP(K*(ZF+ZP))*(1+EXP(-2*K*(ZF+H)))*(1+EXP(-2*K*(ZP+H)))
+!                  DP0 = 2*PI*K*EXP(K*(ZF+ZP))*(1-EXP(-2*K*(ZF+H)))*(1+EXP(-2*K*(ZP+H)))
+!                The scaled form is used above K*H = 300, where E is below 1E-260.
+! ==================================================================================
+
+        SUBROUTINE WAVE_DEPTH_FACTORS(WK,H,ZF,ZP,P0,DP0)
+
+         IMPLICIT NONE
+         REAL*8,INTENT(IN)::WK,H,ZF,ZP
+         REAL*8,INTENT(OUT)::P0,DP0
+         REAL*8 NM0,PI,SCALE,EF,EP
+         REAL*8,PARAMETER::KH_SCALED=300.D0
+         DATA PI/3.141592653589793D0/
+
+         IF (WK*H.LE.KH_SCALED) THEN
+          NM0=H/2.D0*(1.D0+DSINH(2.D0*WK*H)/(2.D0*WK*H))
+          P0=PI/NM0*DCOSH(WK*(ZF+H))*DCOSH(WK*(ZP+H))
+          DP0=PI/NM0*DSINH(WK*(ZF+H))*DCOSH(WK*(ZP+H))
+         ELSE
+          SCALE=2.D0*PI*WK*DEXP(WK*(ZF+ZP))
+          EF=DEXP(-2.D0*WK*(ZF+H))
+          EP=DEXP(-2.D0*WK*(ZP+H))
+          P0=SCALE*(1.D0+EF)*(1.D0+EP)
+          DP0=SCALE*(1.D0-EF)*(1.D0+EP)
+         ENDIF
+
+        RETURN
+        END SUBROUTINE WAVE_DEPTH_FACTORS
+
 ! ==================================================================================
 !       Purpose: This program computes Rankine image source
 !
