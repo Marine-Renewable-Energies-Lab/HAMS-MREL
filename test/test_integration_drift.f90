@@ -142,6 +142,9 @@ module test_integration_drift
     real(8), parameter :: control_vertical_fixed_limit = 4.4d-1
     ! C at 8 against 4 median hull panel sizes, free: 10.2% (measured): 1.5x measured
     real(8), parameter :: control_vertical_c_limit = 1.6d-1
+    ! Two rounded cylinders (control_two_round, 1.35 rad/s), each body's F_z, M_x, M_y against near-field of the same run:
+    ! 42.3% (F_z of body 1 at heading 30, 0.41 against 0.71; M_x and M_y at most 18%) (measured): 1.5x measured
+    real(8), parameter :: control_two_vertical_limit = 6.4d-1
 
 contains
 
@@ -1965,7 +1968,7 @@ contains
         type(error_type), allocatable, intent(out) :: error
         real(8), parameter :: a_rad = 5d0
         real(8), allocatable :: rows(:,:)
-        real(8) :: worst_fx, worst_f, worst_mz, worst_near, worst_own, fmag
+        real(8) :: worst_fx, worst_f, worst_mz, worst_near, worst_own, fmag, worst_vertical
         integer :: r, b
 
         call read_control_horizontal(output_dir("control_two_round")//control_file, rows, error)
@@ -1977,6 +1980,10 @@ contains
         call control_against_far("control_two_round", reshape([0d0, 0d0, 0d0, 30d0], [2, 2]), worst_fx, worst_f, worst_mz, error)
         if (allocated(error)) return
         call body_force_against_near("control_two_round", worst_near, error)
+        if (allocated(error)) return
+        ! F_z, M_x and M_y of each body: the per-body hull waterline, F and hydrostatic term
+        call rows_against("control_two_body_total vertical", output_dir("control_two_round")//control_file, &
+                          output_dir("control_two_round")//near_file, [3, 4, 5, 9, 10, 11], worst_vertical, error)
         if (allocated(error)) return
         worst_own = 0d0
         do r = 1, size(rows, 1) - 2, 3
@@ -1992,6 +1999,8 @@ contains
         call check_below(error, "control_two_body_total each body against near", worst_near, near_far_limit)
         if (allocated(error)) return
         call check_below(error, "control_two_body_total M_z about own axis", worst_own, control_own_mz_limit)
+        if (allocated(error)) return
+        call check_below(error, "control_two_body_total vertical (m1 regression)", worst_vertical, control_two_vertical_limit)
         if (allocated(error)) return
         ! M_z about the origin is mostly the moment of the forces about it
         call check_below(error, "control_two_body_total M_z about the origin", worst_mz, control_two_body_limit)
@@ -2107,8 +2116,8 @@ contains
         call rows_against(tag//" far", output_dir(name)//far_file, output_dir("control_cyl_free")//far_file, [1, 2], &
                           worst_far, error)
         if (allocated(error)) return
-        call rows_against(tag, output_dir(name)//control_file, output_dir("control_cyl_free")//control_file, [1, 2], worst, &
-                          error)
+        call rows_against(tag, output_dir(name)//control_file, output_dir("control_cyl_free")//control_file, &
+                          [1, 2, 3, 4, 5, 6], worst, error)
         if (allocated(error)) return
         limit = max(table_limit, solver_path_factor*worst_far)
         print '(4x,a,": control ",ES10.3,", far ",ES10.3,", limit ",ES10.3)', tag, worst, worst_far, limit
