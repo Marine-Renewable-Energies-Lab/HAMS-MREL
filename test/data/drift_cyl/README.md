@@ -244,12 +244,13 @@ The control-surface fixtures other than `control_cyl` run on 4 threads (`Number 
 | `control_far_box` | far-field | F_x 0.140%, 0.220%; F_y 0.141%, 0.324%; M_z 0.054%, 0.216% at 0.8, 1.0 rad/s | 0.44%, 0.65%, 0.44%: 2x measured, cap 3% |
 | `control_two_body_total`, sum over bodies, `cs_panel_size=0.75` | far-field | F_x 0.579%, 0.514% at headings 0, 30; force vector 0.579%, 0.489% (2.28% and 2.06% F_x with the default C) | 2%, fixed before the measurement |
 | `control_two_body_total`, each body, `cs_panel_size=0.75` | near-field of the same run | force vector (F_x, F_y) 0.568% at heading 0; 1.18% (body 1) and 0.374% (body 2) at heading 30 | 5%: `near_far_limit`, the near-against-far limit of this hull in `drift_two_round`, since near-field at 220 panels per body is not a 2% reference |
+| `control_two_body_total`, F_z, M_x, M_y of each body (I = 3, 4, 5, 9, 10, 11) | near-field of the same run | worst 42.3%: F_z of body 1 at heading 30 (0.41 against 0.71); M_x and M_y at most 18.0%; at heading 0 the two bodies agree to 1e-6, with M_x of opposite sign | 64%: a recorded m1 regression, 1.5x measured |
 | `control_two_body_total`, M_z of each body about its own axis | zero for a body of revolution | 1.49e-3 of \|F\| a (1.46e-3 with the default C) | 3e-3: 2x measured with the default C |
 | `control_far_apart_isolated` | `control_isolated` | F_x 0.475% | 0.5%, fixed before the measurement |
 | `control_irsp_stable` | `control_irsp_ref` | F_x 0.044%, 0.179% at 0.95, 1.10 rad/s | 0.5%, fixed before the measurement |
 | `control_irsp_stable`, 1.548 rad/s | far-field, both `IRSP=1` | F_x 2.40% (with `IRSP=0`: 2.65%) | 3%, fixed before the measurement |
-| `control_half_matches_full` | `control_cyl_free` | F_x and F_y 0 to the 7 printed digits; far-field of the same runs 3.46e-7 | max(1e-6, 5x the far-field difference) = 1.73e-6 |
-| `control_gmres_agrees` | `control_cyl_free` | 2.19e-5; far-field of the same runs 2.22e-5 | max(1e-5, 5x the far-field difference) = 1.11e-4 |
+| `control_half_matches_full`, I = 1 to 6 | `control_cyl_free` | F_x, F_y, F_z, M_x 0 to the 7 printed digits, M_y 1.9e-7; far-field of the same runs 3.46e-7 | max(1e-6, 5x the far-field difference) = 1.73e-6 |
+| `control_gmres_agrees`, I = 1 to 6 | `control_cyl_free` | 2.19e-5 (F_z, M_x, M_y at most 1.6e-5); far-field of the same runs 2.22e-5 | max(1e-5, 5x the far-field difference) = 1.11e-4 |
 | `control_pairs_match_unidirectional` | `control_cyl_free` | diagonal 0 and conjugate symmetry 0, as printed | 1e-10, fixed before the measurement |
 | `control_source_far` | far-field | F_x 18.9%, 0.636%, 3.74% at 0.70, 0.95, 1.10 rad/s | 24%, 0.80%, 4.7%: a recorded regression, 1.25x measured per frequency, not an accuracy claim |
 | `control_source_leaves_near` | `control_source_ref` | 0 for every near-field row, as printed | 1e-10 |
@@ -318,17 +319,18 @@ m3 runs 0.70, 0.95 and 1.10 rad/s only, and the m4 boxes 0.8, 1.0 and 1.4 rad/s.
 
 ### Phase B on Snellius: F_z, M_x, M_y
 
-The vertical force and the roll and pitch moments of the control-surface method (Chen 2007, eqs. 37-38, with F between the hull waterline and Γc), with the default `cs_*` settings and `cs_velocity = green`, against near-field. Rounded and sharp cylinder (a = 10 m), fixed and free, 100 m depth, at m1 to m4 (480/1920/4320/7680 panels rounded, 448/1792/4032/7168 sharp), 0.70, 0.95 and 1.10 rad/s, plus the 11 frequencies of the study above at m1 and m2 [measured, Snellius, 2026-11-07].
+The vertical force and the roll and pitch moments of the control-surface method (Chen 2007, eqs. 37-38, with F between the hull waterline and Γc), with the default `cs_*` settings and `cs_velocity = green`, against near-field (F_z of the sharp hull: against a semi-analytical reference). Rounded and sharp cylinder (a = 10 m), fixed and free, 100 m depth, at m1 to m4 (480/1920/4320/7680 panels rounded, 448/1792/4032/7168 sharp), 0.70, 0.95 and 1.10 rad/s, plus the 11 frequencies of the study above at m1 and m2 [measured, Snellius, 2026-11-07].
 
 | Load | Reference | Result |
 | :--- | :--- | :--- |
 | M_x, M_y | near-field at m4, tolerance max(1% of the reference, 1e-3 rho g A^2 a^2) | within the tolerance on both hulls at m3 and m4; worst 0.44 of it (rounded, m3) and 0.57 (sharp, m3) |
 | F_z, rounded | extrapolated near-field limit f0 + C h^p, fitted over m2 to m4 (h = 1/2, 1/3, 1/4) | control at m3 (0.70, 0.95, 1.10 rad/s): fixed 0.4%, 0.9%, 1.9%; free 0.0%, 0.5%, 0.8%. At m4 fixed 1.10 rad/s is 1.2% |
-| F_z, sharp, fixed | extrapolated near-field limit | control -4.021, -2.596, -1.455 (m4); limit -4.02 to -4.06, -2.58 to -2.61, -1.42 to -1.45 (3-point fit over m2 to m4, and p = 2/3 from m3 and m4); control changes by 0.8% or less from m3 to m4 (it moves up to 20% from m1 to m4) |
-| F_z, sharp, free | extrapolated near-field limit | control 2.171, 1.926 at 0.95, 1.10 rad/s against limits 2.06 and 1.91; at 0.70 rad/s the limit lies between -0.43 and -1.08 and control gives -0.617 |
+| F_z, sharp, fixed | semi-analytical reference (below) | control at m3 / m4 (0.70, 0.95, 1.10 rad/s): 0.40 / 0.31%, 0.89 / 0.63%, 2.26 / 1.44% |
+| F_z, sharp, free | semi-analytical reference (below) | control at m3 / m4: 0.81 / 0.71%, 0.04 / 0.09%, 0.77 / 0.53% |
 
 - The rounded-hull limits of near-field and control agree within 0.4% at all six (motion, frequency) pairs, so the m3 and m4 differences are mesh error in both methods [measured].
-- Near-field F_z on the sharp hull still moves with the mesh: the 3-point fitted order is 0.66 to 0.76 at every frequency, with term 3 (velocity) dominant. At m4 (7168 panels) it is 13% to 19% off on the fixed hull and 24% to 68% off on the free hull (against the control-surface value), with the wrong sign at 0.70 rad/s [measured]. The cause is the right-angled bottom edge, where the velocity is singular [inferred].
+- The sharp hull is the truncated cylinder (radius 10 m, draft 10 m, depth 100 m) of `pre_postprocessing_python/SecondOrder/truncated_cylinder_reference.py` (branch `second-order-drift`), which gives a semi-analytical F_z with an uncertainty of 1e-4 rho g A^2 (3e-3 free at 0.70 rad/s). The errors above are (HAMS - reference)/|reference| at heading 0 [measured]. There is no such reference for the rounded hull, so its F_z is checked against the extrapolated near-field limit.
+- Near-field F_z (differencing) on the sharp hull still moves with the mesh: the 3-point fitted order is 0.66 to 0.76 at every frequency, with term 3 (velocity) dominant. At m4 (7168 panels) it is 12% to 17% off the reference on the fixed hull and 23% to 506% off on the free hull. Free at 0.70 rad/s the reference is -0.6128, control -0.6171 and near-field +2.49 [measured]. The cause is the right-angled bottom edge, where the velocity is singular [inferred].
 - Advice: on hulls with sharp edges, use the control-surface F_z, and do not take near-field F_z at these meshes as the reference. Near-field F_z needs a much finer mesh there.
 - Not covered: at m2 (1920 and 1792 panels), F_z, M_x and M_y at 1.6 to 1.8 rad/s differ from near-field of the same run by up to about 30%, and m3 and m4 were not run at those frequencies [measured].
 - Numbers are as measured; no convergence order of the control-surface method is claimed.
