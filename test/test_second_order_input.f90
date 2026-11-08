@@ -2,7 +2,7 @@
 module test_second_order_input
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use IO, only : CreateDirectory
-  use SecondOrderTypes, only : so_options
+  use SecondOrderTypes, only : so_options, QTF_TERMS_QUADRATIC, QTF_TERMS_BODY
   use SecondOrderInput, only : read_second_order_options, validate_second_order
   implicit none
   private
@@ -30,7 +30,8 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("control_keys_parse", test_control_keys), &
     new_unittest("control_defaults", test_control_defaults), &
     new_unittest("control_rejections", test_control_rejections), &
-    new_unittest("qtf_keys", test_qtf_keys) &
+    new_unittest("qtf_keys", test_qtf_keys), &
+    new_unittest("qtf_terms_body", test_qtf_terms_body) &
     ]
 
 end subroutine collect_second_order_input
@@ -448,8 +449,8 @@ subroutine test_qtf_keys(error)
   call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 4"], &
                            "qtf must be 0, 1, 2 or 3 in SecondOrder.in.")
   if (allocated(error)) return
-  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = body"], &
-                           "qtf_terms = body and full are not implemented (Phase 5); use quadratic.")
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = full"], &
+                           "qtf_terms = full is not implemented (Phase 6); use quadratic or body.")
   if (allocated(error)) return
   call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_max_dw = -1"], &
                            "qtf_max_dw must not be negative in SecondOrder.in.")
@@ -467,6 +468,48 @@ subroutine test_qtf_keys(error)
   call check(error, trim(msg) == "qtf needs drift_methods to include near.", "near message: "//trim(msg))
   call remove_directory(root)
 end subroutine test_qtf_keys
+
+!> qtf_terms = body is read with the difference QTF (qtf = 1 or 3) and rejected with the sum frequency only; quadratic is
+!> the default.
+subroutine test_qtf_terms_body(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_body"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+  integer :: q
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 1"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_terms, QTF_TERMS_QUADRATIC, "qtf_terms default")
+  if (allocated(error)) return
+  do q = 1, 3, 2
+    write (msg, '(a,I0)') "qtf = ", q
+    call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", trim(msg), &
+                            "qtf_terms = body"])
+    call read_second_order_options(root, opts, ok, msg)
+    call check(error, ok, "qtf_terms = body rejected: "//trim(msg))
+    if (allocated(error)) return
+    call check(error, opts%qtf_terms, QTF_TERMS_BODY, "qtf_terms = body")
+    if (allocated(error)) return
+    call validate_second_order(opts, 1, -1d0, 1, 0, .false., ok, msg)
+    call check(error, ok, "qtf_terms = body not validated: "//trim(msg))
+    if (allocated(error)) return
+  end do
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 2", &
+                                         "qtf_terms = body"], &
+                           "qtf_terms = body needs the difference QTF (qtf = 1 or 3); sum-frequency body forcing needs "// &
+                           "the free-surface integrals (Phase 6).")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 3", &
+                                         "qtf_terms = full"], &
+                           "qtf_terms = full is not implemented (Phase 6); use quadratic or body.")
+  call remove_directory(root)
+end subroutine test_qtf_terms_body
 
 subroutine expect_read_message(error, root, lines, expected)
   type(error_type), allocatable, intent(out) :: error

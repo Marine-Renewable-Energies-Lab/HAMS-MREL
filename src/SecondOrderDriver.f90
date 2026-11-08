@@ -28,7 +28,8 @@ MODULE SecondOrderDriver
    ! AMP = 1, so MXPOT and DSPL are already per unit amplitude. The set-up stops if that ever changes.
    !
    ! PanelDiagnostics.txt (write_terms = 2) is test and debugging output, in tagged rows of plain columns. See
-   ! docs/output_files.md.
+   ! docs/output_files.md. QTF_PsiCheck.txt (qtf_terms = body, write_terms >= 1) is test output of the same kind: the added
+   ! mass and damping and the excitation by the indirect method, from psi (header in the file).
    !
    ! The control-surface method (drift_methods = control) needs the states of all the headings of a frequency at once: the
    ! fields on C are computed in one pass over the points at the end of the frequency, for every heading, since
@@ -41,7 +42,7 @@ MODULE SecondOrderDriver
 
    USE Const_mod, ONLY: G, RHO
    USE HAMS_mod, ONLY: SYBO
-   USE WaveDyn_mod, ONLY: AMP, BETA, BLNR, H, NBETA, NBODY, NPER, OUFR, TP, V, W1, WK, WVHD, AMAS, BDMP, EXFC, DSPL, &
+   USE WaveDyn_mod, ONLY: AMP, BETA, BLNR, H, NBETA, NBODY, NPER, OUFR, TP, V, W1, WK, WVFQ, WVHD, WVNB, AMAS, BDMP, EXFC, DSPL, &
                           AMAS_MULTI_COMB, BDMP_MULTI_COMB, BLNR_MULTI, EXFC_MULTI_COMB, DSPL_MULTI_COMB
    USE Body_mod, ONLY: CRS, KSTF, MATX, REFL, XR, XR_MULTI, CRS_MULTI, KSTF_MULTI, MATX_MULTI
    USE PanelMesh_mod, ONLY: DS, DXYZ_P, GEONRM_P, GEONRM_MULTI_COMB, ISX, ISY, NCN, NCON, NELEM, NSYS, PNSZ, XYZ, XYZ_P, &
@@ -50,9 +51,10 @@ MODULE SecondOrderDriver
    USE Inerfs_mod, ONLY: NELEM_PE
    USE Potentials_mod, ONLY: MXPOT, MXPOT_MULTI_COMB
    USE IO, ONLY: CreateDirectory
+   USE ImplementSubs, ONLY: InputOmega
    USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom, cs_points, cs_fields, CS_WALL, CS_LINE, &
-                               CS_FREE
-   USE FirstOrderState, ONLY: expand_images, build_state
+                               CS_FREE, QTF_TERMS_BODY
+   USE FirstOrderState, ONLY: expand_images, build_state, radiation_psi
    USE SurfaceGeometry, ONLY: build_surface_geom, DEFAULT_SHARP_DEG
    USE SurfaceVelocity, ONLY: velocity_differencing, source_operator, build_source_operator, velocity_source
    USE FarFieldDrift, ONLY: far_amplitude, far_field_pair, far_field_pairs
@@ -62,11 +64,13 @@ MODULE SecondOrderDriver
    USE FieldVelocity, ONLY: fields_green, fields_source
    USE ControlSurfaceDrift, ONLY: control_surface_pair, CS_T_LINE, CS_T_PRESSURE, CS_T_HYDROSTATIC
    USE SecondOrderOutput, ONLY: write_drift_row, write_terms_row
-   USE QTFDriver, ONLY: qtf_init, qtf_keep, qtf_finish, qtf_stored_mb
+   USE QTFDriver, ONLY: qtf_init, qtf_keep, qtf_finish, qtf_stored_mb, qtf_keep_psi, qtf_psi_index, qtf_psi_count, &
+                        qtf_radiation_omegas
    IMPLICIT NONE
    PRIVATE
 
    PUBLIC :: so_setup_single, so_setup_multi, so_after_motion_single, so_after_motion_multi, so_end_frequency, so_finish
+   PUBLIC :: so_after_radiation, so_after_radiation_only
 
    REAL(8), PARAMETER :: PI = 3.141592653589793D0
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
@@ -93,6 +97,10 @@ MODULE SecondOrderDriver
    COMPLEX(8), ALLOCATABLE :: cs_sigma(:,:)            ! (n, NBETA), source strengths of each heading, for cs_velocity = source
    COMPLEX(8), ALLOCATABLE :: far_diag(:,:)            ! (3, NBETA), far-field F_x, F_y, M_z of each heading, for the log
    INTEGER :: unit_control = 0
+   ! Radiation potentials of the indirect method (qtf_terms = body)
+   LOGICAL :: body_terms = .FALSE.                     ! psi is kept at the difference frequencies
+   COMPLEX(8), ALLOCATABLE :: psi_main(:,:)            ! (n, 6*nbody), psi of the current main-grid frequency
+   INTEGER :: unit_psi = 0                             ! QTF_PsiCheck.txt (write_terms >= 1)
 
 CONTAINS
 
@@ -185,7 +193,12 @@ CONTAINS
          nqtf = NPER - MERGE(2, 0, SYBO == 1)
          WRITE (*, '(a,F10.1,a,I0,a,I0,a)') ' QTF: the first-order states take', &
             qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA), ' MB for ', nqtf, ' frequencies and ', NBETA, ' headings'
-         CALL qtf_init(opts, nqtf, WVHD(1:NBETA), geom%nwl, mesh%n, mesh%nbody, outputdir)
+         body_terms = opts%qtf_terms == QTF_TERMS_BODY .AND. (opts%qtf == 1 .OR. opts%qtf == 3)
+         IF (body_terms) THEN
+            CALL body_terms_setup(opts, nqtf, outputdir)
+         ELSE
+            CALL qtf_init(opts, nqtf, WVHD(1:NBETA), geom%nwl, mesh%n, mesh%nbody, outputdir)
+         END IF
       END IF
       IF ((opts%do_near .OR. opts%do_control) .AND. opts%write_terms >= 1) THEN
          OPEN (NEWUNIT=unit_terms, FILE=outputdir//'/Wamit_format/MeanDriftTerms.txt', STATUS='REPLACE', ACTION='WRITE')
@@ -222,6 +235,118 @@ CONTAINS
          END IF
       END IF
    END SUBROUTINE common_setup
+
+   SUBROUTINE body_terms_setup(opts, nqtf, outputdir)
+      ! The QTF store with psi at the difference frequencies of the main grid, and QTF_PsiCheck.txt (write_terms >= 1).
+      ! The main-grid frequencies come from the input values (WVNB, before the frequency loop converts them).
+      TYPE(so_options), INTENT(IN) :: opts
+      INTEGER, INTENT(IN) :: nqtf
+      CHARACTER(LEN=*), INTENT(IN) :: outputdir
+      REAL(8) :: omegas(nqtf)
+      INTEGER :: i, first, nneed, nreuse
+
+      first = MERGE(2, 0, SYBO == 1)
+      DO i = 1, nqtf
+         omegas(i) = InputOmega(WVNB(first + i))
+      END DO
+      CALL qtf_init(opts, nqtf, WVHD(1:NBETA), geom%nwl, mesh%n, mesh%nbody, outputdir, omegas_main=omegas)
+      nneed = qtf_psi_count()
+      nreuse = qtf_psi_count(reused=.TRUE.)
+      WRITE (*, '(a,I0,a,I0,a,I0,a)') ' QTF body forcing: psi at ', nneed, ' difference frequencies, ', nreuse, &
+         ' from the main grid and ', nneed - nreuse, ' radiation-only solves (each costs about one radiation solve)'
+      WRITE (*, '(a,F10.1,a)') ' QTF: with psi the store takes', &
+         qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed), ' MB'
+      ALLOCATE (psi_main(mesh%n, 6*mesh%nbody))
+      psi_main = (0D0, 0D0)
+      IF (opts%write_terms >= 1) THEN
+         OPEN (NEWUNIT=unit_psi, FILE=outputdir//'/Wamit_format/QTF_PsiCheck.txt', STATUS='REPLACE', ACTION='WRITE')
+         WRITE (unit_psi, '(a)') '# Checks of the radiation potentials psi_k of the indirect method (qtf_terms = body).'
+         WRITE (unit_psi, '(a)') '# SI units, time factor e^{-i omega t}, per unit wave amplitude, moments about XR of each body.'
+         WRITE (unit_psi, '(a)') '# PSI omega source k l Re Im   rho int_{S_l} psi_k n_l dS = A_lk + i B_lk/omega;'// &
+            ' source 1 main grid, 2 radiation-only solve'
+         WRITE (unit_psi, '(a)') '# EXC omega beta_deg k Re Im   i omega rho [int_{S_k} phi_I n_k dS - int_S psi_k dphi_I/dn dS]'
+      END IF
+   END SUBROUTINE body_terms_setup
+
+   SUBROUTINE write_psi_rows(omega, source, psi)
+      ! PSI rows of QTF_PsiCheck.txt: rho int psi_k n_l dS over the panels of the body of mode l, for all k and l
+      REAL(8), INTENT(IN) :: omega
+      INTEGER, INTENT(IN) :: source
+      COMPLEX(8), INTENT(IN) :: psi(:, :)
+      COMPLEX(8) :: s
+      INTEGER :: k, l, lb, i
+
+      IF (unit_psi == 0) RETURN
+      DO k = 1, 6*mesh%nbody
+         DO l = 1, 6*mesh%nbody
+            lb = (l - 1)/6 + 1
+            s = (0D0, 0D0)
+            DO i = 1, mesh%n
+               IF (mesh%body(i) == lb) s = s + psi(i, k)*mesh%nj(l - 6*(lb - 1), i)*mesh%area(i)
+            END DO
+            WRITE (unit_psi, '(a,ES24.15,I3,2I6,2ES24.15)') 'PSI ', omega, source, k, l, RHO*REAL(s, 8), RHO*AIMAG(s)
+         END DO
+      END DO
+   END SUBROUTINE write_psi_rows
+
+   SUBROUTINE write_exc_rows(s, beta_deg)
+      ! EXC rows of QTF_PsiCheck.txt: the excitation by the indirect method (Haskind), with psi of the main-grid frequency
+      TYPE(first_order_state), INTENT(IN) :: s
+      REAL(8), INTENT(IN) :: beta_deg
+      COMPLEX(8) :: incident, scattered, f
+      INTEGER :: k, kb, i
+
+      IF (unit_psi == 0) RETURN
+      DO k = 1, 6*mesh%nbody
+         kb = (k - 1)/6 + 1
+         incident = (0D0, 0D0)
+         scattered = (0D0, 0D0)
+         DO i = 1, mesh%n
+            IF (mesh%body(i) == kb) incident = incident + s%phi_i(i)*mesh%nj(k - 6*(kb - 1), i)*mesh%area(i)
+            scattered = scattered + psi_main(i, k)*SUM(s%grad_i(:, i)*mesh%nrm(:, i))*mesh%area(i)
+         END DO
+         f = CI*s%omega*RHO*(incident - scattered)
+         WRITE (unit_psi, '(a,2ES24.15,I6,2ES24.15)') 'EXC ', s%omega, beta_deg, k, REAL(f, 8), AIMAG(f)
+      END DO
+   END SUBROUTINE write_exc_rows
+
+   SUBROUTINE so_after_radiation(opts, kk)
+      ! Call after the radiation solve of main-grid frequency kk, before the diffraction solves overwrite the scattered
+      ! column of MXPOT. With qtf_terms = body, takes psi of this frequency: for the excitation check of the headings, and into
+      ! the QTF store if the frequency is also a difference frequency.
+      TYPE(so_options), INTENT(IN) :: opts
+      INTEGER, INTENT(IN) :: kk
+
+      IF (.NOT. body_terms .OR. opts%qtf_terms /= QTF_TERMS_BODY .OR. is_limit_frequency()) RETURN
+      IF (ABS(W1 - WVFQ(kk)) > 1D-12*W1) THEN
+         WRITE (*, '(a,I0)') ' QTF: so_after_radiation called with the wave of another frequency than ', kk
+         ERROR STOP 1
+      END IF
+      IF (multi_arrays) THEN
+         CALL radiation_psi(mesh, W1, MXPOT_MULTI_COMB, psi_main)
+      ELSE
+         CALL radiation_psi(mesh, W1, MXPOT, psi_main)
+      END IF
+      IF (qtf_psi_index(W1) > 0) CALL qtf_keep_psi(W1, psi_main)
+      CALL write_psi_rows(W1, 1, psi_main)
+   END SUBROUTINE so_after_radiation
+
+   SUBROUTINE so_after_radiation_only(opts, omega)
+      ! Call after the radiation-only solve at the difference frequency omega (one of qtf_radiation_omegas()).
+      TYPE(so_options), INTENT(IN) :: opts
+      REAL(8), INTENT(IN) :: omega
+      COMPLEX(8), ALLOCATABLE :: psi(:, :)
+
+      IF (.NOT. body_terms .OR. opts%qtf_terms /= QTF_TERMS_BODY) RETURN
+      ALLOCATE (psi(mesh%n, 6*mesh%nbody))
+      IF (multi_arrays) THEN
+         CALL radiation_psi(mesh, omega, MXPOT_MULTI_COMB, psi)
+      ELSE
+         CALL radiation_psi(mesh, omega, MXPOT, psi)
+      END IF
+      CALL qtf_keep_psi(omega, psi)
+      CALL write_psi_rows(omega, 2, psi)
+   END SUBROUTINE so_after_radiation_only
 
    LOGICAL FUNCTION keep_all_headings(opts)
       ! The states of every heading of a frequency are kept: the pairs of mean_drift = 2, and the fields of the control surface
@@ -360,6 +485,8 @@ CONTAINS
 
       ! The QTFs need every frequency: keep the state with its hull velocity and waterline potential
       IF (opts%qtf > 0) CALL qtf_keep(ib, states(slot), phi_wl(:, slot), OUFR)
+      ! psi of this frequency was taken by so_after_radiation, before the diffraction solves
+      IF (body_terms) CALL write_exc_rows(states(slot), WVHD(ib))
 
       IF (opts%write_terms == 2) THEN
          IF (ib == 1) CALL write_wave_and_modes(states(slot), mxpot_in)
@@ -548,6 +675,8 @@ CONTAINS
       IF (unit_control /= 0) CLOSE (unit_control)
       IF (unit_terms /= 0) CLOSE (unit_terms)
       IF (unit_diag /= 0) CLOSE (unit_diag)
+      IF (unit_psi /= 0) CLOSE (unit_psi)
+      IF (ALLOCATED(psi_main)) DEALLOCATE (psi_main)
    END SUBROUTINE so_finish
 
    SUBROUTINE near_field_output(i1, i2, beta1_deg, beta2_deg, far)

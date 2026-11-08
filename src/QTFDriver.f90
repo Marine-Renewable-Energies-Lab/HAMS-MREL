@@ -35,14 +35,21 @@ MODULE QTFDriver
    ! hold their conjugates, scaled as MeanDriftPressure.9 (SecondOrderOutput), on the full square of frequency pairs.
    ! Heading pairs: beta1 = beta2 for mean_drift = 1, every pair for mean_drift = 2; state i has heading beta1 and state
    ! j heading beta2.
+   !
+   ! With qtf_terms = body the potential part of the difference QTF comes from the indirect method (Molin 1979), which needs
+   ! the radiation potentials psi_k at every difference frequency Omega = omega_i - omega_j > 0 of the grid within
+   ! qtf_max_dw. qtf_radiation_list gives these Omega, with no interpolation: a non-uniform grid can have N(N-1)/2 of them.
+   ! An Omega on the main grid takes psi from the radiation solve of that frequency; the others are solved after the
+   ! frequency loop (qtf_radiation_omegas). psi_store keeps psi of every Omega, filled by qtf_keep_psi.
 
-   USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom
+   USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom, QTF_TERMS_BODY
    USE NearFieldDrift, ONLY: near_field_pair, KERNEL_DIFF, KERNEL_SUM
    USE SecondOrderOutput, ONLY: write_qtf_row
    IMPLICIT NONE
    PRIVATE
 
    PUBLIC :: qtf_init, qtf_keep, qtf_pair_load, qtf_finish, qtf_stored_mb, qtf_kept
+   PUBLIC :: qtf_radiation_list, qtf_radiation_omegas, qtf_keep_psi, qtf_psi_index, qtf_psi_count
 
    LOGICAL :: active = .FALSE.
    INTEGER :: kind_qtf = 0, nbeta = 0, nkept = 0, all_headings_pairs = 0
@@ -51,16 +58,25 @@ MODULE QTFDriver
    TYPE(first_order_state), ALLOCATABLE :: store(:, :)   ! (nfreq, nbeta)
    COMPLEX(8), ALLOCATABLE :: store_wl(:, :, :)          ! (nwl, nfreq, nbeta)
    REAL(8), ALLOCATABLE :: store_oufr(:), beta_deg(:)    ! (nfreq), (nbeta)
+   ! Radiation potentials at the difference frequencies, for qtf_terms = body
+   REAL(8), ALLOCATABLE :: psi_need(:)                   ! (nneed), the Omega, ascending
+   INTEGER, ALLOCATABLE :: psi_reuse(:)                  ! (nneed), main-grid index of each Omega, or 0
+   REAL(8) :: psi_tol = 0D0                              ! two Omega closer than this are the same
+   COMPLEX(8), ALLOCATABLE :: psi_store(:, :, :)         ! (n_panels, 6*nbody, nneed)
+   LOGICAL, ALLOCATABLE :: psi_kept(:)                   ! (nneed)
 
 CONTAINS
 
-   SUBROUTINE qtf_init(opts, nfreq, beta_in_deg, nwl, n_panels, nbody, outputdir)
+   SUBROUTINE qtf_init(opts, nfreq, beta_in_deg, nwl, n_panels, nbody, outputdir, omegas_main)
       ! Allocates the whole store for up to nfreq frequencies, the headings beta_in_deg, n_panels panels and nbody bodies,
       ! so that a run that does not fit stops here, before the first-order solves. outputdir holds Wamit_format.
+      ! omegas_main (rad/s), the nfreq frequencies of the QTF grid, is needed for qtf_terms = body: the store then also holds
+      ! psi at every difference frequency.
       TYPE(so_options), INTENT(IN) :: opts
       INTEGER, INTENT(IN) :: nfreq, nwl, n_panels, nbody
       REAL(8), INTENT(IN) :: beta_in_deg(:)
       CHARACTER(LEN=*), INTENT(IN) :: outputdir
+      REAL(8), INTENT(IN), OPTIONAL :: omegas_main(:)
       INTEGER :: st, i, b
 
       active = opts%qtf > 0
@@ -93,7 +109,177 @@ CONTAINS
       END DO
       store_wl = (0D0, 0D0)
       beta_deg = beta_in_deg
+
+      IF (ALLOCATED(psi_need)) DEALLOCATE (psi_need)
+      IF (ALLOCATED(psi_reuse)) DEALLOCATE (psi_reuse)
+      IF (ALLOCATED(psi_store)) DEALLOCATE (psi_store)
+      IF (ALLOCATED(psi_kept)) DEALLOCATE (psi_kept)
+      IF (opts%qtf_terms == QTF_TERMS_BODY .AND. (kind_qtf == 1 .OR. kind_qtf == 3)) THEN
+         IF (.NOT. PRESENT(omegas_main)) THEN
+            WRITE (*, '(a)') ' QTF: qtf_init needs the main-grid frequencies for qtf_terms = body.'
+            ERROR STOP 1
+         END IF
+         psi_tol = 1D-6*MAXVAL(omegas_main)
+         CALL qtf_radiation_list(omegas_main, max_dw, psi_tol, psi_need, psi_reuse)
+         ALLOCATE (psi_store(n_panels, 6*nbody, SIZE(psi_need)), psi_kept(SIZE(psi_need)), STAT=st)
+         IF (st /= 0) CALL out_of_memory()
+         psi_store = (0D0, 0D0)
+         psi_kept = .FALSE.
+      END IF
    END SUBROUTINE qtf_init
+
+   SUBROUTINE qtf_radiation_list(omegas_main, max_dw_in, tol, need, reuse_index)
+      ! The distinct difference frequencies Omega = omega_i - omega_j > 0 of the grid omegas_main, ascending, with
+      ! Omega <= max_dw_in (all of them for max_dw_in = 0), as in qtf_finish. Differences closer than tol are one, the
+      ! smallest of them. reuse_index(m) is the main-grid index whose frequency is need(m) within tol, else 0; need(m) is then
+      ! that frequency exactly, so that the radiation solve of the main grid finds it.
+      REAL(8), INTENT(IN) :: omegas_main(:), max_dw_in, tol
+      REAL(8), ALLOCATABLE, INTENT(OUT) :: need(:)
+      INTEGER, ALLOCATABLE, INTENT(OUT) :: reuse_index(:)
+      REAL(8), ALLOCATABLE :: d(:)
+      REAL(8) :: dw
+      INTEGER :: n, i, j, m, nd
+
+      n = SIZE(omegas_main)
+      ALLOCATE (d(n*n))
+      nd = 0
+      DO i = 1, n
+         DO j = 1, n
+            dw = omegas_main(i) - omegas_main(j)
+            IF (dw <= tol) CYCLE
+            IF (max_dw_in > 0D0 .AND. dw > max_dw_in*(1D0 + 1D-9)) CYCLE
+            nd = nd + 1
+            d(nd) = dw
+         END DO
+      END DO
+      CALL heap_sort(d(1:nd))
+      ALLOCATE (need(nd))
+      m = 0
+      DO i = 1, nd
+         IF (m > 0) THEN
+            IF (d(i) - need(m) <= tol) CYCLE
+         END IF
+         m = m + 1
+         need(m) = d(i)
+      END DO
+      need = need(1:m)
+      ALLOCATE (reuse_index(m))
+      reuse_index = 0
+      DO i = 1, m
+         DO j = 1, n
+            IF (ABS(omegas_main(j) - need(i)) <= tol) THEN
+               reuse_index(i) = j
+               need(i) = omegas_main(j)
+               EXIT
+            END IF
+         END DO
+      END DO
+   END SUBROUTINE qtf_radiation_list
+
+   PURE SUBROUTINE heap_sort(a)
+      ! Ascending, in place
+      REAL(8), INTENT(INOUT) :: a(:)
+      INTEGER :: n, i
+      REAL(8) :: t
+
+      n = SIZE(a)
+      DO i = n/2, 1, -1
+         CALL sift(i, n)
+      END DO
+      DO i = n, 2, -1
+         t = a(1)
+         a(1) = a(i)
+         a(i) = t
+         CALL sift(1, i - 1)
+      END DO
+
+   CONTAINS
+
+      PURE SUBROUTINE sift(first, last)
+         INTEGER, INTENT(IN) :: first, last
+         INTEGER :: root, child
+         REAL(8) :: v
+
+         root = first
+         v = a(root)
+         DO
+            child = 2*root
+            IF (child > last) EXIT
+            IF (child < last) THEN
+               IF (a(child + 1) > a(child)) child = child + 1
+            END IF
+            IF (a(child) <= v) EXIT
+            a(root) = a(child)
+            root = child
+         END DO
+         a(root) = v
+      END SUBROUTINE sift
+
+   END SUBROUTINE heap_sort
+
+   FUNCTION qtf_radiation_omegas() RESULT(w)
+      ! The difference frequencies that are not on the main grid: each needs a radiation-only solve. Empty unless
+      ! qtf_terms = body.
+      REAL(8), ALLOCATABLE :: w(:)
+
+      IF (ALLOCATED(psi_need)) THEN
+         w = PACK(psi_need, psi_reuse == 0)
+      ELSE
+         ALLOCATE (w(0))
+      END IF
+   END FUNCTION qtf_radiation_omegas
+
+   INTEGER FUNCTION qtf_psi_count(reused)
+      ! Number of difference frequencies, or with reused = .TRUE. of those on the main grid
+      LOGICAL, INTENT(IN), OPTIONAL :: reused
+
+      qtf_psi_count = 0
+      IF (.NOT. ALLOCATED(psi_need)) RETURN
+      qtf_psi_count = SIZE(psi_need)
+      IF (PRESENT(reused)) THEN
+         IF (reused) qtf_psi_count = COUNT(psi_reuse > 0)
+      END IF
+   END FUNCTION qtf_psi_count
+
+   INTEGER FUNCTION qtf_psi_index(omega)
+      ! Index of omega among the difference frequencies (within their tolerance), or 0
+      REAL(8), INTENT(IN) :: omega
+      INTEGER :: m
+
+      qtf_psi_index = 0
+      IF (.NOT. ALLOCATED(psi_need)) RETURN
+      DO m = 1, SIZE(psi_need)
+         IF (ABS(psi_need(m) - omega) <= psi_tol) THEN
+            qtf_psi_index = m
+            RETURN
+         END IF
+      END DO
+   END FUNCTION qtf_psi_index
+
+   SUBROUTINE qtf_keep_psi(omega, psi, ok)
+      ! Keeps psi(n_panels, 6*nbody) of the difference frequency omega. An omega that is not a difference frequency, or a psi
+      ! of another size, stops the run; with ok present, psi is not kept and ok is false instead.
+      REAL(8), INTENT(IN) :: omega
+      COMPLEX(8), INTENT(IN) :: psi(:, :)
+      LOGICAL, INTENT(OUT), OPTIONAL :: ok
+      INTEGER :: m
+
+      IF (PRESENT(ok)) ok = .FALSE.
+      m = qtf_psi_index(omega)
+      IF (m == 0) THEN
+         IF (PRESENT(ok)) RETURN
+         WRITE (*, '(a,ES14.6,a)') ' QTF: psi at omega =', omega, ' rad/s, which is not a difference frequency of the grid.'
+         ERROR STOP 1
+      END IF
+      IF (SIZE(psi, 1) /= SIZE(psi_store, 1) .OR. SIZE(psi, 2) /= SIZE(psi_store, 2)) THEN
+         IF (PRESENT(ok)) RETURN
+         WRITE (*, '(a)') ' QTF: psi does not have the size the store was set up for.'
+         ERROR STOP 1
+      END IF
+      psi_store(:, :, m) = psi
+      psi_kept(m) = .TRUE.
+      IF (PRESENT(ok)) ok = .TRUE.
+   END SUBROUTINE qtf_keep_psi
 
    SUBROUTINE qtf_keep(ib, s, phi_wl, oufr)
       ! Keeps the state of heading ib of the current frequency. Heading 1 starts a new frequency, so the driver must call
@@ -142,11 +328,14 @@ CONTAINS
       qtf_kept = nkept
    END FUNCTION qtf_kept
 
-   REAL(8) FUNCTION qtf_stored_mb(n_panels, nwl, nbody, nfreq, nb)
-      ! Size of the store in MB for nfreq frequencies and nb headings: 8 complex values per panel, 6 per body, 1 per segment
+   REAL(8) FUNCTION qtf_stored_mb(n_panels, nwl, nbody, nfreq, nb, npsi)
+      ! Size of the store in MB for nfreq frequencies and nb headings: 8 complex values per panel, 6 per body, 1 per segment.
+      ! With npsi, also psi at npsi difference frequencies: 6*nbody complex values per panel.
       INTEGER, INTENT(IN) :: n_panels, nwl, nbody, nfreq, nb
+      INTEGER, INTENT(IN), OPTIONAL :: npsi
 
       qtf_stored_mb = 16D0*REAL(8*n_panels + 6*nbody + nwl, 8)*REAL(nfreq, 8)*REAL(nb, 8)/1D6
+      IF (PRESENT(npsi)) qtf_stored_mb = qtf_stored_mb + 16D0*REAL(n_panels, 8)*REAL(6*nbody, 8)*REAL(npsi, 8)/1D6
    END FUNCTION qtf_stored_mb
 
    SUBROUTINE qtf_pair_load(mesh, geom, kernel, i1, b1, i2, b2, total)
@@ -173,6 +362,7 @@ CONTAINS
       IF (kind_qtf == 2 .OR. kind_qtf == 3) CALL write_file('/Wamit_format/QTF_Quadratic.10s', KERNEL_SUM)
       WRITE (*, '(a,I0,a,I0,a)') ' QTF quadratic part: ', nkept, ' frequencies and ', nbeta, ' headings'
       DEALLOCATE (store, store_wl, store_oufr)
+      IF (ALLOCATED(psi_store)) DEALLOCATE (psi_store, psi_kept, psi_need, psi_reuse)
       active = .FALSE.
 
    CONTAINS

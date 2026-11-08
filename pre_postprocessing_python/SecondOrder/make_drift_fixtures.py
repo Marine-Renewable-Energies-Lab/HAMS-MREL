@@ -44,6 +44,8 @@ FIELD_PANELS = (1, 4, 8, 9, 14, 40, 85, 130, 133, 200, 270, 448)
 CONTROL_THREADS = 4
 CONTROL_FREQUENCY = 0.95
 CONTROL_STEPS = (0.005, 0.01, 0.05, 0.1)
+# Main grid of qtf_round_low: differences 0.05 to 0.20 rad/s
+QTF_LOW_FREQUENCIES = (0.40, 0.45, 0.50, 0.55, 0.60)
 
 
 def real12(value):
@@ -352,6 +354,16 @@ def main():
                   sybo=1)
     write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="free",
                        write_terms=0, velocity_method="source", qtf=3, qtf_max_dw=0.3)
+    # The radiation potentials of the indirect method (qtf_terms = body): the qtf_round case with the check file, and the same
+    # hull on a low-frequency grid whose differences go down to 0.05 rad/s, with the zero frequency of SYBO = 1 to compare
+    for name, frequencies, options in (("qtf_round_body", DRIFT_CYL_FREQUENCIES, dict(qtf=3, qtf_max_dw=0.3)),
+                                       ("qtf_round_low", QTF_LOW_FREQUENCIES, dict(qtf=1))):
+        target = case_dir(data, name)
+        for file in ("HullMesh.pnl", "Hydrostatic.in"):
+            shutil.copyfile(os.path.join(data, "drift_round", "input", file), os.path.join(target, file))
+        write_control(os.path.join(target, "ControlFile.in"), frequencies=frequencies, headings=DRIFT_CYL_HEADINGS, sybo=1)
+        write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="free",
+                           write_terms=1, velocity_method="source", qtf_terms="body", **options)
     target = case_dir(data, "qtf_two_round")
     for file in ("HullMesh_1.pnl", "HullMesh_2.pnl", "Hydrostatic_1.in", "Hydrostatic_2.in", "ControlFile.in"):
         shutil.copyfile(os.path.join(data, "drift_two_round", "input", file), os.path.join(target, file))

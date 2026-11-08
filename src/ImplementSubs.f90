@@ -31,6 +31,8 @@ MODULE ImplementSubs
    ! ..... Public Subroutines ...................................................................................................
    
    PUBLIC :: CalWaveProperts
+   PUBLIC :: SetWaveFromOmega
+   PUBLIC :: InputOmega
    PUBLIC :: WarnLargeKH
    PUBLIC :: CheckFiniteResults
 
@@ -102,29 +104,10 @@ CONTAINS
             WL=2.D0*PI/WK
             TP=2.D0*PI/W1
         ELSEIF (INFT .EQ. 3)  THEN
-            W1=WVNB(KK)
-          IF(H .LE. 0.0D0) THEN
-            V=W1*W1/G
-            WK=V
-          ELSE
-            V=W1*W1/G
-            CALL DISPERSION(WVN,NK,W1,H)
-            WK=WVN(1)
-          END IF
-            WL=2.D0*PI/WK
-            TP=2.D0*PI/W1
+            CALL SetWaveFromOmega(WVNB(KK))
         ELSEIF (INFT .EQ. 4)  THEN
+            CALL SetWaveFromOmega(2.D0*PI/WVNB(KK))
             TP=WVNB(KK)
-            W1=2.D0*PI/TP
-          IF(H .LE. 0.0D0) THEN
-            V=W1*W1/G
-            WK=V
-          ELSE
-            V=W1*W1/G
-            CALL DISPERSION(WVN,NK,W1,H)
-            WK=WVN(1)
-          END IF
-            WL=2.D0*PI/WK
         ELSEIF (INFT .EQ. 5)  THEN
             WL=WVNB(KK)
             WK=2.D0*PI/WL
@@ -155,6 +138,59 @@ CONTAINS
         END IF
 
       END SUBROUTINE CalWaveProperts
+
+! -------------------------------------------------------------------
+!    Wave properties of a finite frequency W (rad/s)
+! -------------------------------------------------------------------
+!    Sets W1, V, WK (and the roots WVN of the finite-depth Green function), WL and TP, as CalWaveProperts does for
+!    INFT = 3, and nothing else: not INFR, OUFR or the per-frequency arrays WVNB and WVFQ. The radiation-only solves of the
+!    QTF difference frequencies use it after the frequency loop.
+      SUBROUTINE SetWaveFromOmega(W)
+      IMPLICIT  NONE
+      REAL*8,INTENT(IN):: W
+
+            W1=W
+          IF(H .LE. 0.0D0) THEN
+            V=W1*W1/G
+            WK=V
+          ELSE
+            V=W1*W1/G
+            CALL DISPERSION(WVN,NK,W1,H)
+            WK=WVN(1)
+          END IF
+            WL=2.D0*PI/WK
+            TP=2.D0*PI/W1
+
+      END SUBROUTINE SetWaveFromOmega
+
+! -------------------------------------------------------------------
+!    Frequency in rad/s of an input frequency value X of type INFT
+! -------------------------------------------------------------------
+!    The W1 that CalWaveProperts computes from WVNB(KK) = X before the frequency loop overwrites WVNB, without side
+!    effects. Not for the limit frequencies of SYBO = 1.
+      REAL*8 FUNCTION InputOmega(X)
+      IMPLICIT  NONE
+      REAL*8,INTENT(IN):: X
+      REAL*8:: VX,KX
+
+        IF (INFT .EQ. 1) THEN
+          InputOmega=SQRT(G*X)
+        ELSEIF (INFT .EQ. 2 .OR. INFT .EQ. 5) THEN
+          KX=X
+          IF (INFT .EQ. 5) KX=2.D0*PI/X
+          IF (H .LE. 0.0D0) THEN
+            VX=KX
+          ELSE
+            VX=KX*TANH(KX*H)
+          END IF
+          InputOmega=SQRT(G*VX)
+        ELSEIF (INFT .EQ. 4) THEN
+          InputOmega=2.D0*PI/X
+        ELSE
+          InputOmega=X
+        END IF
+
+      END FUNCTION InputOmega
 
 ! -------------------------------------------------------------------
 !    Warn when kh is large in finite depth

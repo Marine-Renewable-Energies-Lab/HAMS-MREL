@@ -1,0 +1,8 @@
+! Mean drift options of this integration test
+mean_drift = 1
+drift_methods = far near
+motion_state = free
+write_terms = 1
+velocity_method = source
+qtf_terms = body
+qtf = 1

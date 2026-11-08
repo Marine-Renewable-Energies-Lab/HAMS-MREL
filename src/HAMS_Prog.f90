@@ -91,6 +91,7 @@ program HAMS_MREL
     use SecondOrderTypes
     use SecondOrderInput
     use SecondOrderDriver
+    use QTFDriver, only: qtf_radiation_omegas
     use omp_lib
 
     implicit none  
@@ -303,17 +304,8 @@ program HAMS_MREL
             CALL WarnLargeKH()
          
             ! Solving the radiation problem
-            IF (IRSP.EQ.0) THEN                     
-                CALL CALGREEN
-                CALL ASSB_LEFT(AMAT,IPIV,NELEM,NSYS)
-                CALL ASSB_RBC(BRMAT,NELEM,NSYS)
-                CALL RADIATION_SOLVER(AMAT,BRMAT,IPIV,MXPOT,NELEM,NSYS)
-            ELSEIF (IRSP.EQ.1) THEN                                         
-                CALL CALGREEN_IRR
-                CALL ASSB_LEFT_IRR(AMAT,CMAT,IPIV,NELEM,TNELEM,NSYS)
-                CALL ASSB_RBC_IRR(BRMAT,DRMAT,AMAT,NELEM,TNELEM,NSYS)
-                CALL RADIATION_SOLVER_IRR(CMAT,DRMAT,IPIV,MXPOT,NELEM,NSYS)
-            ENDIF
+            CALL SolveRadiation()
+            IF (so_opts%active) CALL so_after_radiation(so_opts, KK)
 
             CALL RFORCE(WK,W1,TP,AMAS(KK,:,:),BDMP(KK,:,:))
             CALL OutputPressureElevation_Radiation(640)                ! This needs to be implemented for multi-bodies
@@ -339,9 +331,10 @@ program HAMS_MREL
             ENDDO
             CALL CheckFiniteResults(AMAS(KK,:,:),BDMP(KK,:,:),EXFC(KK,:,:))
             IF (so_opts%active) CALL so_end_frequency(so_opts, KK)
-        
+
         ENDDO
 
+        IF (so_opts%active) CALL RadiationOnlySolves(.FALSE.)
         IF (so_opts%active) CALL so_finish()
        
         DO KK=1,NPER
@@ -666,41 +659,9 @@ program HAMS_MREL
             CALL WarnLargeKH()
          
             ! Solving the radiation problem
-            IF (IRSP.EQ.0) THEN
-                CALL CALGREEN_MULTI
-                CALL ASSB_LEFT_MULTI(AMAT_MULTI,IPIV_MULTI_COMB,TNELEM,NSYS)                 ! Should AMAT_MULTI be symmetric?
-                NELEM_GLOBAL=0
-                BRMAT_MULTI=CMPLX(0.0D0,0.0D0)
-                DO FILE_M=1,NBODY
-                    IF (FILE_M.EQ.1) THEN
-                        CALL ASSB_RBC_MULTI(BRMAT_MULTI(:,6*(FILE_M-1)+1:6*(FILE_M-1)+6,:),TNELEM,NSYS,1,NELEM_MULTI(FILE_M))
-                    ELSEIF (FILE_M.EQ.NBODY) THEN
-                        CALL ASSB_RBC_MULTI(BRMAT_MULTI(:,6*(FILE_M-1)+1:6*(FILE_M-1)+6,:),TNELEM,NSYS,NELEM_GLOBAL+1,TNELEM)
-                    ELSE
-                        CALL ASSB_RBC_MULTI(BRMAT_MULTI(:,6*(FILE_M-1)+1:6*(FILE_M-1)+6,:),TNELEM,NSYS,NELEM_GLOBAL+1,NELEM_GLOBAL+NELEM_MULTI(FILE_M))
-                    ENDIF
-                    NELEM_GLOBAL=NELEM_GLOBAL+NELEM_MULTI(FILE_M)
-                ENDDO
-                CALL RADIATION_SOLVER_MULTI(AMAT_MULTI,BRMAT_MULTI,IPIV_MULTI_COMB,MXPOT_MULTI_COMB,TNELEM,NSYS)
-            ELSEIF (IRSP.EQ.1) THEN                                         
-                CALL CALGREEN_MULTI_IRR
-                CALL ASSB_LEFT_IRR_MULTI(AMAT_MULTI,CMAT_MULTI,IPIV_MULTI_COMB,NELEM_TOTAL,iNELEM_TOTAL,TNELEM,NSYS)
-                NELEM_GLOBAL=0
-                BRMAT_MULTI=CMPLX(0.0D0,0.0D0)
-                DRMAT_MULTI=CMPLX(0.0D0,0.0D0)
-                DO FILE_M=1,NBODY
-                    IF (FILE_M.EQ.1) THEN
-                        CALL ASSB_RBC_IRR_MULTI(BRMAT_MULTI(:,6*(FILE_M-1)+1:6*(FILE_M-1)+6,:),DRMAT_MULTI(:,6*(FILE_M-1)+1:6*(FILE_M-1)+6,:),AMAT_MULTI,NELEM_TOTAL,iNELEM_TOTAL,TNELEM,NSYS,1,NELEM_MULTI(FILE_M))
-                    ELSEIF (FILE_M.EQ.NBODY) THEN
-                        CALL ASSB_RBC_IRR_MULTI(BRMAT_MULTI(:,6*(FILE_M-1)+1:6*(FILE_M-1)+6,:),DRMAT_MULTI(:,6*(FILE_M-1)+1:6*(FILE_M-1)+6,:),AMAT_MULTI,NELEM_TOTAL,iNELEM_TOTAL,TNELEM,NSYS,NELEM_GLOBAL+1,NELEM_TOTAL)
-                    ELSE
-                        CALL ASSB_RBC_IRR_MULTI(BRMAT_MULTI(:,6*(FILE_M-1)+1:6*(FILE_M-1)+6,:),DRMAT_MULTI(:,6*(FILE_M-1)+1:6*(FILE_M-1)+6,:),AMAT_MULTI,NELEM_TOTAL,iNELEM_TOTAL,TNELEM,NSYS,NELEM_GLOBAL+1,NELEM_GLOBAL+NELEM_MULTI(FILE_M))
-                    ENDIF
-                    NELEM_GLOBAL=NELEM_GLOBAL+NELEM_MULTI(FILE_M)
-                ENDDO
-                CALL RADIATION_SOLVER_MULTI(CMAT_MULTI,DRMAT_MULTI,IPIV_MULTI_COMB,MXPOT_MULTI_COMB,NELEM_TOTAL,NSYS)
-            ENDIF
-         
+            CALL SolveRadiationMulti()
+            IF (so_opts%active) CALL so_after_radiation(so_opts, KK)
+
          
             ! Filling the total element number matrix to be used for deriving the radiation forces
             NELEM_GLOBAL=0
@@ -775,6 +736,7 @@ program HAMS_MREL
             CALL CheckFiniteResults(AMAS_MULTI_COMB(KK,:,:),BDMP_MULTI_COMB(KK,:,:),EXFC_MULTI_COMB(KK,:,:))
             IF (so_opts%active) CALL so_end_frequency(so_opts, KK)
         ENDDO
+        IF (so_opts%active) CALL RadiationOnlySolves(.TRUE.)
         IF (so_opts%active) CALL so_finish()
         CLOSE(61)
         CALL ReorderAmssDamp(trim(outputdir)//'/Wamit_format/AmssDamp.1', NPER, 6*NBODY) !Reorder the WAMIT format .1 file
@@ -813,6 +775,82 @@ program HAMS_MREL
     end if
 
 contains
+
+    ! The radiation problem of the single body at the wave of CalWaveProperts or SetWaveFromOmega: MXPOT(:,1:6,:)
+    subroutine SolveRadiation()
+        IF (IRSP.EQ.0) THEN
+            CALL CALGREEN
+            CALL ASSB_LEFT(AMAT,IPIV,NELEM,NSYS)
+            CALL ASSB_RBC(BRMAT,NELEM,NSYS)
+            CALL RADIATION_SOLVER(AMAT,BRMAT,IPIV,MXPOT,NELEM,NSYS)
+        ELSEIF (IRSP.EQ.1) THEN
+            CALL CALGREEN_IRR
+            CALL ASSB_LEFT_IRR(AMAT,CMAT,IPIV,NELEM,TNELEM,NSYS)
+            CALL ASSB_RBC_IRR(BRMAT,DRMAT,AMAT,NELEM,TNELEM,NSYS)
+            CALL RADIATION_SOLVER_IRR(CMAT,DRMAT,IPIV,MXPOT,NELEM,NSYS)
+        ENDIF
+    end subroutine SolveRadiation
+
+    ! The radiation problem of all the bodies at the wave of CalWaveProperts or SetWaveFromOmega:
+    ! MXPOT_MULTI_COMB(:,1:6*NBODY,:)
+    subroutine SolveRadiationMulti()
+        IF (IRSP.EQ.0) THEN
+            CALL CALGREEN_MULTI
+            CALL ASSB_LEFT_MULTI(AMAT_MULTI,IPIV_MULTI_COMB,TNELEM,NSYS)                 ! Should AMAT_MULTI be symmetric?
+            NELEM_GLOBAL=0
+            BRMAT_MULTI=CMPLX(0.0D0,0.0D0)
+            DO FILE_M=1,NBODY
+                IF (FILE_M.EQ.1) THEN
+                    CALL ASSB_RBC_MULTI(BRMAT_MULTI(:,6*(FILE_M-1)+1:6*(FILE_M-1)+6,:),TNELEM,NSYS,1,NELEM_MULTI(FILE_M))
+                ELSEIF (FILE_M.EQ.NBODY) THEN
+                    CALL ASSB_RBC_MULTI(BRMAT_MULTI(:,6*(FILE_M-1)+1:6*(FILE_M-1)+6,:),TNELEM,NSYS,NELEM_GLOBAL+1,TNELEM)
+                ELSE
+                    CALL ASSB_RBC_MULTI(BRMAT_MULTI(:,6*(FILE_M-1)+1:6*(FILE_M-1)+6,:),TNELEM,NSYS,NELEM_GLOBAL+1,NELEM_GLOBAL+NELEM_MULTI(FILE_M))
+                ENDIF
+                NELEM_GLOBAL=NELEM_GLOBAL+NELEM_MULTI(FILE_M)
+            ENDDO
+            CALL RADIATION_SOLVER_MULTI(AMAT_MULTI,BRMAT_MULTI,IPIV_MULTI_COMB,MXPOT_MULTI_COMB,TNELEM,NSYS)
+        ELSEIF (IRSP.EQ.1) THEN
+            CALL CALGREEN_MULTI_IRR
+            CALL ASSB_LEFT_IRR_MULTI(AMAT_MULTI,CMAT_MULTI,IPIV_MULTI_COMB,NELEM_TOTAL,iNELEM_TOTAL,TNELEM,NSYS)
+            NELEM_GLOBAL=0
+            BRMAT_MULTI=CMPLX(0.0D0,0.0D0)
+            DRMAT_MULTI=CMPLX(0.0D0,0.0D0)
+            DO FILE_M=1,NBODY
+                IF (FILE_M.EQ.1) THEN
+                    CALL ASSB_RBC_IRR_MULTI(BRMAT_MULTI(:,6*(FILE_M-1)+1:6*(FILE_M-1)+6,:),DRMAT_MULTI(:,6*(FILE_M-1)+1:6*(FILE_M-1)+6,:),AMAT_MULTI,NELEM_TOTAL,iNELEM_TOTAL,TNELEM,NSYS,1,NELEM_MULTI(FILE_M))
+                ELSEIF (FILE_M.EQ.NBODY) THEN
+                    CALL ASSB_RBC_IRR_MULTI(BRMAT_MULTI(:,6*(FILE_M-1)+1:6*(FILE_M-1)+6,:),DRMAT_MULTI(:,6*(FILE_M-1)+1:6*(FILE_M-1)+6,:),AMAT_MULTI,NELEM_TOTAL,iNELEM_TOTAL,TNELEM,NSYS,NELEM_GLOBAL+1,NELEM_TOTAL)
+                ELSE
+                    CALL ASSB_RBC_IRR_MULTI(BRMAT_MULTI(:,6*(FILE_M-1)+1:6*(FILE_M-1)+6,:),DRMAT_MULTI(:,6*(FILE_M-1)+1:6*(FILE_M-1)+6,:),AMAT_MULTI,NELEM_TOTAL,iNELEM_TOTAL,TNELEM,NSYS,NELEM_GLOBAL+1,NELEM_GLOBAL+NELEM_MULTI(FILE_M))
+                ENDIF
+                NELEM_GLOBAL=NELEM_GLOBAL+NELEM_MULTI(FILE_M)
+            ENDDO
+            CALL RADIATION_SOLVER_MULTI(CMAT_MULTI,DRMAT_MULTI,IPIV_MULTI_COMB,MXPOT_MULTI_COMB,NELEM_TOTAL,NSYS)
+        ENDIF
+    end subroutine SolveRadiationMulti
+
+    ! The radiation problems at the QTF difference frequencies that are not on the main grid (qtf_terms = body), after the
+    ! frequency loop: the potentials only, for so_after_radiation_only. No RFORCE, no output file, and AMAS, BDMP and EXFC
+    ! are left as they are. The wave globals (W1, WK, V, ...) are left at the last of these frequencies.
+    subroutine RadiationOnlySolves(multi)
+        logical, intent(in) :: multi
+        real(8), allocatable :: omegas(:)
+        integer :: m
+
+        omegas = qtf_radiation_omegas()
+        do m = 1, size(omegas)
+            call SetWaveFromOmega(omegas(m))
+            write(*,'(a,F10.5,a,I0,a,I0,a)') ' Radiation only, omega = ', omegas(m), ' rad/s (', m, ' of ', size(omegas), ')'
+            call WarnLargeKH()
+            if (multi) then
+                call SolveRadiationMulti()
+            else
+                call SolveRadiation()
+            end if
+            call so_after_radiation_only(so_opts, omegas(m))
+        end do
+    end subroutine RadiationOnlySolves
 
     ! Report the end of the run. Output files are written either way; a run with NaN or Inf results
     ! ends with exit code 1 instead of the message of success.

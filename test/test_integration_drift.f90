@@ -75,6 +75,7 @@ module test_integration_drift
     character(len=*), parameter :: near_file = "Wamit_format/MeanDriftPressure.9"
     character(len=*), parameter :: qtf_diff_file = "Wamit_format/QTF_Quadratic.10d"
     character(len=*), parameter :: qtf_sum_file = "Wamit_format/QTF_Quadratic.10s"
+    character(len=*), parameter :: psi_file = "Wamit_format/QTF_PsiCheck.txt"
     character(len=*), parameter :: terms_file = "Wamit_format/MeanDriftTerms.txt"
     character(len=*), parameter :: control_file = "Wamit_format/MeanDriftControlSurface.7"
     character(len=*), parameter :: offset_cases(4) = [character(len=17) :: "drift_field_0p005", "drift_field_0p01", &
@@ -148,6 +149,25 @@ module test_integration_drift
     ! 42.3% (F_z of body 1 at heading 30, 0.41 against 0.71; M_x and M_y at most 18%) (measured): 1.5x measured
     real(8), parameter :: control_two_vertical_limit = 6.4d-1
 
+    ! Radiation potentials psi of the indirect method (qtf_terms = body).
+    ! rho int psi n dS against AmssDamp.1: the same panel sum as RFORCE, so only the 7 printed digits of AmssDamp.1 (ES14.6)
+    ! differ; 3.6e-7 measured. A fixed 1e-6 (the plan's 1e-8 is below the printed digits)
+    real(8), parameter :: psi_added_mass_limit = 1d-6
+    ! The indirect excitation against ExcForce.3. The Haskind identity int phi_D n_k = int psi_k dphi_D/dn holds for the
+    ! continuous problem; for the panel solution it holds to the discretization error, since the discrete operator is not
+    ! symmetric. Measured on the 480-panel rounded hull: 2.6e-4 to 5.5e-4 in surge and pitch, 2.47e-3 in heave at 1.10 rad/s.
+    ! 2x measured (the plan's 1e-6 assumed an exact discrete identity)
+    real(8), parameter :: psi_haskind_limit = 5d-3
+    ! Low frequency, from the plan: A11 and A55 at 0.05 rad/s within 5% of the zero frequency (0.19%, 0.09% measured), B/omega
+    ! of those modes below 5% of A(0) (4e-5, 2e-5 measured)
+    real(8), parameter :: psi_low_a_limit = 5d-2
+    real(8), parameter :: psi_low_b_limit = 5d-2
+    ! Heave in finite depth does not tend to the zero-frequency (rigid-lid) A33: the heaving body is a source of volume flux,
+    ! whose wave at kh << 1 spreads in two dimensions, so A33 grows like log(1/kR) and B33/omega tends to rho A_wp^2/(4h)
+    ! (from the energy flux of a shallow-water source, derived for this test). Measured at 0.05 rad/s, h = 100 m (kh = 0.16):
+    ! A33 8.9% above A33(0), B33/omega 0.88% above rho A_wp^2/(4h). The heave check is the latter, at a fixed 5%
+    real(8), parameter :: psi_low_heave_limit = 5d-2
+
 contains
 
     subroutine setup_drift(testsuite)
@@ -192,6 +212,8 @@ contains
             new_unittest("run_drift_source_two_round", run_drift_source_two_round), &
             new_unittest("run_qtf_round", run_qtf_round), &
             new_unittest("run_qtf_two_round", run_qtf_two_round), &
+            new_unittest("run_qtf_round_body", run_qtf_round_body), &
+            new_unittest("run_qtf_round_low", run_qtf_round_low), &
             new_unittest("run_control_cyl", run_control_cyl), &
             new_unittest("run_control_cyl_sybo", run_control_cyl_sybo), &
             new_unittest("run_control_cases", run_control_cases) &
@@ -271,7 +293,11 @@ contains
             new_unittest("qtf_rows", qtf_rows), &
             new_unittest("qtf_diagonal_is_mean_drift", qtf_diagonal_is_mean_drift), &
             new_unittest("qtf_symmetries", qtf_symmetries), &
-            new_unittest("qtf_off_without_key", qtf_off_without_key) &
+            new_unittest("qtf_off_without_key", qtf_off_without_key), &
+            new_unittest("psi_added_mass", psi_added_mass), &
+            new_unittest("psi_haskind", psi_haskind), &
+            new_unittest("psi_low_frequency", psi_low_frequency), &
+            new_unittest("qtf_off_unchanged", qtf_off_unchanged) &
         ]
     end subroutine collect_tests_drift
 
@@ -504,6 +530,16 @@ contains
         type(error_type), allocatable, intent(out) :: error
         call run_case("qtf_two_round", [character(len=40) :: near_file, qtf_diff_file, qtf_sum_file], error)
     end subroutine run_qtf_two_round
+
+    subroutine run_qtf_round_body(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("qtf_round_body", [character(len=40) :: near_file, qtf_diff_file, qtf_sum_file, psi_file], error)
+    end subroutine run_qtf_round_body
+
+    subroutine run_qtf_round_low(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("qtf_round_low", [character(len=40) :: near_file, qtf_diff_file, psi_file], error)
+    end subroutine run_qtf_round_low
 
     subroutine run_control_cyl(error)
         type(error_type), allocatable, intent(out) :: error
@@ -3083,5 +3119,265 @@ contains
         inquire (file=output_dir("drift_source_round")//qtf_sum_file, exist=exists)
         call check(error, .not. exists, "A run without qtf wrote QTF_Quadratic.10s")
     end subroutine qtf_off_without_key
+
+    ! ---------------------------------------------------------------------------------------------- radiation potentials psi
+
+    !> PSI rows (omega, source, k, l, Re, Im) or EXC rows (omega, beta_deg, k, Re, Im) of QTF_PsiCheck.txt, by tag
+    subroutine read_psi_check(path, tag, ncol, rows, error)
+        character(len=*), intent(in) :: path, tag
+        integer, intent(in) :: ncol
+        real(8), allocatable, intent(out) :: rows(:,:)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=:), allocatable :: lines(:)
+        integer :: r, n, ios
+
+        call read_lines(path, lines, error)
+        if (allocated(error)) return
+        allocate (rows(size(lines), ncol))
+        n = 0
+        do r = 1, size(lines)
+            if (lines(r)(1:4) /= tag//' ') cycle
+            n = n + 1
+            read (lines(r)(5:), *, iostat=ios) rows(n,:)
+            call check(error, ios == 0, "Bad row in "//path//": "//trim(lines(r)))
+            if (allocated(error)) return
+        end do
+        rows = rows(1:n,:)
+    end subroutine read_psi_check
+
+    !> Rows PER I J A B of AmssDamp.1 with the limit frequencies of SYBO = 1, whose rows have no B (B = 0 here).
+    subroutine read_amssdamp_limits(path, rows, error)
+        character(len=*), intent(in) :: path
+        real(8), allocatable, intent(out) :: rows(:,:)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=:), allocatable :: lines(:)
+        integer :: r, ios
+
+        call read_lines(path, lines, error)
+        if (allocated(error)) return
+        allocate (rows(size(lines), 5))
+        do r = 1, size(lines)
+            read (lines(r), *, iostat=ios) rows(r,1:5)
+            if (ios /= 0) then
+                rows(r,5) = 0d0
+                read (lines(r), *, iostat=ios) rows(r,1:4)
+            end if
+            call check(error, ios == 0, "Bad row in "//path//": "//trim(lines(r)))
+            if (allocated(error)) return
+        end do
+    end subroutine read_amssdamp_limits
+
+    !> rho int psi_k n_l dS = A_lk + i B_lk/omega at the main-grid frequencies of qtf_round_body, against AmssDamp.1 of the
+    !> same run (A/rho and B/(rho omega)). Relative to each entry, or to the largest entry of the frequency for the entries
+    !> below 1e-6 of it (zero by symmetry).
+    subroutine psi_added_mass(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: psi(:,:), amss(:,:)
+        real(8) :: worst, scale, a, b
+        integer :: p, r, matched, freqs
+
+        call read_psi_check(output_dir("qtf_round_body")//psi_file, "PSI", 6, psi, error)
+        if (allocated(error)) return
+        call read_amssdamp_limits(output_dir("qtf_round_body")//"Wamit_format/AmssDamp.1", amss, error)
+        if (allocated(error)) return
+        worst = 0d0
+        matched = 0
+        freqs = 0
+        do p = 1, size(psi, 1)
+            if (nint(psi(p,2)) /= 1) cycle
+            if (nint(psi(p,3)) == 1 .and. nint(psi(p,4)) == 1) freqs = freqs + 1
+            scale = maxval(abs(amss(:,4)) + abs(amss(:,5)), mask=abs(amss(:,1) - psi(p,1)) < 1d-9)
+            do r = 1, size(amss, 1)
+                if (abs(amss(r,1) - psi(p,1)) > 1d-9) cycle
+                if (nint(amss(r,2)) /= nint(psi(p,4)) .or. nint(amss(r,3)) /= nint(psi(p,3))) cycle
+                matched = matched + 1
+                a = psi(p,5)/rho
+                b = psi(p,6)/rho
+                worst = max(worst, abs(a - amss(r,4))/max(abs(amss(r,4)), 1d-6*scale))
+                worst = max(worst, abs(b - amss(r,5))/max(abs(amss(r,5)), 1d-6*scale))
+            end do
+        end do
+        call check(error, freqs == 3, "qtf_round_body: expected PSI rows at the 3 main-grid frequencies")
+        if (allocated(error)) return
+        call check(error, matched == 3*36, "qtf_round_body: a PSI row has no AmssDamp.1 row")
+        if (allocated(error)) return
+        call report("psi_added_mass", worst)
+        call check_below(error, "psi_added_mass", worst, psi_added_mass_limit)
+    end subroutine psi_added_mass
+
+    !> The indirect excitation i omega rho [int phi_I n_k dS - int psi_k dphi_I/dn dS] against ExcForce.3 of the same run,
+    !> conj(F)/(rho g A), at every main-grid frequency and heading. Modes with no excitation by symmetry are left out.
+    subroutine psi_haskind(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: ind(:,:), exc(:,:)
+        real(8) :: worst, scale
+        complex(8) :: direct, indirect
+        integer :: p, r, used, matched
+
+        call read_psi_check(output_dir("qtf_round_body")//psi_file, "EXC", 5, ind, error)
+        if (allocated(error)) return
+        call read_exc(output_dir("qtf_round_body")//"Wamit_format/ExcForce.3", exc, error)
+        if (allocated(error)) return
+        call check(error, size(ind, 1) == 3*2*6, "qtf_round_body: expected EXC rows for 3 frequencies, 2 headings, 6 modes")
+        if (allocated(error)) return
+        worst = 0d0
+        used = 0
+        matched = 0
+        do p = 1, size(ind, 1)
+            do r = 1, size(exc, 1)
+                if (abs(exc(r,1) - ind(p,1)) > 1d-5 .or. abs(exc(r,2) - ind(p,2)) > 1d-5) cycle
+                if (nint(exc(r,3)) /= nint(ind(p,3))) cycle
+                matched = matched + 1
+                scale = maxval(exc(:,4), mask=abs(exc(:,1) - exc(r,1)) < 1d-5 .and. abs(exc(:,2) - exc(r,2)) < 1d-5)
+                if (exc(r,4) < 1d-3*scale) cycle
+                direct = conjg(cmplx(exc(r,6), exc(r,7), kind=8))
+                indirect = cmplx(ind(p,4), ind(p,5), kind=8)/(rho*g)
+                worst = max(worst, abs(indirect - direct)/abs(direct))
+                used = used + 1
+            end do
+        end do
+        call check(error, matched == size(ind, 1), "qtf_round_body: an EXC row has no ExcForce.3 row")
+        if (allocated(error)) return
+        call check(error, used >= 18, "Too few modes with excitation in psi_haskind")
+        if (allocated(error)) return
+        call report("psi_haskind", worst)
+        call check_below(error, "psi_haskind", worst, psi_haskind_limit)
+    end subroutine psi_haskind
+
+    !> qtf_round_low (h = 100 m): psi at the smallest difference, 0.05 rad/s (kh = 0.16), is finite; its A11 and A55 are within
+    !> 5% of the zero-frequency values of the same run (SYBO = 1) and their B/omega is small against them; its B33/omega is
+    !> the shallow-water source value rho A_wp^2/(4h), with A_wp = C33/(rho g) from Hydrostat.hst (REFL = 1).
+    subroutine psi_low_frequency(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), parameter :: depth = 100d0
+        real(8), allocatable :: psi(:,:), amss(:,:), hst(:,:)
+        real(8) :: a0(6), a_low(6), b_low(6), worst_a, worst_b, awp, heave
+        integer :: p, r, j, m, n_low
+
+        call check_no_bad_numbers(output_dir("qtf_round_low")//psi_file, error)
+        if (allocated(error)) return
+        call read_psi_check(output_dir("qtf_round_low")//psi_file, "PSI", 6, psi, error)
+        if (allocated(error)) return
+        call read_amssdamp_limits(output_dir("qtf_round_low")//"Wamit_format/AmssDamp.1", amss, error)
+        if (allocated(error)) return
+        call check(error, count(nint(psi(:,2)) == 2 .and. nint(psi(:,3)) == 1 .and. nint(psi(:,4)) == 1) == 4, &
+                   "qtf_round_low: expected radiation-only rows at 4 differences")
+        if (allocated(error)) return
+        a0 = -1d0
+        a_low = 0d0
+        b_low = 0d0
+        n_low = 0
+        do j = 1, 6
+            do r = 1, size(amss, 1)
+                if (abs(amss(r,1)) < 1d-9 .and. nint(amss(r,2)) == j .and. nint(amss(r,3)) == j) a0(j) = amss(r,4)
+            end do
+            do p = 1, size(psi, 1)
+                if (abs(psi(p,1) - 0.05d0) > 1d-6 .or. nint(psi(p,3)) /= j .or. nint(psi(p,4)) /= j) cycle
+                a_low(j) = psi(p,5)/rho
+                b_low(j) = psi(p,6)/rho
+                n_low = n_low + 1
+            end do
+        end do
+        call check(error, n_low == 6 .and. a0(1) > 0d0 .and. a0(3) > 0d0, "qtf_round_low: rows at 0.05 rad/s or zero frequency")
+        if (allocated(error)) return
+        ! A(Omega) and B(Omega)/Omega of the differences and of the main grid, for the log
+        do p = 1, size(psi, 1)
+            if (nint(psi(p,3)) == nint(psi(p,4)) .and. (nint(psi(p,3)) == 1 .or. nint(psi(p,3)) == 3)) then
+                print '(4x,a,F6.3,a,I1,a,I1,a,2ES12.4)', "psi_low_frequency omega", psi(p,1), " source ", nint(psi(p,2)), &
+                    " A_jj, B_jj/omega j = ", nint(psi(p,3)), ":", psi(p,5)/rho, psi(p,6)/rho
+            end if
+        end do
+        print '(4x,a,3ES12.4)', "psi_low_frequency zero-frequency A11, A33, A55:", a0(1), a0(3), a0(5)
+        worst_a = 0d0
+        worst_b = 0d0
+        do m = 1, 5, 4
+            worst_a = max(worst_a, abs(a_low(m) - a0(m))/a0(m))
+            worst_b = max(worst_b, abs(b_low(m))/a0(m))
+        end do
+        call read_columns(output_dir("qtf_round_low")//"Wamit_format/Hydrostat.hst", 3, hst, error)
+        if (allocated(error)) return
+        awp = -1d0
+        do r = 1, size(hst, 1)
+            if (nint(hst(r,1)) == 3 .and. nint(hst(r,2)) == 3) awp = hst(r,3)
+        end do
+        call check(error, awp > 0d0, "qtf_round_low: no C33 in Hydrostat.hst")
+        if (allocated(error)) return
+        heave = abs(b_low(3) - awp*awp/(4d0*depth))/(awp*awp/(4d0*depth))
+        call report("psi_low_frequency A11, A55 against A(0)", worst_a)
+        call report("psi_low_frequency B11, B55 over omega A(0)", worst_b)
+        call report("psi_low_frequency A33 against A33(0), not limited", abs(a_low(3) - a0(3))/a0(3))
+        call report("psi_low_frequency B33/omega against rho A_wp^2/(4h)", heave)
+        call check_below(error, "psi_low_frequency A", worst_a, psi_low_a_limit)
+        if (allocated(error)) return
+        call check_below(error, "psi_low_frequency B/omega", worst_b, psi_low_b_limit)
+        if (allocated(error)) return
+        call check_below(error, "psi_low_frequency heave", heave, psi_low_heave_limit)
+    end subroutine psi_low_frequency
+
+    !> qtf_terms = quadratic solves no radiation-only problem and writes no psi check; qtf_terms = body changes no output of
+    !> the quadratic case it extends, and logs one line per radiation-only solve (0.15 and 0.25 rad/s within qtf_max_dw = 0.3,
+    !> 0.05 to 0.20 rad/s for qtf_round_low).
+    subroutine qtf_off_unchanged(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=40), parameter :: same_files(7) = [character(len=40) :: "Wamit_format/AmssDamp.1", &
+            "Wamit_format/ExcForce.3", "Wamit_format/Motion.4", far_file, near_file, qtf_diff_file, &
+            qtf_sum_file]
+        logical :: exists
+        integer :: i
+
+        inquire (file=output_dir("qtf_round")//psi_file, exist=exists)
+        call check(error, .not. exists, "qtf_terms = quadratic wrote "//psi_file)
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_round.log", "Radiation only"), 0, &
+                   "radiation-only lines in the log of qtf_round")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_round_body.log", "Radiation only"), 2, &
+                   "radiation-only lines in the log of qtf_round_body")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_round_low.log", "Radiation only"), 4, &
+                   "radiation-only lines in the log of qtf_round_low")
+        if (allocated(error)) return
+        do i = 1, size(same_files)
+            call check_same_file(output_dir("qtf_round")//trim(same_files(i)), &
+                                 output_dir("qtf_round_body")//trim(same_files(i)), error)
+            if (allocated(error)) return
+        end do
+    end subroutine qtf_off_unchanged
+
+    !> Lines of a file that contain text, or -1 if it cannot be opened
+    integer function count_log_lines(path, text)
+        character(len=*), intent(in) :: path, text
+        character(len=512) :: line
+        integer :: unit, ios
+
+        count_log_lines = -1
+        open (newunit=unit, file=path, status='old', action='read', iostat=ios)
+        if (ios /= 0) return
+        count_log_lines = 0
+        do
+            read (unit, '(A)', iostat=ios) line
+            if (ios /= 0) exit
+            if (index(line, text) > 0) count_log_lines = count_log_lines + 1
+        end do
+        close (unit)
+    end function count_log_lines
+
+    subroutine check_same_file(path_a, path_b, error)
+        character(len=*), intent(in) :: path_a, path_b
+        type(error_type), allocatable, intent(out) :: error
+        character(len=:), allocatable :: a(:), b(:)
+        integer :: r
+
+        call read_lines(path_a, a, error)
+        if (allocated(error)) return
+        call read_lines(path_b, b, error)
+        if (allocated(error)) return
+        call check(error, size(a) == size(b), "Different number of lines: "//path_a//" and "//path_b)
+        if (allocated(error)) return
+        do r = 1, size(a)
+            call check(error, a(r) == b(r), "Files differ: "//path_a//" and "//path_b//" at "//trim(a(r)))
+            if (allocated(error)) return
+        end do
+    end subroutine check_same_file
 
 end module test_integration_drift
