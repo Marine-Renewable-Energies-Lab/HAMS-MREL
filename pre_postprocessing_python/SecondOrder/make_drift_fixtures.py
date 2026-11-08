@@ -343,6 +343,21 @@ def main():
     write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=2, drift_methods=both, motion_state="free",
                        write_terms=0, velocity_method="source")
 
+    # Quadratic QTFs: the free rounded hull with the limit frequencies (which must stay out of the QTF grid) and a
+    # qtf_max_dw that drops the pair (0.70, 1.10) from .10d, and the two rounded hulls with every heading pair
+    target = case_dir(data, "qtf_round")
+    for file in ("HullMesh.pnl", "Hydrostatic.in"):
+        shutil.copyfile(os.path.join(data, "drift_round", "input", file), os.path.join(target, file))
+    write_control(os.path.join(target, "ControlFile.in"), frequencies=DRIFT_CYL_FREQUENCIES, headings=DRIFT_CYL_HEADINGS,
+                  sybo=1)
+    write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="free",
+                       write_terms=0, velocity_method="source", qtf=3, qtf_max_dw=0.3)
+    target = case_dir(data, "qtf_two_round")
+    for file in ("HullMesh_1.pnl", "HullMesh_2.pnl", "Hydrostatic_1.in", "Hydrostatic_2.in", "ControlFile.in"):
+        shutil.copyfile(os.path.join(data, "drift_two_round", "input", file), os.path.join(target, file))
+    write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=2, drift_methods=both, motion_state="free",
+                       write_terms=0, velocity_method="source", qtf=3)
+
     # The control-surface method on the hull of drift_cyl: held fixed, and with the limit frequencies and all heading pairs
     for name, control, options in (("control_cyl", dict(), dict(mean_drift=1, drift_methods="far control", write_terms=1,
                                                                 motion_state="fixed")),

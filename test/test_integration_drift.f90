@@ -73,6 +73,8 @@ module test_integration_drift
     character(len=*), parameter :: main_case = "drift_cyl"
     character(len=*), parameter :: far_file = "Wamit_format/MeanDriftMomentum.8"
     character(len=*), parameter :: near_file = "Wamit_format/MeanDriftPressure.9"
+    character(len=*), parameter :: qtf_diff_file = "Wamit_format/QTF_Quadratic.10d"
+    character(len=*), parameter :: qtf_sum_file = "Wamit_format/QTF_Quadratic.10s"
     character(len=*), parameter :: terms_file = "Wamit_format/MeanDriftTerms.txt"
     character(len=*), parameter :: control_file = "Wamit_format/MeanDriftControlSurface.7"
     character(len=*), parameter :: offset_cases(4) = [character(len=17) :: "drift_field_0p005", "drift_field_0p01", &
@@ -188,6 +190,8 @@ contains
             new_unittest("run_drift_source_round_fixed", run_drift_source_round_fixed), &
             new_unittest("run_drift_source_deep", run_drift_source_deep), &
             new_unittest("run_drift_source_two_round", run_drift_source_two_round), &
+            new_unittest("run_qtf_round", run_qtf_round), &
+            new_unittest("run_qtf_two_round", run_qtf_two_round), &
             new_unittest("run_control_cyl", run_control_cyl), &
             new_unittest("run_control_cyl_sybo", run_control_cyl_sybo), &
             new_unittest("run_control_cases", run_control_cases) &
@@ -263,7 +267,11 @@ contains
             new_unittest("control_step_plateau", control_step_plateau), &
             new_unittest("control_vertical_round", control_vertical_round), &
             new_unittest("control_vertical_independent_of_c", control_vertical_independent_of_c), &
-            new_unittest("control_seabed_rows_absent", control_seabed_rows_absent) &
+            new_unittest("control_seabed_rows_absent", control_seabed_rows_absent), &
+            new_unittest("qtf_rows", qtf_rows), &
+            new_unittest("qtf_diagonal_is_mean_drift", qtf_diagonal_is_mean_drift), &
+            new_unittest("qtf_symmetries", qtf_symmetries), &
+            new_unittest("qtf_off_without_key", qtf_off_without_key) &
         ]
     end subroutine collect_tests_drift
 
@@ -486,6 +494,16 @@ contains
         type(error_type), allocatable, intent(out) :: error
         call run_case("drift_source_two_round", [character(len=40) :: far_file, near_file], error)
     end subroutine run_drift_source_two_round
+
+    subroutine run_qtf_round(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("qtf_round", [character(len=40) :: near_file, qtf_diff_file, qtf_sum_file], error)
+    end subroutine run_qtf_round
+
+    subroutine run_qtf_two_round(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("qtf_two_round", [character(len=40) :: near_file, qtf_diff_file, qtf_sum_file], error)
+    end subroutine run_qtf_two_round
 
     subroutine run_control_cyl(error)
         type(error_type), allocatable, intent(out) :: error
@@ -2922,5 +2940,148 @@ contains
         end do
         close (unit)
     end subroutine read_lines
+
+    ! ---------------------------------------------------------------------------------------------- quadratic QTFs
+
+    !> Rows PER1 PER2 BETA1 BETA2 I Mod Pha Re Im of QTF_Quadratic.10d or .10s.
+    subroutine read_qtf(path, rows, error)
+        character(len=*), intent(in) :: path
+        real(8), allocatable, intent(out) :: rows(:,:)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=:), allocatable :: lines(:)
+        real(8) :: a(4), b(4)
+        integer :: i, r, ios
+
+        call read_lines(path, lines, error)
+        if (allocated(error)) return
+        allocate (rows(size(lines), 9))
+        do r = 1, size(lines)
+            read (lines(r), '(4ES14.6,I6,4ES14.6)', iostat=ios) a, i, b
+            call check(error, ios == 0, "Bad row in "//path//": "//trim(lines(r)))
+            if (allocated(error)) return
+            rows(r,1:4) = a
+            rows(r,5) = real(i, 8)
+            rows(r,6:9) = b
+        end do
+    end subroutine read_qtf
+
+    !> The grid of each file: the limit frequencies of SYBO = 1 stay out, qtf_max_dw = 0.3 drops (0.70, 1.10) from .10d
+    !> only, mean_drift = 1 gives beta1 = beta2, and the two-body case has 12 indices for every heading pair.
+    subroutine qtf_rows(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: d(:,:), s(:,:)
+
+        call read_qtf(output_dir("qtf_round")//qtf_diff_file, d, error)
+        if (allocated(error)) return
+        call read_qtf(output_dir("qtf_round")//qtf_sum_file, s, error)
+        if (allocated(error)) return
+        call check(error, size(s, 1) == 9*2*6, "qtf_round .10s: expected 3 x 3 frequency pairs, 2 headings, 6 rows")
+        if (allocated(error)) return
+        call check(error, size(d, 1) == 7*2*6, "qtf_round .10d: expected 7 frequency pairs within 0.3 rad/s")
+        if (allocated(error)) return
+        call check(error, all(d(:,1) > 0.5d0 .and. d(:,2) > 0.5d0 .and. s(:,1) > 0.5d0), "A limit frequency is in a QTF file")
+        if (allocated(error)) return
+        call check(error, all(abs(d(:,1) - d(:,2)) < 0.3d0 + 1d-6), "qtf_round .10d has a pair beyond qtf_max_dw")
+        if (allocated(error)) return
+        call check(error, all(d(:,3) == d(:,4)) .and. all(s(:,3) == s(:,4)), "mean_drift = 1 wrote a pair of headings")
+        if (allocated(error)) return
+        call read_qtf(output_dir("qtf_two_round")//qtf_diff_file, d, error)
+        if (allocated(error)) return
+        call check(error, size(d, 1) == 2*2*4*12, "qtf_two_round .10d: expected 2 x 2 frequencies, 4 heading pairs, 12 rows")
+        if (allocated(error)) return
+        call check(error, maxval(d(:,5)) == 12d0 .and. any(d(:,3) /= d(:,4)), "qtf_two_round: body 2 or heading pairs missing")
+    end subroutine qtf_rows
+
+    !> On the diagonal, .10d is the mean drift of MeanDriftPressure.9 of the same run, row for row, including the heading
+    !> pairs and both bodies of qtf_two_round.
+    subroutine qtf_diagonal_is_mean_drift(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=13), parameter :: cases(2) = [character(len=13) :: "qtf_round", "qtf_two_round"]
+        real(8), allocatable :: d(:,:), m(:,:)
+        real(8) :: worst, scale
+        integer :: c, r, q, matched
+
+        do c = 1, 2
+            call read_qtf(output_dir(trim(cases(c)))//qtf_diff_file, d, error)
+            if (allocated(error)) return
+            call read_drift(output_dir(trim(cases(c)))//near_file, m, error)
+            if (allocated(error)) return
+            worst = 0d0
+            matched = 0
+            do r = 1, size(m, 1)
+                scale = maxval(m(:,5), mask=same_index_kind(m(:,4), m(r,4)))
+                do q = 1, size(d, 1)
+                    if (same(d(q,1), m(r,1)) .and. same(d(q,2), m(r,1)) .and. d(q,3) == m(r,2) .and. d(q,4) == m(r,3) &
+                        .and. d(q,5) == m(r,4)) then
+                        worst = max(worst, (abs(d(q,8) - m(r,7)) + abs(d(q,9) - m(r,8)))/scale)
+                        matched = matched + 1
+                    end if
+                end do
+            end do
+            call report("qtf_diagonal_is_mean_drift "//trim(cases(c)), worst)
+            call check(error, matched == size(m, 1), trim(cases(c))//": a mean drift row has no diagonal row in .10d")
+            if (allocated(error)) return
+            call check_below(error, "qtf_diagonal_is_mean_drift", worst, 1d-6)
+            if (allocated(error)) return
+        end do
+    end subroutine qtf_diagonal_is_mean_drift
+
+    !> Rows of forces (I mod 6 in 1..3) and of moments are scaled separately
+    pure function same_index_kind(index, of) result(mask)
+        real(8), intent(in) :: index(:), of
+        logical :: mask(size(index))
+        mask = (mod(nint(index) - 1, 6) < 3) .eqv. (mod(nint(of) - 1, 6) < 3)
+    end function same_index_kind
+
+    !> T-(i, beta1; j, beta2) = conj T-(j, beta2; i, beta1), and T+ the same without the conjugate, in both cases.
+    subroutine qtf_symmetries(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=13), parameter :: cases(2) = [character(len=13) :: "qtf_round", "qtf_two_round"]
+        real(8), allocatable :: t(:,:)
+        real(8) :: worst, scale, sgn
+        integer :: c, f, p, q, partners
+
+        do c = 1, 2
+            do f = 1, 2
+                if (f == 1) then
+                    call read_qtf(output_dir(trim(cases(c)))//qtf_diff_file, t, error)
+                    sgn = -1d0
+                else
+                    call read_qtf(output_dir(trim(cases(c)))//qtf_sum_file, t, error)
+                    sgn = 1d0
+                end if
+                if (allocated(error)) return
+                worst = 0d0
+                partners = 0
+                do p = 1, size(t, 1)
+                    scale = maxval(t(:,6), mask=same_index_kind(t(:,5), t(p,5)))
+                    do q = 1, size(t, 1)
+                        if (same(t(q,1), t(p,2)) .and. same(t(q,2), t(p,1)) .and. t(q,3) == t(p,4) .and. t(q,4) == t(p,3) &
+                            .and. t(q,5) == t(p,5)) then
+                            worst = max(worst, (abs(t(q,8) - t(p,8)) + abs(t(q,9) - sgn*t(p,9)))/scale)
+                            partners = partners + 1
+                        end if
+                    end do
+                end do
+                call report("qtf_symmetries "//trim(cases(c))//merge(" .10d", " .10s", f == 1), worst)
+                call check(error, partners == size(t, 1), trim(cases(c))//": a QTF row has no partner")
+                if (allocated(error)) return
+                call check_below(error, "qtf_symmetries", worst, 1d-6)
+                if (allocated(error)) return
+            end do
+        end do
+    end subroutine qtf_symmetries
+
+    !> Without qtf in SecondOrder.in no QTF file is written
+    subroutine qtf_off_without_key(error)
+        type(error_type), allocatable, intent(out) :: error
+        logical :: exists
+
+        inquire (file=output_dir("drift_source_round")//qtf_diff_file, exist=exists)
+        call check(error, .not. exists, "A run without qtf wrote QTF_Quadratic.10d")
+        if (allocated(error)) return
+        inquire (file=output_dir("drift_source_round")//qtf_sum_file, exist=exists)
+        call check(error, .not. exists, "A run without qtf wrote QTF_Quadratic.10s")
+    end subroutine qtf_off_without_key
 
 end module test_integration_drift
