@@ -61,6 +61,8 @@ IRREGULAR_FREQUENCIES = (1.10, 1.50, 1.548, 1.60, 1.939)
 BOX_FINE_FREQUENCIES = (0.80, 1.00, 1.40)
 # Nemoh needs a uniform grid. All of these lie below the first irregular frequency, and contain WIDE_FREQUENCIES up to 1.40
 NEMOH_FREQUENCY_RANGE = (0.40, 1.40, 21)
+# The QTF study (--qtf) runs HAMS and Nemoh on a finer grid, so that the QTF curves along omega_j = omega_i + dw are smooth
+QTF_FREQUENCY_RANGE = (0.40, 1.40, 101)
 NEMOH_STAGES = (("preProcessor", "preProc"), ("Solver", "solver"), ("postProcessor", "postProc"),
                 (os.path.join("QTF", "PreProcessor"), "QTFpreProc"), (os.path.join("QTF", "Solver"), "QTFsolver"),
                 (os.path.join("QTF", "PostProcessor"), "QTFpostProc"))
@@ -110,7 +112,7 @@ class Case:
 
     def __init__(self, name, group, question, hull, multiple, motion="fixed", velocity="differencing", waterline="extrapolate",
                  frequencies=WIDE_FREQUENCIES, headings=(0.0, 30.0), grn=4, isolv=1, irsp=0, mean_drift=1, tier="both",
-                 solver="hams", where="snellius", control=None, qtf=0):
+                 solver="hams", where="snellius", control=None, qtf=0, nemoh_range=None):
         self.name = name
         self.group = group
         self.question = question
@@ -130,6 +132,7 @@ class Case:
         self.where = where
         self.control = control   # None, "green" or "source": the cs_velocity of drift_methods = control
         self.qtf = qtf           # qtf of SecondOrder.in: 0 off, 3 both quadratic QTFs
+        self.nemoh_range = nemoh_range or NEMOH_FREQUENCY_RANGE   # (low, high, count) of a Nemoh run
 
 
 def in_tier(case, tier):
@@ -287,7 +290,7 @@ def qtf_cases():
     panels. Velocity by source solve (the method that agreed with Nemoh and the exact reference for F_z), and the
     differencing velocity once, at m2 of the free sharp hull. `collect --qtf` collects their mean drift only;
     qtf_compare.py reads the QTF files in place, under q_*/output/Wamit_format."""
-    grid = tuple(round(w, 4) for w in nemoh_frequencies())
+    grid = tuple(round(w, 4) for w in nemoh_frequencies(QTF_FREQUENCY_RANGE))
     chosen = []
     for motion in ("fixed", "free"):
         for m in (1, 2, 3, 4):
@@ -298,6 +301,11 @@ def qtf_cases():
                            headings=(0.0,), qtf=3))
     chosen.append(Case("q_sharp_free_diff_m2", "Q", "4", "sharp", 2, "free", "differencing", frequencies=grid,
                        headings=(0.0,), qtf=3))
+    # Nemoh's DUOK part on the same grid and meshes
+    for motion in ("fixed", "free"):
+        for m in (1, 2):
+            chosen.append(Case("nemoh_sharp_%s_%s" % (motion, tag(m)), "Q", "4", "sharp", m, motion, headings=(0.0,),
+                               solver="nemoh", nemoh_range=QTF_FREQUENCY_RANGE))
     return chosen
 
 
@@ -308,8 +316,8 @@ def cases_of(control, qtf=False):
     return control_cases(control) if control else study_cases()
 
 
-def nemoh_frequencies():
-    low, high, count = NEMOH_FREQUENCY_RANGE
+def nemoh_frequencies(frequency_range=None):
+    low, high, count = frequency_range or NEMOH_FREQUENCY_RANGE
     return [low + (high - low) * i / (count - 1) for i in range(count)]
 
 
@@ -327,7 +335,7 @@ def laptop_seconds(case):
 def nemoh_seconds(case):
     """Estimated single thread time of a Nemoh run: the first-order solver, and the QTF stages."""
     n = panels_of(case)
-    count = NEMOH_FREQUENCY_RANGE[2]
+    count = case.nemoh_range[2]
     problems = (len(case.headings) + 6) / 7.0
     return count * problems * (NEMOH_N2 * n ** 2 + NEMOH_N3 * n ** 3 + NEMOH_QTF_N2 * n ** 2)
 
@@ -517,7 +525,7 @@ def write_nemoh_case(case, root):
     nemoh_matrix(os.path.join(base, "Mechanics", "Kh.dat"), matrices["restoring"])
     nemoh_matrix(os.path.join(base, "Mechanics", "Km.dat"), stiffness)
     nemoh_matrix(os.path.join(base, "Mechanics", "Badd.dat"), zero)
-    low, high, count = NEMOH_FREQUENCY_RANGE
+    low, high, count = case.nemoh_range
     modes = ("1 1. 0. 0. 0. 0. 0.", "1 0. 1. 0. 0. 0. 0.", "1 0. 0. 1. 0. 0. 0.",
              "2 1. 0. 0. 0. 0. 0.", "2 0. 1. 0. 0. 0. 0.", "2 0. 0. 1. 0. 0. 0.")
     lines = ["--- Environment ---", "%.1f" % make_mesh.RHO, "%.5f" % make_mesh.G, "%.1f" % HULLS[case.hull]["depth"], "0. 0.",
@@ -1150,7 +1158,7 @@ def write_slurm(args):
             f.write("# Needs a build of Nemoh on Snellius, kept outside the repository. Set NEMOH_BUILD to its build folder.\n")
             f.write("NEMOH_BUILD=${NEMOH_BUILD:?set NEMOH_BUILD}\n")
             f.write("xargs -P %d -I{} python3 %s run %s --case {} --hams none --nemoh-build $NEMOH_BUILD --threads 1 < %s/nemoh.txt\n" % (
-                len(chosen), script, root, jobs))
+                len(chosen), script, root, " --qtf" if args.qtf else "", jobs))
     print("Scripts in %s, for %s on the cluster, with logs in %s. Nothing was submitted." % (out, jobs, logs))
 
 
@@ -1176,7 +1184,7 @@ def job_table(tier, markdown, control=None, qtf=False):
             setting.append("qtf %d" % case.qtf)
         if case.solver == "nemoh":
             setting.append("Nemoh")
-        count = NEMOH_FREQUENCY_RANGE[2] if case.solver == "nemoh" else len(case.frequencies)
+        count = case.nemoh_range[2] if case.solver == "nemoh" else len(case.frequencies)
         rows.append((case.name, case.group, case.question, case.hull, case.motion,
                      "-" if case.solver == "nemoh" else case.velocity, ", ".join(setting) or "-",
                      "%d" % (panels_of(case) + lid_panels_of(case)), "%d" % count, "%d" % len(case.headings),
