@@ -28,7 +28,7 @@ MODULE SecondOrderOutput
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: write_drift_row, write_terms_row
+   PUBLIC :: write_drift_row, write_terms_row, write_qtf_row
 
 CONTAINS
 
@@ -61,6 +61,21 @@ CONTAINS
       scaled = output_value(value, refl, moment)
       WRITE (unit, '(3ES14.6,3I6,2ES14.6)') oufr, beta1_deg, beta2_deg, body, index, term, REAL(scaled, 8), AIMAG(scaled)
    END SUBROUTINE write_terms_row
+
+   SUBROUTINE write_qtf_row(unit, oufr1, oufr2, beta1_deg, beta2_deg, index, value, refl, moment)
+      ! Writes one row PER1 PER2 BETA1 BETA2 I Mod Pha Re Im of QTF_Quadratic.10d or .10s, scaled and conjugated as
+      ! write_drift_row. oufr1, beta1 belong to the first component of the pair, oufr2, beta2 to the second.
+      INTEGER, INTENT(IN) :: unit, index
+      REAL(8), INTENT(IN) :: oufr1, oufr2, beta1_deg, beta2_deg, refl
+      COMPLEX(8), INTENT(IN) :: value
+      LOGICAL, INTENT(IN) :: moment
+      REAL(8), PARAMETER :: RAD_TO_DEG = 180D0/3.141592653589793D0
+      COMPLEX(8) :: scaled
+
+      scaled = output_value(value, refl, moment)
+      WRITE (unit, '(4ES14.6,I6,4ES14.6)') oufr1, oufr2, beta1_deg, beta2_deg, index, ABS(scaled), &
+         ATAN2(AIMAG(scaled), REAL(scaled, 8))*RAD_TO_DEG, REAL(scaled, 8), AIMAG(scaled)
+   END SUBROUTINE write_qtf_row
 
    PURE COMPLEX(8) FUNCTION output_value(value, refl, moment)
       COMPLEX(8), INTENT(IN) :: value
