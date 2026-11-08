@@ -22,7 +22,8 @@
 !  ------------------------------------------------------------------------------------------------------
 MODULE FarFieldDrift
    ! Mean wave drift force and yaw moment from the far-field (Kochin) amplitude of the perturbation potential.
-   ! Formulae: docs/superpowers/specs/2026-11-04-second-order-waves-design.md, section 5.3. Time factor e^{-i omega t}.
+   ! Formulae: a momentum and energy balance on a large circle, which for a lossless body gives the Maruo (1960) form
+   ! (rho g/2)(C_g/C_p) int |a|^2 (1 - cos(theta - beta)) dtheta [derived]. Time factor e^{-i omega t}.
    ! The amplitudes scale with s%amp; the callers pass states with amp = 1 to get loads per unit amplitude.
 
    USE SecondOrderTypes, ONLY: panel_mesh, first_order_state, so_options

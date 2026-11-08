@@ -336,8 +336,8 @@ def memory_gb(case):
 
 # Control-surface fields. The surface C is a cylinder around each body (cs_shape = cylinder, the default), of radius the largest
 # horizontal extent of the hull plus 4 median panel sizes, with panels of the median hull panel size. Its panel count is modelled
-# from the hull area, and fixed to the counts logged by the fixtures at one mesh (Task 8, `control_*` logs). The field time is
-# proportional to the Green calls of spec section 9: (6 N_C + 5 N_Gamma_c) N_hull for the green route, and (N_C + N_Gamma_c) N_hull
+# from the hull area, and fixed to the counts logged by the fixtures at one mesh (the `control_*` fixture logs, test/data/drift_cyl/README.md). The field time is
+# proportional to the Green calls [derived]: (6 N_C + 5 N_Gamma_c) N_hull for the green route, and (N_C + N_Gamma_c) N_hull
 # for the source route. Its rate per call is fixed to the logged field time of the same hull and water depth.
 CS_MARGIN_PANELS = 4.0
 # Hull: wall area, largest horizontal extent, draft (metres), whether the wall reaches the sea bed (then C has no bottom), and the

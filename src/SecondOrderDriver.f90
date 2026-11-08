@@ -31,8 +31,8 @@ MODULE SecondOrderDriver
    ! docs/output_files.md.
    !
    ! The control-surface method (drift_methods = control) needs the states of all the headings of a frequency at once: the
-   ! fields on C are computed in one pass over the points at the end of the frequency, for every heading (design spec
-   ! docs/superpowers/specs/2026-11-06-control-surface-drift-design.md, section 4.3). So with it the states of every heading are
+   ! fields on C are computed in one pass over the points at the end of the frequency, for every heading, since
+   ! the rows of all points are not stored (FieldVelocity.f90). So with it the states of every heading are
    ! kept, as for mean_drift = 2.
    !
    ! Its F_z, M_x and M_y (Phase B) also need the free surface F inside C and the hull waterline potential. They are written for

@@ -1,5 +1,5 @@
-!> End-to-end checks of the mean drift: a real HAMS solution goes through the convention conversion (section 5.2 of
-!> docs/superpowers/specs/2026-11-04-second-order-waves-design.md), the far-field loads are compared with first-order
+!> End-to-end checks of the mean drift: a real HAMS solution goes through the convention conversion (FirstOrderState.f90),
+!> the far-field loads are compared with first-order
 !> outputs written by the solver itself, and the near-field loads with the far-field loads. Fixtures and the frequency
 !> choice: test/data/drift_cyl/README.md.
 module test_integration_drift
@@ -93,31 +93,32 @@ module test_integration_drift
     real(8), parameter :: control_omega = 0.95d0
 
     ! Control-surface limits. "2x measured" limits are twice the value measured when the check was written, rounded up to two
-    ! digits, and capped as the plan sets (3%, or 2% for MacCamy-Fuchs)
+    ! digits, and capped at 3% (2% for MacCamy-Fuchs). "Fixed" limits were set before the measurement
     ! F_x against far, worst over control_cyl (fixed, 0.379%) and control_cyl_free (free, 1.433% at 1.10 rad/s): 2x measured
     real(8), parameter :: control_far_sharp_limit = 2.9d-2
-    ! C 30 m out (0.754% measured) and C a box (0.255%) against the default C: the plan's 1%
+    ! C 30 m out (0.754% measured) and C a box (0.255%) against the default C: a fixed 1%
     real(8), parameter :: control_shape_limit = 1d-2
-    ! F_x against MacCamy-Fuchs, 0.137% measured at 1.6 rad/s: 2x measured. F_y and M_z over F_x, 2.0e-8 measured: the plan's 1e-4
+    ! F_x against MacCamy-Fuchs, 0.137% measured at 1.6 rad/s: 2x measured. F_y and M_z over F_x, 2.0e-8 measured: a fixed 1e-4
     real(8), parameter :: control_maccamy_fuchs_limit = 2.8d-3
     real(8), parameter :: control_maccamy_lateral_limit = 1d-4
     ! The box at heading 30, worst over 0.8 and 1.0 rad/s, measured F_x 0.220%, F_y 0.324%, M_z 0.216%: 2x measured
     real(8), parameter :: control_box_fx_limit = 4.4d-3
     real(8), parameter :: control_box_fy_limit = 6.5d-3
     real(8), parameter :: control_box_mz_limit = 4.4d-3
-    ! The plan's 2%, for the sum over the bodies against far, with C at half the default panel size (0.58% and 0.51% measured).
+    ! A fixed 2%, for the sum over the bodies against far, with C at half the default panel size (0.58% and 0.51% measured).
     ! Each body's force vector against its near-field has near_far_limit, the near-against-far limit of this hull in
     ! drift_two_round, since near-field at 220 panels per body is not a 2% reference
     real(8), parameter :: control_two_body_limit = 2d-2
     ! M_z of each body about its own axis, over |F| a. Not zero for the 20-sided hull, and it does not change when C is refined
     ! (measured), so it is a property of the hull; 1.46e-3 measured: 2x measured
     real(8), parameter :: control_own_mz_limit = 3d-3
-    ! Bodies 50 wavelengths apart against one alone, 0.475% measured: the plan's 0.5%
+    ! Bodies 50 wavelengths apart against one alone, 0.475% measured: a fixed 0.5%
     real(8), parameter :: control_far_apart_limit = 5d-3
-    ! IRSP = 1 against IRSP = 0 (0.179% measured), and at 1.548 rad/s against far, both IRSP = 1 (2.40% measured): the plan's
+    ! IRSP = 1 against IRSP = 0 (0.179% measured), and at 1.548 rad/s against far, both IRSP = 1 (2.40% measured):
+    ! a fixed 0.5% and 3%
     real(8), parameter :: control_irsp_limit = 5d-3
     real(8), parameter :: control_irsp_far_limit = 3d-2
-    ! The half mesh and GMRES against the whole mesh and the direct solver: the plan's limits, or 5 x the far-field difference of
+    ! The half mesh and GMRES against the whole mesh and the direct solver: fixed limits, or 5 x the far-field difference of
     ! the same two runs if larger. The first-order solver paths differ at that level (far-field F_x 3.5e-7 for the half mesh,
     ! 2.2e-5 for GMRES, measured), and control, like far, is quadratic in the field
     real(8), parameter :: control_half_limit = 1d-6
@@ -131,7 +132,7 @@ module test_integration_drift
     real(8), parameter :: control_source_limits(3) = [2.4d-1, 8.0d-3, 4.7d-2]
     ! Deep water against far, 0.340% measured: 2x measured
     real(8), parameter :: control_deep_limit = 6.8d-3
-    ! The spread of F_x over cs_fd_step 0.01 to 0.05 over F_x, 2.2e-5 measured: the plan's 0.2%
+    ! The spread of F_x over cs_fd_step 0.01 to 0.05 over F_x, 2.2e-5 measured: a fixed 0.2%
     real(8), parameter :: control_step_limit = 2d-3
     ! Phase B, F_z, M_x and M_y: recorded regressions at the m1 resolution of the fixtures (480 hull panels), not accuracy
     ! claims. The accuracy gate is the Snellius m3 study: within 1% of near-field on the rounded hulls. At m1 the field on F next
@@ -1869,7 +1870,7 @@ contains
     end subroutine control_skips_limits
 
     ! ------------------------------------------------------------------------------- control-surface physics checks
-    ! The limits follow the rules of the plan (task 8): where a limit is "2x measured, capped", the measured value is in the
+    ! The limits follow the rules above the limit parameters: where a limit is "2x measured, capped", the measured value is in the
     ! comment, and test/data/drift_cyl/README.md has every measured value.
 
     !> F_x against far-field on the sharp cylinder of drift_cyl, held fixed (control_cyl) and free (control_cyl_free), at
@@ -2081,15 +2082,15 @@ contains
         call check_below(error, "control_irsp_stable at the irregular frequency", at_irregular, control_irsp_far_limit)
     end subroutine control_irsp_stable
 
-    !> The half mesh with ISY = 1 goes through the image expansion of the fields: the same values as the whole mesh, to the
-    !> plan's 1e-6 or to 5 x the far-field difference of the same two runs, whichever is larger. The first-order solver paths
+    !> The half mesh with ISY = 1 goes through the image expansion of the fields: the same values as the whole mesh, to a
+    !> fixed 1e-6 or to 5 x the far-field difference of the same two runs, whichever is larger. The first-order solver paths
     !> differ at that level, and control is quadratic in the field, as far is.
     subroutine control_half_matches_full(error)
         type(error_type), allocatable, intent(out) :: error
         call control_same_solution("control_half_matches_full", "control_half", control_half_limit, error)
     end subroutine control_half_matches_full
 
-    !> ISOLV = 2 against the direct solver, with the rule of control_half_matches_full and the plan's 1e-5.
+    !> ISOLV = 2 against the direct solver, with the rule of control_half_matches_full and a fixed 1e-5.
     subroutine control_gmres_agrees(error)
         type(error_type), allocatable, intent(out) :: error
         call control_same_solution("control_gmres_agrees", "control_gmres", control_gmres_limit, error)

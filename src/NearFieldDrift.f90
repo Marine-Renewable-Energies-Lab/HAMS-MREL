@@ -22,10 +22,9 @@
 !  ------------------------------------------------------------------------------------------------------
 MODULE NearFieldDrift
    ! Near-field mean drift force and moment on each body, from pressure integration over the mean wetted surface:
-   ! WAMIT v7.5 eq. 15.54 to 15.57, as listed in docs/superpowers/specs/2026-11-04-second-order-waves-design.md,
-   ! section 5.3. Time factor e^{-i omega t}, normals out of the fluid, moments about the body reference point xr.
+   ! WAMIT v7.5 eq. 15.54 to 15.57. Time factor e^{-i omega t}, normals out of the fluid, moments about the body reference point xr.
    !
-   ! Every product of two first-order quantities goes through pair_minus, section 5.4, so one state pair (s1, s2) gives
+   ! Every product of two first-order quantities goes through pair_minus, so one state pair (s1, s2) gives
    ! the mean load for s1 = s2 and the pair term of bidirectional drift otherwise. Terms with products inside an integral
    ! are evaluated panel by panel; only term IV multiplies integrated quantities, because G and H are themselves factors.
 

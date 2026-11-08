@@ -41,7 +41,7 @@ MODULE ControlSurfaceMesh
    REAL(8), PARAMETER :: PI = 3.141592653589793D0
    REAL(8), PARAMETER :: WL_TOL = 1D-6        ! waterline tolerance for Gamma_c, relative to the size of C
    REAL(8), PARAMETER :: ROW_GROWTH = 1.25D0  ! thickness ratio of successive wall rows, until they reach the panel size
-   REAL(8), PARAMETER :: DEFAULT_MARGIN_FACTOR = 4D0   ! margin = this x median panel size of the body (spec 5.1)
+   REAL(8), PARAMETER :: DEFAULT_MARGIN_FACTOR = 4D0   ! default margin = 4 x the median hull panel size of the body
    REAL(8), PARAMETER :: FS_GRADING = 4D0     ! outer F row / inner F row thickness
 
 CONTAINS
@@ -392,7 +392,8 @@ CONTAINS
    ! ------------------------------------------------------------------------------------------------ build
 
    SUBROUTINE build_control_surface(mesh, geom, opts, h, inputdir, pts, cms, ok, msg, with_free)
-      ! Generates C for every body and turns it into evaluation points (spec 5.1 defaults). h < 0 is deep water.
+      ! Generates C for every body and turns it into evaluation points (default margins 4 x the median hull panel size).
+      ! h < 0 is deep water.
       ! cs_shape = 3 reads C of body b from inputdir/CSMesh_<b>.pnl and checks that its normals point towards the body.
       ! For a file C, ok stays .true. when build_surface_geom only warns, and the warnings are returned in msg.
       ! with_free (default .false.) also appends F of each body, after the C points of that body: see add_free_surface.
@@ -1031,7 +1032,7 @@ CONTAINS
    ! ------------------------------------------------------------------------------------------------ output
 
    SUBROUTINE write_control_surface(outputdir, cms)
-      ! Writes CSMesh_{b}.pnl per body in the HullMesh.pnl format, which the reader of Task 4 reads back.
+      ! Writes CSMesh_{b}.pnl per body in the HullMesh.pnl format, which read_control_mesh reads back.
       CHARACTER(LEN=*), INTENT(IN) :: outputdir
       TYPE(panel_mesh), INTENT(IN) :: cms(:)
       CHARACTER(LEN=16) :: istr

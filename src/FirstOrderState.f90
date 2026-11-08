@@ -22,7 +22,7 @@
 !  ------------------------------------------------------------------------------------------------------
 MODULE FirstOrderState
    ! Converts HAMS's first-order solution into physical quantities for the second-order loads, with time factor
-   ! e^{-i omega t}. Conventions: docs/superpowers/specs/2026-11-04-second-order-waves-design.md, section 5.2.
+   ! e^{-i omega t}. The conventions below are derived from the HAMS code and checked by the integration tests.
    !
    !   incident potential   phi_I = -i (g amp / omega) Z(z) e^{i k (x cos(beta) + y sin(beta))}
    !   HAMS MXPOT(:,6N+1,:) holds the scattered potential divided by i, MXPOT(:,j,:) the unit-velocity radiation

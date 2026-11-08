@@ -21,8 +21,8 @@
 !
 !  ------------------------------------------------------------------------------------------------------
 MODULE FieldVelocity
-   ! The total first-order potential and its gradient at points in the fluid, for the control-surface drift (design spec
-   ! docs/superpowers/specs/2026-11-06-control-surface-drift-design.md, section 4.1). The incident part is exact. The
+   ! The total first-order potential and its gradient at points in the fluid, for the control-surface drift (Chen
+   ! 2007, eq. 39 to 41). The incident part is exact. The
    ! perturbation part phi_P comes from the boundary integral formula of WaterlineField, and its gradient from central
    ! differences of phi_P with step delta:
    !   - below z = -delta: the 6 points x +- delta e_c, second order in delta [derived: the error of a central difference is
@@ -39,7 +39,8 @@ MODULE FieldVelocity
    ! isolated outliers, which a difference takes over 2 delta (FinGreen3D.f90, FINGREEN3D_R). The exception is PIDCOCK
    ! for nu*h > 50, which keeps Limes (FIELD_SERIES in FinGreen3D.f90).
    ! The rows of one stencil point serve every state before the next point, and no row is stored: the rows of all points
-   ! would take gigabytes (memory estimate from section 4.3 of the spec).
+   ! would take (stencil points x N_C) x N_hull x nsys x 2 complex numbers, about 5 GB at 7168 hull panels and 4000 C
+   ! panels [derived].
    !
    ! The second route, fields_source, takes phi_P and its gradient from the source strengths sigma of the auxiliary source
    ! solve of SurfaceVelocity: phi_P = (1/4 pi) sum sigma int G dS, and the gradient with the analytic gradient of G, so no

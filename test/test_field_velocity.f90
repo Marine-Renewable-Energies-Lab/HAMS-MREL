@@ -1,5 +1,5 @@
 !> The total potential and its gradient at points in the fluid, by central differences of the Green-formula field potential
-!> (FieldVelocity, design spec section 4.1). The rows are checked against the analytic panel gradient, the stencil against the
+!> (FieldVelocity, Chen 2007 eq. 39 to 41). The rows are checked against the analytic panel gradient, the stencil against the
 !> incident wave, and the whole route against the exact MacCamy-Fuchs field.
 !> These tests set module globals, so the suite runs serially (see unit_tester.f90).
 module test_field_velocity
@@ -488,7 +488,7 @@ contains
 
   !> The field of the exact hull potentials of maccamy_fuchs_state, on the 64 x 16 bottom-mounted mesh of drift_field_* and
   !> velocity_against_exact (a = 5, h = 10), at 40 points on r = 7.5, 10 of them at z = 0.
-  !> Measured: 6.99e-4 for phi and 1.43e-3 for the gradient; the limits are those of the plan.
+  !> Measured: 6.99e-4 for phi and 1.43e-3 for the gradient; limits 1e-2 and 2e-2, fixed before the measurement.
   subroutine test_green_field(error)
     type(error_type), allocatable, intent(out) :: error
     real(8), parameter :: radius = 5d0, depth = 10d0
@@ -533,7 +533,7 @@ contains
   end subroutine test_green_field
 
   !> As test_green_field, by the source route: sigma from the solve of the exact normal derivative, then fields_source.
-  !> Measured: 6.41e-3 for phi and 8.28e-3 for the gradient; the limits are those of the plan.
+  !> Measured: 6.41e-3 for phi and 8.28e-3 for the gradient; limits 2e-2 and 3e-2, fixed before the measurement.
   subroutine test_source_field(error)
     type(error_type), allocatable, intent(out) :: error
     real(8), parameter :: radius = 5d0, depth = 10d0
