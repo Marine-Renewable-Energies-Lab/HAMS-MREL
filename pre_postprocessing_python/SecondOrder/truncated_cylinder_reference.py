@@ -1757,14 +1757,26 @@ def near_field_terms(cyl, omega_i, sol_i, xi_i, omega_j, sol_j, xi_j, quad, xr=(
     1, 3, 5 filled; for i = j the real part is the mean load over rho g A**2. xi_i, xi_j: the motions (module convention,
     about the origin); xr in the x-z plane. See the module docstring for the terms as coded."""
     xr = np.asarray(xr, dtype=float)
+    si = surface_state(cyl, omega_i, sol_i, xi_i, quad, xr)
+    same = sol_j is sol_i and omega_j == omega_i and xi_j == xi_i
+    sj = si if same else surface_state(cyl, omega_j, sol_j, xi_j, quad, xr)
+    return near_field_terms_states(cyl, omega_i, si, omega_j, sj, quad, xr, kernel)
+
+
+def surface_state(cyl, omega, sol, xi, quad, xr=(0.0, 0.0, 0.0)):
+    """The fields of one first-order solution on the quadrature (_surface_state), after the checks of near_field_terms:
+    xr in the x-z plane, enough theta points for the orders of sol. The QTF table keeps these, not the solutions."""
+    xr = np.asarray(xr, dtype=float)
     if xr[1] != 0.0:
         raise ValueError("near_field_terms: xr must lie in the x-z plane (F_y, M_x, M_z are not computed)")
-    orders = max(max(sol_i.orders), max(sol_j.orders))
-    if quad.theta.size <= 2 * orders + 4:
-        raise ValueError("near_field_terms: %d theta points are too few for order %d" % (quad.theta.size, orders))
-    si = _surface_state(cyl, omega_i, sol_i, xi_i, quad, xr)
-    same = sol_j is sol_i and omega_j == omega_i and xi_j == xi_i
-    sj = si if same else _surface_state(cyl, omega_j, sol_j, xi_j, quad, xr)
+    if quad.theta.size <= 2 * max(sol.orders) + 4:
+        raise ValueError("near_field_terms: %d theta points are too few for order %d" % (quad.theta.size, max(sol.orders)))
+    return _surface_state(cyl, omega, sol, xi, quad, xr)
+
+
+def near_field_terms_states(cyl, omega_i, si, omega_j, sj, quad, xr=(0.0, 0.0, 0.0), kernel=_pair):
+    """near_field_terms from the surface states si, sj of surface_state (same quad and xr)."""
+    xr = np.asarray(xr, dtype=float)
     grav = make_mesh.G
     dth = quad.theta_weight
     terms = {key: np.zeros(6, complex) for key in NEAR_FIELD_TERMS}
@@ -2388,6 +2400,75 @@ def check_pair_symmetry():
             worst_sum = max(worst_sum, np.max(np.abs(sij[key] - sji[key])) / scale_sum)
     return max(worst, worst_sum) < 1e-12, ("max |T-_ij - conj(T-_ji)|/max |T-_ij| over the terms %.1e; "
                                            "max |T+_ij - T+_ji|/max |T+_ij| %.1e" % (worst, worst_sum))
+
+
+QTF_FREQUENCIES = tuple(round(0.40 + 0.05 * i, 2) for i in range(21))   # the grid of the Nemoh runs (NEMOH_FREQUENCY_RANGE)
+QTF_COLUMNS = ("motion", "omega_i", "omega_j", "kernel", "Fx_re", "Fx_im", "Fz_re", "Fz_im", "My_re", "My_im")
+
+
+def qtf_table(cyl, frequencies, motion, n_modes, p_max, orders, xr=(0.0, 0.0, 0.0)):
+    """Quadratic QTF of the near-field terms for every pair omega_i <= omega_j of frequencies, both kernels: rows of
+    QTF_COLUMNS with kernel "diff" (T-_ij, _pair) or "sum" (T+_ij, _pair_sum), F/(rho g), M_y in m about xr, per unit
+    amplitudes, in the internal e^{-i omega t} convention (the conjugates of QTF_Quadratic.10d/.10s). The other half of
+    the square follows: T-_ji = conj(T-_ij), T+_ji = T+_ij. One first-order solve per frequency; only the surface states
+    are kept.
+
+    Phase of the wave. The solutions here take HAMS's VINP as the incident potential, so their wave has elevation
+    eta_I = -i A e^(i k x) (module docstring, "Incident wave"), while the QTFs of HAMS-MREL and Nemoh are per unit
+    amplitude of a wave with eta_I = A e^(i k x) at the origin (spec 5.2: the physical potential is i VINP). Every
+    first-order quantity here is therefore -i times that of the unit wave. The factor cancels in T- (one factor
+    conjugated) and in the mean drift, but gives (-i)**2 = -1 in T+, so the sum rows are multiplied by -1."""
+    quad = body_quadrature(cyl, NEAR_QUADRATURE["n_corner"], NEAR_QUADRATURE["n_far"])
+    states = []
+    for omega in frequencies:
+        total, xi = _first_order_case(cyl, omega, motion, n_modes, p_max, orders)
+        states.append(surface_state(cyl, omega, total, xi, quad, xr))
+    rows = []
+    for i, wi in enumerate(frequencies):
+        for j in range(i, len(frequencies)):
+            wj = frequencies[j]
+            for name, kernel in (("diff", _pair), ("sum", _pair_sum)):
+                terms = near_field_terms_states(cyl, wi, states[i], wj, states[j], quad, xr, kernel)
+                total = sum(terms.values()) * (-1.0 if name == "sum" else 1.0)   # the phase of the wave, above
+                rows.append(dict(motion=motion, omega_i=wi, omega_j=wj, kernel=name,
+                                 Fx_re=total[0].real, Fx_im=total[0].imag, Fz_re=total[2].real, Fz_im=total[2].imag,
+                                 My_re=total[4].real, My_im=total[4].imag))
+    return rows
+
+
+def check_qtf_diagonal():
+    """The diagonal of qtf_table (kernel diff) is the mean drift of near_field, and its sum-kernel off-diagonal rows are
+    symmetric in construction; fixed and free at 0.70 and 0.95 rad/s, LIGHT_RESOLUTION, to 1e-12."""
+    cyl, res = Cylinder(), LIGHT_RESOLUTION
+    quad = body_quadrature(cyl, NEAR_QUADRATURE["n_corner"], NEAR_QUADRATURE["n_far"])
+    worst = 0.0
+    for motion in ("fixed", "free"):
+        rows = qtf_table(cyl, (0.70, 0.95), motion, res["n_modes"], res["p_max"], res["orders"])
+        for omega in (0.70, 0.95):
+            total, xi = _first_order_case(cyl, omega, motion, res["n_modes"], res["p_max"], res["orders"])
+            mean = near_field(cyl, omega, total, xi, quad)[1]
+            row = [r for r in rows if r["kernel"] == "diff" and r["omega_i"] == omega and r["omega_j"] == omega][0]
+            got = np.array([row["Fx_re"], row["Fz_re"], row["My_re"]])
+            worst = max(worst, np.max(np.abs(got - mean[[0, 2, 4]])) / np.max(np.abs(mean)),
+                        abs(row["Fx_im"]) / np.max(np.abs(mean)))
+    return worst < 1e-12, "max |diagonal - mean drift|/max |mean| %.1e" % worst
+
+
+def run_qtf(out, motions=("fixed", "free"), frequencies=QTF_FREQUENCIES, resolution=None):
+    """The qtf subcommand: qtf_table at DEFAULT_RESOLUTION on QTF_FREQUENCIES for each motion, written to out."""
+    res = resolution or DEFAULT_RESOLUTION
+    cyl, start = Cylinder(), time.time()
+    rows = []
+    for motion in motions:
+        rows += qtf_table(cyl, frequencies, motion, res["n_modes"], res["p_max"], res["orders"])
+        print("qtf %s: %d rows, %.0f s" % (motion, len(rows), time.time() - start), flush=True)
+    with open(out, "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(QTF_COLUMNS)
+        for row in rows:
+            writer.writerow([row[c] if isinstance(row[c], str) else "%.10g" % row[c] for c in QTF_COLUMNS])
+    print("wrote %d rows to %s" % (len(rows), out))
+    return 0
 
 
 LONG_WAVE_OMEGA = 0.05
@@ -3197,7 +3278,7 @@ CHECKS = {"roots": check_roots, "inner_products": check_inner_products, "polylog
           "free_energy": check_free_energy, "long_wave_motions": check_long_wave_motions,
           "corner_limit": check_corner_limit, "reference_point": check_reference_point,
           "pair_symmetry": check_pair_symmetry, "fx_identity": check_fx_identity, "convergence": check_convergence,
-          "compare_fixture": check_compare_fixture}
+          "compare_fixture": check_compare_fixture, "qtf_diagonal": check_qtf_diagonal}
 # Run by name (check uncertainty compare_signs) and by the reference subcommand, not by a bare check: uncertainty computes
 # nine rows at N = 128000 that no other check needs; compare_signs reads the study's results outside the repository and
 # computes the 22 reference rows (about 92 s)
@@ -3317,6 +3398,9 @@ def main(argv=None):
     p_check.add_argument("names", nargs="*", metavar="NAME")
     p_ref = sub.add_parser("reference", help="reference values, the convergence table and all checks")
     p_ref.add_argument("--out", metavar="CSV", help="write the reference rows to this CSV file")
+    p_qtf = sub.add_parser("qtf", help="quadratic QTF of the near-field terms on the grid of the Nemoh runs")
+    p_qtf.add_argument("--out", metavar="CSV", required=True)
+    p_qtf.add_argument("--motion", choices=("fixed", "free", "both"), default="both")
     p_cmp = sub.add_parser("compare", help="compare the HAMS a_sharp_* case folders under RESULTS with the reference")
     p_cmp.add_argument("results", metavar="RESULTS", help="folder holding the case folders (a_sharp_*/output/Wamit_format)")
     p_cmp.add_argument("--out", metavar="CSV", help="write the comparison to this CSV file")
@@ -3327,6 +3411,8 @@ def main(argv=None):
         return 1 if run_reference(args.out) else 0
     if args.command == "compare":
         return run_compare(args.results, args.out, args.reference)
+    if args.command == "qtf":
+        return run_qtf(args.out, ("fixed", "free") if args.motion == "both" else (args.motion,))
     names = args.names or list(CHECKS)
     unknown = [n for n in names if n not in ALL_CHECKS]
     if unknown:
