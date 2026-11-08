@@ -27,6 +27,7 @@ program unit_tester
     use test_field_velocity, only : collect_field_velocity
     use test_control_drift, only : collect_control_drift
     use test_qtf, only : collect_qtf
+    use test_second_order_incident, only : collect_so_incident
 
     implicit none
     integer :: stat, is
@@ -61,7 +62,8 @@ program unit_tester
         new_testsuite("control_surface_mesh", collect_control_surface_mesh), &
         new_testsuite("field_velocity", collect_field_velocity), &
         new_testsuite("control_drift", collect_control_drift), &
-        new_testsuite("qtf", collect_qtf) &
+        new_testsuite("qtf", collect_qtf), &
+        new_testsuite("so_incident", collect_so_incident) &
     ]
 
     stat = 0
