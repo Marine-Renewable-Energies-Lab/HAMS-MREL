@@ -24,21 +24,27 @@ MODULE NearFieldDrift
    ! Near-field mean drift force and moment on each body, from pressure integration over the mean wetted surface:
    ! WAMIT v7.5 eq. 15.54 to 15.57. Time factor e^{-i omega t}, normals out of the fluid, moments about the body reference point xr.
    !
-   ! Every product of two first-order quantities goes through pair_minus, so one state pair (s1, s2) gives
-   ! the mean load for s1 = s2 and the pair term of bidirectional drift otherwise. Terms with products inside an integral
-   ! are evaluated panel by panel; only term IV multiplies integrated quantities, because G and H are themselves factors.
+   ! Every product of two first-order quantities goes through pair_product, so one state pair (s1, s2) gives
+   ! the mean load for s1 = s2, the pair term of bidirectional drift, and, with s1 and s2 at different frequencies, the
+   ! quadratic part of the difference-frequency (KERNEL_DIFF, pair_minus) or sum-frequency (KERNEL_SUM, pair_plus) QTF.
+   ! Terms with products inside an integral are evaluated panel by panel; only term IV multiplies integrated quantities,
+   ! because G and H are themselves factors.
 
    USE SecondOrderTypes, ONLY: panel_mesh, first_order_state, surface_geom
    USE FirstOrderState, ONLY: incident_phi, wave_gravity
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: pair_minus, waterline_point, waterline_extrapolate, near_field_pair, elevation, force_and_moment
+   PUBLIC :: pair_minus, pair_plus, pair_product, KERNEL_DIFF, KERNEL_SUM
+   PUBLIC :: waterline_point, waterline_extrapolate, near_field_pair, elevation, force_and_moment
    PUBLIC :: vertical_motion, rigid_displacement, add_hydrostatic_term
    PUBLIC :: T_WATERLINE, T_FLARE, T_VELOCITY, T_DISPLACEMENT, T_ROTATION, T_HYDROSTATIC
 
    ! Term index of near_field_pair
    INTEGER, PARAMETER :: T_WATERLINE = 1, T_FLARE = 2, T_VELOCITY = 3, T_DISPLACEMENT = 4, T_ROTATION = 5, T_HYDROSTATIC = 6
+
+   ! Kernel of near_field_pair: difference frequency (and mean drift), or sum frequency
+   INTEGER, PARAMETER :: KERNEL_DIFF = 1, KERNEL_SUM = 2
 
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
 
@@ -51,6 +57,26 @@ CONTAINS
 
       pair_minus = 0.25D0*(f1*CONJG(g2) + CONJG(f2)*g1)
    END FUNCTION pair_minus
+
+   PURE COMPLEX(8) FUNCTION pair_plus(f1, g1, f2, g2)
+      ! Sum-frequency coefficient of the product f g for components 1 and 2: the part of Re(f(t)) Re(g(t)) at
+      ! e^{-i(omega_1 + omega_2) t} is Re[(pair_plus(1,2) + pair_plus(2,1)) a_1 a_2 e^{-i(omega_1 + omega_2) t}] (spec 5.4).
+      COMPLEX(8), INTENT(IN) :: f1, g1, f2, g2
+
+      pair_plus = 0.25D0*(f1*g2 + f2*g1)
+   END FUNCTION pair_plus
+
+   PURE COMPLEX(8) FUNCTION pair_product(kernel, f1, g1, f2, g2)
+      ! pair_minus for KERNEL_DIFF, pair_plus for KERNEL_SUM
+      INTEGER, INTENT(IN) :: kernel
+      COMPLEX(8), INTENT(IN) :: f1, g1, f2, g2
+
+      IF (kernel == KERNEL_SUM) THEN
+         pair_product = pair_plus(f1, g1, f2, g2)
+      ELSE
+         pair_product = pair_minus(f1, g1, f2, g2)
+      END IF
+   END FUNCTION pair_product
 
    SUBROUTINE waterline_extrapolate(mesh, geom, s, phi_wl)
       ! Total potential at the midpoint of each waterline segment, at z = 0: the incident wave exactly, plus the
@@ -71,8 +97,8 @@ CONTAINS
       END DO
    END SUBROUTINE waterline_extrapolate
 
-   SUBROUTINE near_field_pair(mesh, geom, s1, s2, phi_wl1, phi_wl2, terms)
-      ! Near-field load of the state pair (s1, s2), which may be the same state.
+   SUBROUTINE near_field_pair(mesh, geom, s1, s2, phi_wl1, phi_wl2, terms, kernel)
+      ! Near-field load of the state pair (s1, s2), which may be the same state, under kernel (default KERNEL_DIFF).
       !   phi_wl1, phi_wl2   total potential at the waterline segments (nwl)
       !   terms(6, 6, nbody) (component, term, body). Components: force, then moment about xr of the body. Terms: 1 I
       !                      waterline, 2 Ia flare, 3 II velocity, 4 III displacement, 5 IV rotation, 6 V hydrostatic.
@@ -81,23 +107,28 @@ CONTAINS
       TYPE(first_order_state), INTENT(IN) :: s1, s2
       COMPLEX(8), INTENT(IN) :: phi_wl1(:), phi_wl2(:)
       COMPLEX(8), INTENT(OUT) :: terms(:,:,:)
+      INTEGER, INTENT(IN), OPTIONAL :: kernel
+      INTEGER :: kn
 
+      kn = KERNEL_DIFF
+      IF (PRESENT(kernel)) kn = kernel
       terms = (0D0, 0D0)
-      CALL add_waterline_term(mesh, geom, s1, s2, phi_wl1, phi_wl2, terms)
-      CALL add_flare_term(mesh, geom, s1, s2, phi_wl1, phi_wl2, terms)
-      CALL add_velocity_term(mesh, s1, s2, terms)
-      CALL add_displacement_term(mesh, s1, s2, terms)
-      CALL add_rotation_term(mesh, s1, s2, terms)
-      CALL add_hydrostatic_term(mesh, geom, s1, s2, terms)
+      CALL add_waterline_term(mesh, geom, s1, s2, phi_wl1, phi_wl2, terms, kn)
+      CALL add_flare_term(mesh, geom, s1, s2, phi_wl1, phi_wl2, terms, kn)
+      CALL add_velocity_term(mesh, s1, s2, terms, kn)
+      CALL add_displacement_term(mesh, s1, s2, terms, kn)
+      CALL add_rotation_term(mesh, s1, s2, terms, kn)
+      CALL add_hydrostatic_term(mesh, geom, s1, s2, terms, kn)
    END SUBROUTINE near_field_pair
 
-   SUBROUTINE add_waterline_term(mesh, geom, s1, s2, phi_wl1, phi_wl2, terms)
+   SUBROUTINE add_waterline_term(mesh, geom, s1, s2, phi_wl1, phi_wl2, terms, kernel)
       ! I: (rho g / 2) int r' [ P(zeta, zeta) - 2 P(zeta, X3) ] dl,   r' = n' or x x n'
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       TYPE(first_order_state), INTENT(IN) :: s1, s2
       COMPLEX(8), INTENT(IN) :: phi_wl1(:), phi_wl2(:)
       COMPLEX(8), INTENT(INOUT) :: terms(:,:,:)
+      INTEGER, INTENT(IN) :: kernel
       REAL(8) :: x(3)
       COMPLEX(8) :: z1, z2, x3_1, x3_2, bracket
       INTEGER :: iw, b
@@ -109,19 +140,20 @@ CONTAINS
          z2 = elevation(s2, phi_wl2(iw))
          x3_1 = vertical_motion(s1%xi(:, b), x)
          x3_2 = vertical_motion(s2%xi(:, b), x)
-         bracket = pair_minus(z1, z1, z2, z2) - 2D0*pair_minus(z1, x3_1, z2, x3_2)
+         bracket = pair_product(kernel, z1, z1, z2, z2) - 2D0*pair_product(kernel, z1, x3_1, z2, x3_2)
          terms(:, T_WATERLINE, b) = terms(:, T_WATERLINE, b) &
                                     + 0.5D0*s1%rho*s1%g*bracket*geom%wl_len(iw)*force_and_moment(x, geom%wl_nh(:, iw))
       END DO
    END SUBROUTINE add_waterline_term
 
-   SUBROUTINE add_flare_term(mesh, geom, s1, s2, phi_wl1, phi_wl2, terms)
+   SUBROUTINE add_flare_term(mesh, geom, s1, s2, phi_wl1, phi_wl2, terms, kernel)
       ! Ia: (rho g / 2) int r'' [n_z / sqrt(1 - n_z^2)] P(zeta - X3, zeta - X3) dl,   r'' = k or x x k
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       TYPE(first_order_state), INTENT(IN) :: s1, s2
       COMPLEX(8), INTENT(IN) :: phi_wl1(:), phi_wl2(:)
       COMPLEX(8), INTENT(INOUT) :: terms(:,:,:)
+      INTEGER, INTENT(IN) :: kernel
       REAL(8), PARAMETER :: K_HAT(3) = [0D0, 0D0, 1D0]
       REAL(8) :: x(3), flare
       COMPLEX(8) :: r1, r2
@@ -133,16 +165,17 @@ CONTAINS
          r1 = elevation(s1, phi_wl1(iw)) - vertical_motion(s1%xi(:, b), x)
          r2 = elevation(s2, phi_wl2(iw)) - vertical_motion(s2%xi(:, b), x)
          flare = geom%wl_nz(iw)/SQRT(1D0 - geom%wl_nz(iw)**2)
-         terms(:, T_FLARE, b) = terms(:, T_FLARE, b) + 0.5D0*s1%rho*s1%g*flare*pair_minus(r1, r1, r2, r2) &
+         terms(:, T_FLARE, b) = terms(:, T_FLARE, b) + 0.5D0*s1%rho*s1%g*flare*pair_product(kernel, r1, r1, r2, r2) &
                                 *geom%wl_len(iw)*force_and_moment(x, K_HAT)
       END DO
    END SUBROUTINE add_flare_term
 
-   SUBROUTINE add_velocity_term(mesh, s1, s2, terms)
+   SUBROUTINE add_velocity_term(mesh, s1, s2, terms, kernel)
       ! II: -rho int r (1/2) sum_i P(d_i phi, d_i phi) dS,   r = n or x x n
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(first_order_state), INTENT(IN) :: s1, s2
       COMPLEX(8), INTENT(INOUT) :: terms(:,:,:)
+      INTEGER, INTENT(IN) :: kernel
       COMPLEX(8) :: g1(3), g2(3), q
       INTEGER :: ip, b, i
 
@@ -152,18 +185,19 @@ CONTAINS
          g2 = s2%grad_i(:, ip) + s2%grad_p(:, ip)
          q = (0D0, 0D0)
          DO i = 1, 3
-            q = q + pair_minus(g1(i), g1(i), g2(i), g2(i))
+            q = q + pair_product(kernel, g1(i), g1(i), g2(i), g2(i))
          END DO
          terms(:, T_VELOCITY, b) = terms(:, T_VELOCITY, b) - s1%rho*0.5D0*q*mesh%area(ip) &
                                    *force_and_moment(mesh%xc(:, ip) - mesh%xr(:, b), mesh%nrm(:, ip))
       END DO
    END SUBROUTINE add_velocity_term
 
-   SUBROUTINE add_displacement_term(mesh, s1, s2, terms)
+   SUBROUTINE add_displacement_term(mesh, s1, s2, terms, kernel)
       ! III: -rho int r sum_i P(X_i, d_i phi_t) dS,   X = xi + alpha x x,   phi_t amplitude -i omega phi
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(first_order_state), INTENT(IN) :: s1, s2
       COMPLEX(8), INTENT(INOUT) :: terms(:,:,:)
+      INTEGER, INTENT(IN) :: kernel
       REAL(8) :: x(3)
       COMPLEX(8) :: x1(3), x2(3), gt1(3), gt2(3), q
       INTEGER :: ip, b, i
@@ -177,28 +211,29 @@ CONTAINS
          gt2 = -CI*s2%omega*(s2%grad_i(:, ip) + s2%grad_p(:, ip))
          q = (0D0, 0D0)
          DO i = 1, 3
-            q = q + pair_minus(x1(i), gt1(i), x2(i), gt2(i))
+            q = q + pair_product(kernel, x1(i), gt1(i), x2(i), gt2(i))
          END DO
          terms(:, T_DISPLACEMENT, b) = terms(:, T_DISPLACEMENT, b) - s1%rho*q*mesh%area(ip) &
                                        *force_and_moment(x, mesh%nrm(:, ip))
       END DO
    END SUBROUTINE add_displacement_term
 
-   SUBROUTINE add_rotation_term(mesh, s1, s2, terms)
+   SUBROUTINE add_rotation_term(mesh, s1, s2, terms, kernel)
       ! IV force: alpha x G. IV moment: alpha x H + xi x G. Each cross product goes through P. On the panels of each
       ! body: G = -rho int n phi_t dS, H = -rho int (x x n) phi_t dS.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(first_order_state), INTENT(IN) :: s1, s2
       COMPLEX(8), INTENT(INOUT) :: terms(:,:,:)
+      INTEGER, INTENT(IN) :: kernel
       COMPLEX(8) :: load1(6, mesh%nbody), load2(6, mesh%nbody)
       INTEGER :: b
 
       CALL dynamic_pressure_load(mesh, s1, load1)
       CALL dynamic_pressure_load(mesh, s2, load2)
       DO b = 1, mesh%nbody
-         terms(1:3, T_ROTATION, b) = pair_cross(s1%xi(4:6, b), load1(1:3, b), s2%xi(4:6, b), load2(1:3, b))
-         terms(4:6, T_ROTATION, b) = pair_cross(s1%xi(4:6, b), load1(4:6, b), s2%xi(4:6, b), load2(4:6, b)) &
-                                     + pair_cross(s1%xi(1:3, b), load1(1:3, b), s2%xi(1:3, b), load2(1:3, b))
+         terms(1:3, T_ROTATION, b) = pair_cross(kernel, s1%xi(4:6, b), load1(1:3, b), s2%xi(4:6, b), load2(1:3, b))
+         terms(4:6, T_ROTATION, b) = pair_cross(kernel, s1%xi(4:6, b), load1(4:6, b), s2%xi(4:6, b), load2(4:6, b)) &
+                                     + pair_cross(kernel, s1%xi(1:3, b), load1(1:3, b), s2%xi(1:3, b), load2(1:3, b))
       END DO
    END SUBROUTINE add_rotation_term
 
@@ -217,7 +252,7 @@ CONTAINS
       END DO
    END SUBROUTINE dynamic_pressure_load
 
-   SUBROUTINE add_hydrostatic_term(mesh, geom, s1, s2, terms)
+   SUBROUTINE add_hydrostatic_term(mesh, geom, s1, s2, terms, kernel)
       ! V: F_S and M_S of eq. 15.56 and 15.57, with waterplane and volume properties about xr and Z_o = xr(3). Fills
       ! terms(3:5, T_HYDROSTATIC, :) only. The same rows as Lee (2006) eqs. 16 and 21, term by term [derived]; the
       ! control-surface method uses them too (ControlSurfaceDrift).
@@ -225,10 +260,13 @@ CONTAINS
       TYPE(surface_geom), INTENT(IN) :: geom
       TYPE(first_order_state), INTENT(IN) :: s1, s2
       COMPLEX(8), INTENT(INOUT) :: terms(:,:,:)
+      INTEGER, INTENT(IN), OPTIONAL :: kernel   ! default KERNEL_DIFF
       INTEGER, PARAMETER :: X1 = 1, X2 = 2, X3 = 3, A1 = 4, A2 = 5, A3 = 6
       REAL(8) :: rg, a, axf, ayf, zo, l1m2, l12, vxb, vyb
-      INTEGER :: b
+      INTEGER :: b, kn
 
+      kn = KERNEL_DIFF
+      IF (PRESENT(kernel)) kn = kernel
       rg = s1%rho*s1%g
       DO b = 1, mesh%nbody
          a = geom%awp(b)
@@ -256,7 +294,7 @@ CONTAINS
       PURE COMPLEX(8) FUNCTION p(i, j)
          INTEGER, INTENT(IN) :: i, j
 
-         p = pair_minus(s1%xi(i, b), s1%xi(j, b), s2%xi(i, b), s2%xi(j, b))
+         p = pair_product(kn, s1%xi(i, b), s1%xi(j, b), s2%xi(i, b), s2%xi(j, b))
       END FUNCTION p
 
    END SUBROUTINE add_hydrostatic_term
@@ -308,14 +346,15 @@ CONTAINS
       d(3) = q(3) + q(4)*x(2) - q(5)*x(1)
    END FUNCTION rigid_displacement
 
-   PURE FUNCTION pair_cross(a1, b1, a2, b2) RESULT(c)
+   PURE FUNCTION pair_cross(kernel, a1, b1, a2, b2) RESULT(c)
       ! sum_jk eps_ijk P(a_j, b_k)
+      INTEGER, INTENT(IN) :: kernel
       COMPLEX(8), INTENT(IN) :: a1(3), b1(3), a2(3), b2(3)
       COMPLEX(8) :: c(3)
 
-      c(1) = pair_minus(a1(2), b1(3), a2(2), b2(3)) - pair_minus(a1(3), b1(2), a2(3), b2(2))
-      c(2) = pair_minus(a1(3), b1(1), a2(3), b2(1)) - pair_minus(a1(1), b1(3), a2(1), b2(3))
-      c(3) = pair_minus(a1(1), b1(2), a2(1), b2(2)) - pair_minus(a1(2), b1(1), a2(2), b2(1))
+      c(1) = pair_product(kernel, a1(2), b1(3), a2(2), b2(3)) - pair_product(kernel, a1(3), b1(2), a2(3), b2(2))
+      c(2) = pair_product(kernel, a1(3), b1(1), a2(3), b2(1)) - pair_product(kernel, a1(1), b1(3), a2(1), b2(3))
+      c(3) = pair_product(kernel, a1(1), b1(2), a2(1), b2(2)) - pair_product(kernel, a1(2), b1(1), a2(2), b2(1))
    END FUNCTION pair_cross
 
 END MODULE NearFieldDrift

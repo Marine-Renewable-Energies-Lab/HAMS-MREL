@@ -5,7 +5,8 @@ module test_near_field
   use FirstOrderState, only : incident_phi
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use FarFieldDrift, only : group_ratio
-  use NearFieldDrift, only : pair_minus, waterline_extrapolate, near_field_pair, T_I => T_WATERLINE, T_IA => T_FLARE, &
+  use NearFieldDrift, only : pair_minus, pair_plus, KERNEL_DIFF, KERNEL_SUM, waterline_extrapolate, near_field_pair, &
+                             T_I => T_WATERLINE, T_IA => T_FLARE, &
                              T_II => T_VELOCITY, T_III => T_DISPLACEMENT, T_IV => T_ROTATION, T_V => T_HYDROSTATIC
   use second_order_fixtures, only : make_cylinder, set_panel, maccamy_fuchs_state, maccamy_fuchs_phi, maccamy_fuchs_drift
   implicit none
@@ -53,7 +54,10 @@ subroutine collect_near_field(testsuite)
     new_unittest("pair_symmetry", test_pair_symmetry), &
     new_unittest("pair_superposition", test_pair_superposition), &
     new_unittest("reference_point", test_reference_point), &
-    new_unittest("two_bodies_independent", test_two_bodies_independent) &
+    new_unittest("two_bodies_independent", test_two_bodies_independent), &
+    new_unittest("qtf_time_series", test_qtf_time_series), &
+    new_unittest("qtf_pair_symmetry", test_qtf_pair_symmetry), &
+    new_unittest("qtf_diagonal_is_mean", test_qtf_diagonal_is_mean) &
     ]
 end subroutine collect_near_field
 
@@ -868,5 +872,107 @@ subroutine test_two_bodies_independent(error)
   if (allocated(error)) return
   call check(error, maxval(abs(tt(:, :, 2) - t2(:, :, 1))) <= 1d-8 * maxval(abs(t2)), "body 2 differs from its single-body load")
 end subroutine test_two_bodies_independent
+
+!> The kernels of spec 5.4: for f(t) = Re sum_i a_i f_i e^{-i w_i t} and g(t) likewise, at two frequencies,
+!> f(t) g(t) = sum_i sum_j Re[pair_minus(i,j) a_i a_j* e^{-i(w_i - w_j)t} + pair_plus(i,j) a_i a_j e^{-i(w_i + w_j)t}],
+!> at any t. This fixes the factor 1/2 of both QTFs.
+subroutine test_qtf_time_series(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: w(2) = [0.7d0, 0.95d0]
+  complex(8) :: f(2), gg(2), a(2), expansion
+  real(8) :: t, direct, scale
+  integer :: icase, it, i, j
+
+  do icase = 1, 10
+    do i = 1, 2
+      f(i) = pseudo_c(20 * icase + i)
+      gg(i) = pseudo_c(20 * icase + 4 + i)
+      a(i) = pseudo_c(20 * icase + 8 + i)
+    end do
+    do it = 1, 50
+      t = 3.7d0 * real(it, 8) + 0.1d0 * real(icase, 8)
+      direct = real(sum(a * f * exp(-ci * w * t))) * real(sum(a * gg * exp(-ci * w * t)))
+      expansion = (0d0, 0d0)
+      do i = 1, 2
+        do j = 1, 2
+          expansion = expansion + pair_minus(f(i), gg(i), f(j), gg(j)) * a(i) * conjg(a(j)) * exp(-ci * (w(i) - w(j)) * t) &
+                      + pair_plus(f(i), gg(i), f(j), gg(j)) * a(i) * a(j) * exp(-ci * (w(i) + w(j)) * t)
+        end do
+      end do
+      scale = maxval(abs(a))**2 * maxval(abs(f)) * maxval(abs(gg))
+      call check(error, abs(direct - real(expansion)) <= 1d-12 * scale, "product differs from the bichromatic expansion")
+      if (allocated(error)) return
+    end do
+  end do
+end subroutine test_qtf_time_series
+
+!> A free cylinder at two frequencies: every term of the sum-frequency pair is symmetric in the two states and every term of
+!> the difference-frequency pair is Hermitian, with the frequency factors of terms I, III and IV in each state.
+subroutine test_qtf_pair_symmetry(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: s1, s2
+  complex(8), allocatable :: w1(:), w2(:), w(:), t12(:,:,:), t21(:,:,:)
+  real(8) :: k2, omega2
+  integer :: j
+
+  call free_cylinder([1d0, -0.5d0, 0.3d0], 0d0, mesh, geom, s1, w1, error)
+  if (allocated(error)) return
+  ! The second state at another frequency, with the same mesh
+  omega2 = 1.3d0
+  k2 = omega2**2 / g
+  do j = 1, 100
+    k2 = k2 - (k2 * tanh(k2 * depth) - omega2**2 / g) / (tanh(k2 * depth) + k2 * depth / cosh(k2 * depth)**2)
+  end do
+  call maccamy_fuchs_state(mesh, radius, depth, k2, omega2, 1d0, 0.4d0, g, rho, s2)
+  call free_motion(0.4d0, s2%xi(:, 1))
+  allocate(w2(geom%nwl))
+  do j = 1, geom%nwl
+    w2(j) = maccamy_fuchs_phi(geom%wl_xm(:, j), radius, depth, k2, omega2, 1d0, 0.4d0, g)
+  end do
+  allocate(t12(6, 6, 1), t21(6, 6, 1))
+  call near_field_pair(mesh, geom, s1, s2, w1, w2, t12, KERNEL_SUM)
+  call near_field_pair(mesh, geom, s2, s1, w2, w1, t21, KERNEL_SUM)
+  do j = 1, 6
+    call check(error, maxval(abs(t12(:, j, :))) > 0d0 .or. j == 2, "a sum-frequency term is zero")
+    if (allocated(error)) return
+    call check(error, maxval(abs(t12(:, j, :) - t21(:, j, :))) <= 1d-12 * maxval(abs(t12)), &
+               "sum-frequency term is not symmetric in the two states")
+    if (allocated(error)) return
+  end do
+  call near_field_pair(mesh, geom, s1, s2, w1, w2, t12, KERNEL_DIFF)
+  call near_field_pair(mesh, geom, s2, s1, w2, w1, t21, KERNEL_DIFF)
+  do j = 1, 6
+    call check(error, maxval(abs(t12(:, j, :) - conjg(t21(:, j, :)))) <= 1d-12 * maxval(abs(t12)), &
+               "difference-frequency term is not Hermitian in the two states")
+    if (allocated(error)) return
+  end do
+  ! The two kernels differ off the diagonal
+  call near_field_pair(mesh, geom, s1, s2, w1, w2, t21, KERNEL_SUM)
+  call check(error, maxval(abs(t12 - t21)) > 1d-6 * maxval(abs(t12)), "sum and difference kernels give the same load")
+  if (allocated(error)) return
+  ! The sum-frequency diagonal is the double-frequency load of one state: no conjugate, so complex
+  allocate(w(geom%nwl))
+  w = w1
+  call near_field_pair(mesh, geom, s1, s1, w1, w, t12, KERNEL_SUM)
+  call check(error, maxval(abs(aimag(t12))) > 1d-6 * maxval(abs(t12)), "sum-frequency diagonal is real")
+end subroutine test_qtf_pair_symmetry
+
+!> The default kernel is the difference-frequency one, so the mean drift calls are unchanged.
+subroutine test_qtf_diagonal_is_mean(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: s
+  complex(8), allocatable :: w(:), t0(:,:,:), t1(:,:,:)
+
+  call free_cylinder([1d0, -0.5d0, 0.3d0], 0.3d0, mesh, geom, s, w, error)
+  if (allocated(error)) return
+  allocate(t0(6, 6, 1), t1(6, 6, 1))
+  call near_field_pair(mesh, geom, s, s, w, w, t0)
+  call near_field_pair(mesh, geom, s, s, w, w, t1, KERNEL_DIFF)
+  call check(error, all(t0 == t1), "default kernel differs from KERNEL_DIFF")
+end subroutine test_qtf_diagonal_is_mean
 
 end module test_near_field
