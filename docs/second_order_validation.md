@@ -1,80 +1,10 @@
-# Mean wave drift
+# Second-order wave loads: validation
 
-HAMS-MREL computes the mean (time-averaged) second-order wave loads on bodies in regular waves, from the first-order solution. It has two methods:
+This page holds the evidence behind the second-order methods, defaults and advice of [SecondOrder.in](input_files.md#secondorderin-optional): the mean drift convergence study, the comparison with Nemoh, the semi-analytical reference for a sharp truncated cylinder, the control-surface study and a study of graded meshes. The integration fixtures and the limits of their tests are in [test/data/drift_cyl/README.md](../test/data/drift_cyl/README.md). All values are measured unless marked inferred.
 
-- **Far-field** (momentum conservation): F_x, F_y and M_z of the whole system, from the far-field amplitude of the waves the bodies send out.
-- **Near-field** (pressure integration over the mean wetted surface): all six loads of each body, as the sum of six terms (waterline, flare, velocity, displacement, rotation, hydrostatic).
+## Mean drift convergence study
 
-With `mean_drift = 2`, both give the loads of every pair of headings at the same frequency, for bidirectional seas.
-
-This page covers usage, the choice of method, mesh guidance, limits, and the evidence behind them. The design is in [the spec](superpowers/specs/2026-11-04-second-order-waves-design.md), decisions D1 to D3.
-
-## Usage
-
-Put a `SecondOrder.in` in the input directory. Without it, HAMS-MREL runs exactly as before. All keys and the checks on them are in [Input Files](input_files.md#secondorderin-optional). A typical file:
-
-```
-! Mean drift with both methods, default velocity and waterline methods
-mean_drift      = 1
-drift_methods   = far near
-motion_state    = free
-```
-
-Requirements: `ISOL = 1` in `ControlFile.in`, and depth `H` at most 500 m (use `H < 0` for deep water). The near-field method does not run with generalized mode files.
-
-Outputs, in `Wamit_format/`, are described in [Output Files](output_files.md):
-
-- `MeanDriftMomentum.8`: far-field F_x, F_y, M_z of the system, M_z about the origin.
-- `MeanDriftPressure.9`: near-field loads of each body, moments about that body's `XR`.
-- `MeanDriftTerms.txt`: the six near-field terms (with `write_terms` 1 or 2).
-
-When both methods run, the log prints their relative difference for F_x, F_y and M_z (M_z moved to the origin). Use it as a mesh check: a large difference means the near-field result has not converged.
-
-## Methods and defaults
-
-| Key | Default | Other value |
-| :--- | :--- | :--- |
-| `velocity_method` | `differencing`: tangential velocity from the potential on neighbouring panels | `source`: velocity from an extra source solve |
-| `waterline_method` | `extrapolate`: waterline potential from the adjacent panel and its gradient | `field`: boundary integral formula at a point just off the waterline |
-
-The defaults were kept after the convergence study below. `differencing` meets the gate of the plan (near-field and far-field agree and converge on a free body), and on the rounded truncated cylinder (7680 panels, from 0.60 rad/s up) it is closer to far-field than `source`. On the finest rounded-box meshes it is closer in the force vector at every frequency run, except a near tie at 1.60 rad/s free (0.56% against 0.54%). In F_x alone `source` is closer at 1.00 rad/s on the 8000-panel fixed mesh (-0.039% against -0.130%), and at 0.80, 0.95, 1.00, 1.10 and 1.60 rad/s at 2000 panels fixed. On the bottom-mounted cylinder, which also has no sharp edge, `source` is the closer at 0.40 to 0.80 rad/s at 4096 panels, with both within 0.06% of the exact value there. There is no switch of method by frequency.
-
-## Which method to use
-
-- **Rounded hulls** (no sharp edges at the bilge or corners): use the defaults. This was measured on the rounded truncated cylinder, the rounded box and the bottom-mounted cylinder. On the rounded cylinder at 7680 panels, `differencing` is within 0.24% of far-field from 0.70 to 1.80 rad/s, free, and within 0.08% fixed. `source` is off by 0.12% to 2.3% on the same mesh.
-- **Hulls with sharp edges**, such as a flat bottom meeting a vertical wall:
-  - Near-field with `differencing` converges slowly. On the sharp cylinder at 7168 panels it is still +17.4% at 0.95 rad/s, free.
-  - On that cylinder `source` is closer up to about 1.2 rad/s (ka about 1.5), and `differencing` is closer from 1.4 rad/s (ka about 2.0). This crossing rests on one radius. On the sharp box `source` is closer at all three frequencies run, 0.80, 1.00 and 1.40 rad/s. ka is inferred from the deep-water dispersion relation, a = 10 m.
-  - Against the [semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder) at 7168 panels, the crossing holds for F_x, `source` is the closer for F_z at every frequency, and `differencing` is the closer for M_y wherever compared (within 0.8%, against 1.90% to 5.75% for `source`).
-  - **Recommendation:** below ka about 1.5 and away from irregular frequencies, use `source`, without a lid, and check it against far-field. Above that, `differencing` was the closer on the cylinder, but not on the box. For the horizontal loads of a free sharp hull at low frequency, use far-field. Round the corners and the bilge where the real hull allows. For M_y, `differencing` was the closer on the sharp cylinder, at every frequency compared.
-  - `source` costs about twice the run time at 7680 panels: +98% (ifx, 32 threads). The earlier record is +51% (ifort, 8 threads).
-  - `source` cannot remove irregular frequencies: `IRSP = 1` is rejected. At the two irregular frequencies tested it is off by 32% to 198% (see below). Keep away from them, or use `differencing` with a lid there.
-- **Free sharp hull at low frequency:** use far-field. At 0.70 rad/s, where the net force is small next to its terms, `differencing` has the wrong sign at 7168 panels and `source` is still 10.3% off. Against the semi-analytical reference, HAMS far-field F_x is 0.68% off there and `source` near-field F_x 11.1%.
-- **Sharp box:** near-field F_y and M_z are not reliable, with either method, on the meshes tested. F_y is +12.5% off with `source` at 7040 panels. Round the vertical corners and the bilge if near-field F_y or M_z are needed. That makes it a different hull: judge it against its own far-field.
-- **Waterline:** keep `extrapolate`. `field` is opt-in. It is first order where `extrapolate` is second order, and in finite depth it can jump with the mesh or the offset (see [Limits](#limits)).
-- **Settings:** `GRN_KIND = 8` changed no printed digit of F_x. `ISOLV = 2` (GMRES) matches LU to within 0.003 in F_x / (ρg) on the cases tried.
-
-For F_x, F_y and M_z of the whole system, far-field is the reference on any hull. Near-field is needed for loads per body and for F_z, M_x and M_y.
-
-## Mesh guidance
-
-- Refine towards the waterline. The cylinders here use wall rows cosine spaced towards the waterline, so the top rows are thin. Since the free-surface image term is integrated over the panel (see [Developer Documentation](developer_documentation.md#free-surface-image-term)), near-field converges on such rows: on the rounded cylinder on springs at 1.10 rad/s it is +1.36%, +0.40%, +0.21% from far-field at 480, 1920, 4320 panels.
-- Refine at corners and at the bilge. Better, round them if the real hull allows. On the box, rounding the vertical corners and the bilge took near-field against far-field from 23.4% (sharp, 7040 panels) to 0.41% (rounded, 8000 panels), for the force vector at 1.00 rad/s.
-- Check convergence with both methods on two meshes, panels per side doubled. The rate of fall per doubling is a better check than one difference.
-- Irregular frequencies: with `differencing`, use `IRSP = 1` with a lid near them. A lid with thin rim panels did not shift results on the cylinder: over a scan of the rim ratio down to 0.17, `IRSP = 1` moved near-field F_x by at most 0.42% against `IRSP = 0`. This is one cylinder at 0.95 and 1.10 rad/s only.
-
-## Limits
-
-- **Generalized modes:** the near-field method is rejected when a `gen_mod` file is present. Far-field runs, but no integration test covers it.
-- **Narrow gaps:** not tested. In the test fixtures, bodies are at least 20 m apart centre to centre. With `waterline_method = field`, no other body may be closer to the field point than `waterline_offset` times the segment length.
-- **Multi-body:** far-field gives only the total of all bodies. Near-field per body is checked against the far-field total in the two-body fixtures.
-- **`waterline_method = field` in finite depth:** term I can jump with the mesh or the offset. On 32 x 16 rows at depth 10 and offset 0.01, term I is -11.40% at 1.0 rad/s, against -1.93% and -2.06% at offsets 0.005 and 0.05 (measured on this branch, see [the fixtures](../test/data/drift_cyl/README.md)). A separate measurement on commit 36d1733, not reproduced on this branch, replaced the Green function with a direct eigenfunction sum: term I went from -11.40% to -1.96%. In that measurement, first-order results of the repository cases moved by at most 0.25%, and small panels at kh of 50 or more by up to 9%. A fix (Linton's method for small R/h) is planned on a separate branch and is not merged. The run logs a warning when this method is used in finite depth.
-- **Not tested:** a correction of the velocity fit for the normal offset of neighbouring panels. It was skipped because the term II offset it was meant to explain went away with the image term fix.
-- **Second-order QTFs** (difference and sum frequency) are not implemented. Only the mean drift is.
-
-## Convergence study
-
-Run in November 2026 on Snellius (`fat_genoa`, 32 threads, ifx 2024.2) with HAMS built without `-heap-arrays`, because of the crash described under [Compilers](#compilers), and with `OMP_STACKSIZE=1G` and `ulimit -s unlimited`. Commit dff7a32 makes the documented flag `-heap-arrays 0` work, tested on ifx 2024.2 with the unit and integration tests. The study used [drift_convergence.py](../pre_postprocessing_python/SecondOrder/drift_convergence.py). 80 HAMS runs and 12 Nemoh runs. The per-frequency tables are not in the repository. All values below are measured unless marked inferred.
+Run in November 2026 on Snellius (`fat_genoa`, 32 threads, ifx 2024.2) with HAMS built without `-heap-arrays`, because of the crash described in [Developer Documentation](developer_documentation.md#mean-drift-tests), and with `OMP_STACKSIZE=1G` and `ulimit -s unlimited`. Commit dff7a32 makes the documented flag `-heap-arrays 0` work, tested on ifx 2024.2 with the unit and integration tests. The study used [drift_convergence.py](../pre_postprocessing_python/SecondOrder/drift_convergence.py). 80 HAMS runs and 12 Nemoh runs. The per-frequency tables are not in the repository. All values below are measured unless marked inferred.
 
 **Hulls.** Truncated cylinder, radius 10 m, draft 10 m, depth 100 m, with a sharp bilge (graded rows) or a bilge radius of 3 m (cosine rows); 448 to 7168 and 480 to 7680 panels. Bottom-mounted cylinder, radius 5 m, depth 10 m, against MacCamy-Fuchs; 256 to 4096 panels. Box 20 x 10 x 5 m, depth 50 m, sharp, with rounded vertical corners only, and with rounded corners and bilge. Frequencies 0.40 to 1.80 rad/s in steps of 0.2, plus 0.70, 0.95 and 1.10, set before any result. 0.80 rad/s is the heave resonance, and 1.60 is 3% from the first irregular frequency, 1.548 rad/s.
 
@@ -287,24 +217,93 @@ What the comparison shows, all measured on these meshes (448, 1792, 7168 panels 
 - Newman, J.N. (1967). The drift force and moment on ships in waves. J. Ship Res. 11(1), 51-60. doi:10.5957/jsr.1967.11.1.51
 - WAMIT User Manual, Version 7.5, section 15.8, eqs. 15.54 to 15.57.
 
-## Tests
+## Control-surface method
 
-The integration fixtures and their measured values are described in [test/data/drift_cyl/README.md](../test/data/drift_cyl/README.md). Two limits have thin margins on ifx and Linux (Snellius, ifx 2024.2, measured):
+The control-surface (middle-field) method of Chen (2007), on the hulls of the [convergence study](#mean-drift-convergence-study). The fixture-level checks are in [test/data/drift_cyl/README.md](../test/data/drift_cyl/README.md#control-surface-method).
 
-| Test | Measured, ifx / Linux | Measured, ifort / Windows | Limit |
-| :--- | ---: | ---: | ---: |
-| `source_two_body_total` | 4.69% | 4.69% | 5% |
-| `source_near_far_low_frequency` | 4.10% | 4.11% | 5% |
+### Far-field components, F_x, F_y and M_z
 
-A change in compiler or flags may trip them. Check the printed value before changing a limit.
+The control-surface F_x, F_y and M_z (Chen 2007, eqs. 39-41) against far-field, at mesh multiples m1 to m4 of the fixture hulls (panel counts x1, x4, x9, x16), finite depth 100 m, 11 frequencies from 0.4 to 1.8 rad/s; headings 0 and 30 for the cylinders, 30 for the boxes, 0 for the bottom-mounted cylinder [measured, Snellius `fat_genoa`, 32 threads, 2026-11-06 and 2026-11-07]. The error is the worst over frequencies, headings and the three components of |control - far| / max(1% |far|, 1e-3 rho g A^2 a^k), with a = 10 m and k = 1 for forces, 2 for M_z; above 1 fails. The tolerance floor keeps small far-field values, such as F_x at 0.4 rad/s, from setting the result. Cases are run with [drift_convergence.py](../pre_postprocessing_python/SecondOrder/drift_convergence.py).
 
-## Compilers
+| Hull, motion | Velocity | m1 | m2 | m3 | m4 |
+| :--- | :--- | ---: | ---: | ---: | ---: |
+| sharp cylinder, fixed | green | 2.80 | **0.70** | 0.02 | 0.14 |
+| sharp cylinder, free | green | 2.80 | **0.55** | 0.11 | 0.17 |
+| sharp box, fixed | green | 1.71 | **0.59** | | 0.05 |
+| sharp box, free | green | 1.87 | **0.58** | | |
+| round cylinder, fixed | green | 2.79 | 0.68 | 0.02 | 0.12 |
+| round cylinder, free | green | 2.80 | 0.53 | 0.12 | 0.16 |
+| round-corner box, fixed | green | 1.42 | 0.29 | | 0.06 |
+| round-corner box, free | green | 1.65 | 0.22 | | |
+| bottom-mounted cylinder | green | 1.75 | 0.31 | | 0.16 |
+| sharp cylinder, fixed | source | 4.02 | 1.90 | 1.18 | 0.91 |
+| sharp cylinder, free | source | 6.53 | 2.64 | 1.02 | 1.21 |
+| sharp box, fixed | source | 2.30 | 1.16 | | 0.57 |
+| sharp box, free | source | 70.5 | 34.4 | | |
 
-ifx 2024.2 with `-heap-arrays 0` stopped the far-field method with a segmentation fault on the first frequency. The cause was an array constructor `[s1, s2]` of a type with allocatable components in `far_field_pair`. A 40-line program with no HAMS code fails the same way under ifx 2024.2 with `-heap-arrays 0`, and runs under ifort with that flag and under ifx 2025.1.1. The code now copies the two states into a named array (commit dff7a32). With that change, unit (133) and integration (118) tests all pass under ifx 2024.2 on Linux with `-qmkl -qopenmp -heap-arrays 0` (Snellius job 28933784), with the same two thin margins as above. No other array constructor of a type with allocatable components is in `src/` or `test/`. ifx 2025.0, used by the Linux CI, was not tested here.
+m3 runs 0.70, 0.95 and 1.10 rad/s only, and the m4 boxes 0.8, 1.0 and 1.4 rad/s. The round-cylinder m3 entries come from the default-settings runs that the study's settings and Nemoh groups add (`d_base_round_free_diff_m3`, `n_round_fixed_diff_m3`). Blank: not run.
+
+- The green route is within the tolerance at m2 on every hull, and at worst 0.17 at m4 [measured]. The bold entries are the acceptance gate of the green route: sharp cylinder and sharp box at m2, all frequencies.
+- At m1 the green route fails on every hull, at 1.4 to 2.8 times the tolerance, so the m1 meshes (256 to 500 panels, the CI fixtures) are coarser than this tolerance allows [measured]. The CI limits in [the fixture README](../test/data/drift_cyl/README.md#control-surface-method) are set from measured values at those meshes, not from this tolerance.
+- The source route converges more slowly, and its M_z on the free sharp box is 34 times the tolerance at m2 [measured]. It stays an option, not the default.
+- Before the field-mode fix, the green route failed on the fixed sharp box at m2 (3.8 times the tolerance, F_x at 0.6 rad/s), and the free round cylinder at m4 was 2.7 [measured]. The fix left far-field, near-field and first-order values unchanged in every row [measured].
+- The green-route runs took about 30% longer in the second study than in the first on the same partition (882 s against 675 s for the sharp cylinder at m2) [measured]. A laptop run of the box at m1 gave the same field time before and after the fix, so the cause is not isolated [measured].
+
+### Vertical force and roll and pitch moments, F_z, M_x and M_y
+
+The vertical force and the roll and pitch moments of the control-surface method (Chen 2007, eqs. 37-38, with F between the hull waterline and Γc), with the default `cs_*` settings and `cs_velocity = green`, against near-field (F_z of the sharp hull: against a semi-analytical reference). Rounded and sharp cylinder (a = 10 m), fixed and free, 100 m depth, at m1 to m4 (480/1920/4320/7680 panels rounded, 448/1792/4032/7168 sharp), 0.70, 0.95 and 1.10 rad/s, plus the 11 frequencies of the study above at m1 and m2 [measured, Snellius, 2026-11-07].
+
+| Load | Reference | Result |
+| :--- | :--- | :--- |
+| M_x, M_y | near-field at m4, tolerance max(1% of the reference, 1e-3 rho g A^2 a^2) | within the tolerance on both hulls at m3 and m4; worst 0.44 of it (rounded, m3) and 0.57 (sharp, m3) |
+| F_z, rounded | extrapolated near-field limit f0 + C h^p, fitted over m2 to m4 (h = 1/2, 1/3, 1/4) | control at m3 (0.70, 0.95, 1.10 rad/s): fixed 0.4%, 0.9%, 1.9%; free 0.0%, 0.5%, 0.8%. At m4 fixed 1.10 rad/s is 1.2% |
+| F_z, sharp, fixed | [semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder) | control at m3 / m4 (0.70, 0.95, 1.10 rad/s): 0.40 / 0.31%, 0.89 / 0.63%, 2.26 / 1.44% |
+| F_z, sharp, free | [semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder) | control at m3 / m4: 0.81 / 0.71%, 0.04 / 0.09%, 0.77 / 0.53% |
+
+- The rounded-hull limits of near-field and control agree within 0.4% at all six (motion, frequency) pairs, so the m3 and m4 differences are mesh error in both methods [measured].
+- The sharp hull is the truncated cylinder (radius 10 m, draft 10 m, depth 100 m) of [truncated_cylinder_reference.py](../pre_postprocessing_python/SecondOrder/truncated_cylinder_reference.py), which gives a semi-analytical F_z with an uncertainty of 1e-4 rho g A^2 (3e-3 free at 0.70 rad/s). The errors above are (HAMS - reference)/|reference| at heading 0 [measured]. There is no such reference for the rounded hull, so its F_z is checked against the extrapolated near-field limit.
+- Near-field F_z (differencing) on the sharp hull still moves with the mesh: the 3-point fitted order is 0.66 to 0.76 at every frequency, with term 3 (velocity) dominant. At m4 (7168 panels) it is 12% to 17% off the reference on the fixed hull and 23% to 506% off on the free hull. Free at 0.70 rad/s the reference is -0.6128, control -0.6171 and near-field +2.49 [measured]. The cause is the right-angled bottom edge, where the velocity is singular [inferred].
+- Advice: on hulls with sharp edges, use the control-surface F_z, and do not take near-field F_z at these meshes as the reference. Near-field F_z needs a much finer mesh there.
+- Not covered: at m2 (1920 and 1792 panels), F_z, M_x and M_y at 1.6 to 1.8 rad/s differ from near-field of the same run by up to about 30%, and m3 and m4 were not run at those frequencies [measured].
+- Numbers are as measured; no convergence order of the control-surface method is claimed.
+
+## Near-field on meshes graded towards a sharp edge
+
+On the sharp truncated cylinder (radius 10 m, draft 10 m, depth 100 m), near-field F_z converges slowly with the default cosine rows: the fitted order is about 0.7. The velocity at the right-angled bottom edge grows like (distance)^(-1/3), and cosine spacing puts rows of size about (i/n)^2 next to the edge, so the first rows carry an error that falls only like n^(-2/3) [inferred]. Stronger grading at the edge should raise the order. This study measured it [Snellius `fat_genoa`, 32 threads, 2026-11-08, the build of the control-surface study].
+
+**Meshes.** The panel counts of the convergence study (1792, 4032, 7168 panels, m2 to m4), with the same waterline polygon, so the hydrostatics and the waterline term are unchanged. Wall rows at z = -d f(i/n_z) with f(s) = s^2 / (s^2 + (1 - s)^q), quadratic at the waterline and of power q at the bilge; bottom rings at r = a (1 - (i/n_r)^q), fine at the rim. q = 3 (b3) and q = 4 (b4). The finest bilge row is 3e-4 m (b3) and 1e-5 m (b4) at m4. A first run with power q at both ends of the wall put a row of 1e-5 m at z = 0 for q = 4 at m4, which the input check rejects as a lid panel; it is not used here.
+
+**F_z, near-field, heading 0**, percent (HAMS - reference)/|reference|, at m2 / m3 / m4, against the [semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder):
+
+| Motion, rad/s | Velocity | Cosine | b3 | b4 |
+| :--- | :--- | ---: | ---: | ---: |
+| Fixed 0.70 | `differencing` | +20.5 / +15.3 / +12.4 | +10.7 / +6.6 / +4.6 | +6.1 / +3.1 / +2.0 |
+| Fixed 0.95 | `differencing` | +25.3 / +18.9 / +15.3 | +13.2 / +8.2 / +5.7 | +7.5 / +3.8 / +2.5 |
+| Fixed 1.10 | `differencing` | +28.7 / +21.5 / +17.4 | +15.0 / +9.3 / +6.5 | +8.5 / +4.3 / +2.8 |
+| Free 0.70 | `differencing` | +838 / +623 / +506 | +471 / +289 / +199 | +310 / +158 / +103 |
+| Free 0.95 | `differencing` | +111 / +83 / +68 | +60 / +38 / +26 | +36 / +19 / +12.6 |
+| Free 1.10 | `differencing` | +37 / +28 / +23 | +19.8 / +12.5 / +8.6 | +11.4 / +6.0 / +4.1 |
+| Fixed 0.70 | `source` | +3.2 / +2.0 / +1.5 | -1.7 / +1.7 / -3.5 | -2.5 / +1.6 / -2.7 |
+| Fixed 1.10 | `source` | +6.4 / +4.2 / +3.1 | -0.6 / +3.6 / -3.8 | -1.5 / +3.4 / -2.8 |
+| Free 0.70 | `source` | +232 / +150 / +110 | +64 / +150 / -77 | +57 / +157 / -38 |
+| Free 0.95 | `source` | +41 / +27 / +21 | +15.5 / +25.4 / -4.7 | +13.5 / +25.8 / -0.4 |
+
+- With `differencing`, b4 converges steadily: from m2 to m4 the order is about 1.5, against 0.7 on the cosine mesh. Fixed F_z is within 2.8% at m4. M_y moves the other way: 0.07% to 0.8% on the cosine mesh, 0.6% to 2.5% with b4, at m4.
+- With `source`, the graded meshes change the sign of the error from m2 to m3 and back at m4, on both gradings and in a first run with fine rows at both ends. The cause is not known.
+- The free hull at 0.70 rad/s, near the heave resonance, stays off by 38% or more on every mesh. Its F_z is a small difference of large terms.
+- The control-surface F_z on the cosine mesh (4032 and 7168 panels) is within 2.3% and 1.4% of the reference in every case (see [above](#vertical-force-and-roll-and-pitch-moments-f_z-m_x-and-m_y)). It stays the advised value on sharp hulls.
 
 ## Open items
 
-- A free sharp body at low frequency has no good near-field result from HAMS. Far-field is the number to use. For the sharp cylinder, the [semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder) gives near-field F_x, F_z and M_y, with stated uncertainties.
+- A free sharp body at low frequency has no good near-field result from HAMS. Far-field is the number to use for F_x, and the control-surface method for F_z. For the sharp cylinder, the [semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder) gives near-field F_x, F_z and M_y, with stated uncertainties.
 - Free F_z of the sharp cylinder at 0.70 and 0.80 rad/s: the reference's uncertainty there (3e-3 and 4e-3) is an estimate from an extrapolation, not a bound.
 - Nemoh at 4320 panels: the cause is unknown, and testing it needs another Nemoh run.
+- `velocity_method = source` on graded meshes: the sign of the F_z error alternates with the mesh (above). Not explained.
+- The control-surface F_z, M_x and M_y at 1.6 to 1.8 rad/s were run at m2 only.
 - WAMIT remains an option if a licence becomes available. It is still needed to settle the conjugation and axes of the WAMIT-format output. The semi-analytical reference covers the signs of the mean drift values (210 values agree at 7168 panels), not the phases of the complex outputs.
+
+## Sources
+
+Garrett (1971), Yeung (1981), MacCamy and Fuchs (1954), Maruo (1960), Newman (1967) and the WAMIT v7.5 manual are listed under [the semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder).
+
+- Chen, X.-B. (2007). Middle-field formulation for the computation of wave-drift loads. J. Eng. Math. 59, 61-82.

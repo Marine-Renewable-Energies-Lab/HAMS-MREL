@@ -251,7 +251,7 @@ Each line is `key = value`. Text after `!` is a comment, blank lines are ignored
 | Key | Values | Default | Description |
 | :-- | :----- | :------ | :---------- |
 | `mean_drift` | `0`, `1`, `2` | `0` | 0 is off, 1 is unidirectional, 2 is all heading pairs. |
-| `drift_methods` | any of `far`, `near`, `control`, separated by blanks or commas | `far` | Far-field (momentum), near-field (pressure integration) and control-surface methods. For the vertical force on a hull with sharp edges (a right-angled bottom edge), prefer `control`: on a truncated cylinder (radius 10 m, draft 10 m, depth 100 m, 7168 panels, 0.70 to 1.10 rad/s), control F_z is within 1.44% of a semi-analytical reference, where near-field is 12% to 17% off on the fixed hull and 23% to 506% off on the free hull, with the wrong sign at 0.70 rad/s (see [the accuracy of the vertical loads](../test/data/drift_cyl/README.md#control-surface-method)). |
+| `drift_methods` | any of `far`, `near`, `control`, separated by blanks or commas | `far` | Far-field (momentum), near-field (pressure integration) and control-surface methods. For the vertical force on a hull with sharp edges (a right-angled bottom edge), prefer `control`: on a truncated cylinder (radius 10 m, draft 10 m, depth 100 m, 7168 panels, 0.70 to 1.10 rad/s), control F_z is within 1.44% of a semi-analytical reference, where near-field is 12% to 17% off on the fixed hull and 23% to 506% off on the free hull, with the wrong sign at 0.70 rad/s (see [the accuracy of the vertical loads](second_order_validation.md#vertical-force-and-roll-and-pitch-moments-f_z-m_x-and-m_y)). |
 | `velocity_method` | `differencing`, `source` | `differencing` | How the velocity on the body surface is obtained, for the near-field method. `differencing` takes the tangential part from the potential on the neighbouring panels, and the normal part from the known normal derivative. `source` solves for a source distribution with the same normal derivative, and takes the velocity from its integral: one more dense factorization and one more set of Green function evaluations per frequency. The potential itself stays that of the direct solve. The solve keeps the factorization and the gradient integrals of every symmetry block in memory, 64 nb^2 ns bytes with nb panels in the base mesh and ns symmetry blocks: 236 MB at 1920 panels and 1.2 GB at 4320 with no symmetry, about as much again as the first-order arrays. Irregular frequencies are not removed for this method, since `IRSP = 1` is rejected, and the run stops if a matrix is exactly singular. |
 | `waterline_method` | `extrapolate`, `field` | `extrapolate` | How the potential at the waterline is obtained, for the near-field method. `extrapolate` takes it from the adjacent panel and its gradient. `field` evaluates the boundary integral formula at a point close to the waterline, out from the body and down. The point is in the fluid if the wall at the waterline widens downward by no more than 45 degrees from the vertical, and if no other body is closer to it than `waterline_offset` times the segment length, so keep the gap between bodies larger than that. On a wider wall the run stops with a message. It costs one set of Green function evaluations per waterline segment and frequency. It converges more slowly than `extrapolate`, and in finite depth it can jump with the mesh or the offset: see `test/data/drift_cyl/README.md`. |
 | `waterline_offset` | positive real | `0.01` | With `waterline_method = field`: how far the point lies from the waterline, out from the body and down, each as a fraction of the waterline segment length. |
@@ -285,3 +285,51 @@ The options are checked against `ControlFile.in` and the mesh files. A run is re
 - `drift_methods` includes `control` and any generalized mode file is present.
 - `cs_velocity = source` with `ISOLV = 2` (GMRES), or with `IRSP = 1` (irregular frequency removal).
 - `cs_margin`, `cs_bottom_margin`, `cs_panel_size` or `cs_fs_rows` is negative, or `cs_fd_step` is outside (0, 0.5].
+
+### Methods and outputs
+
+From the first-order solution, HAMS-MREL computes the mean (time-averaged) second-order loads on bodies in regular waves, by three methods:
+
+- **Far-field** (`far`, momentum conservation): F_x, F_y and M_z of the whole system, from the far-field amplitude of the waves the bodies send out. Output `MeanDriftMomentum.8`.
+- **Near-field** (`near`, pressure integration over the mean wetted surface): all six loads of each body, as the sum of six terms (waterline, flare, velocity, displacement, rotation, hydrostatic). Output `MeanDriftPressure.9`.
+- **Control surface** (`control`, middle-field, Chen 2007): all six loads of each body from the field on a closed surface C around it. F_z, M_x and M_y also need the free surface between the hull and C. Output `MeanDriftControlSurface.7`.
+
+With `mean_drift = 2`, each gives the loads of every pair of headings at the same frequency, for bidirectional seas. The terms of `near` and `control` go to `MeanDriftTerms.txt` (with `write_terms` 1 or 2). The files are described in [Output Files](output_files.md#wamit-format). When `far` runs with another method, the log prints their relative difference for F_x, F_y and M_z (M_z moved to the origin). Use it as a mesh check: a large difference means the other result has not converged.
+
+The defaults `velocity_method = differencing` and `waterline_method = extrapolate` were kept after the [convergence study](second_order_validation.md#mean-drift-convergence-study). `differencing` is the closer to far-field on hulls without sharp edges: within 0.24% from 0.70 to 1.80 rad/s on a free rounded truncated cylinder at 7680 panels, where `source` is off by 0.12% to 2.3%. There is no switch of method by frequency.
+
+### Which method to use
+
+- **F_x, F_y, M_z of the whole system:** far-field is the reference on any hull.
+- **Rounded hulls** (no sharp edges at the bilge or corners): near-field with the defaults, for the loads per body and for F_z, M_x, M_y. Measured on a rounded truncated cylinder, a rounded box and a bottom-mounted cylinder.
+- **Hulls with sharp edges**, such as a flat bottom meeting a vertical wall:
+  - F_z, M_x, M_y: use `control`. On a sharp truncated cylinder its F_z is within 2.3% of a [semi-analytical reference](second_order_validation.md#semi-analytical-reference-sharp-truncated-cylinder) at 4032 panels and 1.4% at 7168, fixed and free. Near-field F_z is 12% to 17% off there on the fixed hull and 23% to 506% on the free hull, with the wrong sign at 0.70 rad/s.
+  - Horizontal loads per body: near-field converges slowly. `source` is the closer up to about ka = 1.5 on the cylinder, and on the box at the three frequencies run; `differencing` is the closer from about ka = 2.0 on the cylinder, and for M_y. Check either against far-field. ka is inferred from the deep-water dispersion relation, a = 10 m.
+  - Free sharp hull at low frequency: use far-field for F_x. At 0.70 rad/s near-field F_x has the wrong sign with `differencing` at 7168 panels, and `source` is 10% off.
+  - Sharp box: near-field F_y and M_z are not reliable with either velocity method on the meshes tested (F_y +12.5% with `source` at 7040 panels).
+- **`source`** costs about twice the run time (+98% at 7680 panels, ifx, 32 threads) and cannot remove irregular frequencies: `IRSP = 1` is rejected, and at the two irregular frequencies tested it is 32% to 198% off. Keep away from them, or use `differencing` with a lid there.
+- **Waterline:** keep `extrapolate`. `field` is first order where `extrapolate` is second order; see [Limits](#limits).
+- **Settings:** `GRN_KIND = 8` changed no printed digit of F_x. `ISOLV = 2` (GMRES) matches LU to within 0.003 in F_x / (ρg) on the cases tried.
+
+The evidence is in [Second-order validation](second_order_validation.md).
+
+### Mesh guidance
+
+- Refine towards the waterline. Thin top rows converge now that the free-surface image term is integrated over the panel ([Developer Documentation](developer_documentation.md#free-surface-image-term)): on a rounded cylinder on springs at 1.10 rad/s, near-field is +1.36%, +0.40%, +0.21% from far-field at 480, 1920, 4320 panels.
+- Round corners and the bilge where the real hull allows. On a box, that took near-field against far-field from 23.4% (sharp, 7040 panels) to 0.41% (rounded, 8000 panels) for the force vector at 1.00 rad/s. It makes a different hull: judge it against its own far-field.
+- If near-field is needed on a sharp edge, grade the rows strongly towards the edge. With `differencing`, rows of size (i/n)^4 at the edge (and quadratic at the waterline) took fixed near-field F_z on the sharp cylinder from 15% to 3.1% at 4032 panels, converging at about order 1.5 against 0.7 with cosine rows. This does not help `source`, and the free hull near heave resonance stays far off: see [graded meshes](second_order_validation.md#near-field-on-meshes-graded-towards-a-sharp-edge).
+- Keep every hull row deeper than `wl_z_tolerance` times the body size below z = 0, or the run takes it for a lid panel and stops.
+- Check convergence with two meshes, panels per side doubled. The rate of fall per doubling is a better check than one difference.
+- Irregular frequencies: with `differencing`, use `IRSP = 1` with a lid near them. On one cylinder at 0.95 and 1.10 rad/s, a lid with thin rim panels moved near-field F_x by at most 0.42% against `IRSP = 0`.
+- Control surface: the defaults of `cs_*` were used in all the studies. For small hulls in a multi-body case, a finer C (`cs_panel_size` half the default) took the sum over two bodies from 2.28% to 0.58% of far-field; see [the fixtures](../test/data/drift_cyl/README.md#control-surface-method).
+
+### Limits
+
+- **Generalized modes:** `near` and `control` are rejected when a `gen_mod` file is present. Far-field runs, but no integration test covers it.
+- **Narrow gaps:** not tested. In the test fixtures, bodies are at least 20 m apart centre to centre. With `waterline_method = field`, no other body may be closer to the field point than `waterline_offset` times the segment length.
+- **Multi-body:** far-field gives only the total of all bodies. Near-field and control per body are checked against the far-field total in the two-body fixtures.
+- **`waterline_method = field` in finite depth:** term I has been seen to jump with the mesh or the offset: on 32 x 16 rows at depth 10 and offset 0.01, -11.40% at 1.0 rad/s against -1.93% and -2.06% at offsets 0.005 and 0.05 (see [the fixtures](../test/data/drift_cyl/README.md)). That was measured before the finite-depth Green function used Linton's method for R/h < 0.02 (v2.3.3), which replaces the series behind such jumps for ν·h ≤ 50. It has not been measured again since. The run logs a warning when this method is used in finite depth.
+- **Control surface, F_z, M_x, M_y:** validated with `cs_shape = cylinder` only, and on finer meshes at 0.70 to 1.10 rad/s only. Not computed when C reaches the sea bed or the free surface between the hull and C cannot be built (the log says why).
+- **Second-order QTFs** (difference and sum frequency) are not implemented. Only the mean drift is.
+
+Source: Chen, X.-B. (2007). Middle-field formulation for the computation of wave-drift loads. J. Eng. Math. 59, 61-82.

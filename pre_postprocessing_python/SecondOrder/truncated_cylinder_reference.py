@@ -1,7 +1,7 @@
 """Semi-analytical reference for a truncated vertical cylinder, by eigenfunction matching, to validate HAMS-MREL's mean drift.
 
 Problem (the method of Garrett 1971 and Yeung 1981, with a corner basis; see Sources at the end, and the section
-"Semi-analytical reference: sharp truncated cylinder" of docs/mean_drift.md for the results). A vertical
+"Semi-analytical reference: sharp truncated cylinder" of docs/second_order_validation.md for the results). A vertical
 cylinder of radius a and draft d, sharp bilge, in water of depth h, with the gap g = h - d below it. Linear potential flow,
 time factor exp(-i omega t), nu = omega**2/G. G and RHO are make_mesh.G and make_mesh.RHO, the values of src/WavDynMods.f90.
 z is up, z = 0 is the still waterline, z = -h the sea bed. Each azimuthal order m is solved on its own.
@@ -150,7 +150,7 @@ the HAMS output is outside it) with the ExcForce.3 of the study's finest sharp-h
 components agree in sign, phase and modulus to about 1e-3, the mesh error.
 
 Near field. near_field_terms writes the pressure-integration terms of the WAMIT v7.5 user manual, section 15.8,
-eqs. (15.54) to (15.57), restated below as coded (the six terms docs/mean_drift.md lists for HAMS-MREL), for a pair of
+eqs. (15.54) to (15.57), restated below as coded (the six terms docs/input_files.md lists for HAMS-MREL), for a pair of
 first-order states i, j under the difference-frequency kernel P(f, g) = (f_i conj(g_j) + conj(f_j) g_i)/4 (for i = j,
 Re(f conj(g))/2, the time average of the product of two harmonic quantities), over rho g, n the unit normal out of the
 fluid (into the body), x relative to xr, xi' = xi + alpha x xr the translation of xr and alpha = (0, xi_5, 0) the

@@ -289,48 +289,6 @@ The spread over 0.01 to 0.05 is 1.1e-5 of F_x, and over all five 4.3e-5. The pla
 
 Control now gives the same small asymmetry as far-field [measured]. Before the field evaluations of the finite-depth Green function stopped using the epsilon algorithm (Limes) of `FINGREEN3D`, control gave F_y / F_x of 2.0e-4, 1.2e-6 and 1.5e-6 and M_z of 1.8e-3, 6.7e-5 and 3.0e-4 here [measured]. Limes keeps the table entry of largest magnitude, so dG/dz can jump between field points 5e-6 m apart (7.367e-3 against 6.122e-3, measured), and the central difference divides that jump by 2 delta. The field mode sums the eigenfunction series directly; see the comments at `FIELD_SERIES` in `src/FinGreen3D.f90`. First-order results do not use it and are unchanged to the last digit [measured].
 
-### Convergence study on Snellius
+### Snellius studies
 
-The control-surface F_x, F_y and M_z (Chen 2007, eqs. 39-41) against far-field, at mesh multiples m1 to m4 of the fixture hulls (panel counts x1, x4, x9, x16), finite depth 100 m, 11 frequencies from 0.4 to 1.8 rad/s; headings 0 and 30 for the cylinders, 30 for the boxes, 0 for the bottom-mounted cylinder [measured, Snellius `fat_genoa`, 32 threads, 2026-11-06 and 2026-11-07]. The error is the worst over frequencies, headings and the three components of |control - far| / max(1% |far|, 1e-3 rho g A^2 a^k), with a = 10 m and k = 1 for forces, 2 for M_z; above 1 fails. The tolerance floor keeps small far-field values, such as F_x at 0.4 rad/s, from setting the result. Cases are run with `pre_postprocessing_python/SecondOrder/drift_convergence.py`.
-
-| Hull, motion | Velocity | m1 | m2 | m3 | m4 |
-| :--- | :--- | ---: | ---: | ---: | ---: |
-| sharp cylinder, fixed | green | 2.80 | **0.70** | 0.02 | 0.14 |
-| sharp cylinder, free | green | 2.80 | **0.55** | 0.11 | 0.17 |
-| sharp box, fixed | green | 1.71 | **0.59** | | 0.05 |
-| sharp box, free | green | 1.87 | **0.58** | | |
-| round cylinder, fixed | green | 2.79 | 0.68 | 0.02 | 0.12 |
-| round cylinder, free | green | 2.80 | 0.53 | 0.12 | 0.16 |
-| round-corner box, fixed | green | 1.42 | 0.29 | | 0.06 |
-| round-corner box, free | green | 1.65 | 0.22 | | |
-| bottom-mounted cylinder | green | 1.75 | 0.31 | | 0.16 |
-| sharp cylinder, fixed | source | 4.02 | 1.90 | 1.18 | 0.91 |
-| sharp cylinder, free | source | 6.53 | 2.64 | 1.02 | 1.21 |
-| sharp box, fixed | source | 2.30 | 1.16 | | 0.57 |
-| sharp box, free | source | 70.5 | 34.4 | | |
-
-m3 runs 0.70, 0.95 and 1.10 rad/s only, and the m4 boxes 0.8, 1.0 and 1.4 rad/s. The round-cylinder m3 entries come from the default-settings runs that the study's settings and Nemoh groups add (`d_base_round_free_diff_m3`, `n_round_fixed_diff_m3`). Blank: not run.
-
-- The green route is within the tolerance at m2 on every hull, and at worst 0.17 at m4 [measured]. The bold entries are the acceptance gate of the green route: sharp cylinder and sharp box at m2, all frequencies.
-- At m1 the green route fails on every hull, at 1.4 to 2.8 times the tolerance, so the m1 meshes (256 to 500 panels, the CI fixtures) are coarser than this tolerance allows [measured]. The CI limits above are set from measured values at those meshes, not from this tolerance.
-- The source route converges more slowly, and its M_z on the free sharp box is 34 times the tolerance at m2 [measured]. It stays an option, not the default.
-- Before the field-mode fix, the green route failed on the fixed sharp box at m2 (3.8 times the tolerance, F_x at 0.6 rad/s), and the free round cylinder at m4 was 2.7 [measured]. The fix left far-field, near-field and first-order values unchanged in every row [measured].
-- The green-route runs took about 30% longer in the second study than in the first on the same partition (882 s against 675 s for the sharp cylinder at m2) [measured]. A laptop run of the box at m1 gave the same field time before and after the fix, so the cause is not isolated [measured].
-
-### Phase B on Snellius: F_z, M_x, M_y
-
-The vertical force and the roll and pitch moments of the control-surface method (Chen 2007, eqs. 37-38, with F between the hull waterline and Γc), with the default `cs_*` settings and `cs_velocity = green`, against near-field (F_z of the sharp hull: against a semi-analytical reference). Rounded and sharp cylinder (a = 10 m), fixed and free, 100 m depth, at m1 to m4 (480/1920/4320/7680 panels rounded, 448/1792/4032/7168 sharp), 0.70, 0.95 and 1.10 rad/s, plus the 11 frequencies of the study above at m1 and m2 [measured, Snellius, 2026-11-07].
-
-| Load | Reference | Result |
-| :--- | :--- | :--- |
-| M_x, M_y | near-field at m4, tolerance max(1% of the reference, 1e-3 rho g A^2 a^2) | within the tolerance on both hulls at m3 and m4; worst 0.44 of it (rounded, m3) and 0.57 (sharp, m3) |
-| F_z, rounded | extrapolated near-field limit f0 + C h^p, fitted over m2 to m4 (h = 1/2, 1/3, 1/4) | control at m3 (0.70, 0.95, 1.10 rad/s): fixed 0.4%, 0.9%, 1.9%; free 0.0%, 0.5%, 0.8%. At m4 fixed 1.10 rad/s is 1.2% |
-| F_z, sharp, fixed | semi-analytical reference (below) | control at m3 / m4 (0.70, 0.95, 1.10 rad/s): 0.40 / 0.31%, 0.89 / 0.63%, 2.26 / 1.44% |
-| F_z, sharp, free | semi-analytical reference (below) | control at m3 / m4: 0.81 / 0.71%, 0.04 / 0.09%, 0.77 / 0.53% |
-
-- The rounded-hull limits of near-field and control agree within 0.4% at all six (motion, frequency) pairs, so the m3 and m4 differences are mesh error in both methods [measured].
-- The sharp hull is the truncated cylinder (radius 10 m, draft 10 m, depth 100 m) of `pre_postprocessing_python/SecondOrder/truncated_cylinder_reference.py` (branch `second-order-drift`), which gives a semi-analytical F_z with an uncertainty of 1e-4 rho g A^2 (3e-3 free at 0.70 rad/s). The errors above are (HAMS - reference)/|reference| at heading 0 [measured]. There is no such reference for the rounded hull, so its F_z is checked against the extrapolated near-field limit.
-- Near-field F_z (differencing) on the sharp hull still moves with the mesh: the 3-point fitted order is 0.66 to 0.76 at every frequency, with term 3 (velocity) dominant. At m4 (7168 panels) it is 12% to 17% off the reference on the fixed hull and 23% to 506% off on the free hull. Free at 0.70 rad/s the reference is -0.6128, control -0.6171 and near-field +2.49 [measured]. The cause is the right-angled bottom edge, where the velocity is singular [inferred].
-- Advice: on hulls with sharp edges, use the control-surface F_z, and do not take near-field F_z at these meshes as the reference. Near-field F_z needs a much finer mesh there.
-- Not covered: at m2 (1920 and 1792 panels), F_z, M_x and M_y at 1.6 to 1.8 rad/s differ from near-field of the same run by up to about 30%, and m3 and m4 were not run at those frequencies [measured].
-- Numbers are as measured; no convergence order of the control-surface method is claimed.
+The convergence study of F_x, F_y and M_z and the study of F_z, M_x and M_y on finer meshes are in [Second-order validation](../../../docs/second_order_validation.md#control-surface-method).

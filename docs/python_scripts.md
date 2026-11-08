@@ -176,9 +176,9 @@ python make_mesh.py box --lx 20 --ly 10 --draft 5 --nx 10 --ny 5 --nz 4 --out Hu
 
 **`SecondOrder/make_drift_fixtures.py`** regenerates all the `test/data/drift_*` inputs, including `ControlFile.in` and `SecondOrder.in`. See `test/data/drift_cyl/README.md`.
 
-**`SecondOrder/drift_convergence.py`** generates and runs the mean drift convergence study of [Mean Drift](mean_drift.md#convergence-study) (HAMS-MREL, and Nemoh as a separate program), writes Slurm scripts for it, and collects the results into a table. Run it with `list` to see the cases. Its `collect` step needs `scipy`, for the MacCamy-Fuchs value.
+**`SecondOrder/drift_convergence.py`** generates and runs the mean drift convergence study of [Second-order validation](second_order_validation.md#mean-drift-convergence-study) (HAMS-MREL, and Nemoh as a separate program), writes Slurm scripts for it, and collects the results into a table. Run it with `list` to see the cases. Its `collect` step needs `scipy`, for the MacCamy-Fuchs value.
 
-**`SecondOrder/truncated_cylinder_reference.py`** computes a semi-analytical reference (eigenfunction matching, no panels) for the sharp truncated cylinder of the convergence study: A, B, X, RAOs, far-field F_x, and near-field F_x, F_z and M_y with each of the six terms, fixed and free. It needs `numpy` and `scipy`. Results, checks and the comparison with HAMS are in [Mean Drift](mean_drift.md#semi-analytical-reference-sharp-truncated-cylinder). Run it from its folder:
+**`SecondOrder/truncated_cylinder_reference.py`** computes a semi-analytical reference (eigenfunction matching, no panels) for the sharp truncated cylinder of the convergence study: A, B, X, RAOs, far-field F_x, and near-field F_x, F_z and M_y with each of the six terms, fixed and free. It needs `numpy` and `scipy`. Results, checks and the comparison with HAMS are in [Second-order validation](second_order_validation.md#semi-analytical-reference-sharp-truncated-cylinder). Run it from its folder:
 
 ```
 python -I truncated_cylinder_reference.py check [NAME ...]

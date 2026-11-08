@@ -167,9 +167,9 @@ CONTAINS
             ALLOCATE (rows_g(mesh%nbase, mesh%nsys, geom%nwl), rows_dg(mesh%nbase, mesh%nsys, geom%nwl))
             IF (H >= 0D0) THEN
                WRITE (*, '(a)') 'Mean drift warning: with waterline_method = field in finite depth, term I'
-               WRITE (*, '(a)') 'has been seen to jump with the mesh or the offset. A separate measurement,'
-               WRITE (*, '(a)') 'not reproduced on this branch, used a direct eigenfunction sum for the Green'
-               WRITE (*, '(a)') 'function: in one case term I went from -11.40% to -1.96%. See docs/mean_drift.md.'
+               WRITE (*, '(a)') 'has been seen to jump with the mesh or the offset. That was measured before'
+               WRITE (*, '(a)') 'the Green function used Linton''s method at small R/h, and not since. Check'
+               WRITE (*, '(a)') 'against extrapolate. See Limits under SecondOrder.in in docs/input_files.md.'
             END IF
          END IF
       END IF
