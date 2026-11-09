@@ -28,6 +28,7 @@ program unit_tester
     use test_control_drift, only : collect_control_drift
     use test_qtf, only : collect_qtf
     use test_second_order_incident, only : collect_so_incident
+    use test_qtf_potential, only : collect_qtf_potential
 
     implicit none
     integer :: stat, is
@@ -63,7 +64,8 @@ program unit_tester
         new_testsuite("field_velocity", collect_field_velocity), &
         new_testsuite("control_drift", collect_control_drift), &
         new_testsuite("qtf", collect_qtf), &
-        new_testsuite("so_incident", collect_so_incident) &
+        new_testsuite("so_incident", collect_so_incident), &
+        new_testsuite("qtf_potential", collect_qtf_potential) &
     ]
 
     stat = 0
@@ -81,7 +83,8 @@ program unit_tester
                                      .and. testsuites(is)%name /= "source_velocity" &
                                      .and. testsuites(is)%name /= "control_surface_mesh" &
                                      .and. testsuites(is)%name /= "field_velocity" &
-                                     .and. testsuites(is)%name /= "qtf"))
+                                     .and. testsuites(is)%name /= "qtf" &
+                                     .and. testsuites(is)%name /= "qtf_potential"))
     end do
 
     if (stat > 0) then
