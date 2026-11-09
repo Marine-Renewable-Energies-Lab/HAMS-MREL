@@ -46,6 +46,12 @@ CONTROL_FREQUENCY = 0.95
 CONTROL_STEPS = (0.005, 0.01, 0.05, 0.1)
 # Main grid of qtf_round_low: differences 0.05 to 0.20 rad/s
 QTF_LOW_FREQUENCIES = (0.40, 0.45, 0.50, 0.55, 0.60)
+# QTF potential part (qtf_terms = body): the pair of qtf_round_body at 0.15 rad/s for IRSP = 1 and the half mesh, and two
+# small rounded hulls 2000 m apart against one alone, at 0.20 rad/s. At 0.80 and 1.00 rad/s (ka 0.33 to 0.51) the wave
+# scattered by the other hull changes .10d by 0.8% at 2000 m; at 1.35 and 1.55 rad/s it was 5.9%, too much for a 2% check
+QTF_BODY_FREQUENCIES = (0.95, 1.10)
+QTF_DISTANT_FREQUENCIES = (0.80, 1.00)
+QTF_DISTANT_SEPARATION = 2000.0
 
 
 def real12(value):
@@ -369,6 +375,7 @@ def main():
         shutil.copyfile(os.path.join(data, "drift_two_round", "input", file), os.path.join(target, file))
     write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=2, drift_methods=both, motion_state="free",
                        write_terms=0, velocity_method="source", qtf=3)
+    write_qtf_body_fixtures(data, both)
 
     # The control-surface method on the hull of drift_cyl: held fixed, and with the limit frequencies and all heading pairs
     for name, control, options in (("control_cyl", dict(), dict(mean_drift=1, drift_methods="far control", write_terms=1,
@@ -383,6 +390,43 @@ def main():
         write_second_order(os.path.join(target, "SecondOrder.in"), **options)
 
     write_control_physics(data)
+
+
+def write_qtf_body_fixtures(data, both):
+    """Fixtures of QTF_Indirect.11d (qtf_terms = body), besides qtf_round_body and qtf_round_low. Kept small: two
+    frequencies where one pair is enough."""
+    body = dict(mean_drift=1, drift_methods=both, motion_state="free", write_terms=1, qtf_terms="body", qtf=1)
+    # The rounded hull of qtf_round_body with irregular frequency removal, as a half mesh, and the whole mesh without
+    # removal as their reference. Velocity by differencing in all three, since the source solve does not take IRSP = 1.
+    for name, irsp, half in (("qtf_round_body_ref", 0, False), ("qtf_round_body_irsp", 1, False),
+                             ("qtf_half_body", 0, True)):
+        target = case_dir(data, name)
+        make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
+                                         half_y=half, **ROUND_MESH)
+        if irsp == 1:
+            make_mesh.write_waterplane(os.path.join(target, "WaterPlaneMesh.pnl"), ROUND_MESH["radius"],
+                                       ROUND_MESH["ntheta"], ROUND_MESH["nr"])
+        write_control(os.path.join(target, "ControlFile.in"), frequencies=QTF_BODY_FREQUENCIES, headings=DRIFT_CYL_HEADINGS,
+                      irsp=irsp)
+        write_second_order(os.path.join(target, "SecondOrder.in"), **body)
+    # Two of the small rounded hulls far apart, with every heading pair, and one alone
+    for name, origins, pairs in (("qtf_two_round_body", [(0.0, 0.0), (0.0, QTF_DISTANT_SEPARATION)], 2),
+                                 ("qtf_isolated_body", None, 1)):
+        target = case_dir(data, name)
+        for b in ((1, 2) if origins else (0,)):
+            suffix = "_%d" % b if b else ""
+            make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh%s.pnl" % suffix),
+                                             os.path.join(target, "Hydrostatic%s.in" % suffix), **TWO_ROUND_MESH)
+        write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=QTF_DISTANT_FREQUENCIES,
+                      headings=DRIFT_CYL_HEADINGS, body_origins=origins)
+        write_second_order(os.path.join(target, "SecondOrder.in"), **dict(body, mean_drift=pairs, velocity_method="source"))
+    # Every second frequency of qtf_round_low: psi is solved at each difference frequency, so the grid spacing must not
+    # change the common pairs
+    target = case_dir(data, "qtf_round_low_spacing")
+    for file in ("HullMesh.pnl", "Hydrostatic.in"):
+        shutil.copyfile(os.path.join(data, "drift_round", "input", file), os.path.join(target, file))
+    write_control(os.path.join(target, "ControlFile.in"), frequencies=QTF_LOW_FREQUENCIES[::2], headings=DRIFT_CYL_HEADINGS)
+    write_second_order(os.path.join(target, "SecondOrder.in"), **dict(body, velocity_method="source"))
 
 
 def copy_inputs(data, source, target, files):

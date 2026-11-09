@@ -254,8 +254,10 @@ CONTAINS
       nreuse = qtf_psi_count(reused=.TRUE.)
       WRITE (*, '(a,I0,a,I0,a,I0,a)') ' QTF body forcing: psi at ', nneed, ' difference frequencies, ', nreuse, &
          ' from the main grid and ', nneed - nreuse, ' radiation-only solves (each costs about one radiation solve)'
-      WRITE (*, '(a,F10.1,a)') ' QTF: with psi the store takes', &
-         qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed), ' MB'
+      WRITE (*, '(a,F10.1,a)') ' QTF: with psi and the potential part the store takes', &
+         qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, &
+                       npairs=MERGE(NBETA*NBETA, NBETA, opts%mean_drift == 2)), ' MB'
+      WRITE (*, '(a)') ' QTF_Indirect.11d: body forcing only, the free-surface integral is omitted.'
       ALLOCATE (psi_main(mesh%n, 6*mesh%nbody))
       psi_main = (0D0, 0D0)
       IF (opts%write_terms >= 1) THEN

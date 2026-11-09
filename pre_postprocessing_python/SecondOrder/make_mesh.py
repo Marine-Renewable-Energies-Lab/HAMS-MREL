@@ -464,12 +464,15 @@ def write_cylinder(mesh_path, hydro_path, radius, draft, ntheta, nz, nr, graded=
 
 
 def write_rounded_cylinder(mesh_path, hydro_path, radius, draft, bilge_radius, ntheta, nz, narc, nr, external_restoring=None,
-                           uniform_rows=False):
-    """Write the mesh and hydrostatics of a cylinder with a rounded bilge, which has no edge. Returns the written mesh."""
+                           uniform_rows=False, half_y=False):
+    """Write the mesh and hydrostatics of a cylinder with a rounded bilge, which has no edge. Returns the written mesh. With
+    half_y, the mesh is the half y > 0 with a y symmetry plane; the hydrostatics stay those of the whole body."""
     mesh, polygon = revolved(rounded_profile(radius, draft, bilge_radius, nz, narc, nr, uniform_rows), ntheta)
     scale = lambda z: rounded_radius(radius, draft, bilge_radius, z) / radius
-    check_normals(mesh, (0.0, 0.0, -draft / 2.0))
-    write_mesh(mesh_path, mesh)
+    if half_y:
+        mesh = half_in_y(mesh)
+    check_normals(mesh, (0.0, radius / 2.0 if half_y else 0.0, -draft / 2.0))
+    write_mesh(mesh_path, mesh, 1 if half_y else 0)
     write_hydrostatic(hydro_path, hydrostatics(polygon, draft, scale, HYDROSTATIC_STEPS), 0.0, 0.0, external_restoring)
     return mesh
 

@@ -41,10 +41,19 @@ MODULE QTFDriver
    ! qtf_max_dw. qtf_radiation_list gives these Omega, with no interpolation: a non-uniform grid can have N(N-1)/2 of them.
    ! An Omega on the main grid takes psi from the radiation solve of that frequency; the others are solved after the
    ! frequency loop (qtf_radiation_omegas). psi_store keeps psi of every Omega, filled by qtf_keep_psi.
+   !
+   ! qtf_finish then writes QTF_Indirect.11d = QTF_Quadratic.10d + T_pot, with T_pot the body-forcing terms of potential_pair
+   ! (QTFPotential); the free-surface integral of the second-order potential is omitted (Phase 6). Same rows, order and
+   ! scaling as .10d, qtf_max_dw included. On the exact diagonal (equal frequencies, also with two headings) T_pot = 0, so
+   ! there .11d is .10d. T_pot is computed Omega by Omega (potential_part), so that grad psi and psi at the waterline are
+   ! built once per difference frequency, and kept per pair in tpot until the files are written. With write_terms >= 1 the
+   ! five terms of each pair go to QTF_PotentialTerms.txt, in that order (header in the file).
 
    USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom, QTF_TERMS_BODY
    USE NearFieldDrift, ONLY: near_field_pair, KERNEL_DIFF, KERNEL_SUM
-   USE SecondOrderOutput, ONLY: write_qtf_row
+   USE SecondOrderOutput, ONLY: write_qtf_row, write_qtf_terms_row
+   USE QTFPotential, ONLY: potential_pair, psi_surface_gradient, psi_waterline, NPOT_TERMS
+   USE FirstOrderState, ONLY: wave_gravity
    IMPLICIT NONE
    PRIVATE
 
@@ -64,6 +73,10 @@ MODULE QTFDriver
    REAL(8) :: psi_tol = 0D0                              ! two Omega closer than this are the same
    COMPLEX(8), ALLOCATABLE :: psi_store(:, :, :)         ! (n_panels, 6*nbody, nneed)
    LOGICAL, ALLOCATABLE :: psi_kept(:)                   ! (nneed)
+   ! Potential part of the difference QTF (qtf_terms = body)
+   LOGICAL :: body_active = .FALSE.                      ! QTF_Indirect.11d is written
+   LOGICAL :: pot_terms = .FALSE.                        ! QTF_PotentialTerms.txt is written (write_terms >= 1)
+   COMPLEX(8), ALLOCATABLE :: tpot(:, :, :, :)           ! (6*nbody, nfreq, nfreq, heading pairs), e^{-i omega t}
 
 CONTAINS
 
@@ -114,7 +127,10 @@ CONTAINS
       IF (ALLOCATED(psi_reuse)) DEALLOCATE (psi_reuse)
       IF (ALLOCATED(psi_store)) DEALLOCATE (psi_store)
       IF (ALLOCATED(psi_kept)) DEALLOCATE (psi_kept)
-      IF (opts%qtf_terms == QTF_TERMS_BODY .AND. (kind_qtf == 1 .OR. kind_qtf == 3)) THEN
+      IF (ALLOCATED(tpot)) DEALLOCATE (tpot)
+      body_active = opts%qtf_terms == QTF_TERMS_BODY .AND. (kind_qtf == 1 .OR. kind_qtf == 3)
+      pot_terms = body_active .AND. opts%write_terms >= 1
+      IF (body_active) THEN
          IF (.NOT. PRESENT(omegas_main)) THEN
             WRITE (*, '(a)') ' QTF: qtf_init needs the main-grid frequencies for qtf_terms = body.'
             ERROR STOP 1
@@ -125,8 +141,25 @@ CONTAINS
          IF (st /= 0) CALL out_of_memory()
          psi_store = (0D0, 0D0)
          psi_kept = .FALSE.
+         ALLOCATE (tpot(6*nbody, nfreq, nfreq, heading_pairs(nbeta)), STAT=st)
+         IF (st /= 0) CALL out_of_memory()
+         tpot = (0D0, 0D0)
       END IF
    END SUBROUTINE qtf_init
+
+   INTEGER FUNCTION heading_pairs(nb)
+      ! Number of heading pairs of the files for nb headings
+      INTEGER, INTENT(IN) :: nb
+
+      heading_pairs = MERGE(nb*nb, nb, all_headings_pairs == 1)
+   END FUNCTION heading_pairs
+
+   INTEGER FUNCTION heading_pair(b1, b2)
+      ! Index of the heading pair (b1, b2) in tpot; for mean_drift = 1 only b1 = b2 is used
+      INTEGER, INTENT(IN) :: b1, b2
+
+      heading_pair = MERGE((b1 - 1)*nbeta + b2, b1, all_headings_pairs == 1)
+   END FUNCTION heading_pair
 
    SUBROUTINE qtf_radiation_list(omegas_main, max_dw_in, tol, need, reuse_index)
       ! The distinct difference frequencies Omega = omega_i - omega_j > 0 of the grid omegas_main, ascending, with
@@ -328,14 +361,16 @@ CONTAINS
       qtf_kept = nkept
    END FUNCTION qtf_kept
 
-   REAL(8) FUNCTION qtf_stored_mb(n_panels, nwl, nbody, nfreq, nb, npsi)
+   REAL(8) FUNCTION qtf_stored_mb(n_panels, nwl, nbody, nfreq, nb, npsi, npairs)
       ! Size of the store in MB for nfreq frequencies and nb headings: 8 complex values per panel, 6 per body, 1 per segment.
-      ! With npsi, also psi at npsi difference frequencies: 6*nbody complex values per panel.
+      ! With npsi, also psi at npsi difference frequencies: 6*nbody complex values per panel. With npairs heading pairs, also
+      ! T_pot: 6*nbody complex values per frequency pair and heading pair.
       INTEGER, INTENT(IN) :: n_panels, nwl, nbody, nfreq, nb
-      INTEGER, INTENT(IN), OPTIONAL :: npsi
+      INTEGER, INTENT(IN), OPTIONAL :: npsi, npairs
 
       qtf_stored_mb = 16D0*REAL(8*n_panels + 6*nbody + nwl, 8)*REAL(nfreq, 8)*REAL(nb, 8)/1D6
       IF (PRESENT(npsi)) qtf_stored_mb = qtf_stored_mb + 16D0*REAL(n_panels, 8)*REAL(6*nbody, 8)*REAL(npsi, 8)/1D6
+      IF (PRESENT(npairs)) qtf_stored_mb = qtf_stored_mb + 16D0*REAL(6*nbody, 8)*REAL(nfreq, 8)**2*REAL(npairs, 8)/1D6
    END FUNCTION qtf_stored_mb
 
    SUBROUTINE qtf_pair_load(mesh, geom, kernel, i1, b1, i2, b2, total)
@@ -358,22 +393,30 @@ CONTAINS
       REAL(8), INTENT(IN) :: refl
 
       IF (.NOT. active) RETURN
+      IF (body_active) CALL potential_part(mesh, geom, refl)
       IF (kind_qtf == 1 .OR. kind_qtf == 3) CALL write_file('/Wamit_format/QTF_Quadratic.10d', KERNEL_DIFF)
       IF (kind_qtf == 2 .OR. kind_qtf == 3) CALL write_file('/Wamit_format/QTF_Quadratic.10s', KERNEL_SUM)
       WRITE (*, '(a,I0,a,I0,a)') ' QTF quadratic part: ', nkept, ' frequencies and ', nbeta, ' headings'
       DEALLOCATE (store, store_wl, store_oufr)
       IF (ALLOCATED(psi_store)) DEALLOCATE (psi_store, psi_kept, psi_need, psi_reuse)
+      IF (ALLOCATED(tpot)) DEALLOCATE (tpot)
       active = .FALSE.
+      body_active = .FALSE.
 
    CONTAINS
 
       SUBROUTINE write_file(name, kernel)
+         ! With qtf_terms = body, the difference kernel also writes QTF_Indirect.11d, row for row with .10d
          CHARACTER(LEN=*), INTENT(IN) :: name
          INTEGER, INTENT(IN) :: kernel
-         COMPLEX(8) :: total(6, mesh%nbody)
-         INTEGER :: unit, b1, b2, i, j, b, c
+         COMPLEX(8) :: total(6, mesh%nbody), value
+         INTEGER :: unit, unit_indirect, b1, b2, i, j, b, c
 
          OPEN (NEWUNIT=unit, FILE=outdir//name, STATUS='REPLACE', ACTION='WRITE')
+         unit_indirect = 0
+         IF (kernel == KERNEL_DIFF .AND. body_active) THEN
+            OPEN (NEWUNIT=unit_indirect, FILE=outdir//'/Wamit_format/QTF_Indirect.11d', STATUS='REPLACE', ACTION='WRITE')
+         END IF
          DO b1 = 1, nbeta
             DO b2 = 1, nbeta
                IF (all_headings_pairs == 0 .AND. b1 /= b2) CYCLE
@@ -387,6 +430,14 @@ CONTAINS
                         DO c = 1, 6
                            CALL write_qtf_row(unit, store_oufr(i), store_oufr(j), beta_deg(b1), beta_deg(b2), &
                                               6*(b - 1) + c, total(c, b), refl, c > 3)
+                           IF (unit_indirect == 0) CYCLE
+                           ! On the diagonal T_pot = 0 and .11d is .10d to the bit (adding a zero could flip a -0)
+                           value = total(c, b)
+                           IF (store(i, b1)%omega /= store(j, b2)%omega) THEN
+                              value = value + tpot(6*(b - 1) + c, i, j, heading_pair(b1, b2))
+                           END IF
+                           CALL write_qtf_row(unit_indirect, store_oufr(i), store_oufr(j), beta_deg(b1), beta_deg(b2), &
+                                              6*(b - 1) + c, value, refl, c > 3)
                         END DO
                      END DO
                   END DO
@@ -394,9 +445,88 @@ CONTAINS
             END DO
          END DO
          CLOSE (unit)
+         IF (unit_indirect /= 0) CLOSE (unit_indirect)
       END SUBROUTINE write_file
 
    END SUBROUTINE qtf_finish
+
+   SUBROUTINE potential_part(mesh, geom, refl)
+      ! T_pot of every pair of the difference QTF with omega_i /= omega_j within qtf_max_dw, into tpot, Omega by Omega:
+      ! grad psi and psi at the waterline are built once for each difference frequency. With write_terms >= 1 the terms go to
+      ! QTF_PotentialTerms.txt, in that order. Stops if psi of a needed Omega was not stored.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(surface_geom), INTENT(IN) :: geom
+      REAL(8), INTENT(IN) :: refl
+      INTEGER, ALLOCATABLE :: pair_m(:, :)                 ! (nkept, nkept), index of |omega_i - omega_j| in psi_need, or 0
+      COMPLEX(8), ALLOCATABLE :: grad(:, :, :), pwl(:, :), terms(:, :)
+      REAL(8) :: dw, g_wave
+      INTEGER :: unit, i, j, m, b1, b2, b, c, k, nmode
+
+      nmode = 6*mesh%nbody
+      ALLOCATE (pair_m(nkept, nkept))
+      pair_m = 0
+      DO i = 1, nkept
+         DO j = 1, nkept
+            dw = store(i, 1)%omega - store(j, 1)%omega
+            IF (dw == 0D0) CYCLE
+            IF (max_dw > 0D0 .AND. ABS(dw) > max_dw*(1D0 + 1D-9)) CYCLE
+            m = qtf_psi_index(ABS(dw))
+            IF (m == 0) THEN
+               WRITE (*, '(a,ES14.6,a)') ' QTF: Omega =', ABS(dw), ' rad/s is not among the difference frequencies of psi.'
+               ERROR STOP 1
+            END IF
+            IF (.NOT. psi_kept(m)) THEN
+               WRITE (*, '(a,ES14.6,a)') ' QTF: psi at Omega =', psi_need(m), ' rad/s was not stored.'
+               ERROR STOP 1
+            END IF
+            pair_m(i, j) = m
+         END DO
+      END DO
+
+      unit = 0
+      IF (pot_terms) THEN
+         OPEN (NEWUNIT=unit, FILE=outdir//'/Wamit_format/QTF_PotentialTerms.txt', STATUS='REPLACE', ACTION='WRITE')
+         WRITE (unit, '(a)') '# Body-forcing terms of the potential part of QTF_Indirect.11d (qtf_terms = body), scaled'// &
+            ' and conjugated as QTF_Quadratic.10d.'
+         WRITE (unit, '(a)') '# PER1 PER2 BETA1 BETA2 I, then Re Im of each term: 1 Froude-Krylov of phi_I2, 2 incident'// &
+            ' diffraction, 3 B1, 4 B2, 5 B3.'
+         WRITE (unit, '(a)') '# .11d - .10d is their sum; the free-surface integral is omitted. One row per pair with'// &
+            ' omega_i /= omega_j, by ascending |omega_i - omega_j|.'
+      END IF
+      ALLOCATE (grad(3, mesh%n, nmode), pwl(geom%nwl, nmode), terms(nmode, NPOT_TERMS))
+      DO m = 1, SIZE(psi_need)
+         IF (.NOT. ANY(pair_m == m)) CYCLE
+         CALL psi_surface_gradient(mesh, geom, psi_store(:, :, m), grad)
+         CALL psi_waterline(mesh, geom, psi_store(:, :, m), grad, pwl)
+         DO b1 = 1, nbeta
+            DO b2 = 1, nbeta
+               IF (all_headings_pairs == 0 .AND. b1 /= b2) CYCLE
+               DO i = 1, nkept
+                  DO j = 1, nkept
+                     IF (pair_m(i, j) /= m) CYCLE
+                     ASSOCIATE (s1 => store(i, b1), s2 => store(j, b2))
+                        ! phi_I2 with the gravity of the first-order incident wave, which has the k of DISPERSION
+                        ! (wave_gravity): both orders of the incident wave then have one dispersion relation (ruling R8)
+                        g_wave = wave_gravity(s1%omega, s1%k, s1%h)
+                        CALL potential_pair(mesh, geom, s1, s2, store_wl(:, i, b1), store_wl(:, j, b2), psi_store(:, :, m), &
+                                            grad, pwl, psi_need(m), s1%rho, g_wave, terms)
+                     END ASSOCIATE
+                     tpot(:, i, j, heading_pair(b1, b2)) = SUM(terms, DIM=2)
+                     IF (unit == 0) CYCLE
+                     DO b = 1, mesh%nbody
+                        DO c = 1, 6
+                           k = 6*(b - 1) + c
+                           CALL write_qtf_terms_row(unit, store_oufr(i), store_oufr(j), beta_deg(b1), beta_deg(b2), k, &
+                                                    terms(k, :), refl, c > 3)
+                        END DO
+                     END DO
+                  END DO
+               END DO
+            END DO
+         END DO
+      END DO
+      IF (unit /= 0) CLOSE (unit)
+   END SUBROUTINE potential_part
 
    SUBROUTINE out_of_memory()
       WRITE (*, '(a)') ' QTF: not enough memory to keep the first-order states of every frequency. Use fewer frequencies,'
