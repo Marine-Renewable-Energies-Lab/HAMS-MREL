@@ -3,6 +3,7 @@ Compare the quadratic QTFs of HAMS-MREL with the exact reference of the sharp tr
 
 Usage:
     python qtf_compare.py <results> --reference <qtf_reference.csv> [--nemoh <folder of nemoh_* runs>] [--max-dw 0.3]
+    python qtf_compare.py <results> --potential <qtf_potential.csv> [--nemoh <folder>] [--max-dw 0.3]
 
 <results> holds the q_* case folders of `drift_convergence.py --qtf` (q_*/output/Wamit_format/QTF_Quadratic.10d, .10s).
 The reference CSV is from `truncated_cylinder_reference.py qtf`: T/(rho g) for omega_i <= omega_j, e^{-i omega t}, both
@@ -18,6 +19,15 @@ documentation does not fix the conjugation of the off-diagonal values against th
 as T(w1, w2), its conjugate, and both with the sign changed (a wave of another phase flips T+), are compared with the exact
 reference, and the closest is reported and used, with a warning if even that one has a median error above 50%. Only the
 documented output files are read.
+
+Potential part (--potential). The CSV is from `truncated_cylinder_reference.py qtf-potential`: the quadratic T-_ij (the
+columns of the quadratic reference, so --reference is not needed) and the five body-forcing terms of T_pot,ij
+(FK, ID, B1, B2, B3, columns <quantity>_<term>_re/_im), difference kernel, omega_i <= omega_j. The reference total of
+QTF_Indirect.11d is the quadratic part plus the terms. For each q_sharp_* case (`drift_convergence.py --qtf-potential`) it
+compares QTF_Indirect.11d with that total, .11d - .10d with the sum of the terms, and each term of QTF_PotentialTerms.txt
+(16 digits, conjugated back) with its reference; the scale of a term is the larger of its own and the potential part's
+largest abs over the pairs, so that a term that is small everywhere is not measured against itself. Nemoh's OUT_QTFM_N.dat
+of a DUOK + HASBO run (body forcing, no free-surface integral) is compared with the reference total, readings as above.
 """
 import argparse
 import csv
@@ -27,6 +37,8 @@ import statistics
 import sys
 
 import numpy as np
+
+import qtf_tools
 
 QUANTITIES = (("Fx", 1), ("Fz", 3), ("My", 5))
 
@@ -91,12 +103,132 @@ def pairs(ref, motion, kernel, max_dw):
 def errors(values, ref, motion, kernel, quantity, max_dw):
     """(max, median) of |value - exact| / max |exact| over the pairs; values maps (wi, wj) -> complex or None."""
     ps = pairs(ref, motion, kernel, max_dw)
-    exact = np.array([ref[(motion, kernel, wi, wj)][quantity] for wi, wj in ps])
-    scale = np.max(np.abs(exact))
-    errs = [abs(values[p] - e) / scale for p, e in zip(ps, exact) if values.get(p) is not None]
-    if not errs:
+    return errors_of(values, {p: ref[(motion, kernel) + p][quantity] for p in ps})
+
+
+def errors_of(values, exact, scale=None):
+    """(max, median, compared, pairs) of |value - exact| / scale over the pairs of exact {(wi, wj): complex}; scale
+    defaults to the largest abs(exact). values maps (wi, wj) -> complex or None (not compared)."""
+    ps = sorted(exact)
+    scale = max(abs(v) for v in exact.values()) if scale is None else scale
+    errs = [abs(values[p] - exact[p]) / scale for p in ps if values.get(p) is not None]
+    if not errs or scale == 0.0:
         return None
     return max(errs), statistics.median(errs), len(errs), len(ps)
+
+
+POTENTIAL_TERMS = qtf_tools.POTENTIAL_TERMS
+
+
+def read_potential_reference(path, max_dw):
+    """{motion: {"total" | "pot" | term: {(w_i, w_j): {quantity: complex}}}} of a qtf-potential CSV, w_i <= w_j,
+    w_j - w_i <= max_dw: the reference total of QTF_Indirect.11d (quadratic + terms), the potential part (sum of the
+    terms) and each term, internal e^{-i omega t}, over rho g."""
+    out = {}
+    with open(path, newline="") as f:
+        for r in csv.DictReader(f):
+            if r["kernel"] != "diff":
+                continue
+            wi, wj = round(float(r["omega_i"]), 4), round(float(r["omega_j"]), 4)
+            if wj - wi > max_dw + 1e-9:
+                continue
+            m = out.setdefault(r["motion"], {key: {} for key in ("total", "pot") + POTENTIAL_TERMS})
+            for q, _ in QUANTITIES:
+                terms = {t: complex(float(r["%s_%s_re" % (q, t)]), float(r["%s_%s_im" % (q, t)])) for t in POTENTIAL_TERMS}
+                pot = sum(terms.values())
+                m["total"].setdefault((wi, wj), {})[q] = complex(float(r[q + "_re"]), float(r[q + "_im"])) + pot
+                m["pot"].setdefault((wi, wj), {})[q] = pot
+                for t in POTENTIAL_TERMS:
+                    m[t].setdefault((wi, wj), {})[q] = terms[t]
+    return out
+
+
+def read_hams_terms(path):
+    """{(w1, w2, I): [term] * 5} of QTF_PotentialTerms.txt, heading pair (0, 0), conjugated back to e^{-i omega t}."""
+    if not os.path.exists(path):
+        return {}
+    return {(round(k[0], 4), round(k[1], 4), k[4]): [v.conjugate() for v in values]
+            for k, values in qtf_tools.read_qtf_terms(path).items() if k[2] == 0.0 and k[3] == 0.0}
+
+
+def _potential_cell(values, exact, scale=None):
+    e = errors_of(values, exact, scale)
+    return ("%7.2f %7.2f %s" % (100 * e[0], 100 * e[1], "" if e[2] == e[3] else "(%d/%d)" % e[2:])) if e else "-"
+
+
+def _difference(a, b):
+    """(wi, wj, index) -> a - b of two lookup functions, None where either is missing."""
+    def value(wi, wj, index):
+        x, y = a(wi, wj, index), b(wi, wj, index)
+        return None if x is None or y is None else x - y
+    return value
+
+
+def _term(terms, t):
+    """(wi, wj, index) -> term t of a read_hams_terms table; zero on the diagonal, where the file has no row."""
+    table = {k: values[t] for k, values in terms.items()}
+
+    def value(wi, wj, index):
+        v = lookup(table, wi, wj, index, "diff")
+        return 0j if v is None and wi == wj else v
+    return value
+
+
+def compare_potential(results, path, nemoh, max_dw):
+    """The --potential tables; see the module docstring."""
+    ref = read_potential_reference(path, max_dw)
+    print("Potential part (qtf_terms = body), exact sharp cylinder: |HAMS - exact| / max |exact| over the pairs, max and "
+          "median, percent; omega_j - omega_i <= %.2f rad/s; a term against the larger of its and T_pot's max" % max_dw)
+    print("%-24s %-6s %18s %18s %18s" % ("case", "what", "F_x", "F_z", "M_y"))
+    for case in sorted(os.path.basename(p) for p in glob.glob(os.path.join(results, "q_sharp_*"))):
+        motion = "fixed" if "_fixed_" in case else "free"
+        if motion not in ref:
+            continue
+        folder = os.path.join(results, case, "output", "Wamit_format")
+        indirect = read_hams(os.path.join(folder, "QTF_Indirect.11d"))
+        quadratic = read_hams(os.path.join(folder, "QTF_Quadratic.10d"))
+        terms = read_hams_terms(os.path.join(folder, "QTF_PotentialTerms.txt"))
+        if not indirect:
+            print("%-24s no QTF_Indirect.11d" % case)
+            continue
+
+        def of(table):
+            return lambda wi, wj, index: lookup(table, wi, wj, index, "diff")
+        rows = [(".11d", of(indirect), "total", None)]
+        if quadratic:
+            rows.append(("pot", _difference(of(indirect), of(quadratic)), "pot", None))
+        if terms:
+            rows += [(name, _term(terms, t), name, "pot") for t, name in enumerate(POTENTIAL_TERMS)]
+        for label, source, key, against in rows:
+            cells = []
+            for q, index in QUANTITIES:
+                exact = {p: v[q] for p, v in ref[motion][key].items()}
+                scale = None
+                if against:
+                    scale = max(max(abs(v) for v in exact.values()), max(abs(v[q]) for v in ref[motion][against].values()))
+                cells.append(_potential_cell({p: source(p[0], p[1], index) for p in exact}, exact, scale))
+            print("%-24s %-6s %18s %18s %18s" % (case, label, *cells))
+    if nemoh:
+        print("\nNemoh DUOK + HASBO against the exact total (quadratic + body forcing); reading chosen by the smaller median")
+        for folder in sorted(glob.glob(os.path.join(nemoh, "nemoh_sharp_*"))):
+            name = os.path.basename(folder)
+            motion = "fixed" if "_fixed_" in name else "free"
+            table = read_nemoh(os.path.join(folder, "results", "QTF", "OUT_QTFM_N.dat"))
+            if not table or motion not in ref:
+                continue
+            best = None
+            for label, conjugate, sign in READINGS:
+                cells, medians = [], []
+                for q, index in QUANTITIES:
+                    exact = {p: v[q] for p, v in ref[motion]["total"].items()}
+                    e = errors_of(nemoh_values(table, index, "diff", conjugate, sign), exact)
+                    cells.append("%7.2f %7.2f" % (100 * e[0], 100 * e[1]) if e else "-")
+                    medians.append(e[1] if e else np.inf)
+                if best is None or sum(medians) < best[0]:
+                    best = (sum(medians), label, cells, max(medians))
+            print("%-24s %-6s %16s %16s %16s%s" % (name, best[1], *best[2],
+                                                    "  WARNING: no reading within 50%" if best[3] > 0.5 else ""))
+    return 0
 
 
 READINGS = (("as-is", False, 1.0), ("conj", True, 1.0), ("-1", False, -1.0), ("-conj", True, -1.0))
@@ -117,10 +249,16 @@ def nemoh_values(table, index, kernel, conjugate, sign=1.0):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     parser.add_argument("results")
-    parser.add_argument("--reference", required=True)
+    parser.add_argument("--reference", help="CSV of truncated_cylinder_reference.py qtf (needed without --potential)")
+    parser.add_argument("--potential", help="CSV of truncated_cylinder_reference.py qtf-potential: compare QTF_Indirect.11d "
+                                            "and QTF_PotentialTerms.txt")
     parser.add_argument("--nemoh", help="folder holding nemoh_<hull>_<motion>_m<k>/results/QTF")
     parser.add_argument("--max-dw", type=float, default=0.3)
     args = parser.parse_args(argv)
+    if args.potential:
+        return compare_potential(args.results, args.potential, args.nemoh, args.max_dw)
+    if not args.reference:
+        parser.error("--reference is needed without --potential")
     ref = read_reference(args.reference)
     cases = sorted(os.path.basename(p) for p in glob.glob(os.path.join(args.results, "q_sharp_*")))
     print("Exact sharp cylinder: |HAMS - exact| / max |exact| over the pairs, max and median, percent; "
