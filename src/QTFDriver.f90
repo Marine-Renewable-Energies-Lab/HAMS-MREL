@@ -47,18 +47,25 @@ MODULE QTFDriver
    ! scaling as .10d, qtf_max_dw included. On the exact diagonal (equal frequencies, also with two headings) T_pot = 0, so
    ! there .11d is .10d. T_pot is computed Omega by Omega (potential_part), so that grad psi and psi at the waterline are
    ! built once per difference frequency, and kept per pair in tpot until the files are written. With write_terms >= 1 the
-   ! five terms of each pair go to QTF_PotentialTerms.txt, in that order (header in the file).
+   ! five terms of each pair go to QTF_PotentialTerms.txt as they are computed: its rows are in ascending |Omega|, not in
+   ! the order of .11d, so a reader matches them by their keys PER1 PER2 BETA1 BETA2 I (header in the file).
+   !
+   ! A psi with NaN or Inf (a radiation solve that failed) is kept, but counted and logged by qtf_keep_psi, and every pair
+   ! whose terms are not finite is counted by potential_part. The files are still written (.10d does not use psi); the main
+   ! program ends with exit code 1 when qtf_nonfinite_psi() or qtf_nonfinite_pairs() is not zero, as for first-order NaN.
 
    USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom, QTF_TERMS_BODY
    USE NearFieldDrift, ONLY: near_field_pair, KERNEL_DIFF, KERNEL_SUM
    USE SecondOrderOutput, ONLY: write_qtf_row, write_qtf_terms_row
    USE QTFPotential, ONLY: potential_pair, psi_surface_gradient, psi_waterline, NPOT_TERMS
    USE FirstOrderState, ONLY: wave_gravity
+   USE, INTRINSIC :: IEEE_ARITHMETIC, ONLY: IEEE_IS_FINITE
    IMPLICIT NONE
    PRIVATE
 
    PUBLIC :: qtf_init, qtf_keep, qtf_pair_load, qtf_finish, qtf_stored_mb, qtf_kept
    PUBLIC :: qtf_radiation_list, qtf_radiation_omegas, qtf_keep_psi, qtf_psi_index, qtf_psi_count
+   PUBLIC :: qtf_nonfinite_psi, qtf_nonfinite_pairs
 
    LOGICAL :: active = .FALSE.
    INTEGER :: kind_qtf = 0, nbeta = 0, nkept = 0, all_headings_pairs = 0
@@ -77,6 +84,9 @@ MODULE QTFDriver
    LOGICAL :: body_active = .FALSE.                      ! QTF_Indirect.11d is written
    LOGICAL :: pot_terms = .FALSE.                        ! QTF_PotentialTerms.txt is written (write_terms >= 1)
    COMPLEX(8), ALLOCATABLE :: tpot(:, :, :, :)           ! (6*nbody, nfreq, nfreq, heading pairs), e^{-i omega t}
+   ! Non-finite results of the potential part, over the run (reset by qtf_init, kept after qtf_finish for the exit code)
+   INTEGER :: n_bad_psi = 0                              ! difference frequencies whose psi has NaN or Inf
+   INTEGER :: n_bad_pairs = 0                            ! frequency and heading pairs whose T_pot has NaN or Inf
 
 CONTAINS
 
@@ -128,6 +138,8 @@ CONTAINS
       IF (ALLOCATED(psi_store)) DEALLOCATE (psi_store)
       IF (ALLOCATED(psi_kept)) DEALLOCATE (psi_kept)
       IF (ALLOCATED(tpot)) DEALLOCATE (tpot)
+      n_bad_psi = 0
+      n_bad_pairs = 0
       body_active = opts%qtf_terms == QTF_TERMS_BODY .AND. (kind_qtf == 1 .OR. kind_qtf == 3)
       pot_terms = body_active .AND. opts%write_terms >= 1
       IF (body_active) THEN
@@ -291,11 +303,12 @@ CONTAINS
 
    SUBROUTINE qtf_keep_psi(omega, psi, ok)
       ! Keeps psi(n_panels, 6*nbody) of the difference frequency omega. An omega that is not a difference frequency, or a psi
-      ! of another size, stops the run; with ok present, psi is not kept and ok is false instead.
+      ! of another size, stops the run; with ok present, psi is not kept and ok is false instead. A psi with NaN or Inf is
+      ! kept, logged with omega and the first mode and body concerned, and counted in qtf_nonfinite_psi().
       REAL(8), INTENT(IN) :: omega
       COMPLEX(8), INTENT(IN) :: psi(:, :)
       LOGICAL, INTENT(OUT), OPTIONAL :: ok
-      INTEGER :: m
+      INTEGER :: m, nbad, k
 
       IF (PRESENT(ok)) ok = .FALSE.
       m = qtf_psi_index(omega)
@@ -309,10 +322,32 @@ CONTAINS
          WRITE (*, '(a)') ' QTF: psi does not have the size the store was set up for.'
          ERROR STOP 1
       END IF
+      nbad = COUNT(.NOT. (IEEE_IS_FINITE(REAL(psi, 8)) .AND. IEEE_IS_FINITE(AIMAG(psi))))
+      IF (nbad > 0) THEN
+         n_bad_psi = n_bad_psi + 1
+         DO k = 1, SIZE(psi, 2)
+            IF (.NOT. ALL(IEEE_IS_FINITE(REAL(psi(:, k), 8)) .AND. IEEE_IS_FINITE(AIMAG(psi(:, k))))) EXIT
+         END DO
+         WRITE (*, '(a,ES14.6,a,I0,a,I0,a,I0,a,a)') ' QTF error: psi at Omega =', omega, ' rad/s has ', nbad, &
+            ' values with NaN or Inf, the first in mode ', k - 6*((k - 1)/6), ' of body ', (k - 1)/6 + 1, ' (', &
+            TRIM(MERGE('radiation solve of the main grid', 'radiation-only solve            ', psi_reuse(m) > 0))//').'
+         WRITE (*, '(a)') ' QTF_Indirect.11d and QTF_PotentialTerms.txt are not valid at that Omega; the run will end with'// &
+            ' exit code 1.'
+      END IF
       psi_store(:, :, m) = psi
       psi_kept(m) = .TRUE.
       IF (PRESENT(ok)) ok = .TRUE.
    END SUBROUTINE qtf_keep_psi
+
+   INTEGER FUNCTION qtf_nonfinite_psi()
+      ! Number of difference frequencies whose psi had NaN or Inf in this run
+      qtf_nonfinite_psi = n_bad_psi
+   END FUNCTION qtf_nonfinite_psi
+
+   INTEGER FUNCTION qtf_nonfinite_pairs()
+      ! Number of frequency and heading pairs of QTF_Indirect.11d whose T_pot had NaN or Inf in this run
+      qtf_nonfinite_pairs = n_bad_pairs
+   END FUNCTION qtf_nonfinite_pairs
 
    SUBROUTINE qtf_keep(ib, s, phi_wl, oufr)
       ! Keeps the state of heading ib of the current frequency. Heading 1 starts a new frequency, so the driver must call
@@ -453,20 +488,23 @@ CONTAINS
    SUBROUTINE potential_part(mesh, geom, refl)
       ! T_pot of every pair of the difference QTF with omega_i /= omega_j within qtf_max_dw, into tpot, Omega by Omega:
       ! grad psi and psi at the waterline are built once for each difference frequency. With write_terms >= 1 the terms go to
-      ! QTF_PotentialTerms.txt, in that order. Stops if psi of a needed Omega was not stored.
+      ! QTF_PotentialTerms.txt, in that order (ascending |Omega|, not the .11d order). Stops if psi of a needed Omega was not
+      ! stored. Pairs with NaN or Inf terms are written as they are, counted in qtf_nonfinite_pairs() and logged per Omega.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       REAL(8), INTENT(IN) :: refl
       INTEGER, ALLOCATABLE :: pair_m(:, :)                 ! (nkept, nkept), index of |omega_i - omega_j| in psi_need, or 0
       COMPLEX(8), ALLOCATABLE :: grad(:, :, :), pwl(:, :), terms(:, :)
       REAL(8) :: dw, g_wave
-      INTEGER :: unit, i, j, m, b1, b2, b, c, k, nmode
+      INTEGER :: unit, i, j, m, b1, b2, b, c, k, nmode, nbad
 
       nmode = 6*mesh%nbody
       ALLOCATE (pair_m(nkept, nkept))
       pair_m = 0
       DO i = 1, nkept
          DO j = 1, nkept
+            ! Heading 1 stands for all: qtf_keep stores every heading of a frequency from the same solve, so
+            ! store(i, b)%omega is the same for every b (the grid is shared by construction)
             dw = store(i, 1)%omega - store(j, 1)%omega
             IF (dw == 0D0) CYCLE
             IF (max_dw > 0D0 .AND. ABS(dw) > max_dw*(1D0 + 1D-9)) CYCLE
@@ -492,12 +530,14 @@ CONTAINS
             ' diffraction, 3 B1, 4 B2, 5 B3.'
          WRITE (unit, '(a)') '# .11d - .10d is their sum; the free-surface integral is omitted. One row per pair with'// &
             ' omega_i /= omega_j, by ascending |omega_i - omega_j|.'
+         WRITE (unit, '(a)') '# The rows are not in the order of .11d: match them by PER1 PER2 BETA1 BETA2 I.'
       END IF
       ALLOCATE (grad(3, mesh%n, nmode), pwl(geom%nwl, nmode), terms(nmode, NPOT_TERMS))
       DO m = 1, SIZE(psi_need)
          IF (.NOT. ANY(pair_m == m)) CYCLE
          CALL psi_surface_gradient(mesh, geom, psi_store(:, :, m), grad)
          CALL psi_waterline(mesh, geom, psi_store(:, :, m), grad, pwl)
+         nbad = 0
          DO b1 = 1, nbeta
             DO b2 = 1, nbeta
                IF (all_headings_pairs == 0 .AND. b1 /= b2) CYCLE
@@ -512,6 +552,7 @@ CONTAINS
                                             grad, pwl, psi_need(m), s1%rho, g_wave, terms)
                      END ASSOCIATE
                      tpot(:, i, j, heading_pair(b1, b2)) = SUM(terms, DIM=2)
+                     IF (.NOT. ALL(IEEE_IS_FINITE(REAL(terms, 8)) .AND. IEEE_IS_FINITE(AIMAG(terms)))) nbad = nbad + 1
                      IF (unit == 0) CYCLE
                      DO b = 1, mesh%nbody
                         DO c = 1, 6
@@ -524,6 +565,11 @@ CONTAINS
                END DO
             END DO
          END DO
+         IF (nbad > 0) THEN
+            n_bad_pairs = n_bad_pairs + nbad
+            WRITE (*, '(a,I0,a,ES14.6,a)') ' QTF error: T_pot has NaN or Inf at ', nbad, ' frequency and heading pairs with'// &
+               ' Omega =', psi_need(m), ' rad/s; those rows of QTF_Indirect.11d are not valid.'
+         END IF
       END DO
       IF (unit /= 0) CLOSE (unit)
    END SUBROUTINE potential_part

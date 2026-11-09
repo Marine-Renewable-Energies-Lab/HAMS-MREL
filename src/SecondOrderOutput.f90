@@ -80,7 +80,8 @@ CONTAINS
    SUBROUTINE write_qtf_terms_row(unit, oufr1, oufr2, beta1_deg, beta2_deg, index, values, refl, moment)
       ! Writes one row PER1 PER2 BETA1 BETA2 I, then Re Im of each of values, of QTF_PotentialTerms.txt. The keys are as in
       ! write_qtf_row; each value is scaled and conjugated as there, and written with 16 digits, so that the sum of the
-      ! terms can be checked against QTF_Indirect.11d - QTF_Quadratic.10d.
+      ! terms can be checked against QTF_Indirect.11d - QTF_Quadratic.10d. QTFDriver writes the rows in ascending
+      ! |omega_1 - omega_2|, not in the order of .11d: match them by their keys.
       INTEGER, INTENT(IN) :: unit, index
       REAL(8), INTENT(IN) :: oufr1, oufr2, beta1_deg, beta2_deg, refl
       COMPLEX(8), INTENT(IN) :: values(:)

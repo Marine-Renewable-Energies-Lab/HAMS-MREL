@@ -91,7 +91,7 @@ program HAMS_MREL
     use SecondOrderTypes
     use SecondOrderInput
     use SecondOrderDriver
-    use QTFDriver, only: qtf_radiation_omegas
+    use QTFDriver, only: qtf_radiation_omegas, qtf_nonfinite_psi, qtf_nonfinite_pairs
     use omp_lib
 
     implicit none  
@@ -853,16 +853,24 @@ contains
     end subroutine RadiationOnlySolves
 
     ! Report the end of the run. Output files are written either way; a run with NaN or Inf results
-    ! ends with exit code 1 instead of the message of success.
+    ! ends with exit code 1 instead of the message of success. So does a QTF potential part (qtf_terms = body) with
+    ! NaN or Inf in psi or T_pot; QTFDriver logged the difference frequencies concerned.
     subroutine ReportCompletion()
         write(*,*)
-        if (NONFINITE_FREQS .eq. 0) then
+        if (NONFINITE_FREQS .eq. 0 .and. qtf_nonfinite_psi() .eq. 0 .and. qtf_nonfinite_pairs() .eq. 0) then
             write(*,*) ' Congratulations! Your computation completes successfully.'
             write(*,*)
         else
-            write(*,'(a,i0,a,f9.3,a)') '  Error: frequencies with NaN or Inf results: ', NONFINITE_FREQS, &
-                ', the first at ', FIRST_NONFINITE_FREQ, ' rad/s.'
-            write(*,*) ' The output files are written but are not valid at those frequencies.'
+            if (NONFINITE_FREQS .ne. 0) then
+                write(*,'(a,i0,a,f9.3,a)') '  Error: frequencies with NaN or Inf results: ', NONFINITE_FREQS, &
+                    ', the first at ', FIRST_NONFINITE_FREQ, ' rad/s.'
+                write(*,*) ' The output files are written but are not valid at those frequencies.'
+            end if
+            if (qtf_nonfinite_psi() .ne. 0 .or. qtf_nonfinite_pairs() .ne. 0) then
+                write(*,'(a,i0,a,i0,a)') '  Error: the QTF potential part has NaN or Inf: psi at ', qtf_nonfinite_psi(), &
+                    ' difference frequencies, T_pot at ', qtf_nonfinite_pairs(), ' frequency and heading pairs.'
+                write(*,*) ' QTF_Indirect.11d is written but is not valid at those pairs (see the QTF error lines above).'
+            end if
             write(*,*)
             stop 1
         end if

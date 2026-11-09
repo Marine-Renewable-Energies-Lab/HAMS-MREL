@@ -176,9 +176,11 @@ module test_integration_drift
     real(8), parameter :: pot_printed_limit = 1d-6
     ! Hermitian symmetry of the terms file (ES24.15): the same arithmetic with psi and its conjugate
     real(8), parameter :: pot_hermitian_limit = 1d-10
-    ! IRSP = 1 and the half mesh against the whole mesh without removal, and two hulls 2000 m apart against one alone, over
-    ! max |T_pot| of the rows of forces or of moments: the plan's 2%
-    real(8), parameter :: pot_irsp_half_limit = 2d-2
+    ! IRSP = 1 against the whole mesh without removal, and two hulls 2000 m apart against one alone, over max |T_pot| of the
+    ! rows of forces or of moments: the plan's 2% (8.7e-4 and 6.8e-3 measured)
+    real(8), parameter :: pot_irsp_limit = 2d-2
+    ! The half mesh is the same discrete problem as the whole mesh, by images: 5.9e-7 measured, 2x measured, rounded up
+    real(8), parameter :: pot_half_limit = 1.2d-6
     real(8), parameter :: pot_distant_limit = 2d-2
     ! Every second frequency of the grid: psi is solved at each Omega, so the common pairs are the same computation
     real(8), parameter :: pot_spacing_limit = 1d-10
@@ -3588,10 +3590,14 @@ contains
     end function partner_row
 
     !> T_pot with IRSP = 1, and on the half mesh, against the whole mesh without removal (velocity by differencing in all
-    !> three: the source solve does not take IRSP = 1), within 2% of max |T_pot|
+    !> three: the source solve does not take IRSP = 1), within 2% of max |T_pot| for IRSP = 1 and to the solver's rounding for
+    !> the half mesh. Omega = 0.15 rad/s and the main grid are well below the first irregular frequency of the hull (about
+    !> 1.5 rad/s), so this checks that psi lives on the hull panels only and that the lid shifts no index, not that the
+    !> removal acts on psi.
     subroutine qtf_body_irsp_and_half(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=19), parameter :: cases(2) = [character(len=19) :: "qtf_round_body_irsp", "qtf_half_body"]
+        real(8), parameter :: limits(2) = [pot_irsp_limit, pot_half_limit]
         real(8), allocatable :: ref(:,:), t(:,:)
         real(8) :: worst
         integer :: c, p, q
@@ -3611,7 +3617,7 @@ contains
                 worst = max(worst, hypot(t(q,6) - ref(p,6), t(q,7) - ref(p,7))/kind_scale(ref, ref(p,5)))
             end do
             call report("qtf_body_irsp_and_half "//trim(cases(c)), worst)
-            call check_below(error, "qtf_body_irsp_and_half "//trim(cases(c)), worst, pot_irsp_half_limit)
+            call check_below(error, "qtf_body_irsp_and_half "//trim(cases(c)), worst, limits(c))
             if (allocated(error)) return
         end do
     end subroutine qtf_body_irsp_and_half

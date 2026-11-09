@@ -8,7 +8,8 @@ module test_qtf
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use NearFieldDrift, only : near_field_pair, KERNEL_DIFF, KERNEL_SUM
   use QTFDriver, only : qtf_init, qtf_keep, qtf_pair_load, qtf_finish, qtf_kept, qtf_radiation_list, qtf_radiation_omegas, &
-                        qtf_keep_psi
+                        qtf_keep_psi, qtf_nonfinite_psi, qtf_nonfinite_pairs
+  use, intrinsic :: ieee_arithmetic, only : ieee_value, ieee_quiet_nan
   use SecondOrderOutput, only : write_qtf_row
   use second_order_fixtures, only : make_cylinder, maccamy_fuchs_state, maccamy_fuchs_phi
   implicit none
@@ -33,6 +34,7 @@ subroutine collect_qtf(testsuite)
     new_unittest("radiation_list_uniform", test_radiation_list_uniform), &
     new_unittest("radiation_list_nonuniform", test_radiation_list_nonuniform), &
     new_unittest("psi_store_order", test_psi_store_order), &
+    new_unittest("psi_nonfinite_counted", test_psi_nonfinite_counted), &
     new_unittest("qtf_files", test_files) &
     ]
 end subroutine collect_qtf
@@ -49,13 +51,14 @@ real(8) function wave_number(omega, h)
 end function wave_number
 
 !> Cylinder with the exact fixed-body fields at each frequency and heading, and made-up motions, kept in the store.
-subroutine fill_store(opts, mesh, geom, states, wls, error)
+subroutine fill_store(opts, mesh, geom, states, wls, error, body)
   type(so_options), intent(in) :: opts
   type(panel_mesh), intent(out) :: mesh
   type(surface_geom), intent(out) :: geom
   type(first_order_state), intent(out) :: states(size(omegas), size(betas))
   complex(8), allocatable, intent(out) :: wls(:,:,:)
   type(error_type), allocatable, intent(out) :: error
+  logical, intent(in), optional :: body   ! qtf_terms = body: the store also takes psi at the differences of omegas
   logical :: ok
   character(len=:), allocatable :: msg
   real(8) :: k, b
@@ -69,7 +72,11 @@ subroutine fill_store(opts, mesh, geom, states, wls, error)
   call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
   call check(error, ok, "build_surface_geom stopped: "//msg)
   if (allocated(error)) return
-  call qtf_init(opts, size(omegas), betas, geom%nwl, mesh%n, mesh%nbody, root)
+  if (present(body)) then
+    call qtf_init(opts, size(omegas), betas, geom%nwl, mesh%n, mesh%nbody, root, omegas_main=omegas)
+  else
+    call qtf_init(opts, size(omegas), betas, geom%nwl, mesh%n, mesh%nbody, root)
+  end if
   allocate(wls(geom%nwl, size(omegas), size(betas)))
   do i = 1, size(omegas)
     k = wave_number(omegas(i), depth)
@@ -253,6 +260,42 @@ subroutine test_psi_store_order(error)
   call qtf_finish(mesh, geom, 1d0)   ! frees the store
   call remove_files()
 end subroutine test_psi_store_order
+
+!> A psi with a NaN is kept but counted (qtf_nonfinite_psi), and the pairs of its Omega are counted by the final guard
+!> (qtf_nonfinite_pairs): 0.5 rad/s = 1.3 - 0.8 has the pairs (1, 3) and (3, 1) at each of the 2 headings. psi at 0.2 and
+!> 0.3 rad/s is finite and adds nothing. The main program turns either count into exit code 1.
+subroutine test_psi_nonfinite_counted(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(so_options) :: opts
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: states(size(omegas), size(betas))
+  complex(8), allocatable :: wls(:,:,:), psi(:,:)
+  real(8), allocatable :: w(:)
+  integer :: m
+
+  opts%mean_drift = 1; opts%qtf = 1; opts%qtf_terms = QTF_TERMS_BODY; opts%write_terms = 1
+  call fill_store(opts, mesh, geom, states, wls, error, body=.true.)
+  if (allocated(error)) return
+  w = qtf_radiation_omegas()
+  call check(error, size(w), 3, "difference frequencies")
+  if (allocated(error)) return
+  allocate(psi(mesh%n, 6))
+  do m = 1, 3
+    psi = (0.4d0, -0.1d0)
+    if (abs(w(m) - 0.5d0) < 1d-9) psi(7, 3) = cmplx(ieee_value(1d0, ieee_quiet_nan), 0d0, kind=8)
+    call qtf_keep_psi(w(m), psi)
+  end do
+  call check(error, qtf_nonfinite_psi(), 1, "difference frequencies with a non-finite psi")
+  if (allocated(error)) return
+  call check(error, qtf_nonfinite_pairs(), 0, "non-finite pairs before qtf_finish")
+  if (allocated(error)) return
+  call qtf_finish(mesh, geom, 1d0)
+  call check(error, qtf_nonfinite_pairs(), 2 * 2, "frequency and heading pairs with a non-finite T_pot")
+  if (allocated(error)) return
+  call check(error, qtf_nonfinite_psi(), 1, "the psi count is kept after qtf_finish")
+  call remove_files()
+end subroutine test_psi_nonfinite_counted
 
 !> Rows of both files: the full square of frequency pairs, heading pairs for mean_drift = 2, and qtf_max_dw on .10d only.
 subroutine test_files(error)
