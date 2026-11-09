@@ -14,6 +14,7 @@ module test_qtf_potential
   use QTFPotential, only : hessian_term_converted, psi_waterline, potential_pair, psi_surface_gradient, &
                            waterline_velocity, NPOT_TERMS, TP_FK, TP_DIFFRACTION, TP_B1, TP_B2, TP_B3
   use second_order_fixtures, only : make_cylinder, set_panel
+  use SecondOrderIncident, only : incident2, incident2_pair, incident2_grad
   implicit none
   private
 
@@ -50,7 +51,8 @@ subroutine collect_qtf_potential(testsuite)
     new_unittest("pot_b1_direct", test_pot_b1_direct), &
     new_unittest("pot_deep_scaling", test_pot_deep_scaling), &
     new_unittest("pot_fk_uniform", test_pot_fk_uniform), &
-    new_unittest("pot_psi_missing", test_pot_psi_missing) &
+    new_unittest("pot_psi_missing", test_pot_psi_missing), &
+    new_unittest("pot_signs_disturbance", test_pot_signs_disturbance) &
     ]
 end subroutine collect_qtf_potential
 
@@ -947,5 +949,91 @@ subroutine test_pot_psi_missing(error)
   call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, 0.1d0, rho, g, terms, ok=ok)
   call check(error, .not. ok .and. all(terms == (0d0, 0d0)), "a psi that was never stored is not refused")
 end subroutine test_pot_psi_missing
+
+!> Signs of B2 and of the incident-diffraction term, with a disturbance in both states (review I1). phi_p is a harmonic
+!> synthetic field with its analytic gradient in grad_p, so u = grad_i + grad_p differs from the incident wave, and the
+!> waterline potential comes from waterline_extrapolate of that state. The references are built from the public parts:
+!>   B2 = -i Omega rho hessian_term_converted(u = grad_i + grad_p, u_wl from waterline_velocity with v_n = -i w X.n)
+!>   diffraction = -i Omega rho sum psi n.grad phi_I2 A
+!> A flipped sign of either term, or u without grad_p, fails here.
+subroutine test_pot_signs_disturbance(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: s1, s2
+  type(incident2) :: inc
+  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), wl1(:), wl2(:), u1(:,:), u2(:,:), uw1(:,:), uw2(:,:)
+  complex(8) :: x1(6, 1), x2(6, 1), terms(nmode, NPOT_TERMS), hs(nmode), ref(nmode), gr2(3)
+  real(8) :: om
+  integer :: i
+
+  call cylinder_448(mesh, geom, error)
+  if (allocated(error)) return
+  call motions(x1, x2)
+  call make_state(mesh, geom, w1, b1, depth, x1, s1, wl1)
+  call make_state(mesh, geom, w2, b2, depth, x2, s2, wl2)
+  call add_disturbance(s1, 2, (0.6d0, 0.3d0), wl1)
+  call add_disturbance(s2, 4, (-0.2d0, 0.5d0), wl2)
+  call synthetic_psi(mesh, geom, .true., psi, grad_psi, psi_wl)
+  call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, 0.1d0, rho, g, terms)
+  om = w1 - w2
+
+  ! B2
+  allocate(u1(3, mesh%n), u2(3, mesh%n), uw1(3, geom%nwl), uw2(3, geom%nwl))
+  u1 = s1%grad_i + s1%grad_p
+  u2 = s2%grad_i + s2%grad_p
+  call waterline_velocity(mesh, geom, s1, wl1, normal_velocity(s1), uw1)
+  call waterline_velocity(mesh, geom, s2, wl2, normal_velocity(s2), uw2)
+  call hessian_term_converted(mesh, geom, psi, grad_psi, psi_wl, x1, u1, x2, u2, KERNEL_DIFF, hs, uw1, uw2)
+  ref = -ci * om * rho * hs
+  call check(error, maxval(abs(ref)) > 0d0, "the reference B2 is zero")
+  if (allocated(error)) return
+  call check(error, maxval(abs(terms(:, TP_B2) - ref)) <= 1d-12 * maxval(abs(ref)), &
+             "B2 is not -i Omega rho times the converted Hessian term of u = grad_i + grad_p")
+  if (allocated(error)) return
+
+  ! Incident-diffraction
+  call incident2_pair(w1, s1%k, b1, w2, s2%k, b2, depth, g, inc)
+  ref = (0d0, 0d0)
+  do i = 1, mesh%n
+    call incident2_grad(inc, mesh%xc(:, i), gr2)
+    ref = ref + psi(i, :) * sum(mesh%nrm(:, i) * gr2) * mesh%area(i)
+  end do
+  ref = -ci * om * rho * ref
+  call check(error, maxval(abs(ref)) > 0d0, "the reference diffraction term is zero")
+  if (allocated(error)) return
+  call check(error, maxval(abs(terms(:, TP_DIFFRACTION) - ref)) <= 1d-12 * maxval(abs(ref)), &
+             "the diffraction term is not -i Omega rho int psi dphi_I2/dn dS")
+
+contains
+
+  !> phi_p = c psi_field(k), grad_p its analytic gradient, and the total waterline potential again.
+  subroutine add_disturbance(s, k, c, phi_wl)
+    type(first_order_state), intent(inout) :: s
+    integer, intent(in) :: k
+    complex(8), intent(in) :: c
+    complex(8), intent(inout) :: phi_wl(:)
+    complex(8) :: p, gp(3)
+    integer :: ip
+    do ip = 1, mesh%n
+      call psi_field(k, mesh%xc(:, ip), p, gp)
+      s%phi_p(ip) = c * p
+      s%grad_p(:, ip) = c * gp
+    end do
+    call waterline_extrapolate(mesh, geom, s, phi_wl)
+  end subroutine add_disturbance
+
+  !> -i omega X.n at the waterline midpoints, with the panel normal
+  function normal_velocity(s) result(vn)
+    type(first_order_state), intent(in) :: s
+    complex(8) :: vn(geom%nwl)
+    integer :: iw
+    do iw = 1, geom%nwl
+      vn(iw) = -ci * s%omega * sum(mesh%nrm(:, geom%wl_panel(iw)) &
+                                   * rigid_displacement(s%xi(:, 1), waterline_point(geom, iw) - mesh%xr(:, 1)))
+    end do
+  end function normal_velocity
+
+end subroutine test_pot_signs_disturbance
 
 end module test_qtf_potential

@@ -362,8 +362,10 @@ CONTAINS
          WRITE (*, '(a)') ' hessian_term_converted: give u1_wl and u2_wl together.'
          ERROR STOP 1
       END IF
-      uc1 = TRANSPOSE(u1)   ! (n, 3): each component a contiguous panel scalar for tangential_fit
-      uc2 = TRANSPOSE(u2)
+      IF (.NOT. PRESENT(u1_wl)) THEN
+         uc1 = TRANSPOSE(u1)   ! (n, 3): each component a contiguous panel scalar for tangential_fit
+         uc2 = TRANSPOSE(u2)
+      END IF
       DO iw = 1, geom%nwl
          ip = geom%wl_panel(iw)
          b = geom%wl_body(iw)
