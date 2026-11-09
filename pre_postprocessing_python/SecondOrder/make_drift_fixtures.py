@@ -52,6 +52,9 @@ QTF_LOW_FREQUENCIES = (0.40, 0.45, 0.50, 0.55, 0.60)
 QTF_BODY_FREQUENCIES = (0.95, 1.10)
 QTF_DISTANT_FREQUENCIES = (0.80, 1.00)
 QTF_DISTANT_SEPARATION = 2000.0
+# B2 by the control surface (qtf_b2 = control) and by the hull on the sharp cylinder of drift_cyl, free, against the exact
+# reference: (0.47, 0.77) is where the hull form is worst (the heave resonance at 0.77 rad/s), Omega = 0.07, 0.23, 0.30
+QTF_SHARP_FREQUENCIES = (0.47, 0.70, 0.77)
 
 
 def real12(value):
@@ -369,7 +372,7 @@ def main():
             shutil.copyfile(os.path.join(data, "drift_round", "input", file), os.path.join(target, file))
         write_control(os.path.join(target, "ControlFile.in"), frequencies=frequencies, headings=DRIFT_CYL_HEADINGS, sybo=1)
         write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="free",
-                           write_terms=1, velocity_method="source", qtf_terms="body", **options)
+                           write_terms=1, velocity_method="source", qtf_terms="body", **options, qtf_b2="body")
     target = case_dir(data, "qtf_two_round")
     for file in ("HullMesh_1.pnl", "HullMesh_2.pnl", "Hydrostatic_1.in", "Hydrostatic_2.in", "ControlFile.in"):
         shutil.copyfile(os.path.join(data, "drift_two_round", "input", file), os.path.join(target, file))
@@ -395,7 +398,8 @@ def main():
 def write_qtf_body_fixtures(data, both):
     """Fixtures of QTF_Indirect.11d (qtf_terms = body), besides qtf_round_body and qtf_round_low. Kept small: two
     frequencies where one pair is enough."""
-    body = dict(mean_drift=1, drift_methods=both, motion_state="free", write_terms=1, qtf_terms="body", qtf=1)
+    body = dict(mean_drift=1, drift_methods=both, motion_state="free", write_terms=1, qtf_terms="body", qtf=1,
+                qtf_b2="body")
     # The rounded hull of qtf_round_body with irregular frequency removal, as a half mesh, and the whole mesh without
     # removal as their reference. Velocity by differencing in all three, since the source solve does not take IRSP = 1.
     for name, irsp, half in (("qtf_round_body_ref", 0, False), ("qtf_round_body_irsp", 1, False),
@@ -427,6 +431,22 @@ def write_qtf_body_fixtures(data, both):
         shutil.copyfile(os.path.join(data, "drift_round", "input", file), os.path.join(target, file))
     write_control(os.path.join(target, "ControlFile.in"), frequencies=QTF_LOW_FREQUENCIES[::2], headings=DRIFT_CYL_HEADINGS)
     write_second_order(os.path.join(target, "SecondOrder.in"), **dict(body, velocity_method="source"))
+    write_qtf_sharp_fixtures(data, body)
+
+
+def write_qtf_sharp_fixtures(data, body):
+    """The sharp cylinder of drift_cyl, free, heading 0, with B2 by the control surface and by the hull, for the comparison
+    with the exact reference of truncated_cylinder_reference.py. On CONTROL_THREADS threads: the fields on C and F are
+    evaluated at each frequency and each difference frequency."""
+    # C and F at 3 m panels (default: the median hull panel, 1474 points): B2 within 1% of the default, half the run time
+    for name, b2 in (("qtf_sharp_b2_control", dict(qtf_b2="control", cs_panel_size=3.0)),
+                     ("qtf_sharp_b2_body", dict(qtf_b2="body"))):
+        target = case_dir(data, name)
+        copy_inputs(data, "drift_cyl", target, ("HullMesh.pnl", "Hydrostatic.in"))
+        write_control(os.path.join(target, "ControlFile.in"), frequencies=QTF_SHARP_FREQUENCIES, headings=(0.0,),
+                      threads=CONTROL_THREADS)
+        write_second_order(os.path.join(target, "SecondOrder.in"),
+                           **dict(body, velocity_method="source", qtf_max_dw=0.3, **b2))
 
 
 def copy_inputs(data, source, target, files):

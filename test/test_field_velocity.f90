@@ -52,6 +52,7 @@ contains
       new_unittest("incident_stencil", test_incident_stencil), &
       new_unittest("maccamy_fuchs_field_consistent", test_maccamy_fuchs_field), &
       new_unittest("green_field_matches_exact", test_green_field), &
+      new_unittest("green_field_perturbation_only", test_green_perturbation_only), &
       new_unittest("source_field_matches_exact", test_source_field), &
       new_unittest("source_field_half_matches_full", test_source_field_half) &
       ]
@@ -533,6 +534,45 @@ contains
     write (info, '(a,es10.3)') "gradient against MacCamy-Fuchs, relative to max |gradient| ", err_grad
     call check(error, err_grad <= green_grad_limit, trim(info))
   end subroutine test_green_field
+
+  !> The route of grad psi_k on C and F (qtf_b2 = control, SecondOrderDriver keep_cs_psi): a state with no incident wave
+  !> (amp = 0) whose perturbation potential and normal derivative are given on the hull. fields_green must then return the
+  !> gradient of the boundary integral of that perturbation alone. Here the perturbation is the MacCamy-Fuchs scattered
+  !> wave, so the reference is the exact total field minus the incident wave; same points and limit as test_green_field.
+  subroutine test_green_perturbation_only(error)
+    type(error_type), allocatable, intent(out) :: error
+    real(8), parameter :: radius = 5d0, depth = 10d0
+    type(panel_mesh) :: full, mesh
+    type(first_order_state) :: states(1)
+    type(cs_points) :: pts
+    type(cs_fields) :: fields(1)
+    complex(8) :: phi_ref, grad_ref(3), grad_inc(3)
+    real(8) :: g_w, max_grad, err_grad
+    integer :: i
+    character(len=120) :: info
+
+    call set_wave(depth)
+    call make_cylinder(radius, depth, 64, 16, 1, full, .false.)
+    call load_panels(full, 0, 0, mesh)
+    g_w = wave_gravity(W1, WK, depth)
+    call maccamy_fuchs_state(mesh, radius, depth, WK, W1, 1d0, BETA, g_w, 1000d0, states(1))
+    states(1)%amp = 0d0
+    call ring_points(10, 30, [7.5d0, 7.5d0, 7.5d0, 7.5d0], [0d0, -1d0, -4d0, -8d0], pts)
+    call fields_green(mesh, pts, states, step, .false., fields)
+    max_grad = 0d0
+    err_grad = 0d0
+    do i = 1, pts%n
+      call maccamy_fuchs_field(pts%x(:, i), radius, depth, WK, W1, 1d0, BETA, g_w, phi_ref, grad_ref)
+      call incident_grad(pts%x(:, i), W1, WK, depth, 1d0, BETA, g_w, grad_inc)
+      max_grad = max(max_grad, sqrt(sum(abs(grad_ref - grad_inc)**2)))
+      err_grad = max(err_grad, sqrt(sum(abs(fields(1)%grad(:, i) - (grad_ref - grad_inc))**2)))
+    end do
+    err_grad = err_grad/max_grad
+    print '(4x,a,es10.2)', "Green field of the scattered wave alone (amp = 0): gradient error, relative to the largest ", &
+      err_grad
+    write (info, '(a,es10.3)') "scattered gradient against MacCamy-Fuchs, relative to max |gradient| ", err_grad
+    call check(error, err_grad <= green_grad_limit, trim(info))
+  end subroutine test_green_perturbation_only
 
   !> As test_green_field, by the source route: sigma from the solve of the exact normal derivative, then fields_source.
   !> Measured: 6.41e-3 for phi and 8.28e-3 for the gradient; limits 2e-2 and 3e-2, fixed before the measurement.

@@ -50,11 +50,16 @@ MODULE QTFDriver
    ! five terms of each pair go to QTF_PotentialTerms.txt as they are computed: its rows are in ascending |Omega|, not in
    ! the order of .11d, so a reader matches them by their keys PER1 PER2 BETA1 BETA2 I (header in the file).
    !
+   ! With qtf_b2 = control the surface piece of B2 is moved to the control surface C and the free surface F of each body
+   ! (QTFPotential). The driver then hands over the points of C and F (qtf_set_control_surface), the total velocity there of
+   ! every kept frequency and heading (qtf_keep_cs_velocity, indexed like store) and grad psi_k there at every difference
+   ! frequency (qtf_keep_cs_psi, indexed like psi_store).
+   !
    ! A psi with NaN or Inf (a radiation solve that failed) is kept, but counted and logged by qtf_keep_psi, and every pair
    ! whose terms are not finite is counted by potential_part. The files are still written (.10d does not use psi); the main
    ! program ends with exit code 1 when qtf_nonfinite_psi() or qtf_nonfinite_pairs() is not zero, as for first-order NaN.
 
-   USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom, QTF_TERMS_BODY
+   USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom, cs_points, QTF_TERMS_BODY
    USE NearFieldDrift, ONLY: near_field_pair, KERNEL_DIFF, KERNEL_SUM
    USE SecondOrderOutput, ONLY: write_qtf_row, write_qtf_terms_row
    USE QTFPotential, ONLY: potential_pair, psi_surface_gradient, psi_waterline, NPOT_TERMS
@@ -66,6 +71,7 @@ MODULE QTFDriver
    PUBLIC :: qtf_init, qtf_keep, qtf_pair_load, qtf_finish, qtf_stored_mb, qtf_kept
    PUBLIC :: qtf_radiation_list, qtf_radiation_omegas, qtf_keep_psi, qtf_psi_index, qtf_psi_count
    PUBLIC :: qtf_nonfinite_psi, qtf_nonfinite_pairs
+   PUBLIC :: qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi
 
    LOGICAL :: active = .FALSE.
    INTEGER :: kind_qtf = 0, nbeta = 0, nkept = 0, all_headings_pairs = 0
@@ -84,6 +90,13 @@ MODULE QTFDriver
    LOGICAL :: body_active = .FALSE.                      ! QTF_Indirect.11d is written
    LOGICAL :: pot_terms = .FALSE.                        ! QTF_PotentialTerms.txt is written (write_terms >= 1)
    COMPLEX(8), ALLOCATABLE :: tpot(:, :, :, :)           ! (6*nbody, nfreq, nfreq, heading pairs), e^{-i omega t}
+   ! qtf_b2 = control: points of C and F of every body, and the fields there
+   LOGICAL :: b2_control = .FALSE.
+   TYPE(cs_points) :: cs
+   COMPLEX(8), ALLOCATABLE :: cs_u(:, :, :, :)           ! (3, cs%n, nfreq, nbeta), total velocity, as store
+   LOGICAL, ALLOCATABLE :: cs_u_kept(:, :)               ! (nfreq, nbeta)
+   COMPLEX(8), ALLOCATABLE :: cs_gpsi(:, :, :, :)        ! (3, cs%n, 6*nbody, nneed), grad psi_k, as psi_store
+   LOGICAL, ALLOCATABLE :: cs_psi_kept(:)                ! (nneed)
    ! Non-finite results of the potential part, over the run (reset by qtf_init, kept after qtf_finish for the exit code)
    INTEGER :: n_bad_psi = 0                              ! difference frequencies whose psi has NaN or Inf
    INTEGER :: n_bad_pairs = 0                            ! frequency and heading pairs whose T_pot has NaN or Inf
@@ -138,6 +151,7 @@ CONTAINS
       IF (ALLOCATED(psi_store)) DEALLOCATE (psi_store)
       IF (ALLOCATED(psi_kept)) DEALLOCATE (psi_kept)
       IF (ALLOCATED(tpot)) DEALLOCATE (tpot)
+      CALL free_control_surface()
       n_bad_psi = 0
       n_bad_pairs = 0
       body_active = opts%qtf_terms == QTF_TERMS_BODY .AND. (kind_qtf == 1 .OR. kind_qtf == 3)
@@ -158,6 +172,68 @@ CONTAINS
          tpot = (0D0, 0D0)
       END IF
    END SUBROUTINE qtf_init
+
+   SUBROUTINE qtf_set_control_surface(pts)
+      ! qtf_b2 = control: keeps the points of C and F and allocates the fields there for the store of qtf_init. Call after
+      ! qtf_init, before the frequency loop, only with qtf_terms = body.
+      TYPE(cs_points), INTENT(IN) :: pts
+      INTEGER :: st
+
+      IF (.NOT. body_active) THEN
+         WRITE (*, '(a)') ' QTF: qtf_set_control_surface needs qtf_terms = body and the difference QTF.'
+         ERROR STOP 1
+      END IF
+      CALL free_control_surface()
+      cs = pts
+      ALLOCATE (cs_u(3, cs%n, SIZE(store, 1), nbeta), cs_u_kept(SIZE(store, 1), nbeta), &
+                cs_gpsi(3, cs%n, SIZE(psi_store, 2), SIZE(psi_need)), cs_psi_kept(SIZE(psi_need)), STAT=st)
+      IF (st /= 0) CALL out_of_memory()
+      cs_u = (0D0, 0D0)
+      cs_gpsi = (0D0, 0D0)
+      cs_u_kept = .FALSE.
+      cs_psi_kept = .FALSE.
+      b2_control = .TRUE.
+   END SUBROUTINE qtf_set_control_surface
+
+   SUBROUTINE free_control_surface()
+      b2_control = .FALSE.
+      IF (ALLOCATED(cs_u)) DEALLOCATE (cs_u)
+      IF (ALLOCATED(cs_u_kept)) DEALLOCATE (cs_u_kept)
+      IF (ALLOCATED(cs_gpsi)) DEALLOCATE (cs_gpsi)
+      IF (ALLOCATED(cs_psi_kept)) DEALLOCATE (cs_psi_kept)
+      cs%n = 0
+   END SUBROUTINE free_control_surface
+
+   SUBROUTINE qtf_keep_cs_velocity(ib, u)
+      ! Keeps u(3, cs%n), the total velocity at the points of C and F of heading ib of the frequency kept last by qtf_keep
+      INTEGER, INTENT(IN) :: ib
+      COMPLEX(8), INTENT(IN) :: u(:, :)
+
+      IF (.NOT. b2_control) RETURN
+      IF (nkept == 0 .OR. ib < 1 .OR. ib > nbeta .OR. SIZE(u, 1) /= 3 .OR. SIZE(u, 2) /= cs%n) THEN
+         WRITE (*, '(a,I0)') ' QTF: qtf_keep_cs_velocity called out of order or with another size, heading ', ib
+         ERROR STOP 1
+      END IF
+      cs_u(:, :, nkept, ib) = u
+      cs_u_kept(nkept, ib) = .TRUE.
+   END SUBROUTINE qtf_keep_cs_velocity
+
+   SUBROUTINE qtf_keep_cs_psi(omega, grad)
+      ! Keeps grad(3, cs%n, 6*nbody), grad psi_k at the points of C and F, of the difference frequency omega
+      REAL(8), INTENT(IN) :: omega
+      COMPLEX(8), INTENT(IN) :: grad(:, :, :)
+      INTEGER :: m
+
+      IF (.NOT. b2_control) RETURN
+      m = qtf_psi_index(omega)
+      IF (m == 0 .OR. SIZE(grad, 1) /= 3 .OR. SIZE(grad, 2) /= cs%n .OR. SIZE(grad, 3) /= SIZE(cs_gpsi, 3)) THEN
+         WRITE (*, '(a,ES14.6,a)') ' QTF: grad psi on the control surface at omega =', omega, &
+            ' rad/s is not of a difference frequency, or has another size.'
+         ERROR STOP 1
+      END IF
+      cs_gpsi(:, :, :, m) = grad
+      cs_psi_kept(m) = .TRUE.
+   END SUBROUTINE qtf_keep_cs_psi
 
    INTEGER FUNCTION heading_pairs(nb)
       ! Number of heading pairs of the files for nb headings
@@ -396,16 +472,22 @@ CONTAINS
       qtf_kept = nkept
    END FUNCTION qtf_kept
 
-   REAL(8) FUNCTION qtf_stored_mb(n_panels, nwl, nbody, nfreq, nb, npsi, npairs)
+   REAL(8) FUNCTION qtf_stored_mb(n_panels, nwl, nbody, nfreq, nb, npsi, npairs, ncs)
       ! Size of the store in MB for nfreq frequencies and nb headings: 8 complex values per panel, 6 per body, 1 per segment.
       ! With npsi, also psi at npsi difference frequencies: 6*nbody complex values per panel. With npairs heading pairs, also
-      ! T_pot: 6*nbody complex values per frequency pair and heading pair.
+      ! T_pot: 6*nbody complex values per frequency pair and heading pair. With ncs points of C and F (qtf_b2 = control, with
+      ! npsi), also the velocity there (3 complex values per point, frequency and heading) and grad psi_k (3 per point, mode
+      ! and difference frequency).
       INTEGER, INTENT(IN) :: n_panels, nwl, nbody, nfreq, nb
-      INTEGER, INTENT(IN), OPTIONAL :: npsi, npairs
+      INTEGER, INTENT(IN), OPTIONAL :: npsi, npairs, ncs
 
       qtf_stored_mb = 16D0*REAL(8*n_panels + 6*nbody + nwl, 8)*REAL(nfreq, 8)*REAL(nb, 8)/1D6
       IF (PRESENT(npsi)) qtf_stored_mb = qtf_stored_mb + 16D0*REAL(n_panels, 8)*REAL(6*nbody, 8)*REAL(npsi, 8)/1D6
       IF (PRESENT(npairs)) qtf_stored_mb = qtf_stored_mb + 16D0*REAL(6*nbody, 8)*REAL(nfreq, 8)**2*REAL(npairs, 8)/1D6
+      IF (PRESENT(ncs)) THEN
+         qtf_stored_mb = qtf_stored_mb + 16D0*3D0*REAL(ncs, 8)*REAL(nfreq, 8)*REAL(nb, 8)/1D6
+         IF (PRESENT(npsi)) qtf_stored_mb = qtf_stored_mb + 16D0*3D0*REAL(ncs, 8)*REAL(6*nbody, 8)*REAL(npsi, 8)/1D6
+      END IF
    END FUNCTION qtf_stored_mb
 
    SUBROUTINE qtf_pair_load(mesh, geom, kernel, i1, b1, i2, b2, total)
@@ -435,6 +517,7 @@ CONTAINS
       DEALLOCATE (store, store_wl, store_oufr)
       IF (ALLOCATED(psi_store)) DEALLOCATE (psi_store, psi_kept, psi_need, psi_reuse)
       IF (ALLOCATED(tpot)) DEALLOCATE (tpot)
+      CALL free_control_surface()
       active = .FALSE.
       body_active = .FALSE.
 
@@ -517,6 +600,17 @@ CONTAINS
                WRITE (*, '(a,ES14.6,a)') ' QTF: psi at Omega =', psi_need(m), ' rad/s was not stored.'
                ERROR STOP 1
             END IF
+            IF (b2_control) THEN
+               IF (.NOT. cs_psi_kept(m)) THEN
+                  WRITE (*, '(a,ES14.6,a)') ' QTF: grad psi on the control surface at Omega =', psi_need(m), &
+                     ' rad/s was not stored.'
+                  ERROR STOP 1
+               END IF
+               IF (.NOT. (ALL(cs_u_kept(i, :)) .AND. ALL(cs_u_kept(j, :)))) THEN
+                  WRITE (*, '(a)') ' QTF: the velocity on the control surface of a kept frequency was not stored.'
+                  ERROR STOP 1
+               END IF
+            END IF
             pair_m(i, j) = m
          END DO
       END DO
@@ -548,8 +642,15 @@ CONTAINS
                         ! phi_I2 with the gravity of the first-order incident wave, which has the k of DISPERSION
                         ! (wave_gravity): both orders of the incident wave then have one dispersion relation (ruling R8)
                         g_wave = wave_gravity(s1%omega, s1%k, s1%h)
-                        CALL potential_pair(mesh, geom, s1, s2, store_wl(:, i, b1), store_wl(:, j, b2), psi_store(:, :, m), &
-                                            grad, pwl, psi_need(m), s1%rho, g_wave, terms)
+                        IF (b2_control) THEN
+                           CALL potential_pair(mesh, geom, s1, s2, store_wl(:, i, b1), store_wl(:, j, b2), &
+                                               psi_store(:, :, m), grad, pwl, psi_need(m), s1%rho, g_wave, terms, &
+                                               cs=cs, grad_psi_cs=cs_gpsi(:, :, :, m), u1_cs=cs_u(:, :, i, b1), &
+                                               u2_cs=cs_u(:, :, j, b2))
+                        ELSE
+                           CALL potential_pair(mesh, geom, s1, s2, store_wl(:, i, b1), store_wl(:, j, b2), &
+                                               psi_store(:, :, m), grad, pwl, psi_need(m), s1%rho, g_wave, terms)
+                        END IF
                      END ASSOCIATE
                      tpot(:, i, j, heading_pair(b1, b2)) = SUM(terms, DIM=2)
                      IF (.NOT. ALL(IEEE_IS_FINITE(REAL(terms, 8)) .AND. IEEE_IS_FINITE(AIMAG(terms)))) nbad = nbad + 1

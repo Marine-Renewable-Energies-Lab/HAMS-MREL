@@ -27,11 +27,13 @@ MODULE SecondOrderTypes
    PRIVATE
 
    PUBLIC :: so_options, panel_mesh, first_order_state, surface_geom, cs_points, cs_fields
-   PUBLIC :: CS_WALL, CS_LINE, CS_FREE, QTF_TERMS_QUADRATIC, QTF_TERMS_BODY
+   PUBLIC :: CS_WALL, CS_LINE, CS_FREE, QTF_TERMS_QUADRATIC, QTF_TERMS_BODY, QTF_B2_BODY, QTF_B2_CONTROL
 
    INTEGER, PARAMETER :: CS_WALL = 1, CS_LINE = 2, CS_FREE = 3   ! C panel, Gamma_c segment midpoint, F panel
    ! qtf_terms: the quadratic part only, or also the potential part with the body forcing (indirect method)
    INTEGER, PARAMETER :: QTF_TERMS_QUADRATIC = 0, QTF_TERMS_BODY = 1
+   ! qtf_b2: the surface piece of B2 integrated on the hull, or moved to a control surface C and the free surface F
+   INTEGER, PARAMETER :: QTF_B2_BODY = 1, QTF_B2_CONTROL = 2
 
    TYPE :: so_options
       LOGICAL :: active = .FALSE.
@@ -56,6 +58,7 @@ MODULE SecondOrderTypes
       INTEGER :: qtf = 0                 ! 0 off, 1 difference frequency, 2 sum frequency, 3 both
       REAL(8) :: qtf_max_dw = 0D0        ! rad/s, largest |omega_i - omega_j| of QTF_Quadratic.10d; 0: all pairs
       INTEGER :: qtf_terms = QTF_TERMS_QUADRATIC
+      INTEGER :: qtf_b2 = QTF_B2_CONTROL ! used with qtf_terms = body only
    END TYPE so_options
 
    TYPE :: panel_mesh

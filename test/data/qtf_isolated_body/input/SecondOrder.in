@@ -5,4 +5,5 @@ motion_state = free
 write_terms = 1
 qtf_terms = body
 qtf = 1
+qtf_b2 = body
 velocity_method = source

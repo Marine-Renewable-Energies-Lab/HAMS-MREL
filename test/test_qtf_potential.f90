@@ -6,13 +6,15 @@
 !> for each mode column k, so that a mix-up of columns shows. Column 1 is e^{0.05 z} cos(0.05 x + 0.3).
 module test_qtf_potential
   use testdrive, only : new_unittest, unittest_type, error_type, check
-  use SecondOrderTypes, only : panel_mesh, surface_geom, first_order_state
+  use SecondOrderTypes, only : panel_mesh, surface_geom, first_order_state, so_options, cs_points, CS_WALL, CS_FREE
   use FirstOrderState, only : incident_phi, incident_grad
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use SurfaceVelocity, only : velocity_differencing
   use NearFieldDrift, only : pair_product, rigid_displacement, waterline_extrapolate, waterline_point, KERNEL_DIFF, KERNEL_SUM
   use QTFPotential, only : hessian_term_converted, psi_waterline, potential_pair, psi_surface_gradient, &
-                           waterline_velocity, NPOT_TERMS, TP_FK, TP_DIFFRACTION, TP_B1, TP_B2, TP_B3
+                           waterline_velocity, NPOT_TERMS, TP_FK, TP_DIFFRACTION, TP_B1, TP_B2, TP_B3, &
+                           b2_body_term, b2_control_term, b2_control_check
+  use ControlSurfaceMesh, only : build_control_surface
   use second_order_fixtures, only : make_cylinder, set_panel
   use SecondOrderIncident, only : incident2, incident2_pair, incident2_grad
   implicit none
@@ -31,6 +33,8 @@ module test_qtf_potential
   integer, parameter :: cyl_ntheta(3) = [32, 64, 128], cyl_nz(3) = [8, 16, 32], cyl_nr(3) = [6, 12, 24]
   ! Sphere radius 5, centre depth 20: 128, 512 and 2048 panels
   integer, parameter :: sph_nlat(3) = [8, 16, 32]
+  ! Control-surface form of the B2 surface piece against the hull form, and the closed flux, on analytic fields
+  real(8), parameter :: B2_SMOOTH_RATIO = 3d0, B2_SMOOTH_LIMIT = 1d-3, B2_FLUX_LIMIT = 1d-3
 
 contains
 
@@ -52,7 +56,11 @@ subroutine collect_qtf_potential(testsuite)
     new_unittest("pot_deep_scaling", test_pot_deep_scaling), &
     new_unittest("pot_fk_uniform", test_pot_fk_uniform), &
     new_unittest("pot_psi_missing", test_pot_psi_missing), &
-    new_unittest("pot_signs_disturbance", test_pot_signs_disturbance) &
+    new_unittest("pot_signs_disturbance", test_pot_signs_disturbance), &
+    new_unittest("b2_control_smooth", test_b2_control_smooth), &
+    new_unittest("b2_control_closed_flux", test_b2_control_flux), &
+    new_unittest("b2_control_needs_bottom_and_f", test_b2_control_check), &
+    new_unittest("pot_b2_control_assembly", test_pot_b2_control_assembly) &
     ]
 end subroutine collect_qtf_potential
 
@@ -1035,5 +1043,291 @@ contains
   end function normal_velocity
 
 end subroutine test_pot_signs_disturbance
+
+! ---------------------------------------------------------------------------------------------- qtf_b2 = control
+
+!> C and F of the cylinder fixtures for the control-surface form: a cylinder C 6 m outside the hull and 6 m below the
+!> bottom, of the median hull panel size, and F between the waterline and C. Depth 100 m, so C has a bottom.
+subroutine control_points(mesh, geom, pts, error)
+  type(panel_mesh), intent(in) :: mesh
+  type(surface_geom), intent(in) :: geom
+  type(cs_points), intent(out) :: pts
+  type(error_type), allocatable, intent(out) :: error
+  type(so_options) :: opts
+  type(panel_mesh), allocatable :: cms(:)
+  logical :: ok
+  character(len=:), allocatable :: msg
+  opts%cs_margin = 6d0
+  opts%cs_bottom_margin = 6d0
+  call build_control_surface(mesh, geom, opts, depth, '.', pts, cms, ok, msg, with_free=.true.)
+  call check(error, ok, "build_control_surface: " // msg)
+  if (allocated(error)) return
+  call check(error, count(pts%kind == CS_FREE) > 0 .and. any(pts%kind == CS_WALL .and. pts%nrm(3, :) > 0.5d0), &
+             "C has no bottom or there is no F")
+end subroutine control_points
+
+!> Analytic grad psi (psi_field, every mode column) and the incident-wave velocity of (omega, beta) at the points of C and F
+subroutine control_fields_analytic(pts, omega, beta, grad_psi_cs, u_cs)
+  type(cs_points), intent(in) :: pts
+  real(8), intent(in) :: omega, beta
+  complex(8), allocatable, intent(out) :: grad_psi_cs(:,:,:), u_cs(:,:)
+  complex(8) :: p
+  integer :: i, k
+  allocate(grad_psi_cs(3, pts%n, nmode), u_cs(3, pts%n))
+  do i = 1, pts%n
+    do k = 1, nmode
+      call psi_field(k, pts%x(:, i), p, grad_psi_cs(:, i, k))
+    end do
+    call incident_grad(pts%x(:, i), omega, wave_number(omega, depth), depth, 1d0, beta, g, u_cs(:, i))
+  end do
+end subroutine control_fields_analytic
+
+!> The surface piece int (n x grad psi).(X x u) dS of hessian_term_converted, and its control-surface form (hull term plus
+!> C and F term) on the same hull, for the pair (1, 2) of analytic fields (u: incident waves (w1, b1), (w2, b2); psi:
+!> psi_field with its analytic gradient; general complex motions). rel = |control - surface| / |surface| over the modes.
+real(8) function control_difference(mesh, geom, pts) result(rel)
+  type(panel_mesh), intent(in) :: mesh
+  type(surface_geom), intent(in) :: geom
+  type(cs_points), intent(in) :: pts
+  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), u1(:,:), u2(:,:), gcs(:,:,:), uc1(:,:), uc2(:,:)
+  complex(8) :: x1(6, 1), x2(6, 1), hs(nmode), pieces(nmode, 3), hb(nmode), hc(nmode)
+  call psi_panels(mesh, psi, grad_psi)
+  allocate(psi_wl(geom%nwl, nmode))
+  call psi_waterline(mesh, geom, psi, grad_psi, psi_wl)
+  call motions(x1, x2)
+  call velocity(mesh, w1, b1, u1)
+  call velocity(mesh, w2, b2, u2)
+  call control_fields_analytic(pts, w1, b1, gcs, uc1)
+  call control_fields_analytic(pts, w2, b2, gcs, uc2)
+  call hessian_term_converted(mesh, geom, psi, grad_psi, psi_wl, x1, u1, x2, u2, KERNEL_DIFF, hs, pieces=pieces)
+  call b2_body_term(mesh, grad_psi, x1, u1, x2, u2, KERNEL_DIFF, hb)
+  call b2_control_term(pts, mesh%xr, gcs, x1, uc1, x2, uc2, KERNEL_DIFF, hc)
+  rel = norm2(abs(hb + hc - pieces(:, 2))) / norm2(abs(pieces(:, 2)))
+end function control_difference
+
+!> The control-surface form of the B2 surface piece equals the hull form on analytic harmonic fields: both are one-point
+!> rules on flat panels of the same Gauss identity, so their difference is quadrature error and falls with refinement of the
+!> hull and of C and F together (C and F take the median hull panel size).
+subroutine test_b2_control_smooth(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(cs_points) :: pts
+  real(8) :: e(3)
+  integer :: m
+  character(len=200) :: line
+
+  do m = 1, 3
+    call make_cylinder(10d0, 10d0, cyl_ntheta(m), cyl_nz(m), cyl_nr(m), mesh, .true.)
+    call geometry(mesh, geom, error)
+    if (allocated(error)) return
+    call control_points(mesh, geom, pts, error)
+    if (allocated(error)) return
+    e(m) = control_difference(mesh, geom, pts)
+  end do
+  write(line, '(a,3es11.3)') "relative differences at 448, 1792, 7168 panels: ", e
+  print '(4x,a)', trim(line)
+  call check(error, e(1) / e(2) >= B2_SMOOTH_RATIO .and. e(2) / e(3) >= B2_SMOOTH_RATIO, &
+             "falls by less than the expected ratio per refinement; " // line)
+  if (allocated(error)) return
+  call check(error, e(3) < B2_SMOOTH_LIMIT, "not below the limit at 7168 panels; " // line)
+end subroutine test_b2_control_smooth
+
+!> The flux of T A out of the fluid between hull, C and F vanishes (div(T A) = 0): the hull part, computed here with the
+!> hull normal (out of the fluid), plus b2_control_term, which takes n_o = -pts%nrm on C and F. A wrong sign of n_o on C or
+!> on F gives a flux of the size of the terms. Analytic fields, pair (1, 2), three refinements.
+subroutine test_b2_control_flux(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(cs_points) :: pts
+  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), u1(:,:), u2(:,:), gcs(:,:,:), uc1(:,:), uc2(:,:)
+  complex(8) :: x1(6, 1), x2(6, 1), hc(nmode), hull(nmode), d1(3), d2(3), mt(3, 3), gr(3)
+  real(8) :: e(3), nv(3)
+  integer :: m, i, k, ia, ib
+  character(len=200) :: line
+
+  call motions(x1, x2)
+  do m = 1, 3
+    call make_cylinder(10d0, 10d0, cyl_ntheta(m), cyl_nz(m), cyl_nr(m), mesh, .true.)
+    call geometry(mesh, geom, error)
+    if (allocated(error)) return
+    call control_points(mesh, geom, pts, error)
+    if (allocated(error)) return
+    call psi_panels(mesh, psi, grad_psi)
+    call velocity(mesh, w1, b1, u1)
+    call velocity(mesh, w2, b2, u2)
+    call control_fields_analytic(pts, w1, b1, gcs, uc1)
+    call control_fields_analytic(pts, w2, b2, gcs, uc2)
+    call b2_control_term(pts, mesh%xr, gcs, x1, uc1, x2, uc2, KERNEL_DIFF, hc)
+    ! n.(T A) = (n.v)(A.g) + (n.g)(A.v) - (n.A)(v.g) = g^T M n + (n.g) tr M - n^T M g on the hull
+    hull = (0d0, 0d0)
+    do i = 1, mesh%n
+      nv = mesh%nrm(:, i)
+      d1 = rigid_displacement(x1(:, 1), mesh%xc(:, i) - mesh%xr(:, 1))
+      d2 = rigid_displacement(x2(:, 1), mesh%xc(:, i) - mesh%xr(:, 1))
+      do ib = 1, 3
+        do ia = 1, 3
+          mt(ia, ib) = pair_product(KERNEL_DIFF, d1(ia), u1(ib, i), d2(ia), u2(ib, i))
+        end do
+      end do
+      do k = 1, nmode
+        gr = grad_psi(:, i, k)
+        hull(k) = hull(k) + mesh%area(i) * (sum(gr * matmul(mt, nv)) &
+                  + sum(nv * gr) * (mt(1, 1) + mt(2, 2) + mt(3, 3)) - sum(nv * matmul(mt, gr)))
+      end do
+    end do
+    e(m) = norm2(abs(hull + hc)) / norm2(abs(hc))
+  end do
+  write(line, '(a,3es11.3)') "closed flux relative to the C and F part at 448, 1792, 7168 panels: ", e
+  print '(4x,a)', trim(line)
+  call check(error, e(1) / e(2) >= B2_SMOOTH_RATIO .and. e(2) / e(3) >= B2_SMOOTH_RATIO, &
+             "the closed flux falls by less than the expected ratio per refinement; " // line)
+  if (allocated(error)) return
+  call check(error, e(3) < B2_FLUX_LIMIT, "the closed flux is not below the limit at 7168 panels; " // line)
+end subroutine test_b2_control_flux
+
+!> qtf_b2 = control needs F and a C with a bottom for every body: C that reaches the sea bed (depth 12 m, C 6 m below a
+!> 10 m draft) and C without F are refused with a message; C with a bottom and F is accepted.
+subroutine test_b2_control_check(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(cs_points) :: pts
+  type(so_options) :: opts
+  type(panel_mesh), allocatable :: cms(:)
+  logical :: ok
+  character(len=:), allocatable :: msg
+
+  call cylinder_448(mesh, geom, error)
+  if (allocated(error)) return
+  opts%cs_margin = 6d0
+  opts%cs_bottom_margin = 6d0
+  call build_control_surface(mesh, geom, opts, 100d0, '.', pts, cms, ok, msg, with_free=.true.)
+  call check(error, ok, "build: " // msg)
+  if (allocated(error)) return
+  call b2_control_check(1, pts, ok, msg)
+  call check(error, ok, "C with a bottom and F refused: " // msg)
+  if (allocated(error)) return
+
+  call build_control_surface(mesh, geom, opts, 12d0, '.', pts, cms, ok, msg, with_free=.true.)
+  call check(error, ok, "build at h = 12: " // msg)
+  if (allocated(error)) return
+  call b2_control_check(1, pts, ok, msg)
+  call check(error, .not. ok, "C on the sea bed accepted")
+  if (allocated(error)) return
+  call check(error, index(msg, "has no bottom") > 0 .and. index(msg, "cs_bottom_margin") > 0, "sea bed message: " // msg)
+  if (allocated(error)) return
+
+  call build_control_surface(mesh, geom, opts, 100d0, '.', pts, cms, ok, msg)
+  call check(error, ok, "build without F: " // msg)
+  if (allocated(error)) return
+  call b2_control_check(1, pts, ok, msg)
+  call check(error, .not. ok, "C without F accepted")
+  if (allocated(error)) return
+  call check(error, index(msg, "no free surface F") > 0, "F message: " // msg)
+end subroutine test_b2_control_check
+
+!> potential_pair with the control surface: FK, diffraction, B1 and B3 are those without it, bit for bit; B2 is
+!> -i Omega rho (rot + line + hull term + C and F term), from the public parts, with rot and line the pieces of
+!> hessian_term_converted that the hull form uses. Swapping the states conjugates every term (psi complex, so a missing
+!> conjugate of grad psi on C shows). A disturbance in both states, as pot_signs_disturbance.
+subroutine test_pot_b2_control_assembly(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(cs_points) :: pts
+  type(first_order_state) :: s1, s2
+  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), wl1(:), wl2(:), u1(:,:), u2(:,:), uw1(:,:), uw2(:,:)
+  complex(8), allocatable :: gcs(:,:,:), uc1(:,:), uc2(:,:)
+  complex(8) :: x1(6, 1), x2(6, 1), tb(nmode, NPOT_TERMS), tc(nmode, NPOT_TERMS), t21(nmode, NPOT_TERMS)
+  complex(8) :: hs(nmode), pieces(nmode, 3), hb(nmode), hc(nmode), ref(nmode)
+  real(8) :: om
+  integer :: j, k
+  character(len=80) :: line
+
+  call cylinder_448(mesh, geom, error)
+  if (allocated(error)) return
+  call control_points(mesh, geom, pts, error)
+  if (allocated(error)) return
+  call motions(x1, x2)
+  call make_state(mesh, geom, w1, b1, depth, x1, s1, wl1)
+  call make_state(mesh, geom, w2, b2, depth, x2, s2, wl2)
+  call add_disturbance(s1, 2, (0.6d0, 0.3d0), wl1)
+  call add_disturbance(s2, 4, (-0.2d0, 0.5d0), wl2)
+  call synthetic_psi(mesh, geom, .true., psi, grad_psi, psi_wl)
+  call control_fields_analytic(pts, w1, b1, gcs, uc1)
+  call control_fields_analytic(pts, w2, b2, gcs, uc2)
+  do k = 1, nmode
+    gcs(:, :, k) = gcs(:, :, k) * exp(ci * 0.3d0 * real(k, 8))
+  end do
+  om = w1 - w2
+  call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, om, rho, g, tb)
+  call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, om, rho, g, tc, cs=pts, grad_psi_cs=gcs, &
+                      u1_cs=uc1, u2_cs=uc2)
+  do j = 1, NPOT_TERMS
+    if (j == TP_B2) cycle
+    write(line, '(a,i0)') "term ", j
+    call check(error, all(tc(:, j) == tb(:, j)), trim(line) // " changes with the control surface")
+    if (allocated(error)) return
+  end do
+
+  allocate(u1(3, mesh%n), u2(3, mesh%n), uw1(3, geom%nwl), uw2(3, geom%nwl))
+  u1 = s1%grad_i + s1%grad_p
+  u2 = s2%grad_i + s2%grad_p
+  call waterline_velocity(mesh, geom, s1, wl1, normal_velocity(s1), uw1)
+  call waterline_velocity(mesh, geom, s2, wl2, normal_velocity(s2), uw2)
+  call hessian_term_converted(mesh, geom, psi, grad_psi, psi_wl, x1, u1, x2, u2, KERNEL_DIFF, hs, uw1, uw2, pieces=pieces)
+  call check(error, maxval(abs(sum(pieces, dim=2) - hs)) <= 1d-12 * maxval(abs(hs)), "the pieces do not sum to the term")
+  if (allocated(error)) return
+  call check(error, maxval(abs(tb(:, TP_B2) + ci * om * rho * hs)) <= 1d-12 * maxval(abs(tb(:, TP_B2))), &
+             "B2 of the hull form is not -i Omega rho (rot + surface + line)")
+  if (allocated(error)) return
+  call b2_body_term(mesh, grad_psi, x1, u1, x2, u2, KERNEL_DIFF, hb)
+  call b2_control_term(pts, mesh%xr, gcs, x1, uc1, x2, uc2, KERNEL_DIFF, hc)
+  ref = -ci * om * rho * (pieces(:, 1) + pieces(:, 3) + hb + hc)
+  call check(error, maxval(abs(hb)) > 0d0 .and. maxval(abs(hc)) > 0d0, "the hull or the C and F term is zero")
+  if (allocated(error)) return
+  call check(error, maxval(abs(tc(:, TP_B2) - ref)) <= 1d-12 * maxval(abs(ref)), &
+             "B2 of the control form is not -i Omega rho (rot + line + hull term + C and F term)")
+  if (allocated(error)) return
+
+  call potential_pair(mesh, geom, s2, s1, wl2, wl1, psi, grad_psi, psi_wl, om, rho, g, t21, cs=pts, grad_psi_cs=gcs, &
+                      u1_cs=uc2, u2_cs=uc1)
+  do j = 1, NPOT_TERMS
+    write(line, '(a,i0)') "term ", j
+    call check(error, maxval(abs(t21(:, j) - conjg(tc(:, j)))) <= 1d-12 * maxval(abs(tc(:, j))), &
+               trim(line) // ": (2, 1) is not conj (1, 2) with the control surface")
+    if (allocated(error)) return
+  end do
+
+contains
+
+  subroutine add_disturbance(s, k, c, phi_wl)
+    type(first_order_state), intent(inout) :: s
+    integer, intent(in) :: k
+    complex(8), intent(in) :: c
+    complex(8), intent(inout) :: phi_wl(:)
+    complex(8) :: p, gp(3)
+    integer :: ip
+    do ip = 1, mesh%n
+      call psi_field(k, mesh%xc(:, ip), p, gp)
+      s%phi_p(ip) = c * p
+      s%grad_p(:, ip) = c * gp
+    end do
+    call waterline_extrapolate(mesh, geom, s, phi_wl)
+  end subroutine add_disturbance
+
+  function normal_velocity(s) result(vn)
+    type(first_order_state), intent(in) :: s
+    complex(8) :: vn(geom%nwl)
+    integer :: iw
+    do iw = 1, geom%nwl
+      vn(iw) = -ci * s%omega * sum(mesh%nrm(:, geom%wl_panel(iw)) &
+                                   * rigid_displacement(s%xi(:, 1), waterline_point(geom, iw) - mesh%xr(:, 1)))
+    end do
+  end function normal_velocity
+
+end subroutine test_pot_b2_control_assembly
 
 end module test_qtf_potential

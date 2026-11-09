@@ -194,6 +194,9 @@ CONTAINS
          ELSE
             ios = 1
          END IF
+      CASE ('qtf_b2')
+         ! Read always, used with qtf_terms = body only
+         CALL choose(value, 'body', 'control', opts%qtf_b2, ios)
       CASE DEFAULT
          ok = .FALSE.
          msg = 'Unknown key "'//key//'" in SecondOrder.in.'

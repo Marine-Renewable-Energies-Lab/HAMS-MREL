@@ -2,7 +2,7 @@
 module test_second_order_input
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use IO, only : CreateDirectory
-  use SecondOrderTypes, only : so_options, QTF_TERMS_QUADRATIC, QTF_TERMS_BODY
+  use SecondOrderTypes, only : so_options, QTF_TERMS_QUADRATIC, QTF_TERMS_BODY, QTF_B2_BODY, QTF_B2_CONTROL
   use SecondOrderInput, only : read_second_order_options, validate_second_order
   implicit none
   private
@@ -31,7 +31,8 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("control_defaults", test_control_defaults), &
     new_unittest("control_rejections", test_control_rejections), &
     new_unittest("qtf_keys", test_qtf_keys), &
-    new_unittest("qtf_terms_body", test_qtf_terms_body) &
+    new_unittest("qtf_terms_body", test_qtf_terms_body), &
+    new_unittest("qtf_b2_key", test_qtf_b2_key) &
     ]
 
 end subroutine collect_second_order_input
@@ -510,6 +511,42 @@ subroutine test_qtf_terms_body(error)
                            "qtf_terms = full is not implemented (Phase 6); use quadratic or body.")
   call remove_directory(root)
 end subroutine test_qtf_terms_body
+
+!> qtf_b2 is control by default, reads body and control, and rejects other values
+subroutine test_qtf_b2_key(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_b2"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 1", &
+                          "qtf_terms = body"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_b2, QTF_B2_CONTROL, "qtf_b2 default")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 1", &
+                          "qtf_terms = body", "qtf_b2 = body"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "qtf_b2 = body rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_b2, QTF_B2_BODY, "qtf_b2 = body")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 1", &
+                          "qtf_terms = body", "QTF_B2 = Control"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "qtf_b2 = control rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_b2, QTF_B2_CONTROL, "qtf_b2 = control")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = body", &
+                                         "qtf_b2 = hull"], 'Invalid value "hull" for key "qtf_b2" in SecondOrder.in.')
+  call remove_directory(root)
+end subroutine test_qtf_b2_key
 
 subroutine expect_read_message(error, root, lines, expected)
   type(error_type), allocatable, intent(out) :: error

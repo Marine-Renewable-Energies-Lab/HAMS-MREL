@@ -36,6 +36,12 @@ MODULE SecondOrderDriver
    ! the rows of all points are not stored (FieldVelocity.f90). So with it the states of every heading are
    ! kept, as for mean_drift = 2.
    !
+   ! qtf_b2 = control (with qtf_terms = body) moves the surface piece of B2 to C and F (QTFPotential). It builds C and F as
+   ! the control-surface method does, with the same keys, also when that method is off, and needs F and a bottom of C for
+   ! every body. The fields there are evaluated once for both: the total velocity of every heading at the end of each
+   ! frequency, and grad psi_k (fields_green of one state per mode, no incident wave) when psi of a difference frequency is
+   ! taken, while the solver globals are at that frequency. Both go to the QTF store.
+   !
    ! Its F_z, M_x and M_y (Phase B) also need the free surface F inside C and the hull waterline potential. They are written for
    ! each body whose C has a bottom, when F could be built. The hull waterline potential then comes from waterline_method, with
    ! the hull velocity of velocity_method when it is extrapolated, as for the near-field method.
@@ -53,7 +59,7 @@ MODULE SecondOrderDriver
    USE IO, ONLY: CreateDirectory
    USE ImplementSubs, ONLY: InputOmega
    USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom, cs_points, cs_fields, CS_WALL, CS_LINE, &
-                               CS_FREE, QTF_TERMS_BODY
+                               CS_FREE, QTF_TERMS_BODY, QTF_B2_CONTROL
    USE FirstOrderState, ONLY: expand_images, build_state, radiation_psi
    USE SurfaceGeometry, ONLY: build_surface_geom, DEFAULT_SHARP_DEG
    USE SurfaceVelocity, ONLY: velocity_differencing, source_operator, build_source_operator, velocity_source
@@ -65,7 +71,8 @@ MODULE SecondOrderDriver
    USE ControlSurfaceDrift, ONLY: control_surface_pair, CS_T_LINE, CS_T_PRESSURE, CS_T_HYDROSTATIC
    USE SecondOrderOutput, ONLY: write_drift_row, write_terms_row
    USE QTFDriver, ONLY: qtf_init, qtf_keep, qtf_finish, qtf_stored_mb, qtf_keep_psi, qtf_psi_index, qtf_psi_count, &
-                        qtf_radiation_omegas
+                        qtf_radiation_omegas, qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi
+   USE QTFPotential, ONLY: b2_control_check
    IMPLICIT NONE
    PRIVATE
 
@@ -101,6 +108,7 @@ MODULE SecondOrderDriver
    LOGICAL :: body_terms = .FALSE.                     ! psi is kept at the difference frequencies
    COMPLEX(8), ALLOCATABLE :: psi_main(:,:)            ! (n, 6*nbody), psi of the current main-grid frequency
    INTEGER :: unit_psi = 0                             ! QTF_PsiCheck.txt (write_terms >= 1)
+   LOGICAL :: b2_control = .FALSE.                     ! qtf_b2 = control: fields on C and F go to the QTF store
 
 CONTAINS
 
@@ -151,6 +159,7 @@ CONTAINS
          ERROR STOP 1
       END IF
 
+      b2_control = uses_b2_control(opts)
       ALLOCATE (states(MERGE(NBETA, 1, keep_all_headings(opts))))
       ! Only the near-field and control-surface methods use the surface geometry (the control surface takes the waterplane
       ! extent from it), so only they can stop on the geometry's errors
@@ -163,6 +172,7 @@ CONTAINS
          IF (LEN_TRIM(msg) > 0) WRITE (*, *) 'Mean drift warning: ', msg
       END IF
       IF (opts%do_control) CALL control_setup(opts, inputdir, outputdir)
+      IF (b2_control) CALL b2_control_setup(opts, inputdir, outputdir)
       ! The hull waterline potential, for the near-field method and the Phase B control-surface loads
       IF (opts%do_near .OR. have_free) THEN
          hull_uses_source = opts%velocity_method == 2
@@ -254,9 +264,19 @@ CONTAINS
       nreuse = qtf_psi_count(reused=.TRUE.)
       WRITE (*, '(a,I0,a,I0,a,I0,a)') ' QTF body forcing: psi at ', nneed, ' difference frequencies, ', nreuse, &
          ' from the main grid and ', nneed - nreuse, ' radiation-only solves (each costs about one radiation solve)'
-      WRITE (*, '(a,F10.1,a)') ' QTF: with psi and the potential part the store takes', &
-         qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, &
-                       npairs=MERGE(NBETA*NBETA, NBETA, opts%mean_drift == 2)), ' MB'
+      IF (b2_control) THEN
+         CALL qtf_set_control_surface(cs_pts)
+         WRITE (*, '(a,F10.1,a,F10.1,a,I0,a)') ' QTF: with psi and the potential part the store takes', &
+            qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, &
+                          npairs=MERGE(NBETA*NBETA, NBETA, opts%mean_drift == 2), ncs=cs_pts%n), ' MB, of which', &
+            48D0*REAL(cs_pts%n, 8)*(REAL(nqtf, 8)*REAL(NBETA, 8) + REAL(6*mesh%nbody, 8)*REAL(nneed, 8))/1D6, &
+            ' MB for the fields at the ', cs_pts%n, &
+            ' points of C and F (qtf_b2 = control)'
+      ELSE
+         WRITE (*, '(a,F10.1,a)') ' QTF: with psi and the potential part the store takes', &
+            qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, &
+                          npairs=MERGE(NBETA*NBETA, NBETA, opts%mean_drift == 2)), ' MB'
+      END IF
       WRITE (*, '(a)') ' QTF_Indirect.11d: body forcing only, the free-surface integral is omitted.'
       ALLOCATE (psi_main(mesh%n, 6*mesh%nbody))
       psi_main = (0D0, 0D0)
@@ -329,7 +349,10 @@ CONTAINS
       ELSE
          CALL radiation_psi(mesh, W1, MXPOT, psi_main)
       END IF
-      IF (qtf_psi_index(W1) > 0) CALL qtf_keep_psi(W1, psi_main)
+      IF (qtf_psi_index(W1) > 0) THEN
+         CALL qtf_keep_psi(W1, psi_main)
+         IF (b2_control) CALL keep_cs_psi(opts, W1, psi_main)
+      END IF
       CALL write_psi_rows(W1, 1, psi_main)
    END SUBROUTINE so_after_radiation
 
@@ -347,15 +370,109 @@ CONTAINS
          CALL radiation_psi(mesh, omega, MXPOT, psi)
       END IF
       CALL qtf_keep_psi(omega, psi)
+      IF (b2_control) CALL keep_cs_psi(opts, omega, psi)
       CALL write_psi_rows(omega, 2, psi)
    END SUBROUTINE so_after_radiation_only
+
+   SUBROUTINE keep_cs_psi(opts, omega, psi)
+      ! grad psi_k at the points of C and F, into the QTF store (qtf_b2 = control). psi_k is the perturbation potential of a
+      ! state with omega, no incident wave and dpsi_k/dn = n_k (mesh%nj) on the panels of the body of mode k, 0 on the others,
+      ! as radiation_psi defines it; fields_green takes its gradient from the boundary integral formula. The solver globals
+      ! (V, WK, H and the Green function) must be at omega, as after the radiation solve there.
+      TYPE(so_options), INTENT(IN) :: opts
+      REAL(8), INTENT(IN) :: omega
+      COMPLEX(8), INTENT(IN) :: psi(:, :)
+      TYPE(first_order_state), ALLOCATABLE :: ps(:)
+      TYPE(cs_fields), ALLOCATABLE :: f(:)
+      COMPLEX(8), ALLOCATABLE :: grad(:, :, :)
+      INTEGER(8) :: t0, t1, rate
+      INTEGER :: k, kb, i, nmode
+
+      IF (ABS(W1 - omega) > 1D-12*omega) THEN
+         WRITE (*, '(a,ES14.6,a)') ' QTF: grad psi on the control surface at omega =', omega, &
+            ' rad/s, but the solver is at another frequency.'
+         ERROR STOP 1
+      END IF
+      nmode = 6*mesh%nbody
+      ALLOCATE (ps(nmode), f(nmode), grad(3, cs_pts%n, nmode))
+      DO k = 1, nmode
+         kb = (k - 1)/6 + 1
+         ps(k)%omega = omega
+         ps(k)%k = WK
+         ps(k)%nu = V
+         ps(k)%h = H
+         ps(k)%amp = 0D0
+         ps(k)%beta = 0D0
+         ps(k)%g = G
+         ps(k)%rho = RHO
+         ALLOCATE (ps(k)%phi_p(mesh%n), ps(k)%dphi_p_dn(mesh%n))
+         ps(k)%phi_p = psi(:, k)
+         DO i = 1, mesh%n
+            ps(k)%dphi_p_dn(i) = (0D0, 0D0)
+            IF (mesh%body(i) == kb) ps(k)%dphi_p_dn(i) = mesh%nj(k - 6*(kb - 1), i)
+         END DO
+      END DO
+      CALL SYSTEM_CLOCK(t0, rate)
+      CALL fields_green(mesh, cs_pts, ps, opts%cs_fd_step, multi_arrays, f)
+      CALL SYSTEM_CLOCK(t1)
+      DO k = 1, nmode
+         grad(:, :, k) = f(k)%grad
+      END DO
+      CALL qtf_keep_cs_psi(omega, grad)
+      WRITE (*, '(a,F10.5,a,F10.2,a,I0,a,I0,a)') ' QTF B2 control surface grad psi: omega', omega, ',', &
+         REAL(t1 - t0, 8)/REAL(rate, 8), ' s for ', cs_pts%n, ' points and ', nmode, ' modes'
+   END SUBROUTINE keep_cs_psi
 
    LOGICAL FUNCTION keep_all_headings(opts)
       ! The states of every heading of a frequency are kept: the pairs of mean_drift = 2, and the fields of the control surface
       TYPE(so_options), INTENT(IN) :: opts
 
-      keep_all_headings = opts%mean_drift == 2 .OR. opts%do_control
+      keep_all_headings = opts%mean_drift == 2 .OR. opts%do_control .OR. uses_b2_control(opts)
    END FUNCTION keep_all_headings
+
+   LOGICAL FUNCTION uses_b2_control(opts)
+      ! qtf_b2 = control applies: the potential part of the difference QTF is computed
+      TYPE(so_options), INTENT(IN) :: opts
+
+      uses_b2_control = opts%qtf_terms == QTF_TERMS_BODY .AND. opts%qtf_b2 == QTF_B2_CONTROL .AND. &
+                        (opts%qtf == 1 .OR. opts%qtf == 3)
+   END FUNCTION uses_b2_control
+
+   SUBROUTINE b2_control_setup(opts, inputdir, outputdir)
+      ! C and F of every body for qtf_b2 = control. With drift_methods = control they are those of control_setup; otherwise
+      ! they are built and checked here in the same way, and C is written as CSMesh_<b>.pnl to outputdir. Unlike the drift,
+      ! B2 has no partial fallback: a body without F, or whose C has no bottom, stops the run.
+      TYPE(so_options), INTENT(IN) :: opts
+      CHARACTER(LEN=*), INTENT(IN) :: inputdir, outputdir
+      TYPE(panel_mesh), ALLOCATABLE :: cms(:)
+      CHARACTER(LEN=:), ALLOCATABLE :: msg
+      LOGICAL :: ok
+      LOGICAL, ALLOCATABLE :: free_built(:)
+
+      IF (.NOT. opts%do_control) THEN
+         CALL build_control_surface(mesh, geom, opts, H, inputdir, cs_pts, cms, ok, msg, with_free=.TRUE., &
+                                    free_built=free_built)
+         IF (.NOT. ok) THEN
+            WRITE (*, '(a,a)') ' QTF B2 control surface: ', msg
+            ERROR STOP 1
+         END IF
+         IF (LEN(msg) > 0) WRITE (*, '(a,a)') ' QTF B2 control surface: ', msg
+         CALL check_control_surface(mesh, cs_pts, cms, opts%cs_shape /= 3, ok, msg)
+         IF (.NOT. ok) THEN
+            WRITE (*, '(a,a)') ' QTF B2 control surface: ', msg
+            ERROR STOP 1
+         END IF
+         CALL write_control_surface(outputdir, cms)
+         IF (opts%cs_velocity == 2) ALLOCATE (cs_sigma(mesh%n, NBETA))
+      END IF
+      CALL b2_control_check(mesh%nbody, cs_pts, ok, msg)
+      IF (.NOT. ok) THEN
+         WRITE (*, '(a,a)') ' ', msg
+         ERROR STOP 1
+      END IF
+      WRITE (*, '(a,I0,a,I0,a,I0,a)') ' QTF B2 control surface: ', COUNT(cs_pts%kind == CS_WALL), ' panels on C and ', &
+         COUNT(cs_pts%kind == CS_FREE), ' panels on F, for ', mesh%nbody, ' bodies'
+   END SUBROUTINE b2_control_setup
 
    SUBROUTINE control_setup(opts, inputdir, outputdir)
       ! Builds and checks C and F of every body, writes C as CSMesh_<b>.pnl to outputdir, and opens MeanDriftControlSurface.7.
@@ -454,7 +571,7 @@ CONTAINS
       LOGICAL :: control_source
 
       slot = MERGE(ib, 1, keep_all_headings(opts))
-      control_source = opts%do_control .AND. opts%cs_velocity == 2
+      control_source = (opts%do_control .OR. b2_control) .AND. opts%cs_velocity == 2
       CALL build_state(mesh, W1, WK, V, H, 1D0, BETA, G, RHO, mxpot_in, dspl_in, opts%motion_fixed, states(slot))
       ! As for the waterline rows below: the operator holds for all the headings of a frequency
       IF (ib == 1 .AND. (hull_uses_source .OR. control_source)) CALL timed_source_build()
@@ -545,10 +662,21 @@ CONTAINS
       ! method.
       TYPE(so_options), INTENT(IN) :: opts
       INTEGER, INTENT(IN) :: kk
+      TYPE(cs_fields), ALLOCATABLE :: fields(:)
+      INTEGER :: ib
 
       IF (is_limit_frequency()) RETURN
       IF (opts%mean_drift == 2) CALL heading_pairs(opts)
-      IF (opts%do_control) CALL control_frequency(opts)
+      IF (.NOT. (opts%do_control .OR. b2_control)) RETURN
+      ! The fields on C and F, once for the control-surface drift and for B2 (qtf_b2 = control)
+      ALLOCATE (fields(SIZE(states)))
+      CALL control_fields(opts, fields)
+      IF (opts%do_control) CALL control_frequency(opts, fields)
+      IF (b2_control) THEN
+         DO ib = 1, NBETA
+            CALL qtf_keep_cs_velocity(ib, fields(ib)%grad)
+         END DO
+      END IF
    END SUBROUTINE so_end_frequency
 
    SUBROUTINE heading_pairs(opts)
@@ -580,24 +708,24 @@ CONTAINS
       END IF
    END SUBROUTINE heading_pairs
 
-   SUBROUTINE control_frequency(opts)
-      ! The fields on C of every heading of the frequency in one pass over the points, then the control-surface load of each
-      ! pair: (i, i) for mean_drift = 1, all pairs for mean_drift = 2. The states are at the current global frequency, which
-      ! fields_green and fields_source read.
+   SUBROUTINE control_fields(opts, fields)
+      ! The fields on C (and F) of every heading of the frequency in one pass over the points. The states are at the current
+      ! global frequency, which fields_green and fields_source read.
       ! Above nu*h = 50 (VHLIN in FinGreen3D.f90) the field mode of FINGREEN3D keeps the Limes acceleration of PIDCOCK
       ! (FIELD_SERIES), whose isolated outliers a central difference takes over (FieldVelocity.f90), so the green route warns.
       TYPE(so_options), INTENT(IN) :: opts
-      TYPE(cs_fields), ALLOCATABLE :: fields(:)
+      TYPE(cs_fields), INTENT(OUT) :: fields(:)
       REAL(8), PARAMETER :: LIMES_NUH = 50D0
       INTEGER(8) :: t0, t1, rate
-      INTEGER :: i, j
+      CHARACTER(LEN=:), ALLOCATABLE :: who
 
+      who = 'Mean drift control surface'
+      IF (.NOT. opts%do_control) who = 'QTF B2 control surface'
       IF (opts%cs_velocity /= 2 .AND. H >= 0D0 .AND. states(1)%nu*H > LIMES_NUH) THEN
-         WRITE (*, '(a,F10.5,a,F8.2,a)') ' Mean drift control surface warning: omega', W1, ', nu*h =', states(1)%nu*H, &
+         WRITE (*, '(a,F10.5,a,F8.2,a)') ' '//who//' warning: omega', W1, ', nu*h =', states(1)%nu*H, &
             ' > 50: the finite-depth field values on C may scatter (the Green function series still uses Limes there).'
          WRITE (*, '(a)') ' Check against drift_methods = far, or use deep water (H < 0) where kh is large.'
       END IF
-      ALLOCATE (fields(SIZE(states)))
       CALL SYSTEM_CLOCK(t0, rate)
       IF (opts%cs_velocity == 2) THEN
          CALL fields_source(mesh, cs_pts, states, cs_sigma, multi_arrays, fields)
@@ -605,8 +733,17 @@ CONTAINS
          CALL fields_green(mesh, cs_pts, states, opts%cs_fd_step, multi_arrays, fields)
       END IF
       CALL SYSTEM_CLOCK(t1)
-      WRITE (*, '(a,F10.5,a,F10.2,a,I0,a,I0,a)') ' Mean drift control surface fields: omega', W1, ',', &
+      WRITE (*, '(a,F10.5,a,F10.2,a,I0,a,I0,a)') ' '//who//' fields: omega', W1, ',', &
          REAL(t1 - t0, 8)/REAL(rate, 8), ' s for ', cs_pts%n, ' points and ', SIZE(states), ' headings'
+   END SUBROUTINE control_fields
+
+   SUBROUTINE control_frequency(opts, fields)
+      ! The control-surface load of each pair of the frequency, from the fields of control_fields: (i, i) for mean_drift = 1,
+      ! all pairs for mean_drift = 2.
+      TYPE(so_options), INTENT(IN) :: opts
+      TYPE(cs_fields), INTENT(IN) :: fields(:)
+      INTEGER :: i, j
+
       DO j = 1, NBETA
          DO i = 1, NBETA
             IF (opts%mean_drift /= 2 .AND. i /= j) CYCLE

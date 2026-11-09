@@ -184,6 +184,10 @@ module test_integration_drift
     real(8), parameter :: pot_distant_limit = 2d-2
     ! Every second frequency of the grid: psi is solved at each Omega, so the common pairs are the same computation
     real(8), parameter :: pot_spacing_limit = 1d-10
+    ! B2 of the sharp free cylinder (qtf_sharp_b2_control, 448 panels, qtf_b2 = control, C and F at 3 m panels) against the
+    ! exact reference, as max over the pairs of |HAMS - exact| / max |exact|, for F_x, F_z, M_y: 15.1%, 30.0%, 11.9% measured
+    ! (11.8% M_y with C and F at the default panel size; the hull form of the same run: 13.8%, 33.1%, 95.4%). 1.3x measured
+    real(8), parameter :: b2_control_limits(3) = [0.20d0, 0.40d0, 0.16d0]
 
 contains
 
@@ -232,6 +236,7 @@ contains
             new_unittest("run_qtf_round_body", run_qtf_round_body), &
             new_unittest("run_qtf_round_low", run_qtf_round_low), &
             new_unittest("run_qtf_body_cases", run_qtf_body_cases), &
+            new_unittest("run_qtf_sharp_b2", run_qtf_sharp_b2), &
             new_unittest("run_control_cyl", run_control_cyl), &
             new_unittest("run_control_cyl_sybo", run_control_cyl_sybo), &
             new_unittest("run_control_cases", run_control_cases) &
@@ -323,7 +328,9 @@ contains
             new_unittest("qtf_body_two_distant", qtf_body_two_distant), &
             new_unittest("qtf_body_spacing", qtf_body_spacing), &
             new_unittest("qtf_body_absent", qtf_body_absent), &
-            new_unittest("qtf_body_log", qtf_body_log) &
+            new_unittest("qtf_body_log", qtf_body_log), &
+            new_unittest("qtf_b2_control_sharp", qtf_b2_control_sharp), &
+            new_unittest("qtf_b2_control_other_terms", qtf_b2_control_other_terms) &
         ]
     end subroutine collect_tests_drift
 
@@ -586,6 +593,15 @@ contains
             end if
         end do
     end subroutine run_qtf_body_cases
+
+    !> The sharp cylinder of drift_cyl, free, with B2 by the control surface (qtf_b2 = control) and by the hull
+    subroutine run_qtf_sharp_b2(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("qtf_sharp_b2_control", [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file, &
+                                               "CSMesh_1.pnl"], error)
+        if (allocated(error)) return
+        call run_case("qtf_sharp_b2_body", [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file], error)
+    end subroutine run_qtf_sharp_b2
 
     subroutine run_control_cyl(error)
         type(error_type), allocatable, intent(out) :: error
@@ -3457,8 +3473,8 @@ contains
     !> files have the same rows in the same order.
     subroutine qtf_body_diagonal(error)
         type(error_type), allocatable, intent(out) :: error
-        character(len=18), parameter :: cases(3) = [character(len=18) :: "qtf_round_body", "qtf_round_low", &
-                                                    "qtf_two_round_body"]
+        character(len=20), parameter :: cases(4) = [character(len=20) :: "qtf_round_body", "qtf_round_low", &
+                                                    "qtf_two_round_body", "qtf_sharp_b2_control"]
         character(len=:), allocatable :: a(:), b(:)
         real(8), allocatable :: d(:,:)
         integer :: c, r, diagonal
@@ -3490,7 +3506,8 @@ contains
     !> each pair with Omega /= 0 and only those
     subroutine qtf_body_sum_of_terms(error)
         type(error_type), allocatable, intent(out) :: error
-        character(len=18), parameter :: cases(2) = [character(len=18) :: "qtf_round_body", "qtf_two_round_body"]
+        character(len=20), parameter :: cases(3) = [character(len=20) :: "qtf_round_body", "qtf_two_round_body", &
+                                                    "qtf_sharp_b2_control"]
         real(8), allocatable :: d(:,:), x(:,:), t(:,:)
         real(8) :: worst
         integer :: c, r, q, n
@@ -3531,8 +3548,8 @@ contains
     !> pairs, and T_pot of the terms file the same to its digits
     subroutine qtf_body_hermitian(error)
         type(error_type), allocatable, intent(out) :: error
-        character(len=18), parameter :: cases(3) = [character(len=18) :: "qtf_round_body", "qtf_round_low", &
-                                                    "qtf_two_round_body"]
+        character(len=20), parameter :: cases(4) = [character(len=20) :: "qtf_round_body", "qtf_round_low", &
+                                                    "qtf_two_round_body", "qtf_sharp_b2_control"]
         real(8), allocatable :: x(:,:), t(:,:)
         real(8) :: worst, scale
         integer :: c, p, q, partners
@@ -3738,6 +3755,99 @@ contains
         call check(error, count_log_lines(get_running_exe_path()//"qtf_round.log", line), 0, &
                    "free-surface line in the log of qtf_round")
     end subroutine qtf_body_log
+
+    !> B2 of the sharp free cylinder against the exact reference (truncated_cylinder_reference.py qtf-potential, free, 0.01
+    !> rad/s grid, N 64000, gap basis (20, 4, 4), converged to 2e-5 in B2), in e^{-i omega t} per rho g, for the pairs
+    !> (omega_i, omega_j) of the fixtures. The terms file holds conj(T)/(rho g). Error per quantity: max over the pairs of
+    !> |HAMS - exact| / max over the pairs of |exact|, as qtf_compare.py. .11d is finite. The hull form of the same mesh is
+    !> printed beside it (its M_y error was 79% at this mesh on the full grid).
+    subroutine qtf_b2_control_sharp(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), parameter :: pairs(2, 3) = reshape([0.47d0, 0.70d0, 0.47d0, 0.77d0, 0.70d0, 0.77d0], [2, 3])
+        integer, parameter :: mode_i(3) = [1, 3, 5]
+        character(len=3), parameter :: label(3) = ["F_x", "F_z", "M_y"]
+        ! exact(quantity, pair): F_x, F_z, M_y of B2 at (0.47, 0.70), (0.47, 0.77), (0.70, 0.77)
+        complex(8), parameter :: exact(3, 3) = reshape([ &
+            (-0.02418447834d0, -0.7044084574d0), (-1.80851198d0, 0.195575648d0), (-0.5452006385d0, -10.02554505d0), &
+            (-12.68439896d0, 13.42905143d0), (2.437011616d0, 7.401809966d0), (-62.12791973d0, 49.44764599d0), &
+            (-9.32633549d0, 6.262764817d0), (1.352408003d0, 1.891009155d0), (-3.738635412d0, 2.171174783d0)], [3, 3])
+        real(8) :: ec(3), eb(3)
+        integer :: q
+
+        call check_no_bad_numbers(output_dir("qtf_sharp_b2_control")//qtf_indirect_file, error)
+        if (allocated(error)) return
+        call b2_errors("qtf_sharp_b2_control", ec, error)
+        if (allocated(error)) return
+        call b2_errors("qtf_sharp_b2_body", eb, error)
+        if (allocated(error)) return
+        do q = 1, 3
+            call report("qtf_b2_control_sharp B2 "//label(q)//" control", ec(q))
+            call report("qtf_b2_control_sharp B2 "//label(q)//" hull   ", eb(q))
+        end do
+        do q = 1, 3
+            call check_below(error, "qtf_b2_control_sharp B2 "//label(q), ec(q), b2_control_limits(q))
+            if (allocated(error)) return
+        end do
+
+    contains
+
+        subroutine b2_errors(name, e, error)
+            character(len=*), intent(in) :: name
+            real(8), intent(out) :: e(3)
+            type(error_type), allocatable, intent(out) :: error
+            real(8), allocatable :: t(:,:)
+            real(8) :: scale
+            complex(8) :: v
+            integer :: p, r, q, found
+
+            call read_pot_terms(output_dir(name)//pot_terms_file, t, error)
+            if (allocated(error)) return
+            do q = 1, 3
+                scale = maxval(abs(exact(q, :)))
+                e(q) = 0d0
+                do p = 1, 3
+                    found = 0
+                    do r = 1, size(t, 1)
+                        if (.not. (same(t(r,1), pairs(1,p)) .and. same(t(r,2), pairs(2,p)) .and. t(r,3) == 0d0 &
+                                   .and. t(r,4) == 0d0 .and. nint(t(r,5)) == mode_i(q))) cycle
+                        found = found + 1
+                        v = cmplx(t(r,12), -t(r,13), kind=8)
+                        e(q) = max(e(q), abs(v - exact(q, p))/scale)
+                    end do
+                    call check(error, found == 1, name//": no single terms row of a reference pair")
+                    if (allocated(error)) return
+                end do
+            end do
+        end subroutine b2_errors
+
+    end subroutine qtf_b2_control_sharp
+
+    !> qtf_b2 = control changes B2 only: the other four terms of the terms file are those of qtf_b2 = body, digit for digit
+    !> (the same first-order solution and psi), and B2 differs
+    subroutine qtf_b2_control_other_terms(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: tc(:,:), tb(:,:)
+        integer :: p, q
+        logical :: b2_differs
+
+        call read_pot_terms(output_dir("qtf_sharp_b2_control")//pot_terms_file, tc, error)
+        if (allocated(error)) return
+        call read_pot_terms(output_dir("qtf_sharp_b2_body")//pot_terms_file, tb, error)
+        if (allocated(error)) return
+        call check(error, size(tc, 1) == size(tb, 1) .and. size(tc, 1) > 0, "qtf_sharp_b2: other rows in the two runs")
+        if (allocated(error)) return
+        b2_differs = .false.
+        do p = 1, size(tc, 1)
+            q = matching_row(tc, p, tb)
+            call check(error, q > 0, "qtf_sharp_b2_body: a row of the control run is missing")
+            if (allocated(error)) return
+            call check(error, all(tc(p, [6, 7, 8, 9, 10, 11, 14, 15]) == tb(q, [6, 7, 8, 9, 10, 11, 14, 15])), &
+                       "qtf_sharp_b2: FK, diffraction, B1 or B3 differ between qtf_b2 = control and body")
+            if (allocated(error)) return
+            if (any(tc(p, 12:13) /= tb(q, 12:13))) b2_differs = .true.
+        end do
+        call check(error, b2_differs, "qtf_sharp_b2: B2 is the same with qtf_b2 = control and body")
+    end subroutine qtf_b2_control_other_terms
 
     !> Lines of a file that contain text, or -1 if it cannot be opened
     integer function count_log_lines(path, text)

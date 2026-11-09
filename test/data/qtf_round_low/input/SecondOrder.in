@@ -6,3 +6,4 @@ write_terms = 1
 velocity_method = source
 qtf_terms = body
 qtf = 1
+qtf_b2 = body
