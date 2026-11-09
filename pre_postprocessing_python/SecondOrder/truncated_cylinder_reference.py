@@ -438,8 +438,13 @@ taken from the Fortran code (incident2, potential_terms_states, _b2_converted gi
   omega_i < omega_j is the conjugate, T_ij = conj(T_ji). waterline_fields gives u at the waterline from the body and
   free-surface conditions. psi_energy_residual flags (psi_warning) a difference frequency whose psi fails the energy
   identity by more than PSI_ENERGY_TOLERANCE; the lowest Omega of the HAMS grid is 0.01 rad/s (kh = 0.03 for psi).
-The terms carry no stated uncertainty yet: only the checks above and the quadrature convergence are measured, not the
-convergence of the terms in N and the gap basis (to do before a stated uncertainty, as for the drift rows). In finite
+The terms carry no stated uncertainty. B2 is the term whose convergence was in doubt (review R15: it alone uses the
+tangential gradient of psi, singular at the edge); the slow check potential_convergence (SLOW_CHECKS, run by name)
+measures B2, its pieces and T_pot over CONVERGENCE_LADDER, orders 15 against 30 and three quadratures, and check_stokes
+(b) at DEFAULT_RESOLUTION. Measured at (0.70, 0.95) and (0.80, 0.81) rad/s: B2 and T_pot change by at most 2.7e-5 from
+DEFAULT_RESOLUTION to N 128000 with (30, 6, 6), and by 3.1e-5 from POTENTIAL_QUADRATURE (24, 16) to (48, 32); with
+NEAR_QUADRATURE (12, 8) B2 M_y was 4.9e-4 off, all of it in the piece (n x grad psi).(X x u), so the potential part uses
+POTENTIAL_QUADRATURE. These are measurements at two pairs, not a stated uncertainty for every row. In finite
 depth T_pot does not tend to 0 as Omega -> 0 (the set-down: phi_I2 ~ 1/Omega, so FK stays finite; measured F_z FK
 -0.83 at (0.70, 0.71) rad/s, a downward load, as a set-down under the wave group gives), so it is discontinuous at
 the diagonal, where it is 0. psi_1 and psi_5 stay bounded as Omega -> 0 and psi_3 grows slowly (waterline maxima at
@@ -2512,6 +2517,9 @@ def run_qtf(out, motions=("fixed", "free"), frequencies=QTF_FREQUENCIES, resolut
 # integral of phi_D2 is omitted, as in QTF_Indirect.11d). Derived here from the boundary-value problem, not from the
 # Fortran code; module docstring, "QTF potential part".
 
+# The quadrature of the potential part (corner nodes, far nodes): NEAR_QUADRATURE's (12, 8) leaves 4.9e-4 of B2 M_y in
+# the piece (n x grad psi).(X x u), against (48, 32), and (24, 16) 3e-5 (check_potential_convergence; Task 6 fix report)
+POTENTIAL_QUADRATURE = (24, 16)
 QTF_MAX_DW = 0.3                         # the qtf_max_dw of the HAMS cases: pairs with |omega_i - omega_j| above it are left out
 POTENTIAL_TERMS = ("FK", "ID", "B1", "B2", "B3")   # the order of QTF_PotentialTerms.txt
 QTF_FINE_FREQUENCIES = tuple(round(0.40 + 0.01 * i, 2) for i in range(101))   # the grid of the HAMS --qtf-potential cases
@@ -2688,7 +2696,10 @@ def waterline_fields(cyl, omega, state, quad):
     return disp, np.array([ct * u_r - st * u_t, st * u_r + ct * u_t, u_z])
 
 
-def _b2_converted(cyl, quad, psi, si, sj, wl_i, wl_j, kernel=_pair):
+B2_PIECES = ("B2_rot", "B2_surf", "B2_line")   # the pieces of _b2_converted, as columns of qtf_potential_table
+
+
+def _b2_converted(cyl, quad, psi, si, sj, wl_i, wl_j, kernel=_pair, parts=False):
     """int_S psi n.[(X.grad) u] dS under the kernel (states i, j; psi one radiation potential), by Stokes' theorem:
 
         int_S psi n.[(X.grad) u] dS = int_S [psi n.(alpha x u) + (n x grad psi).(X x u)] dS - oint_Gamma psi (X x u).t dl.
@@ -2700,23 +2711,27 @@ def _b2_converted(cyl, quad, psi, si, sj, wl_i, wl_j, kernel=_pair):
     n x t points into S: on the wall n = -e_r (out of the fluid) and S lies below the waterline, so -e_r x t = -e_z,
     t = +e_theta, dl = a dtheta. Only the tangential gradient of psi enters (n x grad psi), and only first derivatives of
     phi. The products of states i and j go through the kernel (_pair_cross_field); psi enters linearly. wl_i, wl_j: (X, u)
-    at the waterline (waterline_fields). check_stokes tests the identity against the direct form on smooth fields."""
-    total = 0j
+    at the waterline (waterline_fields). check_stokes tests the identity against the direct form on smooth fields.
+    parts: return the three pieces (B2_PIECES) instead of their sum: int psi n.(alpha x u), int (n x grad psi).(X x u),
+    and -oint psi (X x u).t dl."""
+    rot_part = surf_part = 0j
     for pf, fi, fj in zip(psi.faces, si.faces, sj.faces):
         w = pf["face"].w[:, None] * quad.theta_weight
         n = fi["normal"]
         rot = _pair_cross_field(si.alpha[:, None, None], fi["grad"], sj.alpha[:, None, None], fj["grad"], kernel)
         big_w = _pair_cross_field(fi["disp"], fi["grad"], fj["disp"], fj["grad"], kernel)
-        total += np.sum((pf["phi"] * np.sum(n * rot, axis=0)
-                         + np.sum(np.cross(n, pf["grad"], axis=0) * big_w, axis=0)) * w)
+        rot_part += np.sum(pf["phi"] * np.sum(n * rot, axis=0) * w)
+        surf_part += np.sum(np.sum(np.cross(n, pf["grad"], axis=0) * big_w, axis=0) * w)
     ct, st = np.cos(quad.theta), np.sin(quad.theta)
     tangent = np.array([-st, ct, 0.0 * ct])
     big_w = _pair_cross_field(wl_i[0], wl_i[1], wl_j[0], wl_j[1], kernel)
-    total -= np.sum(psi.phi_wl * np.sum(big_w * tangent, axis=0)) * cyl.radius * quad.theta_weight
-    return total
+    line_part = -np.sum(psi.phi_wl * np.sum(big_w * tangent, axis=0)) * cyl.radius * quad.theta_weight
+    if parts:
+        return np.array([rot_part, surf_part, line_part])
+    return rot_part + surf_part + line_part
 
 
-def potential_terms_states(cyl, omega_i, si, omega_j, sj, psi, quad, kernel=_pair):
+def potential_terms_states(cyl, omega_i, si, omega_j, sj, psi, quad, kernel=_pair, b2_parts=False):
     """The five body-forcing terms of T_pot,k/(rho g), k = 1, 3, 5 (components 0, 2, 4 of (6,) complex arrays; moments in
     m about the origin), for omega_i > omega_j, from the surface states si, sj (surface_state, xr = 0) and psi =
     psi_states at Omega = omega_i - omega_j. Internal e^(-i omega t) convention, per unit amplitudes; the incident waves
@@ -2762,15 +2777,22 @@ def potential_terms_states(cyl, omega_i, si, omega_j, sj, psi, quad, kernel=_pai
             terms["B1"][k - 1] += pref * np.sum(p * b1 * w)
             terms["B3"][k - 1] += pref * np.sum(p * b3 * w)
     wl_i, wl_j = waterline_fields(cyl, omega_i, si, quad), waterline_fields(cyl, omega_j, sj, quad)
+    if b2_parts:
+        terms.update({key: np.zeros(6, complex) for key in B2_PIECES})
     for k in MOTION_MODES:
-        terms["B2"][k - 1] = -pref * _b2_converted(cyl, quad, psi[k], si, sj, wl_i, wl_j, kernel)
+        pieces = -pref * _b2_converted(cyl, quad, psi[k], si, sj, wl_i, wl_j, kernel, parts=True)
+        terms["B2"][k - 1] = np.sum(pieces)
+        if b2_parts:
+            for key, value in zip(B2_PIECES, pieces):
+                terms[key][k - 1] = value
     for key in terms:
         terms[key][[1, 3, 5]] = 0.0
     return terms
 
 
 def _potential_columns():
-    return tuple("%s_%s_%s" % (q, t, part) for q in ("Fx", "Fz", "My") for t in POTENTIAL_TERMS for part in ("re", "im"))
+    return tuple("%s_%s_%s" % (q, t, part) for q in ("Fx", "Fz", "My") for t in POTENTIAL_TERMS + B2_PIECES
+                 for part in ("re", "im"))
 
 
 QTF_POTENTIAL_COLUMNS = QTF_COLUMNS + _potential_columns() + ("psi_warning",)
@@ -2781,12 +2803,15 @@ def qtf_potential_table(cyl, frequencies, motion, n_modes, p_max, orders, max_dw
     difference kernel only: Fx_re ... My_im are the quadratic T-_ij of qtf_table (the same columns and values, so
     qtf_compare.read_reference reads the file as the quadratic reference), and <quantity>_<term>_re/_im each body-forcing
     term of T_pot,ij (POTENTIAL_TERMS), F/(rho g), M_y in m about the origin, internal e^(-i omega t), per unit
-    amplitudes. The reference total of QTF_Indirect.11d is the quadratic part plus the five terms. The terms are computed
+    amplitudes; <quantity>_B2_rot/_B2_surf/_B2_line_re/_im the three pieces of B2 (B2_PIECES, a diagnostic, their sum
+    is B2). The reference total of QTF_Indirect.11d is the quadratic part plus the five terms. The terms are computed
     for omega_j > omega_i (Omega > 0) and conjugated, T_ij = conj(T_ji); they are zero on the diagonal. The radiation
     potentials are solved once per difference frequency, at the resolution of the first-order solves; psi_warning names
     the difference frequency where they fail the energy identity by more than PSI_ENERGY_TOLERANCE (psi_energy_residual),
-    else it is empty. The phase of the wave (qtf_table) cancels in every difference-kernel product."""
-    quad = body_quadrature(cyl, NEAR_QUADRATURE["n_corner"], NEAR_QUADRATURE["n_far"])
+    else it is empty. The phase of the wave (qtf_table) cancels in every difference-kernel product. Quadrature
+    POTENTIAL_QUADRATURE for the quadratic part and the terms alike (the quadratic columns then differ from the qtf
+    subcommand's, at NEAR_QUADRATURE, by the quadrature error of the near field, below 1e-6 relative)."""
+    quad = body_quadrature(cyl, *POTENTIAL_QUADRATURE)
     states = []
     for omega in frequencies:
         total, xi = _first_order_case(cyl, omega, motion, n_modes, p_max, orders)
@@ -2813,14 +2838,14 @@ def qtf_potential_table(cyl, frequencies, motion, n_modes, p_max, orders, max_dw
                         log("psi at Omega = %.4f rad/s: energy identity %.1e%s" % (big_omega, residual,
                                                                                  " WARNING" if bad else ""))
                 psi = psi_states(cyl, big_omega, n_modes, p_max, quad)
-                pot = potential_terms_states(cyl, wj, states[j], wi, states[i], psi, quad)
+                pot = potential_terms_states(cyl, wj, states[j], wi, states[i], psi, quad, b2_parts=True)
                 if warnings_by_omega[big_omega][0]:
                     row["psi_warning"] = "energy identity %.1e at Omega %.4f" % (warnings_by_omega[big_omega][1],
                                                                                  big_omega)
             else:
-                pot = {key: np.zeros(6, complex) for key in POTENTIAL_TERMS}
+                pot = {key: np.zeros(6, complex) for key in POTENTIAL_TERMS + B2_PIECES}
             for name, index in (("Fx", 0), ("Fz", 2), ("My", 4)):
-                for key in POTENTIAL_TERMS:
+                for key in POTENTIAL_TERMS + B2_PIECES:
                     value = np.conj(pot[key][index])                 # T_ij = conj(T_ji)
                     row["%s_%s_re" % (name, key)], row["%s_%s_im" % (name, key)] = value.real, value.imag
             rows.append(row)
@@ -3045,11 +3070,22 @@ def check_stokes():
     resolutions, NEAR_QUADRATURE and (24, 16) nodes, agrees to 1e-4 relative. The direct form is not integrable at the
     sharp edge (u ~ rho**(-1/3)), so (b) checks only that the converted form converges in the quadrature."""
     identity = _stokes_identity_error()
-    cyl, res = Cylinder(), LIGHT_RESOLUTION
+    values = _stokes_quadrature_values(LIGHT_RESOLUTION, STOKES_QUADRATURES)
+    spread = abs(values[1] - values[0]) / abs(values[1])
+    return identity < 1e-8 and spread < 1e-4, (
+        "identity, smooth fields: |converted - direct|/|direct| %.1e; exact fixed-cylinder fields, prescribed motion: "
+        "converted B2 integral %.6e%+.6ei at %s nodes, relative spread %.1e to %s" % (
+            identity, values[1].real, values[1].imag, STOKES_QUADRATURES[1], spread, STOKES_QUADRATURES[0]))
+
+
+def _stokes_quadrature_values(res, quadratures):
+    """check_stokes (b): the converted B2 integral on the fixed cylinder's fields at res, prescribed motion, for each
+    (n_corner, n_far) of quadratures."""
+    cyl = Cylinder()
     case = STOKES_CASE
     omega_psi = case["omega_i"] - case["omega_j"]
     values = []
-    for n_corner, n_far in STOKES_QUADRATURES:
+    for n_corner, n_far in quadratures:
         quad = body_quadrature(cyl, n_corner, n_far)
         states, wl = [], []
         for omega in (case["omega_i"], case["omega_j"]):
@@ -3061,11 +3097,133 @@ def check_stokes():
             wl.append((waterline_fields(cyl, omega, moved, quad)[0], waterline_fields(cyl, omega, fixed, quad)[1]))
         psi = psi_states(cyl, omega_psi, res["n_modes"], res["p_max"], quad)[case["mode"]]
         values.append(_b2_converted(cyl, quad, psi, states[0], states[1], wl[0], wl[1]))
-    spread = abs(values[1] - values[0]) / abs(values[1])
-    return identity < 1e-8 and spread < 1e-4, (
-        "identity, smooth fields: |converted - direct|/|direct| %.1e; exact fixed-cylinder fields, prescribed motion: "
-        "converted B2 integral %.6e%+.6ei at %s nodes, relative spread %.1e to %s" % (
-            identity, values[1].real, values[1].imag, STOKES_QUADRATURES[1], spread, STOKES_QUADRATURES[0]))
+    return values
+
+
+# check_potential_convergence: the pairs (omega_i < omega_j), the quadratures (NEAR_QUADRATURE first), the gate
+POTENTIAL_CONVERGENCE_PAIRS = ((0.70, 0.95), (0.80, 0.81))
+POTENTIAL_CONVERGENCE_QUADRATURES = (POTENTIAL_QUADRATURE, (NEAR_QUADRATURE["n_corner"], NEAR_QUADRATURE["n_far"]), (48, 32))
+POTENTIAL_CONVERGENCE_SPREAD = 1e-4
+POTENTIAL_CONVERGENCE_ITEMS = ("T_pot", "B2") + B2_PIECES
+
+
+def _clear_solution_caches():
+    """Free the cached solves between resolutions (the N = 128000 rung does not fit beside the others)."""
+    for cached in (_solved, _modes_cached, _interior_cached, _series_context, _psi_solutions, _psi_states_cached):
+        cached.cache_clear()
+
+
+def potential_convergence_values(pair, n_modes, p_max, orders, quad_nodes):
+    """{(item, quantity): complex} for the free body at pair = (omega_i, omega_j), omega_i < omega_j: T_pot (the sum of
+    the five terms), B2 and its pieces (B2_PIECES), quantity Fx, Fz, My, as T_ji at Omega = omega_j - omega_i > 0 (the
+    conjugate of the table's row). One resolution of the first-order and psi solves and one quadrature."""
+    cyl = Cylinder()
+    wi, wj = pair
+    quad = body_quadrature(cyl, *quad_nodes)
+    states = {}
+    for omega in (wi, wj):
+        total, xi = _first_order_case(cyl, omega, "free", n_modes, p_max, orders)
+        states[omega] = surface_state(cyl, omega, total, xi, quad)
+    psi = psi_states(cyl, round(wj - wi, 9), n_modes, p_max, quad)
+    terms = potential_terms_states(cyl, wj, states[wj], wi, states[wi], psi, quad, b2_parts=True)
+    out = {}
+    for name, index in (("Fx", 0), ("Fz", 2), ("My", 4)):
+        out["T_pot", name] = complex(sum(terms[key][index] for key in POTENTIAL_TERMS))
+        for key in ("B2",) + B2_PIECES:
+            out[key, name] = complex(terms[key][index])
+    return out
+
+
+def potential_convergence_table(pairs=POTENTIAL_CONVERGENCE_PAIRS, parts=("ladder", "orders", "quadrature"), log=None):
+    """{pair: {label: values}}: potential_convergence_values at DEFAULT_RESOLUTION with POTENTIAL_QUADRATURE ("default"),
+    and, for "ladder", every other rung of CONVERGENCE_LADDER; for "orders", orders 0 ... 30; for "quadrature", the other
+    POTENTIAL_CONVERGENCE_QUADRATURES on the DEFAULT fields. Each solve set is timed (log)."""
+    res = DEFAULT_RESOLUTION
+    table = {}
+    for pair in pairs:
+        rows = table[pair] = {}
+
+        def run(label, n_modes, p_max, orders, quad_nodes, rows=rows, pair=pair):
+            start = time.time()
+            rows[label] = potential_convergence_values(pair, n_modes, p_max, orders, quad_nodes)
+            if log:
+                log("%s %s: %.0f s" % (pair, label, time.time() - start))
+        base_quad = POTENTIAL_CONVERGENCE_QUADRATURES[0]
+        run("default", res["n_modes"], res["p_max"], res["orders"], base_quad)
+        if "quadrature" in parts:
+            for nodes in POTENTIAL_CONVERGENCE_QUADRATURES[1:]:
+                run("quad %d,%d" % nodes, res["n_modes"], res["p_max"], res["orders"], nodes)
+        if "orders" in parts:
+            run("orders 30", res["n_modes"], res["p_max"], 2 * res["orders"], base_quad)
+        _clear_solution_caches()
+        if "ladder" in parts:
+            for rung in CONVERGENCE_LADDER:
+                if _is_default_resolution(rung["n_modes"], rung["p_max"], rung["orders"]):
+                    continue
+                run(_rung_label(rung), rung["n_modes"], rung["p_max"], rung["orders"], base_quad)
+                _clear_solution_caches()
+    return table
+
+
+def _rung_label(rung):
+    return "N %d %s" % (rung["n_modes"], "/".join(str(p) for p in basis_spec(rung["p_max"])))
+
+
+def _spread(value, other, floor):
+    return abs(value - other) / max(abs(value), floor)
+
+
+def _convergence_floor(rows):
+    return CONVERGENCE_FLOOR * max(abs(rows["default"]["T_pot", q]) for q in ("Fx", "Fz", "My"))
+
+
+def format_potential_convergence(table):
+    """Text table: per pair, item and quantity, the default value and the spread of each other column against it."""
+    lines = []
+    for pair, rows in table.items():
+        labels = [label for label in rows if label != "default"]
+        lines.append("pair %.2f, %.2f (T_ji, Omega = %.2f), free body; spread |X - default|/max(|default|, 1e-4 max |T_pot|)"
+                     % (pair[0], pair[1], pair[1] - pair[0]))
+        lines.append("%-8s %-3s %25s %s" % ("item", "q", "default", " ".join("%16s" % l for l in labels)))
+        base, floor = rows["default"], _convergence_floor(rows)
+        for item in POTENTIAL_CONVERGENCE_ITEMS:
+            for q in ("Fx", "Fz", "My"):
+                v = base[item, q]
+                lines.append("%-8s %-3s %12.5e%+12.5ei %s" % (item, q, v.real, v.imag, " ".join(
+                    "%16.1e" % _spread(v, rows[l][item, q], floor) for l in labels)))
+    return chr(10).join(lines)
+
+
+def check_potential_convergence():
+    """B2 and T_pot of the reference converge (review R15): free body at POTENTIAL_CONVERGENCE_PAIRS, DEFAULT_RESOLUTION
+    against the other rungs of CONVERGENCE_LADDER (N 32000 with (10, 2, 2), N 128000 with (30, 6, 6)), orders 0 ... 30,
+    and the quadratures (12, 8) and (48, 32) on the DEFAULT fields, the default quadrature being POTENTIAL_QUADRATURE
+    (24, 16): the spread of B2 and T_pot (F_x, F_z, M_y) below
+    POTENTIAL_CONVERGENCE_SPREAD of the value (floor CONVERGENCE_FLOOR of the pair's largest abs(T_pot)), against the
+    finest rung, orders 30 and (48, 32); the B2 pieces and the coarse columns are printed, not gated. Also check_stokes (b)
+    at DEFAULT_RESOLUTION, (24, 16) against (48, 32), below 1e-4. In SLOW_CHECKS: the same columns, run one process
+    each, took 25 min for (0.70, 0.95) and 15 min for (0.80, 0.81) on the laptop, check_stokes (b) 4 min (November
+    2026). Measured, against (48, 32) and N 128000 (30, 6, 6): B2 and T_pot within 3.1e-5 and 2.7e-5 (Task 6 fix report).
+    The orders column is exactly 0: X and alpha are of orders 0 and 1, psi_k of order 0 or 1, and phi_I2 is analytic,
+    so the theta integrals see the orders 0 ... 2 of u only, and each order is solved on its own; it checks only that
+    the higher orders enter nowhere else."""
+    table = potential_convergence_table(log=lambda text: print("   " + text, flush=True))
+    print(format_potential_convergence(table), flush=True)
+    worst = 0.0
+    gated = (_rung_label(CONVERGENCE_LADDER[-1]), "orders 30", "quad %d,%d" % POTENTIAL_CONVERGENCE_QUADRATURES[-1])
+    for pair, rows in table.items():
+        base, floor = rows["default"], _convergence_floor(rows)
+        for label in gated:
+            for item in ("T_pot", "B2"):
+                for q in ("Fx", "Fz", "My"):
+                    worst = max(worst, _spread(base[item, q], rows[label][item, q], floor))
+    _clear_solution_caches()
+    stokes = _stokes_quadrature_values(DEFAULT_RESOLUTION, POTENTIAL_CONVERGENCE_QUADRATURES)
+    stokes_spread = abs(stokes[0] - stokes[-1]) / abs(stokes[-1])
+    return worst < POTENTIAL_CONVERGENCE_SPREAD and stokes_spread < 1e-4, (
+        "max spread of B2 and T_pot, default against %s: %.1e; check_stokes (b) at DEFAULT_RESOLUTION, (24, 16) against "
+        "(48, 32): %.1e (values %s)" % (", ".join(gated), worst, stokes_spread,
+                                        ", ".join("%.6e%+.6ei" % (v.real, v.imag) for v in stokes)))
 
 
 LONG_WAVE_OMEGA = 0.05
@@ -3880,7 +4038,8 @@ CHECKS = {"roots": check_roots, "inner_products": check_inner_products, "polylog
 # Run by name (check uncertainty compare_signs) and by the reference subcommand, not by a bare check: uncertainty computes
 # nine rows at N = 128000 that no other check needs; compare_signs reads the study's results outside the repository and
 # computes the 22 reference rows (about 92 s)
-SLOW_CHECKS = {"uncertainty": check_uncertainty, "compare_signs": check_compare_signs}
+SLOW_CHECKS = {"uncertainty": check_uncertainty, "compare_signs": check_compare_signs,
+               "potential_convergence": check_potential_convergence}
 ALL_CHECKS = dict(CHECKS, **SLOW_CHECKS)
 
 

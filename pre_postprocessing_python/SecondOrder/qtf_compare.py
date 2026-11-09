@@ -2,6 +2,7 @@
 Compare the quadratic QTFs of HAMS-MREL with the exact reference of the sharp truncated cylinder and with Nemoh's DUOK part.
 
 Usage:
+    python qtf_compare.py check
     python qtf_compare.py <results> --reference <qtf_reference.csv> [--nemoh <folder of nemoh_* runs>] [--max-dw 0.3]
     python qtf_compare.py <results> --potential <qtf_potential.csv> [--nemoh <folder>] [--max-dw 0.3]
 
@@ -111,8 +112,10 @@ def errors_of(values, exact, scale=None):
     defaults to the largest abs(exact). values maps (wi, wj) -> complex or None (not compared)."""
     ps = sorted(exact)
     scale = max(abs(v) for v in exact.values()) if scale is None else scale
+    if scale == 0.0:
+        return None
     errs = [abs(values[p] - exact[p]) / scale for p in ps if values.get(p) is not None]
-    if not errs or scale == 0.0:
+    if not errs:
         return None
     return max(errs), statistics.median(errs), len(errs), len(ps)
 
@@ -183,6 +186,7 @@ def compare_potential(results, path, nemoh, max_dw):
     for case in sorted(os.path.basename(p) for p in glob.glob(os.path.join(results, "q_sharp_*"))):
         motion = "fixed" if "_fixed_" in case else "free"
         if motion not in ref:
+            print("%-24s no reference for the %s body in %s" % (case, motion, path))
             continue
         folder = os.path.join(results, case, "output", "Wamit_format")
         indirect = read_hams(os.path.join(folder, "QTF_Indirect.11d"))
@@ -214,7 +218,10 @@ def compare_potential(results, path, nemoh, max_dw):
             name = os.path.basename(folder)
             motion = "fixed" if "_fixed_" in name else "free"
             table = read_nemoh(os.path.join(folder, "results", "QTF", "OUT_QTFM_N.dat"))
-            if not table or motion not in ref:
+            if not table:
+                continue
+            if motion not in ref:
+                print("%-24s no reference for the %s body in %s" % (name, motion, path))
                 continue
             best = None
             for label, conjugate, sign in READINGS:
@@ -246,8 +253,81 @@ def nemoh_values(table, index, kernel, conjugate, sign=1.0):
     return out
 
 
+def check_compare_potential():
+    """compare_potential on a temporary fixture: a reference CSV with a quadratic part and five terms (a free body, two
+    frequencies), and HAMS files written from it (.11d = quadratic + sum of the terms, .10d, QTF_PotentialTerms.txt,
+    conjugated and in the file layouts): every error is 0 (to 1e-6, the 7 printed digits of .11d), so the reader of the
+    reference CSV, the total = quadratic + terms assembly, the term order and the index mapping agree; a term moved to the
+    wrong column gives a nonzero error; and a fixed case without a fixed reference prints its note."""
+    import contextlib
+    import io
+    import tempfile
+    pairs = ((0.7, 0.7), (0.7, 0.95), (0.95, 0.95))
+    rng = np.random.default_rng(3)
+    quad = {p: {q: complex(*rng.normal(size=2)) for q, _ in QUANTITIES} for p in pairs}
+    terms = {p: {q: [complex(*rng.normal(size=2)) if p[0] != p[1] else 0j for _ in POTENTIAL_TERMS]
+                 for q, _ in QUANTITIES} for p in pairs}
+
+    def internal(wi, wj, q, what):
+        if (wi, wj) in quad:
+            return what(wi, wj, q)
+        return what(wj, wi, q).conjugate()
+    with tempfile.TemporaryDirectory() as d:
+        ref_path = os.path.join(d, "ref.csv")
+        cols = ["motion", "omega_i", "omega_j", "kernel"] + ["%s_%s" % (q, part) for q, _ in QUANTITIES for part in ("re", "im")]
+        cols += ["%s_%s_%s" % (q, t, part) for q, _ in QUANTITIES for t in POTENTIAL_TERMS for part in ("re", "im")]
+        with open(ref_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(cols)
+            for wi, wj in pairs:
+                row = ["free", wi, wj, "diff"]
+                for q, _ in QUANTITIES:
+                    row += [quad[wi, wj][q].real, quad[wi, wj][q].imag]
+                for q, _ in QUANTITIES:
+                    for t in range(len(POTENTIAL_TERMS)):
+                        row += [terms[wi, wj][q][t].real, terms[wi, wj][q][t].imag]
+                w.writerow(row)
+        for case, swap in (("q_sharp_free_src_m1", None), ("q_sharp_free_src_m2", (1, 3)), ("q_sharp_fixed_src_m1", None)):
+            folder = os.path.join(d, "results", case, "output", "Wamit_format")
+            os.makedirs(folder)
+            files = {name: open(os.path.join(folder, name), "w") for name in
+                     ("QTF_Quadratic.10d", "QTF_Indirect.11d", "QTF_PotentialTerms.txt")}
+            files["QTF_PotentialTerms.txt"].write("# header\n")
+            for wi in (0.7, 0.95):
+                for wj in (0.7, 0.95):
+                    for q, index in QUANTITIES:
+                        a = internal(wi, wj, q, lambda x, y, z: quad[x, y][z])
+                        tt = [internal(wi, wj, q, lambda x, y, z, t=t: terms[x, y][z][t]) for t in range(5)]
+                        for name, v in (("QTF_Quadratic.10d", a), ("QTF_Indirect.11d", a + sum(tt))):
+                            v = v.conjugate()
+                            files[name].write("%14.6E%14.6E%14.6E%14.6E%6d%14.6E%14.6E%14.6E%14.6E\n" % (
+                                wi, wj, 0.0, 0.0, index, abs(v), 0.0, v.real, v.imag))
+                        if wi != wj:
+                            if swap:
+                                tt[swap[0]], tt[swap[1]] = tt[swap[1]], tt[swap[0]]
+                            files["QTF_PotentialTerms.txt"].write("%14.6E%14.6E%14.6E%14.6E%6d" % (wi, wj, 0.0, 0.0, index)
+                                                                  + "".join("%24.15E%24.15E" % (v.real, -v.imag)
+                                                                            for v in tt) + "\n")
+            for f in files.values():
+                f.close()
+        text = io.StringIO()
+        with contextlib.redirect_stdout(text):
+            compare_potential(os.path.join(d, "results"), ref_path, None, 0.3)
+    lines = text.getvalue().splitlines()
+    good = [l for l in lines if l.startswith("q_sharp_free_src_m1 ")]
+    bad = [l for l in lines if l.startswith("q_sharp_free_src_m2 ") and l.split()[1] in ("ID", "B2")]
+    numbers = [float(x) for l in good for x in l.split()[2:]]
+    assert len(good) == 7 and max(numbers) <= 1e-4, "errors of the exact fixture: %s" % good
+    assert bad and all(max(float(x) for x in l.split()[2:]) > 1.0 for l in bad), "swapped terms not seen: %s" % bad
+    assert any("no reference for the fixed body" in l for l in lines), "no note for the fixed case"
+    return "exact fixture max %.1e %%, swapped ID/B2 seen, fixed case noted" % max(numbers)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    if argv is None and sys.argv[1:2] == ["check"]:
+        print("compare_potential    %s" % check_compare_potential())
+        return 0
     parser.add_argument("results")
     parser.add_argument("--reference", help="CSV of truncated_cylinder_reference.py qtf (needed without --potential)")
     parser.add_argument("--potential", help="CSV of truncated_cylinder_reference.py qtf-potential: compare QTF_Indirect.11d "

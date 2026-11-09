@@ -584,6 +584,8 @@ def write_nemoh_case(case, root):
     nemoh_matrix(os.path.join(base, "Mechanics", "Kh.dat"), matrices["restoring"])
     nemoh_matrix(os.path.join(base, "Mechanics", "Km.dat"), stiffness)
     nemoh_matrix(os.path.join(base, "Mechanics", "Badd.dat"), zero)
+    # One range for the first-order and the QTF frequencies: the QTF part needs first-order solutions at every difference
+    # frequency, down to the grid step (the Nemoh user manual asks for first-order coverage of [dw, w_max])
     low, high, count = case.nemoh_range
     modes = ("1 1. 0. 0. 0. 0. 0.", "1 0. 1. 0. 0. 0. 0.", "1 0. 0. 1. 0. 0. 0.",
              "2 1. 0. 0. 0. 0. 0.", "2 0. 1. 0. 0. 0. 0.", "2 0. 0. 1. 0. 0. 0.")
