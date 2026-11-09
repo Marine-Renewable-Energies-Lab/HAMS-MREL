@@ -39,6 +39,7 @@ subroutine collect_qtf_potential(testsuite)
     new_unittest("stokes_identity_smooth", test_identity_smooth), &
     new_unittest("stokes_identity_submerged", test_identity_submerged), &
     new_unittest("stokes_identity_differenced", test_identity_differenced), &
+    new_unittest("stokes_identity_differenced_velocity", test_identity_differenced_velocity), &
     new_unittest("stokes_kernel", test_kernel) &
     ]
 end subroutine collect_qtf_potential
@@ -123,6 +124,27 @@ subroutine velocity(mesh, omega, beta, u)
   end do
 end subroutine velocity
 
+!> As velocity, but as production gets it: the incident wave put in phi_p with its exact normal derivative, and the
+!> gradient from velocity_differencing (one-sided on the waterline and bottom-edge panels).
+subroutine velocity_differenced(mesh, geom, omega, beta, u)
+  type(panel_mesh), intent(in) :: mesh
+  type(surface_geom), intent(in) :: geom
+  real(8), intent(in) :: omega, beta
+  complex(8), allocatable, intent(out) :: u(:,:)
+  type(first_order_state) :: s
+  integer :: i, nfb
+  real(8) :: k
+  call velocity(mesh, omega, beta, u)
+  k = wave_number(omega, depth)
+  allocate(s%phi_p(mesh%n), s%dphi_p_dn(mesh%n), s%grad_p(3, mesh%n))
+  do i = 1, mesh%n
+    s%phi_p(i) = incident_phi(mesh%xc(:, i), omega, k, depth, 1d0, beta, g)
+    s%dphi_p_dn(i) = sum(mesh%nrm(:, i) * u(:, i))
+  end do
+  call velocity_differencing(mesh, geom, s, nfb)
+  u = s%grad_p
+end subroutine velocity_differenced
+
 !> n . (grad u) along each axis j: (n.H)_j, with H the analytic Hessian of the incident wave at x.
 !> phi = C Z(z) e^{i (kx x + ky y)}, so H_xj = i kx phi_j, H_yj = i ky phi_j, H_zz = k^2 phi.
 function normal_hessian(x, nrm, omega, beta) result(nh)
@@ -181,10 +203,11 @@ end subroutine geometry
 !> dominates the relative difference: measured 2.4e-1, 7.3e-2, 1.9e-2 at 128, 512, 2048 panels with the vertex average
 !> (4.8e-3 at 8192), against 8.1e-3, 2.2e-3, 5.5e-4 with the area centroid. The test checks the identity, so it takes the
 !> area centroid.
-subroutine make_sphere(r, c, nlat, mesh)
+subroutine make_sphere(r, c, nlat, mesh, vertex_average)
   real(8), intent(in) :: r, c(3)
   integer, intent(in) :: nlat
   type(panel_mesh), intent(out) :: mesh
+  logical, intent(in), optional :: vertex_average   ! keep the vertex-average centroid of set_panel, as HAMS does
   integer :: nlon, nnode, npan, il, jl, jn, ip, i
   real(8) :: th, ph, v(3, 4), d1(3), d2(3), nv(3), xc(3)
 
@@ -241,7 +264,11 @@ subroutine make_sphere(r, c, nlat, mesh)
       nv = nv / sqrt(sum(nv**2))
       if (sum(nv * (xc - c)) > 0d0) nv = -nv
       call set_panel(mesh, ip, nv)
-      mesh%xc(:, ip) = area_centroid(v, mesh%ncn(ip))
+      if (.not. present(vertex_average)) then
+        mesh%xc(:, ip) = area_centroid(v, mesh%ncn(ip))
+      else if (.not. vertex_average) then
+        mesh%xc(:, ip) = area_centroid(v, mesh%ncn(ip))
+      end if
     end do
   end do
 
@@ -275,32 +302,47 @@ end subroutine make_sphere
 
 !> Relative difference of the converted and direct forms for pair (1, 2) and for pair (1, 1), the larger of the two.
 !> differenced: grad psi from velocity_differencing instead of the analytic gradient.
-real(8) function identity_difference(mesh, geom, differenced) result(rel)
+!> differenced_u (default .false.): u from velocity_differencing too (velocity_differenced), the direct form stays exact.
+real(8) function identity_difference(mesh, geom, differenced, differenced_u) result(rel)
   type(panel_mesh), intent(in) :: mesh
   type(surface_geom), intent(in) :: geom
   logical, intent(in) :: differenced
+  logical, intent(in), optional :: differenced_u
   complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), u1(:,:), u2(:,:)
   complex(8) :: x1(6, 1), x2(6, 1), conv(nmode), dir(nmode)
+  logical :: du
 
+  du = .false.
+  if (present(differenced_u)) du = differenced_u
   call psi_panels(mesh, psi, grad_psi)
   if (differenced) call psi_differenced(mesh, geom, psi, grad_psi)
   allocate(psi_wl(geom%nwl, nmode))
   call psi_waterline(mesh, geom, psi, grad_psi, psi_wl)
   call motions(x1, x2)
-  call velocity(mesh, w1, b1, u1)
-  call velocity(mesh, w2, b2, u2)
+  call get_velocity(w1, b1, u1)
+  call get_velocity(w2, b2, u2)
 
   call hessian_term_converted(mesh, geom, psi, grad_psi, psi_wl, x1, u1, x2, u2, KERNEL_DIFF, conv)
   call direct_form(mesh, psi, x1, x2, KERNEL_DIFF, dir)
   rel = norm2(abs(conv - dir)) / norm2(abs(dir))
 
   ! Pair (1, 1): the brief's case on its own, with u2 = u1 at w1
-  call velocity(mesh, w1, b1, u2)
+  call get_velocity(w1, b1, u2)
   call hessian_term_converted(mesh, geom, psi, grad_psi, psi_wl, x1, u1, x1, u2, KERNEL_DIFF, conv)
   call direct_form_same(dir)
   rel = max(rel, norm2(abs(conv - dir)) / norm2(abs(dir)))
 
 contains
+
+  subroutine get_velocity(omega, beta, u)
+    real(8), intent(in) :: omega, beta
+    complex(8), allocatable, intent(out) :: u(:,:)
+    if (du) then
+      call velocity_differenced(mesh, geom, omega, beta, u)
+    else
+      call velocity(mesh, omega, beta, u)
+    end if
+  end subroutine get_velocity
 
   subroutine direct_form_same(out)
     complex(8), intent(out) :: out(:)
@@ -346,12 +388,13 @@ subroutine test_identity_smooth(error)
   call check(error, e(3) < 1d-3, "not below 1e-3 at 7168 panels; " // line)
 end subroutine test_identity_smooth
 
-!> Closed sphere, no waterline: the surface terms alone carry the identity.
+!> Closed sphere, no waterline: the surface terms alone carry the identity. With the vertex-average centroids that HAMS
+!> uses the difference is larger (see make_sphere), so for them only the O(h^2) order is checked.
 subroutine test_identity_submerged(error)
   type(error_type), allocatable, intent(out) :: error
   type(panel_mesh) :: mesh
   type(surface_geom) :: geom
-  real(8) :: e(3)
+  real(8) :: e(3), ev(3)
   integer :: m
   character(len=200) :: line
 
@@ -362,12 +405,20 @@ subroutine test_identity_submerged(error)
     call check(error, geom%nwl == 0, "the submerged sphere has waterline segments")
     if (allocated(error)) return
     e(m) = identity_difference(mesh, geom, .false.)
+    call make_sphere(5d0, [0d0, 0d0, -20d0], sph_nlat(m), mesh, vertex_average=.true.)
+    call geometry(mesh, geom, error)
+    if (allocated(error)) return
+    ev(m) = identity_difference(mesh, geom, .false.)
   end do
   write(line, '(a,3es11.3)') "relative differences at 128, 512, 2048 panels: ", e
   print '(4x,a)', trim(line)
   call check(error, e(2) < e(1) .and. e(3) < e(2), "does not fall with refinement; " // line)
   if (allocated(error)) return
   call check(error, e(3) < 1d-3, "not below 1e-3 at the finest mesh; " // line)
+  if (allocated(error)) return
+  write(line, '(a,3es11.3)') "vertex-average centroids, relative differences: ", ev
+  print '(4x,a)', trim(line)
+  call check(error, ev(2) / ev(3) >= 3.5d0, "vertex-average centroids: falls by less than 3.5x from 512 to 2048; " // line)
 end subroutine test_identity_submerged
 
 !> As stokes_identity_smooth, with grad psi from velocity_differencing.
@@ -391,6 +442,37 @@ subroutine test_identity_differenced(error)
   if (allocated(error)) return
   call check(error, e(3) < 1d-2, "not below 1e-2 at 7168 panels; " // line)
 end subroutine test_identity_differenced
+
+!> The production path: grad psi and u both from velocity_differencing, against the exact direct form. This converges
+!> at O(h) only: measured 5.3e-2, 3.0e-2, 1.6e-2 (ratios 1.75, 1.87). The cause is the waterline row. There the
+!> neighbours of a panel all lie below or beside it, so the fit of velocity_differencing is one-sided and its vertical
+!> derivative has an O(h) error. That error enters the line term directly and again through the extrapolation of u to
+!> the waterline. With the exact u on the waterline panels alone (everything else still differenced) the order is
+!> O(h^2): 4.1e-3, 1.1e-3, 2.9e-4. The surface terms and the one-sided bottom-edge panels do not limit the order. Here
+!> the whole incident wave is differenced, the worst case. In production the incident part can be evaluated exactly at
+!> the waterline, leaving only the scattered part one-sided. A u_z from the free-surface condition, u_z = (omega^2/g) phi
+!> at z = 0, with phi from waterline_extrapolate, would remove the O(h) error but needs phi at the waterline from the
+!> caller (Task 4). So the assertion is O(h) convergence, with the limit set from the measured values.
+subroutine test_identity_differenced_velocity(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  real(8) :: e(3)
+  integer :: m
+  character(len=200) :: line
+
+  do m = 1, 3
+    call make_cylinder(10d0, 10d0, cyl_ntheta(m), cyl_nz(m), cyl_nr(m), mesh, .true.)
+    call geometry(mesh, geom, error)
+    if (allocated(error)) return
+    e(m) = identity_difference(mesh, geom, .true., differenced_u=.true.)
+  end do
+  write(line, '(a,3es11.3)') "relative differences at 448, 1792, 7168 panels: ", e
+  print '(4x,a)', trim(line)
+  call check(error, e(1) / e(2) >= 1.5d0 .and. e(2) / e(3) >= 1.5d0, "falls by less than 1.5x per refinement; " // line)
+  if (allocated(error)) return
+  call check(error, e(3) < 2.5d-2, "not below 2.5e-2 at 7168 panels; " // line)
+end subroutine test_identity_differenced_velocity
 
 !> The pair (1, 2) is the kernel applied to single-frequency evaluations L(a, b), and swapping 1 and 2 conjugates it.
 !> L(a, b) = int psi n.[(a.grad) b] dS is bilinear without conjugation. KERNEL_SUM with a zero partner gives

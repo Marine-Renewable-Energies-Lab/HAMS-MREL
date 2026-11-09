@@ -34,9 +34,13 @@ MODULE QTFPotential
    !    int_S psi n.[(X.grad)u] dS = int_S [ psi n.(alpha x u) + (n x grad psi).(X x u) ] dS - oint_Gamma psi (X x u).t dl
    !
    ! with t the counter-clockwise direction of the waterline segments (body on the left), as Stokes' theorem orients it for
-   ! n into the body; the unit test stokes_identity_smooth fixes this sign against the direct form. The identity holds for each part of the kernel pair, since each is bilinear in a rigid field and an
-   ! irrotational, divergence-free one. Only first derivatives of phi and the tangential gradient of psi enter. On a sharp
-   ! edge the direct integrand is not integrable (u ~ r^{-1/3}); this form is (r^{-2/3}). Only this form is implemented.
+   ! n into the body; the unit test stokes_identity_smooth fixes this sign against the direct form. The identity holds for
+   ! each part of the kernel pair, since each is bilinear in a rigid field and an irrotational, divergence-free one. Only
+   ! first derivatives of phi and the tangential gradient of psi enter. On a sharp edge the direct integrand is not
+   ! integrable (u ~ r^{-1/3}); this form is (r^{-2/3}). Only this form is implemented.
+   !
+   ! u at the waterline is extrapolated along the panel from its centroid value. With a differenced u the waterline row is
+   ! fitted one-sided, which limits the line term to O(h) (measured in stokes_identity_differenced_velocity).
 
    USE SecondOrderTypes, ONLY: panel_mesh, surface_geom
    USE NearFieldDrift, ONLY: pair_cross, rigid_displacement, waterline_point
