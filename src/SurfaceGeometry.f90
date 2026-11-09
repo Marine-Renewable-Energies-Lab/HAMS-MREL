@@ -54,6 +54,7 @@ CONTAINS
       INTEGER :: n, nb, nn, i, m, mp, a, b, e, ne, g, h, iw, ib
       REAL(8), ALLOCATABLE :: bsize(:), ztol(:), key(:)
       INTEGER, ALLOCATABLE :: rep(:), ea(:), eb(:), ep(:), ord(:), segn(:,:), cnt(:), nbad(:), nfree(:), nwl_b(:)
+      INTEGER, ALLOCATABLE :: seg_from(:), seg_to(:)
       LOGICAL, ALLOCATABLE :: single(:), onwl(:), nonconforming(:)
       REAL(8) :: nhm, t(2), x1(3), x2(3)
       CHARACTER(LEN=300) :: line
@@ -186,6 +187,26 @@ CONTAINS
       nbad = 0
       DO iw = 1, geom%nwl
          cnt(segn(:, iw)) = cnt(segn(:, iw)) + 1
+      END DO
+      ! Loop neighbours, through the (merged) node each segment starts and ends at
+      ALLOCATE (geom%wl_prev(geom%nwl), geom%wl_next(geom%nwl), seg_from(nn), seg_to(nn))
+      geom%wl_prev = 0
+      geom%wl_next = 0
+      seg_from = 0
+      seg_to = 0
+      DO iw = 1, geom%nwl
+         seg_from(segn(1, iw)) = iw
+         seg_to(segn(2, iw)) = iw
+      END DO
+      DO iw = 1, geom%nwl
+         a = seg_from(segn(2, iw))
+         b = seg_to(segn(1, iw))
+         IF (cnt(segn(2, iw)) == 2 .AND. a > 0) THEN
+            IF (a /= iw .AND. geom%wl_body(a) == geom%wl_body(iw)) geom%wl_next(iw) = a
+         END IF
+         IF (cnt(segn(1, iw)) == 2 .AND. b > 0) THEN
+            IF (b /= iw .AND. geom%wl_body(b) == geom%wl_body(iw)) geom%wl_prev(iw) = b
+         END IF
       END DO
       DO iw = 1, geom%nwl
          DO m = 1, 2

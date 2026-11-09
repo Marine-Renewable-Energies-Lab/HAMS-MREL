@@ -10,8 +10,9 @@ module test_qtf_potential
   use FirstOrderState, only : incident_phi, incident_grad
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use SurfaceVelocity, only : velocity_differencing
-  use NearFieldDrift, only : pair_product, rigid_displacement, KERNEL_DIFF, KERNEL_SUM
-  use QTFPotential, only : hessian_term_converted, psi_waterline
+  use NearFieldDrift, only : pair_product, rigid_displacement, waterline_extrapolate, waterline_point, KERNEL_DIFF, KERNEL_SUM
+  use QTFPotential, only : hessian_term_converted, psi_waterline, potential_pair, psi_surface_gradient, &
+                           waterline_velocity, NPOT_TERMS, TP_FK, TP_DIFFRACTION, TP_B1, TP_B2, TP_B3
   use second_order_fixtures, only : make_cylinder, set_panel
   implicit none
   private
@@ -20,7 +21,7 @@ module test_qtf_potential
 
   real(8), parameter :: g = 9.81d0, depth = 100d0, pi = 3.14159265358979323846d0
   integer, parameter :: nmode = 6
-  real(8), parameter :: a_psi = 0.05d0
+  real(8), parameter :: a_psi = 0.05d0, rho = 1025d0
   ! The first-order states of the pair: frequency and heading
   real(8), parameter :: w1 = 0.8d0, b1 = 0d0, w2 = 0.7d0, b2 = 0.3d0
   complex(8), parameter :: ci = (0d0, 1d0)
@@ -40,7 +41,16 @@ subroutine collect_qtf_potential(testsuite)
     new_unittest("stokes_identity_submerged", test_identity_submerged), &
     new_unittest("stokes_identity_differenced", test_identity_differenced), &
     new_unittest("stokes_identity_differenced_velocity", test_identity_differenced_velocity), &
-    new_unittest("stokes_kernel", test_kernel) &
+    new_unittest("stokes_identity_waterline_velocity", test_identity_waterline_velocity), &
+    new_unittest("stokes_kernel", test_kernel), &
+    new_unittest("pot_fixed_body", test_pot_fixed_body), &
+    new_unittest("pot_hermitian", test_pot_hermitian), &
+    new_unittest("pot_equal_frequency", test_pot_equal_frequency), &
+    new_unittest("pot_b3_direct", test_pot_b3_direct), &
+    new_unittest("pot_b1_direct", test_pot_b1_direct), &
+    new_unittest("pot_deep_scaling", test_pot_deep_scaling), &
+    new_unittest("pot_fk_uniform", test_pot_fk_uniform), &
+    new_unittest("pot_psi_missing", test_pot_psi_missing) &
     ]
 end subroutine collect_qtf_potential
 
@@ -144,6 +154,46 @@ subroutine velocity_differenced(mesh, geom, omega, beta, u)
   call velocity_differencing(mesh, geom, s, nfb)
   u = s%grad_p
 end subroutine velocity_differenced
+
+!> As velocity_differenced, and u at the waterline segment midpoints from waterline_velocity, as potential_pair builds it.
+!> The whole wave is the disturbance here (amp = 0, so nothing is taken as exact incident wave): phi at the waterline comes
+!> from waterline_extrapolate of the panel values, u_z from the free-surface condition u_z = (omega^2/g) phi, the tangential
+!> part from differencing phi along the waterline. The normal velocity at the waterline is the exact n.u of the wave, as
+!> the body condition gives it in production from the rigid motion.
+subroutine velocity_differenced_wl(mesh, geom, omega, beta, u, u_wl)
+  type(panel_mesh), intent(in) :: mesh
+  type(surface_geom), intent(in) :: geom
+  real(8), intent(in) :: omega, beta
+  complex(8), allocatable, intent(out) :: u(:,:), u_wl(:,:)
+  type(first_order_state) :: s
+  complex(8), allocatable :: phi_wl(:), vn_wl(:)
+  complex(8) :: ue(3)
+  integer :: i, nfb, iw
+  real(8) :: k
+  call velocity(mesh, omega, beta, u)
+  k = wave_number(omega, depth)
+  s%omega = omega
+  s%k = k
+  s%h = depth
+  s%amp = 0d0
+  s%beta = beta
+  s%g = g
+  s%nu = omega**2 / g
+  allocate(s%phi_p(mesh%n), s%dphi_p_dn(mesh%n), s%grad_p(3, mesh%n))
+  do i = 1, mesh%n
+    s%phi_p(i) = incident_phi(mesh%xc(:, i), omega, k, depth, 1d0, beta, g)
+    s%dphi_p_dn(i) = sum(mesh%nrm(:, i) * u(:, i))
+  end do
+  call velocity_differencing(mesh, geom, s, nfb)
+  u = s%grad_p
+  allocate(phi_wl(geom%nwl), vn_wl(geom%nwl), u_wl(3, geom%nwl))
+  call waterline_extrapolate(mesh, geom, s, phi_wl)
+  do iw = 1, geom%nwl
+    call incident_grad(waterline_point(geom, iw), omega, k, depth, 1d0, beta, g, ue)
+    vn_wl(iw) = sum(mesh%nrm(:, geom%wl_panel(iw)) * ue)
+  end do
+  call waterline_velocity(mesh, geom, s, phi_wl, vn_wl, u_wl)
+end subroutine velocity_differenced_wl
 
 !> n . (grad u) along each axis j: (n.H)_j, with H the analytic Hessian of the incident wave at x.
 !> phi = C Z(z) e^{i (kx x + ky y)}, so H_xj = i kx phi_j, H_yj = i ky phi_j, H_zz = k^2 phi.
@@ -303,41 +353,55 @@ end subroutine make_sphere
 !> Relative difference of the converted and direct forms for pair (1, 2) and for pair (1, 1), the larger of the two.
 !> differenced: grad psi from velocity_differencing instead of the analytic gradient.
 !> differenced_u (default .false.): u from velocity_differencing too (velocity_differenced), the direct form stays exact.
-real(8) function identity_difference(mesh, geom, differenced, differenced_u) result(rel)
+!> waterline_u (default .false.): with differenced_u, also u at the waterline from waterline_velocity (free-surface
+!> condition, body condition and differencing along the waterline) instead of the extrapolation inside the routine.
+real(8) function identity_difference(mesh, geom, differenced, differenced_u, waterline_u) result(rel)
   type(panel_mesh), intent(in) :: mesh
   type(surface_geom), intent(in) :: geom
   logical, intent(in) :: differenced
-  logical, intent(in), optional :: differenced_u
-  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), u1(:,:), u2(:,:)
+  logical, intent(in), optional :: differenced_u, waterline_u
+  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), u1(:,:), u2(:,:), uw1(:,:), uw2(:,:)
   complex(8) :: x1(6, 1), x2(6, 1), conv(nmode), dir(nmode)
-  logical :: du
+  logical :: du, dw
 
   du = .false.
   if (present(differenced_u)) du = differenced_u
+  dw = .false.
+  if (present(waterline_u)) dw = waterline_u
   call psi_panels(mesh, psi, grad_psi)
   if (differenced) call psi_differenced(mesh, geom, psi, grad_psi)
   allocate(psi_wl(geom%nwl, nmode))
   call psi_waterline(mesh, geom, psi, grad_psi, psi_wl)
   call motions(x1, x2)
-  call get_velocity(w1, b1, u1)
-  call get_velocity(w2, b2, u2)
+  call get_velocity(w1, b1, u1, uw1)
+  call get_velocity(w2, b2, u2, uw2)
 
-  call hessian_term_converted(mesh, geom, psi, grad_psi, psi_wl, x1, u1, x2, u2, KERNEL_DIFF, conv)
+  if (dw) then
+    call hessian_term_converted(mesh, geom, psi, grad_psi, psi_wl, x1, u1, x2, u2, KERNEL_DIFF, conv, uw1, uw2)
+  else
+    call hessian_term_converted(mesh, geom, psi, grad_psi, psi_wl, x1, u1, x2, u2, KERNEL_DIFF, conv)
+  end if
   call direct_form(mesh, psi, x1, x2, KERNEL_DIFF, dir)
   rel = norm2(abs(conv - dir)) / norm2(abs(dir))
 
   ! Pair (1, 1): the brief's case on its own, with u2 = u1 at w1
-  call get_velocity(w1, b1, u2)
-  call hessian_term_converted(mesh, geom, psi, grad_psi, psi_wl, x1, u1, x1, u2, KERNEL_DIFF, conv)
+  call get_velocity(w1, b1, u2, uw2)
+  if (dw) then
+    call hessian_term_converted(mesh, geom, psi, grad_psi, psi_wl, x1, u1, x1, u2, KERNEL_DIFF, conv, uw1, uw2)
+  else
+    call hessian_term_converted(mesh, geom, psi, grad_psi, psi_wl, x1, u1, x1, u2, KERNEL_DIFF, conv)
+  end if
   call direct_form_same(dir)
   rel = max(rel, norm2(abs(conv - dir)) / norm2(abs(dir)))
 
 contains
 
-  subroutine get_velocity(omega, beta, u)
+  subroutine get_velocity(omega, beta, u, uw)
     real(8), intent(in) :: omega, beta
-    complex(8), allocatable, intent(out) :: u(:,:)
-    if (du) then
+    complex(8), allocatable, intent(out) :: u(:,:), uw(:,:)
+    if (dw) then
+      call velocity_differenced_wl(mesh, geom, omega, beta, u, uw)
+    else if (du) then
       call velocity_differenced(mesh, geom, omega, beta, u)
     else
       call velocity(mesh, omega, beta, u)
@@ -450,9 +514,10 @@ end subroutine test_identity_differenced
 !> the waterline. With the exact u on the waterline panels alone (everything else still differenced) the order is
 !> O(h^2): 4.1e-3, 1.1e-3, 2.9e-4. The surface terms and the one-sided bottom-edge panels do not limit the order. Here
 !> the whole incident wave is differenced, the worst case. In production the incident part can be evaluated exactly at
-!> the waterline, leaving only the scattered part one-sided. A u_z from the free-surface condition, u_z = (omega^2/g) phi
-!> at z = 0, with phi from waterline_extrapolate, would remove the O(h) error but needs phi at the waterline from the
-!> caller (Task 4). So the assertion is O(h) convergence, with the limit set from the measured values.
+!> the waterline, leaving only the scattered part one-sided. This test keeps the extrapolation inside
+!> hessian_term_converted (no u1_wl, u2_wl), so the assertion is O(h) convergence, with the limit set from the measured
+!> values. potential_pair passes u at the waterline from waterline_velocity instead, which is O(h^2):
+!> stokes_identity_waterline_velocity.
 subroutine test_identity_differenced_velocity(error)
   type(error_type), allocatable, intent(out) :: error
   type(panel_mesh) :: mesh
@@ -512,5 +577,375 @@ subroutine test_kernel(error)
   if (allocated(error)) return
   call check(error, maxval(abs(t21 - conjg(t12))) <= 1d-12 * scale, "swapping 1 and 2 does not conjugate the pair term")
 end subroutine test_kernel
+
+!> The production path with u at the waterline built by waterline_velocity (ruling R7): grad psi and the panel u from
+!> velocity_differencing, u at the waterline from the free-surface condition (u_z = (omega^2/g) phi, phi from
+!> waterline_extrapolate), the body condition (normal part) and differencing phi along the waterline (tangential part).
+!> This removes the one-sided vertical derivative of the waterline row, so the order returns to O(h^2).
+subroutine test_identity_waterline_velocity(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  real(8) :: e(3)
+  integer :: m, iw
+  character(len=200) :: line
+
+  do m = 1, 3
+    call make_cylinder(10d0, 10d0, cyl_ntheta(m), cyl_nz(m), cyl_nr(m), mesh, .true.)
+    call geometry(mesh, geom, error)
+    if (allocated(error)) return
+    call check(error, all(geom%wl_next > 0) .and. all(geom%wl_prev > 0), "a waterline segment has no loop neighbour")
+    if (allocated(error)) return
+    call check(error, all(geom%wl_prev(geom%wl_next) == [(iw, iw = 1, geom%nwl)]), "wl_prev is not the inverse of wl_next")
+    if (allocated(error)) return
+    e(m) = identity_difference(mesh, geom, .true., differenced_u=.true., waterline_u=.true.)
+  end do
+  write(line, '(a,3es11.3)') "relative differences at 448, 1792, 7168 panels: ", e
+  print '(4x,a)', trim(line)
+  call check(error, e(1) / e(2) >= 3d0 .and. e(2) / e(3) >= 3d0, "falls by less than 3x per refinement; " // line)
+end subroutine test_identity_waterline_velocity
+
+! ---------------------------------------------------------------------------------------------- potential_pair
+
+!> Wave number of omega in depth h, deep water for h < 0.
+real(8) function wave_number_h(omega, h)
+  real(8), intent(in) :: omega, h
+  if (h < 0d0) then
+    wave_number_h = omega**2 / g
+  else
+    wave_number_h = wave_number(omega, h)
+  end if
+end function wave_number_h
+
+!> First-order state of a unit incident wave (omega, beta) in depth h, with rigid motions xi and no disturbance
+!> potential, and its total potential at the waterline.
+subroutine make_state(mesh, geom, omega, beta, h, xi, s, phi_wl)
+  type(panel_mesh), intent(in) :: mesh
+  type(surface_geom), intent(in) :: geom
+  real(8), intent(in) :: omega, beta, h
+  complex(8), intent(in) :: xi(6, 1)
+  type(first_order_state), intent(out) :: s
+  complex(8), allocatable, intent(out) :: phi_wl(:)
+  integer :: i
+  s%omega = omega
+  s%k = wave_number_h(omega, h)
+  s%nu = omega**2 / g
+  s%h = h
+  s%amp = 1d0
+  s%beta = beta
+  s%g = g
+  s%rho = rho
+  allocate(s%phi_i(mesh%n), s%phi_p(mesh%n), s%dphi_p_dn(mesh%n), s%dphi_dn(mesh%n))
+  allocate(s%grad_i(3, mesh%n), s%grad_p(3, mesh%n), s%xi(6, 1))
+  s%xi = xi
+  s%phi_p = (0d0, 0d0)
+  s%grad_p = (0d0, 0d0)
+  do i = 1, mesh%n
+    s%phi_i(i) = incident_phi(mesh%xc(:, i), omega, s%k, h, 1d0, beta, g)
+    call incident_grad(mesh%xc(:, i), omega, s%k, h, 1d0, beta, g, s%grad_i(:, i))
+    s%dphi_dn(i) = sum(mesh%nrm(:, i) * s%grad_i(:, i))
+  end do
+  s%dphi_p_dn = (0d0, 0d0)
+  allocate(phi_wl(geom%nwl))
+  call waterline_extrapolate(mesh, geom, s, phi_wl)
+end subroutine make_state
+
+!> Synthetic psi: the harmonic columns of psi_panels, times e^{0.3 i k} when complex_psi, with the gradient that
+!> potential_pair's caller builds (psi_surface_gradient) and the waterline values.
+subroutine synthetic_psi(mesh, geom, complex_psi, psi, grad_psi, psi_wl)
+  type(panel_mesh), intent(in) :: mesh
+  type(surface_geom), intent(in) :: geom
+  logical, intent(in) :: complex_psi
+  complex(8), allocatable, intent(out) :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:)
+  integer :: k
+  call psi_panels(mesh, psi, grad_psi)
+  if (complex_psi) then
+    do k = 1, nmode
+      psi(:, k) = psi(:, k) * exp(ci * 0.3d0 * real(k, 8))
+    end do
+  end if
+  call psi_surface_gradient(mesh, geom, psi, grad_psi)
+  allocate(psi_wl(geom%nwl, nmode))
+  call psi_waterline(mesh, geom, psi, grad_psi, psi_wl)
+end subroutine synthetic_psi
+
+subroutine cylinder_448(mesh, geom, error)
+  type(panel_mesh), intent(out) :: mesh
+  type(surface_geom), intent(out) :: geom
+  type(error_type), allocatable, intent(out) :: error
+  call make_cylinder(10d0, 10d0, cyl_ntheta(1), cyl_nz(1), cyl_nr(1), mesh, .true.)
+  call geometry(mesh, geom, error)
+end subroutine cylinder_448
+
+!> With xi = 0 in both states, B1, B2 and B3 are zero exactly: each is a product with a motion.
+subroutine test_pot_fixed_body(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: s1, s2
+  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), wl1(:), wl2(:)
+  complex(8) :: zx(6, 1), terms(nmode, NPOT_TERMS)
+
+  call cylinder_448(mesh, geom, error)
+  if (allocated(error)) return
+  zx = (0d0, 0d0)
+  call make_state(mesh, geom, w1, b1, depth, zx, s1, wl1)
+  call make_state(mesh, geom, w2, b2, depth, zx, s2, wl2)
+  call synthetic_psi(mesh, geom, .true., psi, grad_psi, psi_wl)
+  call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, w1 - w2, rho, g, terms)
+  call check(error, all(terms(:, TP_B1) == (0d0, 0d0)) .and. all(terms(:, TP_B2) == (0d0, 0d0)) &
+             .and. all(terms(:, TP_B3) == (0d0, 0d0)), "B1, B2 or B3 is not zero for a fixed body")
+  if (allocated(error)) return
+  call check(error, maxval(abs(terms(:, TP_FK))) > 0d0 .and. maxval(abs(terms(:, TP_DIFFRACTION))) > 0d0, &
+             "the incident terms are zero")
+end subroutine test_pot_fixed_body
+
+!> Swapping the states gives the conjugate when psi at Omega < 0 is taken as conj psi(|Omega|), with complex psi so that a
+!> missing conjugation shows. Each term on its own, moving body, finite depth, different headings.
+subroutine test_pot_hermitian(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: s1, s2
+  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), wl1(:), wl2(:)
+  complex(8) :: x1(6, 1), x2(6, 1), t12(nmode, NPOT_TERMS), t21(nmode, NPOT_TERMS)
+  integer :: j
+  character(len=80) :: line
+
+  call cylinder_448(mesh, geom, error)
+  if (allocated(error)) return
+  call motions(x1, x2)
+  call make_state(mesh, geom, w1, b1, depth, x1, s1, wl1)
+  call make_state(mesh, geom, w2, b2, depth, x2, s2, wl2)
+  call synthetic_psi(mesh, geom, .true., psi, grad_psi, psi_wl)
+  call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, 0.1d0, rho, g, t12)
+  call potential_pair(mesh, geom, s2, s1, wl2, wl1, psi, grad_psi, psi_wl, 0.1d0, rho, g, t21)
+  do j = 1, NPOT_TERMS
+    write(line, '(a,i0)') "term ", j
+    call check(error, maxval(abs(t12(:, j))) > 0d0, trim(line) // " is zero")
+    if (allocated(error)) return
+    call check(error, maxval(abs(t21(:, j) - conjg(t12(:, j)))) <= 1d-12 * maxval(abs(t12(:, j))), &
+               trim(line) // ": (2, 1) is not conj (1, 2)")
+    if (allocated(error)) return
+  end do
+end subroutine test_pot_hermitian
+
+!> Equal frequencies, different headings (Omega = 0, K /= 0): every term is zero and finite.
+subroutine test_pot_equal_frequency(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: s1, s2
+  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), wl1(:), wl2(:)
+  complex(8) :: x1(6, 1), x2(6, 1), terms(nmode, NPOT_TERMS)
+
+  call cylinder_448(mesh, geom, error)
+  if (allocated(error)) return
+  call motions(x1, x2)
+  call make_state(mesh, geom, w1, 0d0, depth, x1, s1, wl1)
+  call make_state(mesh, geom, w1, 40d0 * pi / 180d0, depth, x2, s2, wl2)
+  call synthetic_psi(mesh, geom, .true., psi, grad_psi, psi_wl)
+  terms = (1d0, 1d0)
+  call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, 0.1d0, rho, g, terms)
+  call check(error, all(terms == (0d0, 0d0)), "the terms are not zero at Omega = 0")
+end subroutine test_pot_equal_frequency
+
+!> B3 = int psi_k n.d/dt(H x) dS, H x = (1/2) alpha x (alpha x x), against the Omega component of the time series of
+!> (1/2) alpha(t) x (alpha(t) x x), alpha(t) = Re[alpha_1 e^{-i w1 t} + alpha_2 e^{-i w2 t}], over one beat period (64
+!> samples). With w1 = 0.8, w2 = 0.7 every frequency of the product is a multiple of Omega below 32 Omega, so the
+!> projection is exact. Its Omega part is Re[(T12 + conj T21) e^{-i Omega t}] = Re[2 T12 e^{-i Omega t}], so
+!> T12 = (1/N) sum h(t_n) e^{i Omega t_n}; d/dt gives -i Omega.
+subroutine test_pot_b3_direct(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: s1, s2
+  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), wl1(:), wl2(:)
+  complex(8) :: x1(6, 1), x2(6, 1), terms(nmode, NPOT_TERMS), ref(nmode), acc(3), bi
+  integer, parameter :: nt = 64
+  real(8) :: om, t, a(3), x(3), hx(3), ax(3)
+  integer :: i, n
+
+  call cylinder_448(mesh, geom, error)
+  if (allocated(error)) return
+  call motions(x1, x2)
+  call make_state(mesh, geom, w1, b1, depth, x1, s1, wl1)
+  call make_state(mesh, geom, w2, b2, depth, x2, s2, wl2)
+  call synthetic_psi(mesh, geom, .true., psi, grad_psi, psi_wl)
+  call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, 0.1d0, rho, g, terms)
+
+  om = w1 - w2
+  ref = (0d0, 0d0)
+  do i = 1, mesh%n
+    x = mesh%xc(:, i) - mesh%xr(:, 1)
+    acc = (0d0, 0d0)
+    do n = 0, nt - 1
+      t = 2d0 * pi * real(n, 8) / (real(nt, 8) * om)
+      a = real(x1(4:6, 1) * exp(-ci * w1 * t) + x2(4:6, 1) * exp(-ci * w2 * t))
+      ax = cross_r(a, x)
+      hx = 0.5d0 * cross_r(a, ax)
+      acc = acc + hx * exp(ci * om * t)
+    end do
+    bi = sum(mesh%nrm(:, i) * (-ci * om * acc / real(nt, 8)))
+    ref = ref + psi(i, :) * bi * mesh%area(i)
+  end do
+  ref = ci * om * rho * ref
+  call check(error, maxval(abs(ref)) > 0d0, "the reference B3 is zero")
+  if (allocated(error)) return
+  call check(error, maxval(abs(terms(:, TP_B3) - ref)) <= 1d-10 * maxval(abs(ref)), "B3 differs from the time series")
+
+contains
+
+  pure function cross_r(p, q) result(c)
+    real(8), intent(in) :: p(3), q(3)
+    real(8) :: c(3)
+    c = [p(2)*q(3) - p(3)*q(2), p(3)*q(1) - p(1)*q(3), p(1)*q(2) - p(2)*q(1)]
+  end function cross_r
+
+end subroutine test_pot_b3_direct
+
+!> B1 = int psi_k (Xdot - u).(alpha x n) dS against the Omega component of the time series of the product of the real
+!> signals Xdot(t) - u(t) and alpha(t), projected as in pot_b3_direct. Fixes the order of the triple product and the
+!> sign of u.
+subroutine test_pot_b1_direct(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: s1, s2
+  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), wl1(:), wl2(:)
+  complex(8) :: x1(6, 1), x2(6, 1), terms(nmode, NPOT_TERMS), ref(nmode), acc, v1(3), v2(3)
+  integer, parameter :: nt = 64
+  real(8) :: om, t, a(3), v(3), x(3), an(3)
+  integer :: i, n
+
+  call cylinder_448(mesh, geom, error)
+  if (allocated(error)) return
+  call motions(x1, x2)
+  call make_state(mesh, geom, w1, b1, depth, x1, s1, wl1)
+  call make_state(mesh, geom, w2, b2, depth, x2, s2, wl2)
+  call synthetic_psi(mesh, geom, .true., psi, grad_psi, psi_wl)
+  call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, 0.1d0, rho, g, terms)
+
+  om = w1 - w2
+  ref = (0d0, 0d0)
+  do i = 1, mesh%n
+    x = mesh%xc(:, i) - mesh%xr(:, 1)
+    v1 = -ci * w1 * rigid_displacement(x1(:, 1), x) - s1%grad_i(:, i)
+    v2 = -ci * w2 * rigid_displacement(x2(:, 1), x) - s2%grad_i(:, i)
+    acc = (0d0, 0d0)
+    do n = 0, nt - 1
+      t = 2d0 * pi * real(n, 8) / (real(nt, 8) * om)
+      a = real(x1(4:6, 1) * exp(-ci * w1 * t) + x2(4:6, 1) * exp(-ci * w2 * t))
+      v = real(v1 * exp(-ci * w1 * t) + v2 * exp(-ci * w2 * t))
+      an = [a(2)*mesh%nrm(3, i) - a(3)*mesh%nrm(2, i), a(3)*mesh%nrm(1, i) - a(1)*mesh%nrm(3, i), &
+            a(1)*mesh%nrm(2, i) - a(2)*mesh%nrm(1, i)]
+      acc = acc + sum(v * an) * exp(ci * om * t)
+    end do
+    ref = ref + psi(i, :) * acc / real(nt, 8) * mesh%area(i)
+  end do
+  ref = ci * om * rho * ref
+  call check(error, maxval(abs(ref)) > 0d0, "the reference B1 is zero")
+  if (allocated(error)) return
+  call check(error, maxval(abs(terms(:, TP_B1) - ref)) <= 1d-10 * maxval(abs(ref)), "B1 differs from the time series")
+end subroutine test_pot_b1_direct
+
+!> Deep water, collinear waves, fixed synthetic psi and motions: every bracket of T_pot has a finite limit as Omega -> 0
+!> (phi_I2 tends to i omega/2 per unit amplitudes), so T_pot = i Omega rho [...] is proportional to Omega.
+subroutine test_pot_deep_scaling(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: s1, s2
+  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), wl1(:), wl2(:)
+  complex(8) :: x1(6, 1), x2(6, 1), terms(nmode, NPOT_TERMS)
+  real(8), parameter :: dw(3) = [0.02d0, 0.01d0, 0.005d0], wj = 0.8d0
+  real(8) :: r(3)
+  integer :: m
+  character(len=200) :: line
+
+  call cylinder_448(mesh, geom, error)
+  if (allocated(error)) return
+  call motions(x1, x2)
+  call synthetic_psi(mesh, geom, .false., psi, grad_psi, psi_wl)
+  call make_state(mesh, geom, wj, 0d0, -1d0, x2, s2, wl2)
+  do m = 1, 3
+    call make_state(mesh, geom, wj + dw(m), 0d0, -1d0, x1, s1, wl1)
+    call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, dw(m), rho, g, terms)
+    r(m) = norm2(abs(sum(terms, dim=2))) / dw(m)
+  end do
+  write(line, '(a,3es13.5)') "|T_pot| / Omega at Omega = 0.02, 0.01, 0.005: ", r
+  print '(4x,a)', trim(line)
+  call check(error, abs(r(2) / r(1) - 1d0) <= 0.05d0 .and. abs(r(3) / r(1) - 1d0) <= 0.05d0, &
+             "|T_pot| is not proportional to Omega within 5%; " // line)
+end subroutine test_pot_deep_scaling
+
+!> phi_I2 replaced by a constant c: the FK force is i Omega rho c int n dS. On a closed sphere that is 0; on the truncated
+!> cylinder only the bottom contributes, n_z = +1 (out of the fluid), so F_z = i Omega rho c A_wp. The diffraction term
+!> is 0, since dphi_I2/dn = 0.
+subroutine test_pot_fk_uniform(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: s1, s2
+  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), wl1(:), wl2(:)
+  complex(8) :: zx(6, 1), terms(nmode, NPOT_TERMS)
+  complex(8), parameter :: c = (0.7d0, -0.4d0)
+  real(8) :: om, ref
+
+  om = w1 - w2
+  zx = (0d0, 0d0)
+  call make_sphere(5d0, [0d0, 0d0, -20d0], sph_nlat(1), mesh)
+  call geometry(mesh, geom, error)
+  if (allocated(error)) return
+  call make_state(mesh, geom, w1, b1, depth, zx, s1, wl1)
+  call make_state(mesh, geom, w2, b2, depth, zx, s2, wl2)
+  call synthetic_psi(mesh, geom, .true., psi, grad_psi, psi_wl)
+  call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, 0.1d0, rho, g, terms, phi2_constant=c)
+  ref = om * rho * abs(c) * sum(mesh%area)
+  call check(error, norm2(abs(terms(1:3, TP_FK))) <= 1d-12 * ref, "sphere: the FK force of a constant is not zero")
+  if (allocated(error)) return
+  call check(error, all(terms(:, TP_DIFFRACTION) == (0d0, 0d0)), "sphere: the diffraction term of a constant is not zero")
+  if (allocated(error)) return
+
+  call cylinder_448(mesh, geom, error)
+  if (allocated(error)) return
+  call make_state(mesh, geom, w1, b1, depth, zx, s1, wl1)
+  call make_state(mesh, geom, w2, b2, depth, zx, s2, wl2)
+  call synthetic_psi(mesh, geom, .true., psi, grad_psi, psi_wl)
+  call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, 0.1d0, rho, g, terms, phi2_constant=c)
+  ref = om * rho * abs(c) * geom%awp(1)
+  call check(error, abs(terms(1, TP_FK)) <= 1d-10 * ref .and. abs(terms(2, TP_FK)) <= 1d-10 * ref, &
+             "cylinder: F_x or F_y of a constant is not zero")
+  if (allocated(error)) return
+  call check(error, abs(terms(3, TP_FK) - ci * om * rho * c * geom%awp(1)) <= 1d-10 * ref, &
+             "cylinder: F_z is not i Omega rho c A_wp")
+end subroutine test_pot_fk_uniform
+
+!> A psi solved at another Omega, or a psi that was never stored (all zero), is refused: ok = .false., terms zero.
+subroutine test_pot_psi_missing(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: s1, s2
+  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), wl1(:), wl2(:)
+  complex(8) :: x1(6, 1), x2(6, 1), terms(nmode, NPOT_TERMS)
+  logical :: ok
+
+  call cylinder_448(mesh, geom, error)
+  if (allocated(error)) return
+  call motions(x1, x2)
+  call make_state(mesh, geom, w1, b1, depth, x1, s1, wl1)
+  call make_state(mesh, geom, w2, b2, depth, x2, s2, wl2)
+  call synthetic_psi(mesh, geom, .true., psi, grad_psi, psi_wl)
+  call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, 0.1d0, rho, g, terms, ok=ok)
+  call check(error, ok, "a matching psi is refused")
+  if (allocated(error)) return
+  call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, 0.2d0, rho, g, terms, ok=ok)
+  call check(error, .not. ok .and. all(terms == (0d0, 0d0)), "psi of another Omega is not refused")
+  if (allocated(error)) return
+  psi = (0d0, 0d0)
+  call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, 0.1d0, rho, g, terms, ok=ok)
+  call check(error, .not. ok .and. all(terms == (0d0, 0d0)), "a psi that was never stored is not refused")
+end subroutine test_pot_psi_missing
 
 end module test_qtf_potential

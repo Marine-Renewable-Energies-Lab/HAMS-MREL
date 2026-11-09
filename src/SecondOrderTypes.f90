@@ -87,6 +87,9 @@ MODULE SecondOrderTypes
       REAL(8), ALLOCATABLE :: wl_x1(:,:), wl_x2(:,:), wl_xm(:,:), wl_len(:)   ! (3,nwl), (3,nwl), (3,nwl), (nwl)
       REAL(8), ALLOCATABLE :: wl_nh(:,:), wl_nz(:)    ! unit horizontal normal into the body (3,nwl); n_z of the panel
       INTEGER, ALLOCATABLE :: wl_panel(:), wl_body(:)
+      ! Neighbours along the waterline loop: wl_next starts at the end node of the segment, wl_prev ends at its start
+      ! node (nwl); 0 at a gap or where more than two segments meet.
+      INTEGER, ALLOCATABLE :: wl_prev(:), wl_next(:)
       REAL(8), ALLOCATABLE :: awp(:), xf(:), yf(:), l11(:), l12(:), l22(:), vol(:), xb(:), yb(:), zb(:)   ! (nbody)
       INTEGER, ALLOCATABLE :: n_wl_gaps(:)            ! (nbody)
    END TYPE surface_geom
