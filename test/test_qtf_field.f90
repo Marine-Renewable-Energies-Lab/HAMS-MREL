@@ -4,7 +4,7 @@ module test_qtf_field
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use QTFField, only : field_pair, build_field_points
   use SecondOrderTypes, only : panel_mesh, cs_points
-  use second_order_fixtures, only : make_cylinder, make_two_bodies
+  use second_order_fixtures, only : make_cylinder, make_two_bodies, set_panel
   use SecondOrderIncident, only : incident2, incident2_pair, incident2_phi
   use FirstOrderState, only : incident_phi, incident_grad
   use NearFieldDrift, only : KERNEL_DIFF, KERNEL_SUM
@@ -34,7 +34,8 @@ subroutine collect_qtf_field(testsuite)
     new_unittest("points_on_hull_rejected", test_points_on_hull), &
     new_unittest("points_inside_rejected", test_points_inside), &
     new_unittest("points_inside_waterplane_rejected", test_points_waterplane), &
-    new_unittest("points_two_bodies", test_points_two_bodies) &
+    new_unittest("points_two_bodies", test_points_two_bodies), &
+    new_unittest("points_mixed_panel_sizes", test_points_mixed_sizes) &
     ]
 end subroutine collect_qtf_field
 
@@ -375,5 +376,62 @@ subroutine test_points_two_bodies(error)
   call build_field_points(mesh, reshape([20d0, 0d0, 0d0], [3, 1]), pts, surface, ok, msg)
   call check(error, ok .and. pts%body(1) >= 1, "point between the bodies rejected")
 end subroutine test_points_two_bodies
+
+!> Box 20 x 10 x 5 below z = 0 (open top): side walls of 0.5 m panels, bottom of 5 x 3 panels of 4 m x 3.33 m.
+subroutine mixed_box(mesh)
+  type(panel_mesh), intent(out) :: mesh
+  integer :: ip, inode
+  mesh%n = 2*200 + 2*400 + 15; mesh%nbase = mesh%n; mesh%nnode = 4*mesh%n; mesh%nbody = 1
+  allocate(mesh%xc(3, mesh%n), mesh%nrm(3, mesh%n), mesh%area(mesh%n), mesh%psize(mesh%n), mesh%nj(6, mesh%n))
+  allocate(mesh%xnode(3, mesh%nnode), mesh%ncn(mesh%n), mesh%ncon(4, mesh%n), mesh%body(mesh%n), mesh%base(mesh%n), &
+           mesh%image(mesh%n), mesh%xr(3, 1))
+  mesh%xr = 0d0; mesh%body = 1; mesh%image = 1; mesh%ncn = 4
+  ip = 0; inode = 0
+  call add_face([0d0, 0d0, -5d0], [0d0, 10d0, 0d0], [0d0, 0d0, 5d0], 20, 10, [1d0, 0d0, 0d0])
+  call add_face([20d0, 0d0, -5d0], [0d0, 10d0, 0d0], [0d0, 0d0, 5d0], 20, 10, [-1d0, 0d0, 0d0])
+  call add_face([0d0, 0d0, -5d0], [20d0, 0d0, 0d0], [0d0, 0d0, 5d0], 40, 10, [0d0, 1d0, 0d0])
+  call add_face([0d0, 10d0, -5d0], [20d0, 0d0, 0d0], [0d0, 0d0, 5d0], 40, 10, [0d0, -1d0, 0d0])
+  call add_face([0d0, 0d0, -5d0], [20d0, 0d0, 0d0], [0d0, 10d0, 0d0], 5, 3, [0d0, 0d0, 1d0])
+  mesh%base = [(ip, ip = 1, mesh%n)]
+contains
+  subroutine add_face(o, u, v, nu, nv, nin)
+    real(8), intent(in) :: o(3), u(3), v(3), nin(3)
+    integer, intent(in) :: nu, nv
+    integer :: i, j
+    do i = 0, nu - 1
+      do j = 0, nv - 1
+        ip = ip + 1
+        mesh%xnode(:, inode + 1) = o + u*i/nu + v*j/nv
+        mesh%xnode(:, inode + 2) = o + u*(i + 1)/nu + v*j/nv
+        mesh%xnode(:, inode + 3) = o + u*(i + 1)/nu + v*(j + 1)/nv
+        mesh%xnode(:, inode + 4) = o + u*i/nu + v*(j + 1)/nv
+        mesh%ncon(:, ip) = inode + [1, 2, 3, 4]
+        inode = inode + 4
+        call set_panel(mesh, ip, nin)
+      end do
+    end do
+  end subroutine add_face
+end subroutine mixed_box
+
+!> Below the box, 3.5 m under the bottom and 0.3 m inside the plane of a side wall: the nearest centroid is on the fine
+!> wall, whose plane puts the point inside. The point is outside and must be accepted; points in the box and in its
+!> waterplane must still be rejected.
+subroutine test_points_mixed_sizes(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(cs_points) :: pts
+  logical, allocatable :: surface(:)
+  logical :: ok
+  character(len=:), allocatable :: msg
+  call mixed_box(mesh)
+  call build_field_points(mesh, reshape([0.3d0, 5d0, -8.5d0, 25d0, 5d0, 0d0], [3, 2]), pts, surface, ok, msg)
+  call check(error, ok, "point below the box rejected: " // msg)
+  if (allocated(error)) return
+  call build_field_points(mesh, reshape([10d0, 5d0, -0.5d0], [3, 1]), pts, surface, ok, msg)
+  call check(error, .not. ok .and. index(msg, "inside body 1") > 0, "point in the box not rejected")
+  if (allocated(error)) return
+  call build_field_points(mesh, reshape([10d0, 5d0, 0d0], [3, 1]), pts, surface, ok, msg)
+  call check(error, .not. ok .and. index(msg, "inside body 1") > 0, "waterplane point not rejected")
+end subroutine test_points_mixed_sizes
 
 end module test_qtf_field

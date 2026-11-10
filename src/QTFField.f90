@@ -110,7 +110,7 @@ CONTAINS
       ! hull panel (centroids of the full panel set, so symmetry images are included). Rejected, checked in point order,
       ! the first failing point giving msg: above the free surface; within one local panel size of a hull panel centroid
       ! (a point has no panel size of its own, so the limit is the hull panel's size); inside a body, decided by the
-      ! nearest centroid c as (x - c).n > 0, with n the panel normal, which points into the body.
+      ! winding number of body_winding. The nearest centroid alone decides wrongly near edges where panel sizes change.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       REAL(8), INTENT(IN) :: xfp(:,:)
       TYPE(cs_points), INTENT(OUT) :: pts
@@ -119,7 +119,8 @@ CONTAINS
       CHARACTER(LEN=:), ALLOCATABLE, INTENT(OUT) :: msg
       REAL(8), PARAMETER :: ZTOL = 1D-6
       REAL(8) :: x(3), d2, d2min
-      INTEGER :: ip, i, imin, ihull, n
+      REAL(8), ALLOCATABLE :: wind(:)
+      INTEGER :: ip, i, imin, ihull, n, ib
       CHARACTER(LEN=300) :: line
 
       n = SIZE(xfp, 2)
@@ -171,14 +172,64 @@ CONTAINS
             ok = .FALSE.
             RETURN
          END IF
-         IF (SUM((x - mesh%xc(:, imin))*mesh%nrm(:, imin)) > 0D0) THEN
-            WRITE (line, '(a,i0,a,3(1x,es11.3),a,i0)') 'field point ', ip, ' at', x, ' is inside body ', mesh%body(imin)
+         CALL body_winding(mesh, x, wind)
+         ib = MAXLOC(wind, 1)
+         IF (wind(ib) > 0.5D0) THEN
+            WRITE (line, '(a,i0,a,3(1x,es11.3),a,i0)') 'field point ', ip, ' at', x, ' is inside body ', ib
             msg = TRIM(line)
             ok = .FALSE.
             RETURN
          END IF
       END DO
    END SUBROUTINE build_field_points
+
+   SUBROUTINE body_winding(mesh, x, wind)
+      ! Winding number wind(b) of each body b about x: the solid angle of its hull panels plus their mirror in z = 0, over
+      ! 4 pi. A surface-piercing hull and its mirror form a closed surface; a submerged hull is closed and its mirror lies
+      ! above z = 0. So wind is 1 inside a body (or its waterplane, for x on z = 0) and 0 outside, for a watertight hull.
+      ! Panels are split into triangles (1,2,3) and (1,3,4), each turned to face out of the body (against nrm, which points
+      ! into it), and the solid angle of a triangle is that of Van Oosterom and Strackee (1983).
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      REAL(8), INTENT(IN) :: x(3)
+      REAL(8), ALLOCATABLE, INTENT(OUT) :: wind(:)
+      REAL(8), PARAMETER :: PI = 3.14159265358979323846D0
+      REAL(8) :: v(3, 4), a(3), b(3), c(3), f(3), nin(3), la, lb, lc, num, den
+      INTEGER :: i, is, it, m
+
+      ALLOCATE (wind(mesh%nbody))
+      wind = 0D0
+      DO i = 1, mesh%n
+         DO is = 1, 2
+            f = [1D0, 1D0, MERGE(1D0, -1D0, is == 1)]
+            nin = f*mesh%nrm(:, i)
+            DO m = 1, mesh%ncn(i)
+               v(:, m) = f*mesh%xnode(:, mesh%ncon(m, i)) - x
+            END DO
+            DO it = 1, mesh%ncn(i) - 2
+               a = v(:, 1)
+               b = v(:, it + 1)
+               c = v(:, it + 2)
+               IF (SUM(cross(b - a, c - a)*nin) > 0D0) THEN
+                  b = v(:, it + 2)
+                  c = v(:, it + 1)
+               END IF
+               la = NORM2(a)
+               lb = NORM2(b)
+               lc = NORM2(c)
+               num = SUM(a*cross(b, c))
+               den = la*lb*lc + SUM(a*b)*lc + SUM(a*c)*lb + SUM(b*c)*la
+               wind(mesh%body(i)) = wind(mesh%body(i)) + 2D0*ATAN2(num, den)
+            END DO
+         END DO
+      END DO
+      wind = wind/(4D0*PI)
+   CONTAINS
+      PURE FUNCTION cross(p, q)
+         REAL(8), INTENT(IN) :: p(3), q(3)
+         REAL(8) :: cross(3)
+         cross = [p(2)*q(3) - p(3)*q(2), p(3)*q(1) - p(1)*q(3), p(1)*q(2) - p(2)*q(1)]
+      END FUNCTION cross
+   END SUBROUTINE body_winding
 
    SUBROUTINE qfield_init(opts, nfreq, beta_in_deg, pts, surface, outputdir)
       ! Allocates the store for up to nfreq frequencies, the headings beta_in_deg and the field points pts (of
