@@ -31,7 +31,8 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("control_defaults", test_control_defaults), &
     new_unittest("control_rejections", test_control_rejections), &
     new_unittest("qtf_keys", test_qtf_keys), &
-    new_unittest("qtf_terms_body", test_qtf_terms_body) &
+    new_unittest("qtf_terms_body", test_qtf_terms_body), &
+    new_unittest("qtf_field_key", test_qtf_field_key) &
     ]
 
 end subroutine collect_second_order_input
@@ -468,6 +469,36 @@ subroutine test_qtf_keys(error)
   call check(error, trim(msg) == "qtf needs drift_methods to include near.", "near message: "//trim(msg))
   call remove_directory(root)
 end subroutine test_qtf_keys
+
+!> qtf_field is 0 (default) or 1, and 1 needs a QTF.
+subroutine test_qtf_field_key(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_field"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 3"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_field, 0, "qtf_field default")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 3", "qtf_field = 1"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_field, 1, "qtf_field")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 3", "qtf_field = 2"], &
+                           "qtf_field must be 0 or 1 in SecondOrder.in.")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 0", "qtf_field = 1"], &
+                           "qtf_field needs qtf = 1, 2 or 3 in SecondOrder.in.")
+  call remove_directory(root)
+end subroutine test_qtf_field_key
 
 !> qtf_terms = body is read with the difference QTF (qtf = 1 or 3) and rejected with the sum frequency only; quadratic is
 !> the default.

@@ -52,6 +52,16 @@ QTF_LOW_FREQUENCIES = (0.40, 0.45, 0.50, 0.55, 0.60)
 QTF_BODY_FREQUENCIES = (0.95, 1.10)
 QTF_DISTANT_FREQUENCIES = (0.80, 1.00)
 QTF_DISTANT_SEPARATION = 2000.0
+# Field points of QTF_FieldPartial.txt on the rounded hull (radius 10, draft 10): free-surface points and points below z = 0,
+# on the weather side, the lee side, ahead and astern, and two with y < 0 for the half mesh
+QTF_FIELD_POINTS = ((30.0, 0.0, 0.0), (0.0, 40.0, 0.0), (-50.0, 20.0, 0.0), (30.0, 0.0, -5.0), (0.0, -40.0, -10.0),
+                    (60.0, 60.0, -20.0))
+# A hull of radius and draft 0.05 m in 20 m of water at 0.9 rad/s has ka of about 0.004: the field is that of the incident
+# wave alone, and the Stokes wave of the incident pair is the reference
+QTF_TINY_MESH = dict(radius=0.05, draft=0.05, ntheta=8, nz=2, nr=2)
+QTF_TINY_FREQUENCY = 0.9
+QTF_TINY_DEPTH = 20.0
+QTF_TINY_POINTS = ((30.0, 0.0, 0.0), (30.0, 10.0, 0.0), (30.0, 0.0, -3.0))
 
 
 def real12(value):
@@ -376,6 +386,7 @@ def main():
     write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=2, drift_methods=both, motion_state="free",
                        write_terms=0, velocity_method="source", qtf=3)
     write_qtf_body_fixtures(data, both)
+    write_qtf_field_fixtures(data, both)
 
     # The control-surface method on the hull of drift_cyl: held fixed, and with the limit frequencies and all heading pairs
     for name, control, options in (("control_cyl", dict(), dict(mean_drift=1, drift_methods="far control", write_terms=1,
@@ -427,6 +438,34 @@ def write_qtf_body_fixtures(data, both):
         shutil.copyfile(os.path.join(data, "drift_round", "input", file), os.path.join(target, file))
     write_control(os.path.join(target, "ControlFile.in"), frequencies=QTF_LOW_FREQUENCIES[::2], headings=DRIFT_CYL_HEADINGS)
     write_second_order(os.path.join(target, "SecondOrder.in"), **dict(body, velocity_method="source"))
+
+
+def write_qtf_field_fixtures(data, both):
+    """Fixtures of QTF_FieldPartial.txt (qtf_field = 1): the rounded hull with the limit frequencies and every heading pair,
+    its half mesh against the whole mesh (the set-up of qtf_half_body), a hull too small to scatter, and the two ways the
+    field points can stop the run. The reader needs near in drift_methods for every qtf."""
+    field = dict(mean_drift=2, drift_methods=both, motion_state="free", write_terms=0, qtf=3, qtf_max_dw=0.3, qtf_field=1)
+
+    def rounded_case(name, frequencies, points, half=False, sybo=0, **options):
+        target = case_dir(data, name)
+        make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
+                                         half_y=half, **ROUND_MESH)
+        write_control(os.path.join(target, "ControlFile.in"), frequencies=frequencies, headings=DRIFT_CYL_HEADINGS,
+                      sybo=sybo, field_points=points)
+        write_second_order(os.path.join(target, "SecondOrder.in"), **dict(field, **options))
+
+    rounded_case("qtf_field", DRIFT_CYL_FREQUENCIES, QTF_FIELD_POINTS, sybo=1)
+    # The half mesh (ISY = 1) and the whole mesh of the same hull, at the frequencies and headings of qtf_half_body
+    rounded_case("qtf_field_half", QTF_BODY_FREQUENCIES, QTF_FIELD_POINTS, half=True)
+    rounded_case("qtf_field_full", QTF_BODY_FREQUENCIES, QTF_FIELD_POINTS)
+    # A point inside the hull, and no points at all
+    rounded_case("qtf_field_inside", DRIFT_CYL_FREQUENCIES, QTF_FIELD_POINTS + ((0.0, 0.0, -5.0),), sybo=1)
+    rounded_case("qtf_field_no_points", DRIFT_CYL_FREQUENCIES, (), sybo=1)
+    target = case_dir(data, "qtf_field_tiny")
+    make_mesh.write_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"), **QTF_TINY_MESH)
+    write_control(os.path.join(target, "ControlFile.in"), depth=QTF_TINY_DEPTH, frequencies=(QTF_TINY_FREQUENCY,),
+                  headings=(0.0,), field_points=QTF_TINY_POINTS)
+    write_second_order(os.path.join(target, "SecondOrder.in"), **dict(field, mean_drift=1))
 
 
 def copy_inputs(data, source, target, files):

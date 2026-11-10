@@ -77,6 +77,7 @@ module test_integration_drift
     character(len=*), parameter :: qtf_sum_file = "Wamit_format/QTF_Quadratic.10s"
     character(len=*), parameter :: psi_file = "Wamit_format/QTF_PsiCheck.txt"
     character(len=*), parameter :: qtf_indirect_file = "Wamit_format/QTF_Indirect.11d"
+    character(len=*), parameter :: qtf_field_file = "Wamit_format/QTF_FieldPartial.txt"
     character(len=*), parameter :: pot_terms_file = "Wamit_format/QTF_PotentialTerms.txt"
     character(len=*), parameter :: terms_file = "Wamit_format/MeanDriftTerms.txt"
     character(len=*), parameter :: control_file = "Wamit_format/MeanDriftControlSurface.7"
@@ -232,6 +233,7 @@ contains
             new_unittest("run_qtf_round_body", run_qtf_round_body), &
             new_unittest("run_qtf_round_low", run_qtf_round_low), &
             new_unittest("run_qtf_body_cases", run_qtf_body_cases), &
+            new_unittest("run_qtf_field_cases", run_qtf_field_cases), &
             new_unittest("run_control_cyl", run_control_cyl), &
             new_unittest("run_control_cyl_sybo", run_control_cyl_sybo), &
             new_unittest("run_control_cases", run_control_cases) &
@@ -323,7 +325,15 @@ contains
             new_unittest("qtf_body_two_distant", qtf_body_two_distant), &
             new_unittest("qtf_body_spacing", qtf_body_spacing), &
             new_unittest("qtf_body_absent", qtf_body_absent), &
-            new_unittest("qtf_body_log", qtf_body_log) &
+            new_unittest("qtf_body_log", qtf_body_log), &
+            new_unittest("qtf_field_rows", qtf_field_rows), &
+            new_unittest("qtf_field_symmetries", qtf_field_symmetries), &
+            new_unittest("qtf_field_diagonal", qtf_field_diagonal), &
+            new_unittest("qtf_field_tiny_stokes", qtf_field_tiny_stokes), &
+            new_unittest("qtf_field_half_matches_full", qtf_field_half_matches_full), &
+            new_unittest("qtf_field_inside_stops", qtf_field_inside_stops), &
+            new_unittest("qtf_field_no_points_stops", qtf_field_no_points_stops), &
+            new_unittest("qtf_field_off", qtf_field_off) &
         ]
     end subroutine collect_tests_drift
 
@@ -586,6 +596,23 @@ contains
             end if
         end do
     end subroutine run_qtf_body_cases
+
+    !> The fixtures of QTF_FieldPartial.txt that run to the end, in one setup test; the two that must stop run in their tests
+    subroutine run_qtf_field_cases(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=16), parameter :: cases(4) = [character(len=16) :: "qtf_field", "qtf_field_half", "qtf_field_full", &
+                                                    "qtf_field_tiny"]
+        type(error_type), allocatable :: one
+        integer :: c
+
+        do c = 1, size(cases)
+            call run_case(trim(cases(c)), [character(len=40) :: near_file, qtf_diff_file, qtf_sum_file, qtf_field_file], one)
+            if (allocated(one)) then
+                print '(4x,a)', trim(cases(c))//": "//one%message
+                if (.not. allocated(error)) call move_alloc(one, error)
+            end if
+        end do
+    end subroutine run_qtf_field_cases
 
     subroutine run_control_cyl(error)
         type(error_type), allocatable, intent(out) :: error
@@ -3756,6 +3783,304 @@ contains
         end do
         close (unit)
     end function count_log_lines
+
+
+    ! ---------------------------------------------------------------------------------------------- QTF_FieldPartial.txt
+
+    !> Rows PER1 PER2 BETA1 BETA2 K IPT TYPE Mod Pha Re Im Re_quad Im_quad Re_inc Im_inc of QTF_FieldPartial.txt (15 columns).
+    !> The header lines, which start with #, are returned in header.
+    subroutine read_field_file(path, rows, header, error)
+        character(len=*), intent(in) :: path
+        real(8), allocatable, intent(out) :: rows(:,:)
+        character(len=:), allocatable, intent(out) :: header(:)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=:), allocatable :: lines(:)
+        real(8) :: a(4), b(8)
+        integer :: i(3), r, n, nh, ios
+
+        call read_lines(path, lines, error)
+        if (allocated(error)) return
+        allocate (rows(size(lines), 15))
+        allocate (character(len=512) :: header(size(lines)))
+        n = 0
+        nh = 0
+        do r = 1, size(lines)
+            if (len_trim(lines(r)) == 0) cycle
+            if (lines(r)(1:1) == '#') then
+                nh = nh + 1
+                header(nh) = lines(r)
+                cycle
+            end if
+            read (lines(r), '(4ES14.6,3I6,8ES14.6)', iostat=ios) a, i, b
+            call check(error, ios == 0, "Bad row in "//path//": "//trim(lines(r)))
+            if (allocated(error)) return
+            n = n + 1
+            rows(n,1:4) = a
+            rows(n,5:7) = real(i, 8)
+            rows(n,8:15) = b
+        end do
+        rows = rows(1:n,:)
+        header = header(1:nh)
+    end subroutine read_field_file
+
+    !> The row of rows that is the partner of row p under the exchange of the two waves, or 0
+    integer function swapped_row(rows, p)
+        real(8), intent(in) :: rows(:,:)
+        integer, intent(in) :: p
+        integer :: q
+
+        swapped_row = 0
+        do q = 1, size(rows, 1)
+            if (same(rows(q,1), rows(p,2)) .and. same(rows(q,2), rows(p,1)) .and. rows(q,3) == rows(p,4) &
+                .and. rows(q,4) == rows(p,3) .and. rows(q,5) == rows(p,5) .and. rows(q,6) == rows(p,6)) then
+                swapped_row = q
+                return
+            end if
+        end do
+    end function swapped_row
+
+    !> The header, the points and the pairs: every pair of .10d and of .10s at every point, and no limit frequency
+    subroutine qtf_field_rows(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: dir = "qtf_field"
+        real(8), allocatable :: f(:,:), d(:,:), s(:,:), t(:,:)
+        character(len=:), allocatable :: header(:)
+        real(8) :: pt(3), worst
+        integer :: npoint, ipt, r, q, matched, kernel, ios, ptype
+        logical :: omitted, diffracted
+
+        call read_field_file(output_dir(dir)//qtf_field_file, f, header, error)
+        if (allocated(error)) return
+        call read_qtf(output_dir(dir)//qtf_diff_file, d, error)
+        if (allocated(error)) return
+        call read_qtf(output_dir(dir)//qtf_sum_file, s, error)
+        if (allocated(error)) return
+
+        omitted = .false.
+        diffracted = .false.
+        do r = 1, size(header)
+            if (index(header(r), "OMITTED") > 0) omitted = .true.
+            if (index(header(r), "second-order diffracted and radiated waves") > 0) diffracted = .true.
+        end do
+        call check(error, omitted .and. diffracted, "The header does not say that the diffracted and radiated waves are omitted")
+        if (allocated(error)) return
+
+        ! One POINT line per point, with the type of its z: free surface (elevation, 2) or below (pressure, 1)
+        npoint = 0
+        do r = 1, size(header)
+            if (index(header(r), "# POINT") /= 1 .or. index(header(r), "IPT") > 0) cycle
+            read (header(r)(8:), *, iostat=ios) ipt, pt, ptype
+            call check(error, ios == 0, "Bad POINT line: "//trim(header(r)))
+            if (allocated(error)) return
+            npoint = npoint + 1
+            call check(error, ipt == npoint, "POINT lines out of order")
+            if (allocated(error)) return
+            call check(error, ptype == merge(2, 1, abs(pt(3)) < 1d-9), "Wrong TYPE of a POINT line: "//trim(header(r)))
+            if (allocated(error)) return
+        end do
+        call check(error, npoint == 6, "Expected 6 POINT lines")
+        if (allocated(error)) return
+
+        call check(error, size(f, 1) == size(d, 1) + size(s, 1), "Rows: pairs of .10d and .10s times 6 points")
+        if (allocated(error)) return
+        call check(error, size(d, 1)/6 == 7*4 .and. size(s, 1)/6 == 9*4, "qtf_field: 7 + 9 frequency pairs and 4 heading pairs")
+        if (allocated(error)) return
+        call check(error, all(f(:,1) > 0.5d0 .and. f(:,2) > 0.5d0), "A limit frequency is in QTF_FieldPartial.txt")
+        if (allocated(error)) return
+        call check(error, all(abs(f(:,1) - f(:,2)) < 0.3d0 + 1d-6 .or. f(:,5) == 2d0), "A difference pair beyond qtf_max_dw")
+        if (allocated(error)) return
+        call check(error, all(f(:,7) == merge(2d0, 1d0, f(:,6) <= 3d0)), "TYPE: points 1 to 3 are elevations")
+        if (allocated(error)) return
+
+        ! Each pair of the two files is there for every point, and nothing else
+        do kernel = 1, 2
+            if (allocated(t)) deallocate (t)
+            if (kernel == 1) then
+                allocate (t, source=d)
+            else
+                allocate (t, source=s)
+            end if
+            do ipt = 1, 6
+                call check(error, count(f(:,5) == kernel .and. f(:,6) == ipt) == size(t, 1)/6, "Number of pairs of a point")
+                if (allocated(error)) return
+            end do
+            do r = 1, size(t, 1)
+                if (t(r,5) /= 1d0) cycle
+                matched = 0
+                do q = 1, size(f, 1)
+                    if (f(q,5) == kernel .and. f(q,6) == 1d0 .and. same(f(q,1), t(r,1)) .and. same(f(q,2), t(r,2)) &
+                        .and. f(q,3) == t(r,3) .and. f(q,4) == t(r,4)) matched = matched + 1
+                end do
+                call check(error, matched == 1, "A pair of the quadratic QTF is missing from QTF_FieldPartial.txt")
+                if (allocated(error)) return
+            end do
+        end do
+
+        ! Re = Re_quad + Re_inc, Im likewise, to the digits of the file
+        worst = 0d0
+        do r = 1, size(f, 1)
+            worst = max(worst, abs(f(r,10) - f(r,12) - f(r,14))/(abs(f(r,12)) + abs(f(r,14)) + abs(f(r,10)) + 1d-300), &
+                        abs(f(r,11) - f(r,13) - f(r,15))/(abs(f(r,13)) + abs(f(r,15)) + abs(f(r,11)) + 1d-300))
+        end do
+        call report("qtf_field_rows sum of parts", worst)
+        call check_below(error, "qtf_field_rows sum of parts", worst, 1d-6)
+    end subroutine qtf_field_rows
+
+    !> Every row has its exchanged partner: T- conjugate, T+ equal, to 1e-6 of the largest value of the point
+    subroutine qtf_field_symmetries(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: f(:,:)
+        character(len=:), allocatable :: header(:)
+        real(8) :: worst, scale, sgn
+        integer :: p, q
+
+        call read_field_file(output_dir("qtf_field")//qtf_field_file, f, header, error)
+        if (allocated(error)) return
+        worst = 0d0
+        do p = 1, size(f, 1)
+            q = swapped_row(f, p)
+            call check(error, q > 0, "A field row has no partner")
+            if (allocated(error)) return
+            scale = maxval(f(:,8), mask=f(:,6) == f(p,6))
+            sgn = merge(-1d0, 1d0, f(p,5) == 1d0)
+            worst = max(worst, (abs(f(q,10) - f(p,10)) + abs(f(q,11) - sgn*f(p,11)))/scale)
+        end do
+        call report("qtf_field_symmetries", worst)
+        call check_below(error, "qtf_field_symmetries", worst, 1d-6)
+    end subroutine qtf_field_symmetries
+
+    !> On the exact diagonal of the difference kernel the pressure is the mean of the squared velocity: real, negative, and
+    !> with no second-order incident part
+    subroutine qtf_field_diagonal(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: f(:,:)
+        character(len=:), allocatable :: header(:)
+        integer :: r, n
+
+        call read_field_file(output_dir("qtf_field")//qtf_field_file, f, header, error)
+        if (allocated(error)) return
+        n = 0
+        do r = 1, size(f, 1)
+            if (f(r,5) /= 1d0 .or. f(r,7) /= 1d0 .or. .not. same(f(r,1), f(r,2)) .or. f(r,3) /= f(r,4)) cycle
+            n = n + 1
+            call check(error, abs(f(r,11)) <= 1d-6*abs(f(r,10)), "Pressure on the difference diagonal is not real")
+            if (allocated(error)) return
+            call check(error, f(r,10) < 0d0, "Pressure on the difference diagonal is not negative")
+            if (allocated(error)) return
+            call check(error, f(r,14) == 0d0 .and. f(r,15) == 0d0, "The difference diagonal has an incident part")
+            if (allocated(error)) return
+        end do
+        ! 3 frequencies, 2 headings, 3 pressure points
+        call check(error, n == 3*2*3, "Number of pressure rows on the difference diagonal")
+    end subroutine qtf_field_diagonal
+
+    !> A hull of radius 0.05 m in 20 m of water barely scatters: on the sum diagonal the field is the Stokes wave
+    !> (Dean and Dalrymple 1991), and the difference diagonal of the pressure is the mean of the squared velocity.
+    subroutine qtf_field_tiny_stokes(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), parameter :: omega = 0.9d0, h = 20d0, g_disp = 9.807d0
+        real(8), parameter :: xs(3) = [30d0, 30d0, 30d0], zs(3) = [0d0, 0d0, -3d0]
+        real(8), allocatable :: f(:,:)
+        character(len=:), allocatable :: header(:)
+        complex(8) :: expected, got
+        real(8) :: k, worst
+        integer :: r, ipt, n, it
+
+        k = omega**2/g_disp
+        do it = 1, 100
+            k = k - (k*tanh(k*h) - omega**2/g_disp)/(tanh(k*h) + k*h/cosh(k*h)**2)
+        end do
+        call read_field_file(output_dir("qtf_field_tiny")//qtf_field_file, f, header, error)
+        if (allocated(error)) return
+        call check(error, size(f, 1) == 2*3, "qtf_field_tiny: one pair, two kernels, three points")
+        if (allocated(error)) return
+        worst = 0d0
+        n = 0
+        do r = 1, size(f, 1)
+            ipt = nint(f(r,6))
+            got = cmplx(f(r,10), f(r,11), 8)
+            if (f(r,5) == 2d0) then
+                ! Sum: the file holds the conjugate of the e^{-i omega t} amplitude, per unit wave amplitude
+                if (f(r,7) == 2d0) then
+                    expected = 0.25d0*k*cosh(k*h)*(2d0 + cosh(2d0*k*h))/sinh(k*h)**3
+                else
+                    expected = (0.75d0*omega**2*cosh(2d0*k*(zs(ipt) + h))/sinh(k*h)**4 - g*k/(2d0*sinh(2d0*k*h)))/g
+                end if
+                expected = conjg(expected*exp(2d0*ci*k*xs(ipt)))
+            else if (f(r,7) == 1d0) then
+                expected = cmplx(-k*cosh(2d0*k*(zs(ipt) + h))/(2d0*sinh(2d0*k*h)), 0d0, 8)
+            else
+                cycle
+            end if
+            n = n + 1
+            worst = max(worst, abs(got - expected)/abs(expected))
+            call report("qtf_field_tiny_stokes", abs(got - expected)/abs(expected))
+        end do
+        call check(error, n == 4, "Expected 3 sum rows and 1 difference pressure row")
+        if (allocated(error)) return
+        call check_below(error, "qtf_field_tiny_stokes", worst, 2d-3)
+    end subroutine qtf_field_tiny_stokes
+
+    !> The half mesh with ISY = 1 gives the file of the whole mesh, for points on both sides of the plane
+    subroutine qtf_field_half_matches_full(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: h(:,:), f(:,:)
+        character(len=:), allocatable :: header(:)
+        real(8) :: worst, scale
+        integer :: r
+
+        call read_field_file(output_dir("qtf_field_half")//qtf_field_file, h, header, error)
+        if (allocated(error)) return
+        call read_field_file(output_dir("qtf_field_full")//qtf_field_file, f, header, error)
+        if (allocated(error)) return
+        call check(error, size(h, 1) == size(f, 1) .and. size(f, 1) > 0, "qtf_field_half and qtf_field_full: different rows")
+        if (allocated(error)) return
+        worst = 0d0
+        do r = 1, size(f, 1)
+            call check(error, same(h(r,1), f(r,1)) .and. same(h(r,2), f(r,2)) .and. all(h(r,3:7) == f(r,3:7)), &
+                       "qtf_field_half and qtf_field_full: the rows are not the same pairs")
+            if (allocated(error)) return
+            scale = maxval(f(:,8), mask=f(:,6) == f(r,6))
+            worst = max(worst, (abs(h(r,10) - f(r,10)) + abs(h(r,11) - f(r,11)))/scale)
+        end do
+        call report("qtf_field_half_matches_full", worst)
+        call check_below(error, "qtf_field_half_matches_full", worst, 1d-5)
+    end subroutine qtf_field_half_matches_full
+
+    !> Runs HAMS on a fixture that must stop, and checks that it exits with an error and says why
+    subroutine run_expecting_stop(name, text, error)
+        character(len=*), intent(in) :: name, text
+        type(error_type), allocatable, intent(out) :: error
+        character(:), allocatable :: command
+        integer :: exitcode
+
+        command = native_path(hamsexe_path//" "//get_repo_root_path()//"test/data/"//name//"/input/ "//output_dir(name)// &
+                              " > "//get_running_exe_path()//name//".log")//" 2>&1"
+        call execute_command_line(command, exitstat=exitcode, wait=.true.)
+        call check(error, exitcode /= 0, name//" did not stop")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//name//".log", text) >= 1, &
+                   name//": the log does not say """//text//"""")
+    end subroutine run_expecting_stop
+
+    subroutine qtf_field_inside_stops(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_expecting_stop("qtf_field_inside", "inside body 1", error)
+    end subroutine qtf_field_inside_stops
+
+    subroutine qtf_field_no_points_stops(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_expecting_stop("qtf_field_no_points", "Number_of_field_points", error)
+    end subroutine qtf_field_no_points_stops
+
+    !> Without qtf_field no field file is written
+    subroutine qtf_field_off(error)
+        type(error_type), allocatable, intent(out) :: error
+        logical :: exists
+
+        inquire (file=output_dir("qtf_round")//qtf_field_file, exist=exists)
+        call check(error, .not. exists, "A run without qtf_field wrote QTF_FieldPartial.txt")
+    end subroutine qtf_field_off
 
     subroutine check_same_file(path_a, path_b, error)
         character(len=*), intent(in) :: path_a, path_b
