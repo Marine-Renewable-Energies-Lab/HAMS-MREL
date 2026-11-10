@@ -411,7 +411,18 @@ Nemoh v3.0.3, built and run as in [Comparison with Nemoh](#comparison-with-nemoh
 - Fixed, 1792 panels: largest 1.5 / 0.5 / 0.3% (F_x / F_z / M_y).
 - Free, 1792 panels: medians at most 1.25%; largest 55 / 16.5 / 5.5%, on the lines of the resonance at 0.77 rad/s.
 
-So HAMS and Nemoh agree as closely as their quadratic parts did ([Quadratic QTFs](#quadratic-qtfs)), except at the resonance, where both carry the motion error. Whether Nemoh's HASBO contains a term like B3 was not checked. The Nemoh outputs are not in the repository.
+Against the exact reference, HAMS (hull form of B2) and Nemoh at the same mesh, `.11d` total, |value − exact| / max |exact|, largest / median in percent, F_x / F_z / M_y (`qtf_compare.py --potential ... --nemoh`; free body also with the pairs that have a frequency in 0.75 to 0.79 rad/s left out, `--exclude 0.75 0.79`):
+
+| Body | Panels | HAMS | Nemoh |
+| :--- | ---: | :--- | :--- |
+| fixed | 448 | 5.7 / 0.96, 5.5 / 4.5, 5.1 / 3.9 | 4.9 / 1.7, 4.9 / 4.0, 5.2 / 3.8 |
+| fixed | 1792 | 3.0 / 0.49, 2.7 / 2.2, 2.4 / 1.9 | 4.4 / 0.80, 2.5 / 2.0, 2.4 / 1.9 |
+| free | 448 | 99 / 0.73, 112 / 0.29, 14 / 0.04 | 103 / 2.4, 95 / 0.20, 13 / 0.09 |
+| free | 1792 | 41 / 0.41, 59 / 0.15, 5.9 / 0.03 | 92 / 2.2, 48 / 0.10, 7.2 / 0.06 |
+| free, band left out | 448 | 27 / 0.63, 12 / 0.23, 2.3 / 0.04 | 27 / 2.1, 12 / 0.16, 3.9 / 0.08 |
+| free, band left out | 1792 | 11 / 0.35, 6.1 / 0.12, 1.4 / 0.03 | 17 / 1.9, 6.2 / 0.08, 2.2 / 0.05 |
+
+On the fixed body the two codes are equally close to the reference at each mesh, as for the quadratic part ([Quadratic QTFs](#quadratic-qtfs)). On the free body, away from the resonance, HAMS is as close or closer: the same F_z, a smaller largest F_x and M_y, and a median F_x of 0.35% against Nemoh's 1.9%, which barely falls with the mesh (2.1% at 448 panels). Within the band both carry the motion error of the resonance. Whether Nemoh's HASBO contains a term like B3 was not checked. The Nemoh outputs are not in the repository.
 
 ### Cost of the potential part
 
