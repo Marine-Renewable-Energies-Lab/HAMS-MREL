@@ -40,10 +40,11 @@ MODULE QTFField
 
    USE SecondOrderIncident, ONLY: incident2, incident2_phi
    USE NearFieldDrift, ONLY: pair_product
+   USE SecondOrderTypes, ONLY: panel_mesh, cs_points, CS_FREE
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: field_pair
+   PUBLIC :: field_pair, build_field_points
 
 CONTAINS
 
@@ -76,5 +77,81 @@ CONTAINS
          pot = CI*rho*inc%omega*p2
       END IF
    END SUBROUTINE field_pair
+
+   SUBROUTINE build_field_points(mesh, xfp, pts, surface, ok, msg)
+      ! Field points xfp(3,:) as a cs_points set (kind CS_FREE, nrm = 0, w = 0). Type as PressureElevation: |z| <= 1e-6 is
+      ! a surface (elevation) point and gets z = 0, z < -1e-6 is a pressure point. psize and body are those of the nearest
+      ! hull panel (centroids of the full panel set, so symmetry images are included). Rejected, checked in point order,
+      ! the first failing point giving msg: above the free surface; within one local panel size of a hull panel centroid
+      ! (the rule of check_control_surface); inside a body, decided by the nearest centroid c as (x - c).n > 0, with n the
+      ! panel normal, which points into the body.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      REAL(8), INTENT(IN) :: xfp(:,:)
+      TYPE(cs_points), INTENT(OUT) :: pts
+      LOGICAL, ALLOCATABLE, INTENT(OUT) :: surface(:)
+      LOGICAL, INTENT(OUT) :: ok
+      CHARACTER(LEN=:), ALLOCATABLE, INTENT(OUT) :: msg
+      REAL(8), PARAMETER :: ZTOL = 1D-6
+      REAL(8) :: x(3), d2, d2min
+      INTEGER :: ip, i, imin, ihull, n
+      CHARACTER(LEN=300) :: line
+
+      n = SIZE(xfp, 2)
+      pts%n = n
+      ALLOCATE (pts%x(3, n), pts%nrm(3, n), pts%w(n), pts%psize(n), pts%kind(n), pts%body(n), surface(n))
+      pts%x = xfp
+      pts%nrm = 0D0
+      pts%w = 0D0
+      pts%psize = 0D0
+      pts%kind = CS_FREE
+      pts%body = 0
+      surface = .FALSE.
+      ok = .TRUE.
+      msg = ''
+
+      DO ip = 1, n
+         x = xfp(:, ip)
+         IF (x(3) > ZTOL) THEN
+            WRITE (line, '(a,i0,a,3(1x,es11.3),a)') 'field point ', ip, ' at', x, ' is above the free surface (z > 0)'
+            msg = TRIM(line)
+            ok = .FALSE.
+            RETURN
+         END IF
+         IF (ABS(x(3)) <= ZTOL) THEN
+            surface(ip) = .TRUE.
+            x(3) = 0D0
+            pts%x(3, ip) = 0D0
+         END IF
+
+         imin = 0
+         ihull = 0
+         d2min = HUGE(1D0)
+         DO i = 1, mesh%n
+            d2 = SUM((x - mesh%xc(:, i))**2)
+            IF (d2 < d2min) THEN
+               d2min = d2
+               imin = i
+            END IF
+            IF (ihull == 0 .AND. d2 < mesh%psize(i)**2) ihull = i
+         END DO
+         IF (imin == 0) CYCLE
+         pts%psize(ip) = mesh%psize(imin)
+         pts%body(ip) = mesh%body(imin)
+
+         IF (ihull > 0) THEN
+            WRITE (line, '(a,i0,a,3(1x,es11.3),a,i0,a,i0,a)') 'field point ', ip, ' at', x, ' lies on the hull of body ', &
+               mesh%body(ihull), ' (within one panel size of panel ', ihull, ')'
+            msg = TRIM(line)
+            ok = .FALSE.
+            RETURN
+         END IF
+         IF (SUM((x - mesh%xc(:, imin))*mesh%nrm(:, imin)) > 0D0) THEN
+            WRITE (line, '(a,i0,a,3(1x,es11.3),a,i0)') 'field point ', ip, ' at', x, ' is inside body ', mesh%body(imin)
+            msg = TRIM(line)
+            ok = .FALSE.
+            RETURN
+         END IF
+      END DO
+   END SUBROUTINE build_field_points
 
 END MODULE QTFField

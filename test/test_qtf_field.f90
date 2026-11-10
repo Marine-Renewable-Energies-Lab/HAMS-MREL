@@ -2,7 +2,9 @@
 !> second-order incident potential).
 module test_qtf_field
   use testdrive, only : new_unittest, unittest_type, error_type, check
-  use QTFField, only : field_pair
+  use QTFField, only : field_pair, build_field_points
+  use SecondOrderTypes, only : panel_mesh, cs_points
+  use second_order_fixtures, only : make_cylinder
   use SecondOrderIncident, only : incident2, incident2_pair, incident2_phi
   use FirstOrderState, only : incident_phi, incident_grad
   use NearFieldDrift, only : KERNEL_DIFF, KERNEL_SUM
@@ -25,7 +27,14 @@ subroutine collect_qtf_field(testsuite)
     new_unittest("field_mean_pressure", test_mean_pressure), &
     new_unittest("field_swap_symmetry", test_swap_symmetry), &
     new_unittest("field_bichromatic_time", test_bichromatic_time), &
-    new_unittest("field_sum_continuity", test_sum_continuity) &
+    new_unittest("field_sum_continuity", test_sum_continuity), &
+    new_unittest("points_classified", test_points_classified), &
+    new_unittest("points_near_zero_is_surface", test_points_near_zero), &
+    new_unittest("points_above_rejected", test_points_above), &
+    new_unittest("points_on_hull_rejected", test_points_on_hull), &
+    new_unittest("points_inside_rejected", test_points_inside), &
+    new_unittest("points_inside_waterplane_rejected", test_points_waterplane), &
+    new_unittest("points_two_bodies", test_points_two_bodies) &
     ]
 end subroutine collect_qtf_field
 
@@ -259,5 +268,134 @@ subroutine test_sum_continuity(error)
              * exp(2d0 * ci * k * (x(1) * cos(b * deg) + x(2) * sin(b * deg)))
   call check(error, abs(quad + pot - expected) <= 1d-4 * abs(expected), "sum-frequency pair does not tend to the Stokes value")
 end subroutine test_sum_continuity
+
+!> Cylinder of radius 5, draft 5, with bottom.
+subroutine one_cylinder(mesh)
+  type(panel_mesh), intent(out) :: mesh
+  call make_cylinder(5d0, 5d0, 24, 10, 5, mesh, .true.)
+end subroutine one_cylinder
+
+!> Two copies of the cylinder, the second shifted by dx along x.
+subroutine two_cylinders(dx, both)
+  real(8), intent(in) :: dx
+  type(panel_mesh), intent(out) :: both
+  type(panel_mesh) :: m
+  integer :: n, nn
+  call one_cylinder(m)
+  n = m%n
+  nn = m%nnode
+  both = m
+  both%n = 2 * n; both%nbase = 2 * n; both%nnode = 2 * nn; both%nbody = 2
+  both%xc = reshape([m%xc, m%xc + spread([dx, 0d0, 0d0], 2, n)], [3, 2 * n])
+  both%nrm = reshape([m%nrm, m%nrm], [3, 2 * n])
+  both%nj = reshape([m%nj, m%nj], [6, 2 * n])
+  both%area = [m%area, m%area]
+  both%psize = [m%psize, m%psize]
+  both%xnode = reshape([m%xnode, m%xnode + spread([dx, 0d0, 0d0], 2, nn)], [3, 2 * nn])
+  both%ncn = [m%ncn, m%ncn]
+  both%ncon = reshape([m%ncon, merge(m%ncon + nn, 0, m%ncon > 0)], [4, 2 * n])
+  both%body = [spread(1, 1, n), spread(2, 1, n)]
+  both%base = [m%base, m%base + n]
+  both%image = [m%image, m%image]
+  both%xr = reshape([m%xr(:, 1), m%xr(:, 1) + [dx, 0d0, 0d0]], [3, 2])
+end subroutine two_cylinders
+
+subroutine test_points_classified(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(cs_points) :: pts
+  logical, allocatable :: surface(:)
+  logical :: ok
+  character(len=:), allocatable :: msg
+  call one_cylinder(mesh)
+  call build_field_points(mesh, reshape([15d0, 0d0, 0d0, 0d0, -20d0, -3d0], [3, 2]), pts, surface, ok, msg)
+  call check(error, ok, "classified points rejected: " // msg)
+  if (allocated(error)) return
+  call check(error, surface(1) .and. .not. surface(2), "surface flags")
+  if (allocated(error)) return
+  call check(error, all(pts%psize > 0d0) .and. all(pts%body == 1), "psize or body")
+end subroutine test_points_classified
+
+subroutine test_points_near_zero(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(cs_points) :: pts
+  logical, allocatable :: surface(:)
+  logical :: ok
+  character(len=:), allocatable :: msg
+  call one_cylinder(mesh)
+  call build_field_points(mesh, reshape([15d0, 0d0, -1d-7], [3, 1]), pts, surface, ok, msg)
+  call check(error, ok .and. surface(1) .and. pts%x(3, 1) == 0d0, "z = -1e-7 is not a surface point at z = 0")
+end subroutine test_points_near_zero
+
+subroutine test_points_above(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(cs_points) :: pts
+  logical, allocatable :: surface(:)
+  logical :: ok
+  character(len=:), allocatable :: msg
+  call one_cylinder(mesh)
+  call build_field_points(mesh, reshape([15d0, 0d0, 0.1d0], [3, 1]), pts, surface, ok, msg)
+  call check(error, .not. ok .and. index(msg, "above the free surface") > 0, "above the free surface not rejected")
+end subroutine test_points_above
+
+subroutine test_points_on_hull(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(cs_points) :: pts
+  logical, allocatable :: surface(:)
+  logical :: ok
+  character(len=:), allocatable :: msg
+  integer :: i
+  call one_cylinder(mesh)
+  do i = 1, mesh%n
+    if (abs(mesh%nrm(3, i)) < 0.1d0) exit
+  end do
+  call build_field_points(mesh, reshape(mesh%xc(:, i), [3, 1]), pts, surface, ok, msg)
+  call check(error, .not. ok .and. index(msg, "hull") > 0, "point on the hull not rejected")
+end subroutine test_points_on_hull
+
+subroutine test_points_inside(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(cs_points) :: pts
+  logical, allocatable :: surface(:)
+  logical :: ok
+  character(len=:), allocatable :: msg
+  call one_cylinder(mesh)
+  call build_field_points(mesh, reshape([0d0, 0d0, -2d0], [3, 1]), pts, surface, ok, msg)
+  call check(error, .not. ok .and. index(msg, "inside body 1") > 0, "point inside not rejected")
+end subroutine test_points_inside
+
+subroutine test_points_waterplane(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(cs_points) :: pts
+  logical, allocatable :: surface(:)
+  logical :: ok
+  character(len=:), allocatable :: msg
+  call one_cylinder(mesh)
+  call build_field_points(mesh, reshape([0d0, 0d0, 0d0], [3, 1]), pts, surface, ok, msg)
+  call check(error, .not. ok .and. index(msg, "inside") > 0, "centre of the waterplane not rejected")
+  if (allocated(error)) return
+  call build_field_points(mesh, reshape([2d0, 1d0, 0d0], [3, 1]), pts, surface, ok, msg)
+  call check(error, .not. ok .and. index(msg, "inside") > 0, "waterplane point not rejected")
+end subroutine test_points_waterplane
+
+subroutine test_points_two_bodies(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(cs_points) :: pts
+  logical, allocatable :: surface(:)
+  logical :: ok
+  character(len=:), allocatable :: msg
+  call two_cylinders(40d0, mesh)
+  call build_field_points(mesh, reshape([40d0, 0d0, -2d0], [3, 1]), pts, surface, ok, msg)
+  call check(error, .not. ok .and. index(msg, "body 2") > 0, "point inside body 2 not rejected")
+  if (allocated(error)) return
+  call build_field_points(mesh, reshape([20d0, 0d0, 0d0], [3, 1]), pts, surface, ok, msg)
+  call check(error, ok .and. pts%body(1) >= 1, "point between the bodies rejected")
+end subroutine test_points_two_bodies
 
 end module test_qtf_field
