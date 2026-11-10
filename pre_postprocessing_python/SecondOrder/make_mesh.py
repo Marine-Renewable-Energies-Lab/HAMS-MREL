@@ -100,10 +100,15 @@ def check_normals(mesh, inside):
             raise ValueError("panel %d has a normal pointing into the fluid" % number)
 
 
-def cylinder(radius, draft, ntheta, nz, nr, graded=False):
+def cylinder(radius, draft, ntheta, nz, nr, graded=False, edge_power=None):
     """Side wall and flat bottom, with triangles at the centre of the bottom. Nodes lie on y = 0, so the mesh is
-    symmetric about y = 0. With graded, rows are cosine spaced, finer at the waterline and the bilge. Returns the mesh
-    and its waterline polygon, counter-clockwise from above."""
+    symmetric about y = 0. With graded, rows are cosine spaced, finer at the waterline and the bilge. With edge_power q
+    (instead of graded), the rows are power-law graded: on the side wall s^q / (s^q + (1 - s)^q) of the draft, finer at
+    the waterline and the bilge; on the bottom the distance from the bilge edge is s^q of the radius. The first row is then
+    about (1/n)^q of the draft or radius, against about 2.5/n^2 (side) and 1.2/n^2 (bottom) for cosine spacing.
+    Returns the mesh and its waterline polygon, counter-clockwise from above."""
+    if edge_power is not None and not edge_power >= 1.0:
+        raise ValueError("edge_power must be at least 1")
     if ntheta % 2 != 0:
         raise ValueError("ntheta must be even, to keep the mesh symmetric about both axes")
     mesh = Mesh()
@@ -114,10 +119,16 @@ def cylinder(radius, draft, ntheta, nz, nr, graded=False):
         return (r * math.cos(angles[j]), r * math.sin(angles[j]), z)
 
     def depth(i):
-        return -draft * (0.5 * (1.0 - math.cos(math.pi * i / nz)) if graded else i / nz)
+        s = i / nz
+        if edge_power is not None:
+            return -draft * s ** edge_power / (s ** edge_power + (1.0 - s) ** edge_power)
+        return -draft * (0.5 * (1.0 - math.cos(math.pi * s)) if graded else s)
 
     def bottom_radius(i):
-        return radius * (math.cos(0.5 * math.pi * i / nr) if graded else (nr - i) / nr)
+        s = i / nr
+        if edge_power is not None:
+            return radius * (1.0 - s ** edge_power)
+        return radius * (math.cos(0.5 * math.pi * s) if graded else 1.0 - s)
 
     for j in range(ntheta):
         for i in range(nz):
@@ -457,9 +468,9 @@ def write_body(mesh, polygon, draft, x0, y0, half_y, mesh_path, hydro_path, exte
 
 
 def write_cylinder(mesh_path, hydro_path, radius, draft, ntheta, nz, nr, graded=False, x0=0.0, y0=0.0, half_y=False,
-                   external_restoring=None):
+                   external_restoring=None, edge_power=None):
     """Write the mesh and hydrostatics of a cylinder. Returns the written mesh."""
-    mesh, polygon = cylinder(radius, draft, ntheta, nz, nr, graded)
+    mesh, polygon = cylinder(radius, draft, ntheta, nz, nr, graded, edge_power)
     return write_body(mesh, polygon, draft, x0, y0, half_y, mesh_path, hydro_path, external_restoring)[0]
 
 

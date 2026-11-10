@@ -120,7 +120,7 @@ class Case:
     def __init__(self, name, group, question, hull, multiple, motion="fixed", velocity="differencing", waterline="extrapolate",
                  frequencies=WIDE_FREQUENCIES, headings=(0.0, 30.0), grn=4, isolv=1, irsp=0, mean_drift=1, tier="both",
                  solver="hams", where="snellius", control=None, qtf=0, nemoh_range=None, qtf_terms=None, qtf_max_dw=None,
-                 nemoh_contrib=1):
+                 nemoh_contrib=1, edge_power=None, qtf_edge_weights=None):
         self.name = name
         self.group = group
         self.question = question
@@ -144,6 +144,8 @@ class Case:
         self.qtf_terms = qtf_terms     # qtf_terms of SecondOrder.in: None (not written, quadratic) or "body"
         self.qtf_max_dw = qtf_max_dw   # qtf_max_dw of SecondOrder.in, or None (not written)
         self.nemoh_contrib = nemoh_contrib   # Nemoh's QTF terms: 1 DUOK, 2 DUOK + HASBO (NEMOH_QTF_TERMS)
+        self.edge_power = edge_power   # sharp hull only: power-law rows toward the bilge (make_mesh.cylinder), None for cosine
+        self.qtf_edge_weights = qtf_edge_weights   # qtf_edge_weights of SecondOrder.in: None (not written), "on" or "off"
 
 
 def in_tier(case, tier):
@@ -320,6 +322,10 @@ def qtf_cases():
     return chosen
 
 
+# Powers of the edge-graded meshes of the QTF potential study (make_mesh.cylinder edge_power)
+EDGE_POWERS = (2.5, 3)
+
+
 def qtf_potential_cases():
     """The cases of the QTF potential study (--qtf-potential): the sharp hull of qtf_cases, fixed and free, source velocity,
     m1 to m4, with qtf_terms = body (QTF_Indirect.11d and QTF_PotentialTerms.txt) on QTF_FREQUENCY_RANGE, qtf_max_dw =
@@ -337,6 +343,16 @@ def qtf_potential_cases():
         for m in (1, 2):
             chosen.append(Case("nemoh_sharp_%s_%s" % (motion, tag(m)), "P", "5", "sharp", m, motion, headings=(0.0,),
                                solver="nemoh", nemoh_range=QTF_POTENTIAL_NEMOH_RANGE, nemoh_contrib=2))
+    # Edge grading: the free hull with power-law rows toward the sharp bilge (EDGE_POWERS), the same panel count, with the
+    # sharp-edge weights off and on (q_sharp_free_g<q>[w]_m<k>, 2.5 as g2p5). The cosine rows of the
+    # other cases are close to q = 2, so the powers start above it
+    for q in EDGE_POWERS:
+        for weights in ("off", "on"):
+            for m in (1, 2):
+                name = "q_sharp_free_g%s%s_%s" % (("%g" % q).replace(".", "p"), "w" if weights == "on" else "", tag(m))
+                chosen.append(Case(name, "P", "5", "sharp", m, "free", "source", frequencies=grid, headings=(0.0,), qtf=1,
+                                   qtf_terms="body", qtf_max_dw=QTF_POTENTIAL_MAX_DW, edge_power=q,
+                                   qtf_edge_weights=weights))
     return chosen
 
 
@@ -497,7 +513,10 @@ def write_hams_hull(case, path):
     hydro_path = os.path.join(path, "Hydrostatic.in")
     m = case.multiple
     if case.hull == "sharp":
-        mesh = make_mesh.write_cylinder(mesh_path, hydro_path, **scaled(fixtures.DRIFT_CYL_MESH, ("ntheta", "nz", "nr"), m))
+        params = scaled(fixtures.DRIFT_CYL_MESH, ("ntheta", "nz", "nr"), m)
+        if case.edge_power is not None:
+            params.update(graded=False, edge_power=case.edge_power)
+        mesh = make_mesh.write_cylinder(mesh_path, hydro_path, **params)
     elif case.hull == "round":
         mesh = make_mesh.write_rounded_cylinder(mesh_path, hydro_path,
                                                 **scaled(fixtures.ROUND_MESH, ("ntheta", "nz", "narc", "nr"), m))
@@ -540,6 +559,8 @@ def write_hams_case(case, root, threads):
         options.update(qtf_terms=case.qtf_terms)
     if case.qtf_max_dw:
         options.update(qtf_max_dw=case.qtf_max_dw)
+    if case.qtf_edge_weights:
+        options.update(qtf_edge_weights=case.qtf_edge_weights)
     fixtures.write_second_order(os.path.join(path, "SecondOrder.in"), **options)
     return path
 
