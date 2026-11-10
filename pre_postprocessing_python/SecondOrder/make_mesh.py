@@ -841,7 +841,10 @@ def oc4_mooring_signs():
     origin; the vertical part: the pull grows on the line behind and drops on the two ahead). L_s = V / w from the vertical
     pretension 1.839e6 N / 3 (Eq. 5-14) and the wet weight w = 108.63 x 9.80665 N/m (Table 5-1). The two parts nearly cancel,
     leaving C51 < 0; a pitch rotation lifts and lowers the fairleads, which gives C15 the same value (a catenary line is
-    conservative, so dH/dz_f = dV/dX), and sway and roll give C24 = C42 = -C51 by the symmetry of the layout.
+    conservative, so dH/dz_f = dV/dX), and sway and roll give C24 = C42 = -C51 by the symmetry of the layout. Leaving out
+    the transverse stiffness H / X of each line (about 1.1e3 N/m, with H about 8.5e5 N and X about 797 m) makes H' about 2%
+    high; with it C51 is about -7.7e4, so the sign is firmer than the near cancellation suggests. The extracted Eq. 5-15 has
+    two minus signs, which fits two negative entries (C15, C51).
     Returns (C51 estimate, |z_f| k, the vertical part)."""
     k = OC4_MOORING[0][0]
     h_prime = k / 1.5
@@ -1043,8 +1046,9 @@ def triangle_quality(mesh):
 
 
 def check_control_clearance(hull, control):
-    """As check_control_surface of src/ControlSurfaceMesh.f90: no panel centroid of C within one panel size (the larger of the
-    two, size = sqrt(area)) of a hull panel centroid. Returns the smallest distance over that size, or 2 if it is at least 2."""
+    """As check_control_surface of src/ControlSurfaceMesh.f90: no point of C (panel centroids, size sqrt(area), and the
+    midpoints of the Gamma_c segments, size their length) within one size (the larger of the two) of a hull panel centroid.
+    Returns the smallest distance over that size, or 2 if it is at least 2."""
     def centroids(mesh):
         out = []
         for panel in mesh.panels:
@@ -1057,6 +1061,9 @@ def check_control_clearance(hull, control):
         return out
     hull_points = centroids(hull)
     control_points = centroids(control)
+    for a, b in open_edges(control):
+        pa, pb = control.nodes[a - 1], control.nodes[b - 1]
+        control_points.append((tuple(0.5 * (u + v) for u, v in zip(pa, pb)), math.sqrt(sum((u - v) ** 2 for u, v in zip(pa, pb)))))
     # Pairs farther apart than twice the largest size cannot fail and are not looked at (bins of that size)
     cell = 2.0 * max(size for _, size in hull_points + control_points)
     bins = {}

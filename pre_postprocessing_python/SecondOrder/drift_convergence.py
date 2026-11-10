@@ -94,6 +94,10 @@ NEMOH_N2 = 6.0e-6
 NEMOH_N3 = 0.5e-9
 NEMOH_QTF_N2 = 6.2e-6
 NEMOH_BYTES = 102.0   # per N^2, measured at 1792 panels
+# Snellius time of a Nemoh run over nemoh_seconds: nemoh_sharp_*_m2 (1792 panels, 140 frequencies, DUOK + HASBO) took
+# 2 h 34 min on one thread (job 29017289) against 1.635 h from nemoh_seconds. One point only: an N^3 share above the modelled
+# one would make larger runs slower, which the time limit of twice the estimate covers
+NEMOH_SNELLIUS_FACTOR = 2.567 / 1.635
 
 # Bytes per N^2 per symmetry image, from the ALLOCATE statements of HAMS_Prog.f90 and SurfaceVelocity.f90
 BYTES_AMAT = 16.0
@@ -108,6 +112,10 @@ CPUS = 32
 MEMORY_GB = 64
 CHARGED_CPUS = 48
 SBU_PER_JOB_HOUR = 72.0
+# Nemoh runs on one thread per case, side by side in one allocation, which asks for the 24 CPUs that fat_genoa bills at least,
+# and little memory (a few GB per run)
+NEMOH_CPUS = 24
+NEMOH_MEMORY_GB = 24
 # ifx 2024.2 with -heap-arrays 0 stops with SIGSEGV when it frees the temporary of an array constructor of a type with allocatable
 # parts, as in far_field_pair. A small program with no HAMS code does the same. So the jobs leave that flag out, and give the
 # threads a large stack instead. A stack overflow stops the run, so it cannot change a number silently.
@@ -164,9 +172,12 @@ HULLS = {
     "corner_box": dict(depth=50.0, panels=440),
     # OC4 semisubmersible (make_mesh.OC4_MESH): the panels per multiple, since the transition rows do not scale as m^2. Its
     # C and F (CSMesh_1.pnl, FSMesh_1.pnl, cs_shape = file) are the same at every multiple: C 1400 panels, F per multiple.
+    # cf_points counts the panels of C and F only: B2 evaluates no field at the segments of Gamma_c (b2_control_setup in
+    # SecondOrderDriver.f90), so the 1416 points of B2_PASS_SECONDS are likewise C and F points only.
+    # Its Nemoh runs have allocations per multiple (nemoh_batches).
     # A fixed Nemoh body needs a stiffer hold than NEMOH_FIXED_STIFFNESS: wave moments of order 1e9 N m per metre of amplitude
     "oc4": dict(depth=make_mesh.OC4_DEPTH, panels={1: 1224, 2: 4608}, cf_points={1: 1400 + 750, 2: 1400 + 1384},
-                fixed_stiffness=1.0e15),
+                fixed_stiffness=1.0e15, nemoh_batches=True),
 }
 # Both radii are for a box 20 x 10 x 5. 1.5 is the bilge radius of the rounded cylinder over its draft, times the draft here
 ROUND_BOX_MESH = dict(lx=20.0, ly=10.0, draft=5.0, corner_radius=2.5, bilge_radius=1.5, nx=16, ny=6, ncorner=4, nz=3, narc=2)
@@ -476,7 +487,7 @@ def b2_snellius_hours(case):
 def wall_hours(case):
     """Estimated wall time on Snellius, or on the laptop for a case that runs there."""
     if case.solver == "nemoh":
-        return nemoh_seconds(case) / 3600.0
+        return nemoh_seconds(case) / 3600.0 * (NEMOH_SNELLIUS_FACTOR if case.where == "snellius" else 1.0)
     return laptop_seconds(case) / SNELLIUS_SPEEDUP / 3600.0 + control_snellius_hours(case) + b2_snellius_hours(case)
 
 
@@ -1309,20 +1320,33 @@ def write_slurm(args):
                 script, root, root, root, CPUS,
                 " --control " + args.control if args.control else qtf_flag(study_of(args))))
 
-    # Nemoh is run with one thread per case, as many at a time as there are cases, in one allocation
-    chosen = [case for case in cases if case.solver == "nemoh"]
-    if chosen:
-        with open(os.path.join(out, "nemoh.txt"), "w", newline="\n") as f:
+    # Nemoh is run with one thread per case, as many at a time as there are cases, in one allocation per batch
+    # (nemoh_batches: nemoh.txt, or nemoh_<hull>_m<k>.txt for a hull with batches of its own)
+    for label, chosen in nemoh_batches([case for case in cases if case.solver == "nemoh"]):
+        if len(chosen) > NEMOH_CPUS:
+            raise ValueError("%s has %d Nemoh runs for %d CPUs" % (label, len(chosen), NEMOH_CPUS))
+        with open(os.path.join(out, label + ".txt"), "w", newline="\n") as f:
             f.write("\n".join(case.name for case in chosen) + "\n")
         limit = time_limit(max(wall_hours(case) for case in chosen))
-        with open(os.path.join(out, "nemoh.sbatch"), "w", newline="\n") as f:
-            f.write(SBATCH_HEAD.format(name="drift_nemoh", limit=limit, log="nemoh_%j.log", **head).replace(
-                "export OMP_NUM_THREADS=%d" % CPUS, "export OMP_NUM_THREADS=1"))
+        with open(os.path.join(out, label + ".sbatch"), "w", newline="\n") as f:
+            f.write(SBATCH_HEAD.format(name="drift_" + label, limit=limit, log=label + "_%j.log",
+                                       **dict(head, cpus=NEMOH_CPUS, memory=NEMOH_MEMORY_GB)).replace(
+                "export OMP_NUM_THREADS=%d" % NEMOH_CPUS, "export OMP_NUM_THREADS=1"))
             f.write("# Needs a build of Nemoh on Snellius, kept outside the repository. Set NEMOH_BUILD to its build folder.\n")
             f.write("NEMOH_BUILD=${NEMOH_BUILD:?set NEMOH_BUILD}\n")
-            f.write("xargs -P %d -I{} python3 %s run %s --case {} --hams none --nemoh-build $NEMOH_BUILD --threads 1%s < %s/nemoh.txt\n" % (
-                len(chosen), script, root, qtf_flag(study_of(args)), jobs))
+            f.write("xargs -P %d -I{} python3 %s run %s --case {} --hams none --nemoh-build $NEMOH_BUILD --threads 1%s < %s/%s.txt\n" % (
+                len(chosen), script, root, qtf_flag(study_of(args)), jobs, label))
     print("Scripts in %s, for %s on the cluster, with logs in %s. Nothing was submitted." % (out, jobs, logs))
+
+
+def nemoh_batches(cases):
+    """[(label, cases)] of the Nemoh allocations: one "nemoh" for the hulls without batches of their own, and one
+    "nemoh_<hull>_m<k>" per multiple of a hull with HULLS nemoh_batches (OC4: m1 and m2 are approved and run apart)."""
+    groups = {}
+    for case in cases:
+        own = HULLS[case.hull].get("nemoh_batches")
+        groups.setdefault("nemoh_%s_%s" % (case.hull, tag(case.multiple)) if own else "nemoh", []).append(case)
+    return sorted(groups.items())
 
 
 def job_table(tier, markdown, control=None, qtf=False):
@@ -1373,11 +1397,11 @@ def job_table(tier, markdown, control=None, qtf=False):
         print("%s: %d runs, %.1f wall h in sum, longest %.2f h, largest memory %.1f GB" % (
             label, len(chosen), hours, longest, max([memory_gb(c) for c in chosen] or [0.0])))
     hams_hours = sum(wall_hours(c) for c in cases if c.solver == "hams")
-    nemoh_list = [c for c in cases if c.solver == "nemoh" and c.where == "snellius"]
-    nemoh_hours = max([wall_hours(c) for c in nemoh_list] or [0.0])
     print("Charged: HAMS %.1f job hours, %.0f CPU-hours, %.0f SBU" % (hams_hours, hams_hours * CHARGED_CPUS, hams_hours * SBU_PER_JOB_HOUR))
-    print("Charged: Nemoh in one allocation %.1f job hours, %.0f CPU-hours, %.0f SBU" % (
-        nemoh_hours, nemoh_hours * CHARGED_CPUS, nemoh_hours * SBU_PER_JOB_HOUR))
+    for label, chosen in nemoh_batches([c for c in cases if c.solver == "nemoh" and c.where == "snellius"]):
+        hours = max(wall_hours(c) for c in chosen)
+        print("Charged: Nemoh allocation %s (%d runs, %d CPUs) %.1f job hours, %.0f CPU-hours, %.0f SBU" % (
+            label, len(chosen), NEMOH_CPUS, hours, hours * NEMOH_CPUS, hours * NEMOH_CPUS * SBU_PER_JOB_HOUR / CHARGED_CPUS))
 
 
 def main():

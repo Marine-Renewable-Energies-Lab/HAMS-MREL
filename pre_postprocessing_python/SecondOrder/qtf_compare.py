@@ -252,18 +252,23 @@ def compare_potential(results, path, nemoh, max_dw, exclude=None):
 READINGS = (("as-is", False, 1.0), ("conj", True, 1.0), ("-1", False, -1.0), ("-conj", True, -1.0))
 
 
-def compare_against_nemoh(results, nemoh, max_dw, exclude=None, hull="oc4", reading=None):
+def compare_against_nemoh(results, nemoh, max_dw, exclude=None, hull="oc4", reading="as-is"):
     """The --against-nemoh table, for a hull without an exact reference: QTF_Indirect.11d of each q_<hull>_<motion>_m<k>
     case against OUT_QTFM_N.dat of nemoh_<hull>_<motion>_m<k> (DUOK + HASBO, the same mesh), |HAMS - Nemoh| / max |Nemoh|
     over the pairs omega_i <= omega_j of the HAMS file with omega_j - omega_i <= max_dw, max and median, percent. Nemoh's
-    reading is the one named, or else the one closest to HAMS by the sum of the medians (printed: with no reference,
-    agreement picks it; the sharp-cylinder runs fix it against the exact reference). exclude (lo, hi) as in compare_potential.
-    Returns the rows (case, reading, [(max, median) or None per quantity])."""
+    values are taken under one fixed reading, "as-is" by default: the one the sharp-cylinder runs established against the
+    exact reference. With no reference here, the reading is never chosen by agreement with HAMS, which would hide a sign or
+    conjugation error of either code; the other readings are only computed to print a WARNING when one of them has a sum of
+    medians under WARN_READING_RATIO of the fixed reading's. exclude (lo, hi) as in compare_potential.
+    Returns the rows (case, [(max, median) or None per quantity], warning or None)."""
+    fixed = [r for r in READINGS if r[0] == reading]
+    if not fixed:
+        raise ValueError("unknown Nemoh reading " + str(reading))
     print("HAMS QTF_Indirect.11d against Nemoh DUOK + HASBO, %s: |HAMS - Nemoh| / max |Nemoh| over the pairs, max and median, "
-          "percent; omega_j - omega_i <= %.2f rad/s" % (hull, max_dw))
+          "percent; omega_j - omega_i <= %.2f rad/s; Nemoh reading %s" % (hull, max_dw, reading))
     if exclude:
         print("Pairs with omega_i or omega_j in [%.3f, %.3f] rad/s left out; scales from all the pairs" % tuple(exclude))
-    print("%-24s %-6s %16s %16s %16s" % ("case", "Nemoh", "F_x", "F_z", "M_y"))
+    print("%-24s %16s %16s %16s" % ("case", "F_x", "F_z", "M_y"))
     rows = []
     for folder in sorted(glob.glob(os.path.join(results, "q_%s_*" % hull))):
         case = os.path.basename(folder)
@@ -275,10 +280,8 @@ def compare_against_nemoh(results, nemoh, max_dw, exclude=None, hull="oc4", read
             continue
         pairs_all = sorted(set((min(w1, w2), max(w1, w2)) for w1, w2, _ in hams if abs(w2 - w1) <= max_dw + 1e-9))
         kept = [p for p in pairs_all if not exclude or not any(exclude[0] - 1e-9 <= w <= exclude[1] + 1e-9 for w in p)]
-        best = None
-        for label, conjugate, sign in READINGS:
-            if reading and label != reading:
-                continue
+
+        def cells_of(conjugate, sign):
             cells = []
             for _, index in QUANTITIES:
                 values = nemoh_values(table, index, "diff", conjugate, sign)
@@ -288,19 +291,30 @@ def compare_against_nemoh(results, nemoh, max_dw, exclude=None, hull="oc4", read
                 scale = max(abs(values[p]) for p in pairs_all)
                 e = errors_of({p: lookup(hams, p[0], p[1], index, "diff") for p in kept}, {p: values[p] for p in kept}, scale)
                 cells.append(e[:2] if e else None)
-            score = sum(c[1] if c else np.inf for c in cells)
-            if best is None or score < best[0]:
-                best = (score, label, cells)
-        rows.append((case, best[1], best[2]))
-        print("%-24s %-6s %16s %16s %16s" % (case, best[1], *["%7.2f %7.2f" % (100 * c[0], 100 * c[1]) if c else "-"
-                                                               for c in best[2]]))
+            return cells, sum(c[1] if c else np.inf for c in cells)
+        cells, score = cells_of(*fixed[0][1:])
+        warning = None
+        for label, conjugate, sign in READINGS:
+            if label == reading:
+                continue
+            other = cells_of(conjugate, sign)[1]
+            if other < WARN_READING_RATIO * score:
+                warning = "WARNING: reading %s fits much better (sum of medians %.2f%% against %.2f%%)" % (
+                    label, 100 * other, 100 * score)
+        rows.append((case, cells, warning))
+        print("%-24s %16s %16s %16s%s" % (case, *["%7.2f %7.2f" % (100 * c[0], 100 * c[1]) if c else "-" for c in cells],
+                                          "  " + warning if warning else ""))
     return rows
+
+
+# A reading other than the fixed one is reported when its sum of medians is below this fraction of the fixed reading's
+WARN_READING_RATIO = 0.2
 
 
 def check_against_nemoh():
     """compare_against_nemoh on a temporary fixture: a HAMS .11d (conj(T), both halves of the square) and a Nemoh file (T as
-    written, w1 >= w2) of the same T: errors 0 and the reading "as-is"; Nemoh written conjugated: "conj"; a Nemoh run missing
-    is noted."""
+    written, w1 >= w2) of the same T: errors 0 under the default "as-is" reading. Nemoh written conjugated: a large error under
+    "as-is", with a warning naming "conj", and errors 0 with reading = "conj". A Nemoh run missing is noted."""
     import contextlib
     import io
     import tempfile
@@ -342,12 +356,18 @@ def check_against_nemoh():
         text = io.StringIO()
         with contextlib.redirect_stdout(text):
             rows = compare_against_nemoh(os.path.join(d, "results"), os.path.join(d, "nemoh"), 0.3)
-    found = {case: (label, cells) for case, label, cells in rows}
-    worst = max(c[0] for _, cells in found.values() for c in cells)
-    assert found["q_oc4_fixed_m1"][0] == "as-is" and found["q_oc4_free_m1"][0] == "conj", found
-    assert worst <= 1e-5, "errors of the exact fixture: %s" % found
-    assert "no nemoh_oc4_free_m2" in text.getvalue(), "no note for the missing Nemoh run"
-    return "exact fixture max %.1e %%, readings as-is and conj found, missing run noted" % (100 * worst)
+            conj_rows = compare_against_nemoh(os.path.join(d, "results"), os.path.join(d, "nemoh"), 0.3, reading="conj")
+    found = {case: (cells, warning) for case, cells, warning in rows}
+    as_is = max(c[0] for c in found["q_oc4_fixed_m1"][0])
+    wrong = min(c[1] for c in found["q_oc4_free_m1"][0])
+    conj = max(c[0] for case, cells, _ in conj_rows if case == "q_oc4_free_m1" for c in cells)
+    assert as_is <= 1e-5 and found["q_oc4_fixed_m1"][1] is None, "as-is fixture: %s" % (found["q_oc4_fixed_m1"],)
+    assert wrong > 0.1 and found["q_oc4_free_m1"][1] and "conj" in found["q_oc4_free_m1"][1], \
+        "the conjugated fixture under as-is: %s" % (found["q_oc4_free_m1"],)
+    assert conj <= 1e-5, "the conjugated fixture under conj: %g" % conj
+    assert "Nemoh reading as-is" in text.getvalue() and "no nemoh_oc4_free_m2" in text.getvalue(), "header or missing note"
+    return ("as-is fixture max %.1e %%, conjugated fixture %.0f %% median under as-is with a warning and %.1e %% under conj, "
+            "missing run noted" % (100 * as_is, 100 * wrong, 100 * conj))
 
 
 def nemoh_values(table, index, kernel, conjugate, sign=1.0):
@@ -451,12 +471,13 @@ def main(argv=None):
                         help="compare QTF_Indirect.11d of q_<hull>_* with Nemoh's nemoh_<hull>_* under FOLDER (no exact "
                              "reference)")
     parser.add_argument("--hull", default="oc4", help="with --against-nemoh: the hull of the case names (default oc4)")
-    parser.add_argument("--reading", choices=[label for label, _, _ in READINGS],
-                        help="with --against-nemoh: Nemoh's reading; by default the closest to HAMS")
+    parser.add_argument("--reading", choices=[label for label, _, _ in READINGS], default="as-is",
+                        help="with --against-nemoh: Nemoh's reading (default as-is, established on the sharp cylinder "
+                             "against the exact reference; never chosen by agreement with HAMS)")
     args = parser.parse_args(argv)
     if args.against_nemoh:
-        compare_against_nemoh(args.results, args.against_nemoh, args.max_dw, args.exclude, args.hull, args.reading)
-        return 0
+        rows = compare_against_nemoh(args.results, args.against_nemoh, args.max_dw, args.exclude, args.hull, args.reading)
+        return 0 if rows else 1
     if args.potential:
         return compare_potential(args.results, args.potential, args.nemoh, args.max_dw, args.exclude)
     if not args.reference:
