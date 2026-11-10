@@ -331,6 +331,7 @@ contains
             new_unittest("qtf_field_diagonal", qtf_field_diagonal), &
             new_unittest("qtf_field_tiny_stokes", qtf_field_tiny_stokes), &
             new_unittest("qtf_field_half_matches_full", qtf_field_half_matches_full), &
+            new_unittest("qtf_field_converges", qtf_field_converges), &
             new_unittest("qtf_field_inside_stops", qtf_field_inside_stops), &
             new_unittest("qtf_field_no_points_stops", qtf_field_no_points_stops), &
             new_unittest("qtf_field_off", qtf_field_off) &
@@ -600,8 +601,8 @@ contains
     !> The fixtures of QTF_FieldPartial.txt that run to the end, in one setup test; the two that must stop run in their tests
     subroutine run_qtf_field_cases(error)
         type(error_type), allocatable, intent(out) :: error
-        character(len=16), parameter :: cases(4) = [character(len=16) :: "qtf_field", "qtf_field_half", "qtf_field_full", &
-                                                    "qtf_field_tiny"]
+        character(len=16), parameter :: cases(7) = [character(len=16) :: "qtf_field", "qtf_field_half", "qtf_field_full", &
+                                                    "qtf_field_tiny", "qtf_field_m1", "qtf_field_m2", "qtf_field_m3"]
         type(error_type), allocatable :: one
         integer :: c
 
@@ -4046,6 +4047,54 @@ contains
         call report("qtf_field_half_matches_full", worst)
         call check_below(error, "qtf_field_half_matches_full", worst, 1d-5)
     end subroutine qtf_field_half_matches_full
+
+    !> The quadratic part of the field converges with the panel count: the rounded hull of radius 5 m with 128, 288 and 512
+    !> panels (qtf_field_m1 to m3), five points one and two body sizes away. With v1, v2, v3 the Re_quad + i Im_quad of the
+    !> three meshes in a row, d12 = |v2 - v1| and d23 = |v3 - v2|, each over the largest |v3| of its point. The finer step
+    !> is clearly the smaller, and d23 stays within twice the value measured on this laptop (0.00082, so 0.002).
+    subroutine qtf_field_converges(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), parameter :: d23_limit = 2d-3
+        real(8), allocatable :: m(:,:,:)
+        character(len=:), allocatable :: header(:)
+        real(8), allocatable :: f(:,:)
+        character(len=16) :: name
+        complex(8) :: v1, v2, v3
+        real(8) :: scale, d12, d23, max12, max23
+        integer :: i, r, n
+
+        do i = 1, 3
+            write (name, '(a,i0)') "qtf_field_m", i
+            call read_field_file(output_dir(trim(name))//qtf_field_file, f, header, error)
+            if (allocated(error)) return
+            if (i == 1) then
+                n = size(f, 1)
+                allocate (m(n, 15, 3))
+            end if
+            call check(error, size(f, 1) == n .and. n > 0, trim(name)//": a different number of rows")
+            if (allocated(error)) return
+            m(:,:,i) = f
+        end do
+        max12 = 0d0
+        max23 = 0d0
+        do r = 1, n
+            call check(error, all(m(r,1:7,2) == m(r,1:7,1)) .and. all(m(r,1:7,3) == m(r,1:7,1)), &
+                       "qtf_field_m1 to m3: the rows are not the same pairs and points")
+            if (allocated(error)) return
+            scale = maxval(abs(cmplx(m(:,12,3), m(:,13,3), 8)), mask=m(:,6,1) == m(r,6,1))
+            v1 = cmplx(m(r,12,1), m(r,13,1), 8)
+            v2 = cmplx(m(r,12,2), m(r,13,2), 8)
+            v3 = cmplx(m(r,12,3), m(r,13,3), 8)
+            d12 = abs(v2 - v1)/scale
+            d23 = abs(v3 - v2)/scale
+            max12 = max(max12, d12)
+            max23 = max(max23, d23)
+        end do
+        print '(4x,a,es10.3,a,es10.3)', "qtf_field_converges: largest d12 =", max12, ", largest d23 =", max23
+        call check(error, max23 <= 0.6d0*max12, "qtf_field_converges: d23 is not below 0.6 d12")
+        if (allocated(error)) return
+        call check(error, max23 <= d23_limit, "qtf_field_converges: d23 above its limit")
+    end subroutine qtf_field_converges
 
     !> Runs HAMS on a fixture that must stop, and checks that it exits with an error and says why
     subroutine run_expecting_stop(name, text, error)

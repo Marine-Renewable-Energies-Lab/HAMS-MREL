@@ -62,6 +62,12 @@ QTF_TINY_MESH = dict(radius=0.05, draft=0.05, ntheta=8, nz=2, nr=2)
 QTF_TINY_FREQUENCY = 0.9
 QTF_TINY_DEPTH = 20.0
 QTF_TINY_POINTS = ((30.0, 0.0, 0.0), (30.0, 10.0, 0.0), (30.0, 0.0, -3.0))
+# Panel convergence of the quadratic part: the small rounded hull (radius 5) at three resolutions, panel counts about 1.8 to
+# 2.2 times each step, with points one and two body sizes from the hull
+QTF_CONVERGENCE_MESHES = (dict(ntheta=16, nz=4, narc=2, nr=2), dict(ntheta=24, nz=6, narc=3, nr=3),
+                          dict(ntheta=32, nz=8, narc=4, nr=4))
+QTF_CONVERGENCE_POINTS = ((15.0, 0.0, 0.0), (0.0, 15.0, 0.0), (-25.0, 0.0, 0.0), (15.0, 0.0, -3.0), (0.0, -25.0, -5.0))
+QTF_CONVERGENCE_FREQUENCIES = (0.8, 1.0)
 
 
 def real12(value):
@@ -461,6 +467,14 @@ def write_qtf_field_fixtures(data, both):
     # A point inside the hull, and no points at all
     rounded_case("qtf_field_inside", DRIFT_CYL_FREQUENCIES, QTF_FIELD_POINTS + ((0.0, 0.0, -5.0),), sybo=1)
     rounded_case("qtf_field_no_points", DRIFT_CYL_FREQUENCIES, (), sybo=1)
+    for number, mesh in enumerate(QTF_CONVERGENCE_MESHES, 1):
+        target = case_dir(data, "qtf_field_m%d" % number)
+        make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
+                                         **dict(TWO_ROUND_MESH, **mesh))
+        write_control(os.path.join(target, "ControlFile.in"), depth=100.0, frequencies=QTF_CONVERGENCE_FREQUENCIES,
+                      headings=(0.0,), field_points=QTF_CONVERGENCE_POINTS)
+        write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods="near", motion_state="free",
+                           write_terms=0, qtf=3, qtf_field=1, velocity_method="source")
     target = case_dir(data, "qtf_field_tiny")
     make_mesh.write_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"), **QTF_TINY_MESH)
     write_control(os.path.join(target, "ControlFile.in"), depth=QTF_TINY_DEPTH, frequencies=(QTF_TINY_FREQUENCY,),
