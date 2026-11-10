@@ -27,6 +27,7 @@ SecondOrder/
 ├── make_mesh.py
 ├── make_drift_fixtures.py
 ├── drift_convergence.py
+├── qtf_field_plots.py
 └── truncated_cylinder_reference.py
 ```
 
@@ -189,3 +190,17 @@ python -I truncated_cylinder_reference.py compare RESULTS --out tc_compare.csv [
 - `check` runs the named self-checks, or all but the two slow ones (`uncertainty`, `compare_signs`), and exits with 1 if one fails. A check that cannot run for want of data (`compare_signs` without the study's results) prints SKIP and is not counted as passed. 5 min 4 s on a laptop.
 - `reference` writes the reference values at 11 frequencies, fixed and free, with their stated uncertainties, prints the convergence table and runs all 22 checks. 7 min 11 s. The stated uncertainties hold for this hull at the default resolution only; for any other cylinder or resolution they are `nan` (not measured), an empty field in the CSV.
 - `compare` reads the `a_sharp_*` case folders of the study under `RESULTS` (`output/Wamit_format/`) and prints, per case and frequency, the percentage difference of HAMS from the reference. Folders that are not study cases, or have no output, are skipped with a note. 93 s, nearly all of it the reference rows; `--reference` reads them from a CSV of `reference` instead (under 1 s). The uncertainty shown after each drift percentage is the one the reference rows carry.
+
+## Partial Second-Order Field Maps
+
+**`SecondOrder/qtf_field_plots.py`** maps `QTF_FieldPartial.txt` (format in [Output Files](output_files.md#wamit-format)) and prints grids of field points for `ControlFile.in`. It needs `numpy` and `matplotlib`. The field in the file is partial: it omits the second-order diffracted wave and, for a free body, the wave radiated by its second-order motion. Near the bodies, where the free-surface forcing drives the second-order scattered wave, the omitted part is not small, so the maps say PARTIAL in their title. The complete field is a later phase (see [Partial second-order field](input_files.md#partial-second-order-field-at-the-field-points)).
+
+```
+python -I qtf_field_plots.py plot Output/Wamit_format/QTF_FieldPartial.txt --out maps [--kernel diff|sum|both] [--type pressure|elevation|both]
+python -I qtf_field_plots.py grid --x X0 X1 NX --y Y0 Y1 NY [--z 0] [--exclude XC YC R]...
+python -I qtf_field_plots.py check
+```
+
+- `plot` writes one PNG per kernel, frequency pair, heading pair, type and depth (pressure points are grouped by z), named `field_<diff|sum>_<PER1>_<PER2>_<beta1>_<beta2>_<elevation|pressure_z<z>>.png`, with `m` for a minus sign. Each has two panels over x and y, in the units of the file. The modulus is contoured between the points, or shown as coloured markers when there are fewer than 3 points off one line, two points at the same (x, y), or one value. The phase (degrees, cyclic colour map) is always shown as markers at the points, since a contour would interpolate across the jump from 180 to −180. The number of PNGs grows with the pairs; `--kernel` and `--type` select. The title calls the first two columns T1 and T2 in s: they are periods only with periods as `Output_frequency_type`.
+- `grid` prints the field-point block: a `Number_of_field_points` line, then one `x y z` line per point of the NX by NY grid, leaving out the points within R of each (XC, YC). Make the discs larger than the bodies, or points on or inside a hull stop the run. `ControlFile.in` reads the count with format `27x,i16`, so copy the count into the `Number_of_field_points` line of an existing `ControlFile.in`, right of column 27, rather than the printed line.
+- `check` writes a synthetic file, reads, plots and grids it, and exits with 1 if one of its 9 checks fails.

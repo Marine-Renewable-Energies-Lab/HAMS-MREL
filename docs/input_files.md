@@ -270,6 +270,7 @@ Each line is `key = value`. Text after `!` is a comment, blank lines are ignored
 | `qtf` | `0`, `1`, `2`, `3` | `0` | Quadratic part of the second-order QTFs: 0 off, 1 difference frequency (`QTF_Quadratic.10d`), 2 sum frequency (`QTF_Quadratic.10s`), 3 both. Needs `mean_drift = 1` or `2` and `near` in `drift_methods`. Heading pairs follow `mean_drift`: β1 = β2 for 1, every pair for 2. The first-order state of every frequency and heading is kept in memory, 128 bytes per panel each; the log gives the size. See [QTFs](#qtfs-quadratic-part). |
 | `qtf_terms` | `quadratic` | `quadratic` | Which parts of the QTF. Only the quadratic part (products of first-order quantities) is implemented; `body` and `full` (second-order potential) stop the run. |
 | `qtf_max_dw` | real, at least 0 | `0` | Largest \|ω_i − ω_j\| in rad/s written to `QTF_Quadratic.10d`. 0 writes every pair. The sum-frequency file always has every pair. |
+| `qtf_field` | `0`, `1` | `0` | 1 writes `QTF_FieldPartial.txt`: the second-order pressure and free-surface elevation at the field points of `ControlFile.in`, for the pairs of `QTF_Quadratic.10d` and `.10s`. Needs `qtf` 1, 2 or 3 and at least one field point. **Partial:** the second-order diffracted and radiated waves are omitted, and near the bodies they are not small. See [Partial second-order field](#partial-second-order-field-at-the-field-points). |
 
 Example:
 
@@ -289,6 +290,7 @@ The options are checked against `ControlFile.in` and the mesh files. A run is re
 - `cs_velocity = source` with `ISOLV = 2` (GMRES), or with `IRSP = 1` (irregular frequency removal).
 - `cs_margin`, `cs_bottom_margin`, `cs_panel_size` or `cs_fs_rows` is negative, or `cs_fd_step` is outside (0, 0.5].
 - `qtf` is above 0 with `mean_drift = 0`, or without `near` in `drift_methods`; `qtf` is outside 0 to 3, `qtf_max_dw` is negative, or `qtf_terms` is `body` or `full`.
+- `qtf_field` is not 0 or 1, or is 1 with `qtf = 0` or with no field points in `ControlFile.in`; or a field point is above the free surface, on a hull or inside a body (see [the point rules](#partial-second-order-field-at-the-field-points)).
 
 ### Methods and outputs
 
@@ -335,6 +337,7 @@ The evidence is in [Second-order validation](second_order_validation.md).
 - **`waterline_method = field` in finite depth:** term I has been seen to jump with the mesh or the offset: on 32 x 16 rows at depth 10 and offset 0.01, -11.40% at 1.0 rad/s against -1.93% and -2.06% at offsets 0.005 and 0.05 (see [the fixtures](../test/data/drift_cyl/README.md)). That was measured before the finite-depth Green function used Linton's method for R/h < 0.02 (v2.3.3), which replaces the series behind such jumps for ν·h ≤ 50. It has not been measured again since. The run logs a warning when this method is used in finite depth.
 - **Control surface, F_z, M_x, M_y:** validated with `cs_shape = cylinder` only, and on finer meshes at 0.70 to 1.10 rad/s only. Not computed when C reaches the sea bed or the free surface between the hull and C cannot be built (the log says why).
 - **QTFs:** only the quadratic part, from the near-field method. The second-order potential (WAMIT's indirect method, Nemoh's HASBO and HASFS) is not implemented, so the difference-frequency QTF misses the potential part, which is zero on the diagonal and grows away from it (WAMIT v7.5 user manual, ch. 11), and the sum-frequency QTF is incomplete: use it as the quadratic part only. See [QTFs](#qtfs-quadratic-part).
+- **Second-order field at the field points (`qtf_field`):** partial. The second-order diffracted wave, and for a free body the wave radiated by its second-order motion, are omitted; near the bodies they are not small. The complete field is a later phase. See [Partial second-order field](#partial-second-order-field-at-the-field-points).
 
 ### QTFs, quadratic part
 
@@ -345,3 +348,36 @@ With `qtf` set, the near-field terms are evaluated for every pair of frequencies
 - `pre_postprocessing_python/SecondOrder/qtf_tools.py` reads the files, gives Newman's approximation from the diagonal (Newman 1974) and the spectrum of the slowly varying force.
 
 Sources: Chen, X.-B. (2007). Middle-field formulation for the computation of wave-drift loads. J. Eng. Math. 59, 61-82. Newman, J. N. (1974). Second-order, slowly-varying forces on vessels in irregular waves. Proc. Int. Symp. Dynamics of Marine Vehicles and Structures in Waves, London, 182-186.
+
+### Partial second-order field at the field points
+
+With `qtf_field = 1`, HAMS-MREL writes `QTF_FieldPartial.txt`: the second-order pressure at the field points below z = 0 and the second-order free-surface elevation at the points on z = 0, for every frequency and heading pair of `QTF_Quadratic.10d` (difference frequency) and `.10s` (sum frequency). The field points are those of `ControlFile.in` (`Number_of_field_points`). The kernels follow `qtf`, the heading pairs `mean_drift`, and `qtf_max_dw` limits the difference pairs, as for the QTFs. The columns, the conjugation and the scaling are in [Output Files](output_files.md#wamit-format).
+
+**The file is partial.** It holds two parts:
+- the quadratic part: products of the total first-order field at the point (incident, diffracted, and radiated by the motions of a free body);
+- the second-order incident wave of each pair (Sharma and Dean 1981); for one wave with itself at the sum frequency this is the second-order Stokes wave (Dean and Dalrymple 1991).
+
+It omits the second-order diffracted wave and, for a free body, the wave radiated by its second-order motion. Near the bodies the omitted part is not small:
+- On the hull, the second-order diffracted potential cancels the normal velocity of the second-order incident potential (Molin 1979), so next to the hull it is of the size of the incident part.
+- On the free surface it is forced by products of the first-order field that contain the scattered and radiated first-order waves (Molin 1979). Near a body that is not small against the wave length these waves are of the size of the incident wave, so this forcing is of the size of the one that makes the second-order incident wave. Kim and Yue (1989, 1990) solve this complete problem for an axisymmetric body.
+
+So the omitted part comes from the bodies and falls off with distance from them, as their first-order waves do. It is small only where those waves are small against the incident wave, for example around a hull small against the wave length: on a hull of radius 0.05 m the file gives the Stokes wave to a relative error of at most 6.2e-5 ([validation](second_order_validation.md#partial-second-order-field)). Use the file for checks, and for the field away from the bodies with this in mind. The complete field, with the second-order diffracted and radiated waves, is a later phase.
+
+The equations are Bernoulli's, expanded about z = 0 (Dean and Dalrymple 1991):
+- pressure at a fixed point below z = 0: p⁽²⁾ = −ρ[∂φ⁽²⁾/∂t + ½|∇φ⁽¹⁾|²], the dynamic second-order pressure only. A point between the wave troughs and z = 0 is not always wet, so keep pressure points below the troughs;
+- elevation at a point on z = 0: η⁽²⁾ = −(1/g)[∂φ⁽²⁾/∂t + ½|∇φ⁽¹⁾|² + η⁽¹⁾ ∂²φ⁽¹⁾/∂z∂t],
+
+with φ⁽²⁾ the second-order incident potential. The formulas per frequency pair are in [Developer Documentation](developer_documentation.md#partial-second-order-field-qtffieldf90).
+
+**Points.** As for `PressureElevation.6p`, a point with |z| ≤ 1e-6 is an elevation point (its z is set to 0) and a point with z < −1e-6 a pressure point. The run stops with a message naming the point and the body when a point is:
+- above the free surface (z > 1e-6);
+- on a hull: within one panel size of the centroid of a hull panel, with the size of that panel;
+- inside a body: with c the centroid of the nearest hull panel (symmetry images included) and n its normal, which points into the body, (x − c)·n > 0. This also rejects a point on z = 0 inside the waterplane of a surface-piercing body.
+
+**Route and cost.** The first-order potential and its gradient at the points always come from the Green function, whatever `velocity_method` or `cs_velocity` is, with central differences of step δ = 0.02 times the size of the nearest hull panel (the default of `cs_fd_step`). At each frequency of the QTF grid, each stencil point takes one influence row (the Green function and its normal derivative from every hull panel), which serves all headings and is not stored. A pressure point takes 7 rows: the point and x ± δ, y ± δ, z ± δ. An elevation point takes 5: the point and x ± δ, y ± δ, with ∂φ/∂z from the linear free-surface condition. A pressure point less than δ below z = 0 also takes 5 rows. On a 480-panel hull, 6 points (3 of each type) and 2 headings took 1.5 to 1.8 s per frequency on a loaded laptop. The log gives this time at each frequency.
+
+- The store keeps φ and ∇φ at each point, 64 bytes per point, frequency and heading. It is allocated at set-up, so a run that does not fit stops before the first-order solves, and the log gives its size. `qtf_field = 1` also keeps the first-order states of every heading of a frequency, as `mean_drift = 2` does.
+- In finite depth above ν·h = 50 (ν = ω²/g), the log warns at each such frequency that the field values may scatter, for the reason given under `cs_velocity`.
+- `pre_postprocessing_python/SecondOrder/qtf_field_plots.py` maps the file and writes grids of field points: see [Python Scripts](python_scripts.md#partial-second-order-field-maps).
+
+Sources: Dean, R. G. and Dalrymple, R. A. (1991). Water Wave Mechanics for Engineers and Scientists. World Scientific. Kim, M.-H. and Yue, D. K. P. (1989). The complete second-order diffraction solution for an axisymmetric body. Part 1. Monochromatic incident waves. J. Fluid Mech. 200, 235-264. Kim, M.-H. and Yue, D. K. P. (1990). Part 2. Bichromatic incident waves and body motions. J. Fluid Mech. 211, 557-593. Molin, B. (1979). Second-order diffraction loads upon three-dimensional bodies. Applied Ocean Research 1, 197-202. Sharma, J. N. and Dean, R. G. (1981). Second-order directional seas and associated wave forces. Soc. Petroleum Eng. J. 21, 129-140.
