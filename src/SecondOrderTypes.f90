@@ -59,6 +59,12 @@ MODULE SecondOrderTypes
       REAL(8) :: qtf_max_dw = 0D0        ! rad/s, largest |omega_i - omega_j| of QTF_Quadratic.10d; 0: all pairs
       INTEGER :: qtf_terms = QTF_TERMS_QUADRATIC
       INTEGER :: qtf_b2 = QTF_B2_CONTROL ! used with qtf_terms = body only
+      ! Panel weights of the B2 hull term at sharp edges (SharpEdge), with qtf_b2 = control; edges where the normals differ
+      ! by more than qtf_edge_angle degrees
+      LOGICAL :: qtf_edge_weights = .TRUE.
+      REAL(8) :: qtf_edge_angle = 45D0
+      ! The keys were in SecondOrder.in, so that the log can say when they have no effect
+      LOGICAL :: qtf_b2_given = .FALSE., qtf_edge_given = .FALSE.
    END TYPE so_options
 
    TYPE :: panel_mesh

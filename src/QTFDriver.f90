@@ -53,7 +53,8 @@ MODULE QTFDriver
    ! With qtf_b2 = control the surface piece of B2 is moved to the control surface C and the free surface F of each body
    ! (QTFPotential). The driver then hands over the points of C and F (qtf_set_control_surface), the total velocity there of
    ! every kept frequency and heading (qtf_keep_cs_velocity, indexed like store) and grad psi_k there at every difference
-   ! frequency (qtf_keep_cs_psi, indexed like psi_store).
+   ! frequency (qtf_keep_cs_psi, indexed like psi_store). With qtf_edge_weights the panel weights of the hull term at sharp
+   ! edges come with qtf_set_edge_weights.
    !
    ! A psi with NaN or Inf (a radiation solve that failed) is kept, but counted and logged by qtf_keep_psi, and every pair
    ! whose terms are not finite is counted by potential_part. The files are still written (.10d does not use psi); the main
@@ -71,7 +72,7 @@ MODULE QTFDriver
    PUBLIC :: qtf_init, qtf_keep, qtf_pair_load, qtf_finish, qtf_stored_mb, qtf_kept
    PUBLIC :: qtf_radiation_list, qtf_radiation_omegas, qtf_keep_psi, qtf_psi_index, qtf_psi_count
    PUBLIC :: qtf_nonfinite_psi, qtf_nonfinite_pairs
-   PUBLIC :: qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi
+   PUBLIC :: qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, qtf_set_edge_weights
 
    LOGICAL :: active = .FALSE.
    INTEGER :: kind_qtf = 0, nbeta = 0, nkept = 0, all_headings_pairs = 0
@@ -97,6 +98,7 @@ MODULE QTFDriver
    LOGICAL, ALLOCATABLE :: cs_u_kept(:, :)               ! (nfreq, nbeta)
    COMPLEX(8), ALLOCATABLE :: cs_gpsi(:, :, :, :)        ! (3, cs%n, 6*nbody, nneed), grad psi_k, as psi_store
    LOGICAL, ALLOCATABLE :: cs_psi_kept(:)                ! (nneed)
+   REAL(8), ALLOCATABLE :: edge_w(:)                     ! (n_panels), weights of the B2 hull term at sharp edges, if set
    ! Non-finite results of the potential part, over the run (reset by qtf_init, kept after qtf_finish for the exit code)
    INTEGER :: n_bad_psi = 0                              ! difference frequencies whose psi has NaN or Inf
    INTEGER :: n_bad_pairs = 0                            ! frequency and heading pairs whose T_pot has NaN or Inf
@@ -195,8 +197,21 @@ CONTAINS
       b2_control = .TRUE.
    END SUBROUTINE qtf_set_control_surface
 
+   SUBROUTINE qtf_set_edge_weights(w)
+      ! qtf_b2 = control with qtf_edge_weights: the panel weights w(n_panels) of the B2 hull term (SharpEdge). Call after
+      ! qtf_set_control_surface.
+      REAL(8), INTENT(IN) :: w(:)
+
+      IF (.NOT. b2_control .OR. SIZE(w) /= SIZE(psi_store, 1)) THEN
+         WRITE (*, '(a)') ' QTF: qtf_set_edge_weights needs qtf_b2 = control and one weight per panel.'
+         ERROR STOP 1
+      END IF
+      edge_w = w
+   END SUBROUTINE qtf_set_edge_weights
+
    SUBROUTINE free_control_surface()
       b2_control = .FALSE.
+      IF (ALLOCATED(edge_w)) DEALLOCATE (edge_w)
       IF (ALLOCATED(cs_u)) DEALLOCATE (cs_u)
       IF (ALLOCATED(cs_u_kept)) DEALLOCATE (cs_u_kept)
       IF (ALLOCATED(cs_gpsi)) DEALLOCATE (cs_gpsi)
@@ -642,7 +657,12 @@ CONTAINS
                         ! phi_I2 with the gravity of the first-order incident wave, which has the k of DISPERSION
                         ! (wave_gravity): both orders of the incident wave then have one dispersion relation (ruling R8)
                         g_wave = wave_gravity(s1%omega, s1%k, s1%h)
-                        IF (b2_control) THEN
+                        IF (b2_control .AND. ALLOCATED(edge_w)) THEN
+                           CALL potential_pair(mesh, geom, s1, s2, store_wl(:, i, b1), store_wl(:, j, b2), &
+                                               psi_store(:, :, m), grad, pwl, psi_need(m), s1%rho, g_wave, terms, &
+                                               cs=cs, grad_psi_cs=cs_gpsi(:, :, :, m), u1_cs=cs_u(:, :, i, b1), &
+                                               u2_cs=cs_u(:, :, j, b2), edge_w=edge_w)
+                        ELSE IF (b2_control) THEN
                            CALL potential_pair(mesh, geom, s1, s2, store_wl(:, i, b1), store_wl(:, j, b2), &
                                                psi_store(:, :, m), grad, pwl, psi_need(m), s1%rho, g_wave, terms, &
                                                cs=cs, grad_psi_cs=cs_gpsi(:, :, :, m), u1_cs=cs_u(:, :, i, b1), &

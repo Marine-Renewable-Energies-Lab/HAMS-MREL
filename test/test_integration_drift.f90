@@ -185,9 +185,18 @@ module test_integration_drift
     ! Every second frequency of the grid: psi is solved at each Omega, so the common pairs are the same computation
     real(8), parameter :: pot_spacing_limit = 1d-10
     ! B2 of the sharp free cylinder (qtf_sharp_b2_control, 448 panels, qtf_b2 = control, C and F at 3 m panels) against the
-    ! exact reference, as max over the pairs of |HAMS - exact| / max |exact|, for F_x, F_z, M_y: 15.1%, 30.0%, 11.9% measured
-    ! (11.8% M_y with C and F at the default panel size; the hull form of the same run: 13.8%, 33.1%, 95.4%). 1.3x measured
-    real(8), parameter :: b2_control_limits(3) = [0.20d0, 0.40d0, 0.16d0]
+    ! exact reference, as max over the pairs of |HAMS - exact| / max |exact|, for F_x, F_z, M_y. Without edge weights 15.1%,
+    ! 30.0%, 11.9% measured (11.8% M_y with C and F at the default panel size; the hull form of the same run: 13.8%, 33.1%,
+    ! 95.4%), and the limits were 1.3x those. With the edge weights of the hull term (qtf_edge_weights = on, the default)
+    ! 17.2%, 37.4%, 11.1%: F_x and F_z are worse, so their limits stay where they were (no loosening); M_y is better and its
+    ! limit is 1.3x the new value
+    real(8), parameter :: b2_control_limits(3) = [0.20d0, 0.40d0, 0.15d0]
+    ! qtf_b2 = control at (0.47, 0.70) with psi of Omega = 0.23 from the main grid against a radiation-only solve, over
+    ! max |T_pot| of the rows of forces or of moments: the same solve at the same frequency, 3.1e-15 measured (rounding).
+    ! A fixed 1e-12
+    real(8), parameter :: b2_main_grid_limit = 1d-12
+    ! The half mesh against the whole mesh with qtf_b2 = control and edge weights: 7.0e-8 measured, 2x measured, rounded up
+    real(8), parameter :: b2_half_limit = 1.5d-7
 
 contains
 
@@ -237,6 +246,7 @@ contains
             new_unittest("run_qtf_round_low", run_qtf_round_low), &
             new_unittest("run_qtf_body_cases", run_qtf_body_cases), &
             new_unittest("run_qtf_sharp_b2", run_qtf_sharp_b2), &
+            new_unittest("run_qtf_b2_routes", run_qtf_b2_routes), &
             new_unittest("run_control_cyl", run_control_cyl), &
             new_unittest("run_control_cyl_sybo", run_control_cyl_sybo), &
             new_unittest("run_control_cases", run_control_cases) &
@@ -330,7 +340,10 @@ contains
             new_unittest("qtf_body_absent", qtf_body_absent), &
             new_unittest("qtf_body_log", qtf_body_log), &
             new_unittest("qtf_b2_control_sharp", qtf_b2_control_sharp), &
-            new_unittest("qtf_b2_control_other_terms", qtf_b2_control_other_terms) &
+            new_unittest("qtf_b2_control_other_terms", qtf_b2_control_other_terms), &
+            new_unittest("qtf_b2_control_main_grid", qtf_b2_control_main_grid), &
+            new_unittest("qtf_b2_control_half", qtf_b2_control_half), &
+            new_unittest("qtf_b2_control_log", qtf_b2_control_log) &
         ]
     end subroutine collect_tests_drift
 
@@ -593,6 +606,23 @@ contains
             end if
         end do
     end subroutine run_qtf_body_cases
+
+    !> Routes of qtf_b2 = control on the hull of drift_cyl with C and F at 6 m panels: psi of Omega = 0.23 from a radiation-only
+    !> solve, from the main grid, and on the half mesh
+    subroutine run_qtf_b2_routes(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=12), parameter :: cases(3) = [character(len=12) :: "qtf_b2c_rad", "qtf_b2c_main", "qtf_b2c_half"]
+        type(error_type), allocatable :: one
+        integer :: c
+
+        do c = 1, size(cases)
+            call run_case(trim(cases(c)), [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file], one)
+            if (allocated(one)) then
+                print '(4x,a)', trim(cases(c))//": "//one%message
+                if (.not. allocated(error)) call move_alloc(one, error)
+            end if
+        end do
+    end subroutine run_qtf_b2_routes
 
     !> The sharp cylinder of drift_cyl, free, with B2 by the control surface (qtf_b2 = control) and by the hull
     subroutine run_qtf_sharp_b2(error)
@@ -3848,6 +3878,97 @@ contains
         end do
         call check(error, b2_differs, "qtf_sharp_b2: B2 is the same with qtf_b2 = control and body")
     end subroutine qtf_b2_control_other_terms
+
+    !> qtf_b2 = control with psi of Omega from the main grid (so_after_radiation, keep_cs_psi there): the terms of the pair
+    !> (0.47, 0.70) are those of the run where Omega = 0.23 comes from a radiation-only solve, and the log shows the route
+    subroutine qtf_b2_control_main_grid(error)
+        type(error_type), allocatable, intent(out) :: error
+
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_b2c_main.log", &
+                                          "1 from the main grid and 0 radiation-only solves"), 1, &
+                   "qtf_b2c_main: psi of Omega = 0.23 is not taken from the main grid")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_b2c_rad.log", &
+                                          "0 from the main grid and 1 radiation-only solves"), 1, &
+                   "qtf_b2c_rad: psi of Omega = 0.23 is not from a radiation-only solve")
+        if (allocated(error)) return
+        call compare_terms("qtf_b2c_main", "qtf_b2c_rad", "qtf_b2_control_main_grid", b2_main_grid_limit, error)
+    end subroutine qtf_b2_control_main_grid
+
+    !> qtf_b2 = control on the half mesh (images expanded before C, F and the edge weights are built) equals the whole mesh
+    subroutine qtf_b2_control_half(error)
+        type(error_type), allocatable, intent(out) :: error
+        call compare_terms("qtf_b2c_half", "qtf_b2c_rad", "qtf_b2_control_half", b2_half_limit, error)
+    end subroutine qtf_b2_control_half
+
+    !> Every term of every row of the terms file of case a against the same row of case b (the same rows in both), over
+    !> max |T_pot| of the rows of forces or of moments of b; B2 apart, then all terms
+    subroutine compare_terms(a, b, label, limit, error)
+        character(len=*), intent(in) :: a, b, label
+        real(8), intent(in) :: limit
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: ta(:,:), tb(:,:), total(:,:)
+        real(8) :: worst, worst_b2, scale
+        integer :: p, q, k
+
+        call read_pot_terms(output_dir(a)//pot_terms_file, ta, error)
+        if (allocated(error)) return
+        call read_pot_terms(output_dir(b)//pot_terms_file, tb, error)
+        if (allocated(error)) return
+        call read_pot_total(output_dir(b)//pot_terms_file, total, error)
+        if (allocated(error)) return
+        call check(error, size(ta, 1) == size(tb, 1) .and. size(ta, 1) > 0, label//": other rows in "//a//" and "//b)
+        if (allocated(error)) return
+        worst = 0d0
+        worst_b2 = 0d0
+        do p = 1, size(tb, 1)
+            q = matching_row(tb, p, ta)
+            call check(error, q > 0, label//": a row of "//b//" is missing in "//a)
+            if (allocated(error)) return
+            scale = kind_scale(total, tb(p,5))
+            do k = 6, 14, 2
+                worst = max(worst, hypot(ta(q,k) - tb(p,k), ta(q,k+1) - tb(p,k+1))/scale)
+            end do
+            worst_b2 = max(worst_b2, hypot(ta(q,12) - tb(p,12), ta(q,13) - tb(p,13))/scale)
+        end do
+        call report(label//" B2", worst_b2)
+        call report(label//" all terms", worst)
+        call check_below(error, label, worst, limit)
+    end subroutine compare_terms
+
+    !> The log of a qtf_b2 = control run gives the sharp edges found and the panels weighted (the bottom edge of the cylinder,
+    !> the same on the half mesh); a run that sets qtf_edge_weights or qtf_b2 where they have no effect says so, once
+    subroutine qtf_b2_control_log(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: edges = "QTF B2 edge weights: body 1, 1 sharp edges (32 panel edges), 64 panels weighted"
+        character(len=*), parameter :: edge_note = "QTF note: qtf_edge_weights and qtf_edge_angle are ignored"
+        character(len=*), parameter :: b2_note = "QTF note: qtf_b2 is ignored"
+        character(len=12), parameter :: control(3) = [character(len=12) :: "qtf_b2c_rad", "qtf_b2c_half", "qtf_b2c_main"]
+        integer :: c
+
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_sharp_b2_control.log", edges), 1, &
+                   "edge weights line in the log of qtf_sharp_b2_control")
+        if (allocated(error)) return
+        do c = 1, size(control)
+            call check(error, count_log_lines(get_running_exe_path()//trim(control(c))//".log", edges), 1, &
+                       "edge weights line in the log of "//trim(control(c)))
+            if (allocated(error)) return
+        end do
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_sharp_b2_control.log", edge_note), 0, &
+                   "edge note in the log of qtf_sharp_b2_control")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_sharp_b2_body.log", edge_note), 1, &
+                   "edge note in the log of qtf_sharp_b2_body (qtf_edge_weights = off with qtf_b2 = body)")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_sharp_b2_body.log", edges), 0, &
+                   "edge weights line in the log of qtf_sharp_b2_body")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_two_round.log", b2_note), 1, &
+                   "qtf_b2 note in the log of qtf_two_round (quadratic part only)")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_round_body.log", b2_note), 0, &
+                   "qtf_b2 note in the log of qtf_round_body")
+    end subroutine qtf_b2_control_log
 
     !> Lines of a file that contain text, or -1 if it cannot be opened
     integer function count_log_lines(path, text)

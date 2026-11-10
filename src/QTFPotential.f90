@@ -71,6 +71,12 @@ MODULE QTFPotential
    ! bottom (a C that reaches the sea bed leaves the sea bed between body and C as a boundary of D, not implemented).
    ! rot and line of the Stokes form stay on the hull.
    !
+   ! Sharp edges (qtf_edge_weights = on). The hull term is linear in u, which goes like rho^p near an edge (p = -1/3 at a
+   ! 90 deg edge; SharpEdge states the corner-flow result). Its one-point rule then misses the singular part on the panels
+   ! next to the edge, so b2_body_term takes the panel weights of SharpEdge (edge_w) that make the rule exact for rho^p.
+   ! The rot piece psi n.(alpha x u) is linear in u too but is not weighted: on the sharp-cylinder fixture against the
+   ! exact reference the weight did not reduce its error consistently (F_z 27% to 26%, F_x 9.4% to 9.6%).
+   !
    ! Assembly (potential_pair). At Omega = omega_1 - omega_2, per unit amplitudes, with the free-surface integral omitted
    ! (Phase 6):
    !
@@ -101,7 +107,7 @@ MODULE QTFPotential
 CONTAINS
 
    SUBROUTINE potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, omega_psi, rho, g, terms, ok, &
-                             phi2_constant, cs, grad_psi_cs, u1_cs, u2_cs)
+                             phi2_constant, cs, grad_psi_cs, u1_cs, u2_cs, edge_w)
       ! Body-forcing terms of the difference-frequency potential QTF of the state pair (s1, s2), per unit amplitudes.
       !   wl1, wl2      total potential at the waterline segments (nwl), as for near_field_pair
       !   psi           (n, 6 nbody) radiation potentials at |Omega|, Omega = s1%omega - s2%omega
@@ -116,6 +122,7 @@ CONTAINS
       !   cs, grad_psi_cs, u1_cs, u2_cs   optional, all or none (qtf_b2 = control): the points of C and F of every body,
       !                 grad psi_k there at |Omega| (3, cs%n, 6 nbody), and the total velocity of s1 and s2 there (3, cs%n).
       !                 B2 then takes the surface piece from b2_body_term and b2_control_term; rot and line are unchanged.
+      !   edge_w        optional (n), with cs only: panel weights of the hull term at sharp edges (SharpEdge)
       ! Omega = 0 gives zeros. For Omega < 0, psi(-|Omega|) = conj psi(|Omega|) is used (the radiation potential of the
       ! negative frequency), so terms(2, 1) = conj terms(1, 2). Exact equality s1%omega == s2%omega is the diagonal: the
       ! caller passes the same grid value for both.
@@ -129,6 +136,7 @@ CONTAINS
       COMPLEX(8), INTENT(IN), OPTIONAL :: phi2_constant
       TYPE(cs_points), INTENT(IN), OPTIONAL :: cs
       COMPLEX(8), INTENT(IN), OPTIONAL :: grad_psi_cs(:, :, :), u1_cs(:, :), u2_cs(:, :)
+      REAL(8), INTENT(IN), OPTIONAL :: edge_w(:)
 
       INTEGER :: nmode
       LOGICAL :: control
@@ -158,6 +166,12 @@ CONTAINS
          IF (SIZE(grad_psi_cs, 1) /= 3 .OR. SIZE(grad_psi_cs, 2) /= cs%n .OR. SIZE(grad_psi_cs, 3) /= nmode .OR. &
              SIZE(u1_cs, 1) /= 3 .OR. SIZE(u1_cs, 2) /= cs%n .OR. SIZE(u2_cs, 1) /= 3 .OR. SIZE(u2_cs, 2) /= cs%n) THEN
             WRITE (*, '(a)') ' potential_pair: grad_psi_cs, u1_cs or u2_cs does not have the size of the control surface.'
+            ERROR STOP 1
+         END IF
+      END IF
+      IF (PRESENT(edge_w)) THEN
+         IF (.NOT. control .OR. SIZE(edge_w) /= mesh%n) THEN
+            WRITE (*, '(a)') ' potential_pair: edge_w needs the control surface and one weight per panel.'
             ERROR STOP 1
          END IF
       END IF
@@ -268,7 +282,7 @@ CONTAINS
          IF (PRESENT(gcs)) THEN
             ! qtf_b2 = control: rot and line as above, the surface piece from the hull term and the C and F term
             ALLOCATE (hb(nmode), hc(nmode))
-            CALL b2_body_term(mesh, gps, s1%xi, u1, s2%xi, u2, KERNEL_DIFF, hb)
+            CALL b2_body_term(mesh, gps, s1%xi, u1, s2%xi, u2, KERNEL_DIFF, hb, edge_w)   ! edge_w may be absent
             CALL b2_control_term(cs, mesh%xr, gcs, s1%xi, u1_cs, s2%xi, u2_cs, KERNEL_DIFF, hc)
             hs = pieces(:, 1) + pieces(:, 3) + hb + hc
          END IF
@@ -485,17 +499,20 @@ CONTAINS
 
    END SUBROUTINE hessian_term_converted
 
-   SUBROUTINE b2_body_term(mesh, grad_psi, x1, u1, x2, u2, kernel, out)
+   SUBROUTINE b2_body_term(mesh, grad_psi, x1, u1, x2, u2, kernel, out, edge_w)
       ! Hull term of the control-surface form of the B2 surface piece: out(k) = int_S (X.u) psi_n dS, kernel pair (1, 2),
       ! with psi_n = n.grad_psi(:, i, k) (n_k on the body of mode k when grad_psi comes from psi_surface_gradient) and the
       ! motion of the body that owns the panel. Arguments as hessian_term_converted.
+      !   edge_w   optional (n): panel weights for the velocity singularity at sharp edges (SharpEdge, qtf_edge_weights);
+      !            the panel area is multiplied by them. Without it the plain one-point rule.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       COMPLEX(8), INTENT(IN) :: grad_psi(:, :, :), x1(:, :), u1(:, :), x2(:, :), u2(:, :)
       INTEGER, INTENT(IN) :: kernel
       COMPLEX(8), INTENT(OUT) :: out(:)
+      REAL(8), INTENT(IN), OPTIONAL :: edge_w(:)
       INTEGER :: i, b, k
       COMPLEX(8) :: d1(3), d2(3), m(3, 3), tr
-      REAL(8) :: nv(3)
+      REAL(8) :: nv(3), w
 
       out = (0D0, 0D0)
       DO i = 1, mesh%n
@@ -505,8 +522,10 @@ CONTAINS
          d2 = rigid_displacement(x2(:, b), mesh%xc(:, i) - mesh%xr(:, b))
          m = pair_tensor(kernel, d1, u1(:, i), d2, u2(:, i))
          tr = m(1, 1) + m(2, 2) + m(3, 3)
+         w = mesh%area(i)
+         IF (PRESENT(edge_w)) w = w*edge_w(i)
          DO k = 1, SIZE(out)
-            out(k) = out(k) + mesh%area(i)*SUM(nv*grad_psi(:, i, k))*tr
+            out(k) = out(k) + w*SUM(nv*grad_psi(:, i, k))*tr
          END DO
       END DO
    END SUBROUTINE b2_body_term
@@ -562,6 +581,10 @@ CONTAINS
       ! qtf_b2 = control needs, for every body, F (CS_FREE points) and a C with a bottom (a CS_WALL point whose normal points
       ! up, towards the body). A C that reaches the sea bed leaves the sea bed between body and C as a boundary of the
       ! fluid, whose term is not implemented. ok = .false. with the reason in msg otherwise.
+      ! The bottom test is one CS_WALL point with n_z > 0.5. That is enough for a generated C, whose bottom is a whole disc
+      ! or rectangle when it exists. A C read from a file (cs_shape = file) with only part of a bottom also passes, and its
+      ! gap is then an open boundary of the fluid that the identity does not account for. Nothing checks that a C from a
+      ! file is closed.
       INTEGER, INTENT(IN) :: nbody
       TYPE(cs_points), INTENT(IN) :: pts
       LOGICAL, INTENT(OUT) :: ok

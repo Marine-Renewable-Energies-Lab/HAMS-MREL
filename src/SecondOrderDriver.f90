@@ -71,8 +71,10 @@ MODULE SecondOrderDriver
    USE ControlSurfaceDrift, ONLY: control_surface_pair, CS_T_LINE, CS_T_PRESSURE, CS_T_HYDROSTATIC
    USE SecondOrderOutput, ONLY: write_drift_row, write_terms_row
    USE QTFDriver, ONLY: qtf_init, qtf_keep, qtf_finish, qtf_stored_mb, qtf_keep_psi, qtf_psi_index, qtf_psi_count, &
-                        qtf_radiation_omegas, qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi
+                        qtf_radiation_omegas, qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, &
+                        qtf_set_edge_weights
    USE QTFPotential, ONLY: b2_control_check
+   USE SharpEdge, ONLY: sharp_edge_weights
    IMPLICIT NONE
    PRIVATE
 
@@ -109,6 +111,8 @@ MODULE SecondOrderDriver
    COMPLEX(8), ALLOCATABLE :: psi_main(:,:)            ! (n, 6*nbody), psi of the current main-grid frequency
    INTEGER :: unit_psi = 0                             ! QTF_PsiCheck.txt (write_terms >= 1)
    LOGICAL :: b2_control = .FALSE.                     ! qtf_b2 = control: fields on C and F go to the QTF store
+   TYPE(cs_points) :: b2_pts                           ! the points of C and F of cs_pts (no Gamma_c), for B2
+   INTEGER, ALLOCATABLE :: b2_idx(:)                   ! (b2_pts%n), their index in cs_pts
 
 CONTAINS
 
@@ -160,6 +164,13 @@ CONTAINS
       END IF
 
       b2_control = uses_b2_control(opts)
+      IF (opts%qtf_b2_given .AND. .NOT. (opts%qtf_terms == QTF_TERMS_BODY .AND. (opts%qtf == 1 .OR. opts%qtf == 3))) THEN
+         WRITE (*, '(a)') ' QTF note: qtf_b2 is ignored; it applies with qtf_terms = body and the difference QTF only.'
+      END IF
+      IF (opts%qtf_edge_given .AND. .NOT. b2_control) THEN
+         WRITE (*, '(a)') ' QTF note: qtf_edge_weights and qtf_edge_angle are ignored; they apply with qtf_terms = body,'// &
+            ' the difference QTF and qtf_b2 = control only.'
+      END IF
       ALLOCATE (states(MERGE(NBETA, 1, keep_all_headings(opts))))
       ! Only the near-field and control-surface methods use the surface geometry (the control surface takes the waterplane
       ! extent from it), so only they can stop on the geometry's errors
@@ -252,8 +263,8 @@ CONTAINS
       TYPE(so_options), INTENT(IN) :: opts
       INTEGER, INTENT(IN) :: nqtf
       CHARACTER(LEN=*), INTENT(IN) :: outputdir
-      REAL(8) :: omegas(nqtf)
-      INTEGER :: i, first, nneed, nreuse
+      REAL(8) :: omegas(nqtf), mb, mb_cs
+      INTEGER :: i, first, nneed, nreuse, npairs
 
       first = MERGE(2, 0, SYBO == 1)
       DO i = 1, nqtf
@@ -264,18 +275,17 @@ CONTAINS
       nreuse = qtf_psi_count(reused=.TRUE.)
       WRITE (*, '(a,I0,a,I0,a,I0,a)') ' QTF body forcing: psi at ', nneed, ' difference frequencies, ', nreuse, &
          ' from the main grid and ', nneed - nreuse, ' radiation-only solves (each costs about one radiation solve)'
+      npairs = MERGE(NBETA*NBETA, NBETA, opts%mean_drift == 2)
+      mb = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs)
       IF (b2_control) THEN
-         CALL qtf_set_control_surface(cs_pts)
-         WRITE (*, '(a,F10.1,a,F10.1,a,I0,a)') ' QTF: with psi and the potential part the store takes', &
-            qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, &
-                          npairs=MERGE(NBETA*NBETA, NBETA, opts%mean_drift == 2), ncs=cs_pts%n), ' MB, of which', &
-            48D0*REAL(cs_pts%n, 8)*(REAL(nqtf, 8)*REAL(NBETA, 8) + REAL(6*mesh%nbody, 8)*REAL(nneed, 8))/1D6, &
-            ' MB for the fields at the ', cs_pts%n, &
-            ' points of C and F (qtf_b2 = control)'
+         CALL qtf_set_control_surface(b2_pts)
+         ! The share of C and F is what the points add to the store, so qtf_stored_mb is the one formula
+         mb_cs = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs, ncs=b2_pts%n) - mb
+         WRITE (*, '(a,F10.1,a,F10.1,a,I0,a)') ' QTF: with psi and the potential part the store takes', mb + mb_cs, &
+            ' MB, of which', mb_cs, ' MB for the fields at the ', b2_pts%n, ' points of C and F (qtf_b2 = control)'
+         IF (opts%qtf_edge_weights) CALL b2_edge_weights(opts)
       ELSE
-         WRITE (*, '(a,F10.1,a)') ' QTF: with psi and the potential part the store takes', &
-            qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, &
-                          npairs=MERGE(NBETA*NBETA, NBETA, opts%mean_drift == 2)), ' MB'
+         WRITE (*, '(a,F10.1,a)') ' QTF: with psi and the potential part the store takes', mb, ' MB'
       END IF
       WRITE (*, '(a)') ' QTF_Indirect.11d: body forcing only, the free-surface integral is omitted.'
       ALLOCATE (psi_main(mesh%n, 6*mesh%nbody))
@@ -289,6 +299,23 @@ CONTAINS
          WRITE (unit_psi, '(a)') '# EXC omega beta_deg k Re Im   i omega rho [int_{S_k} phi_I n_k dS - int_S psi_k dphi_I/dn dS]'
       END IF
    END SUBROUTINE body_terms_setup
+
+   SUBROUTINE b2_edge_weights(opts)
+      ! The panel weights of the B2 hull term at the sharp edges of each body (SharpEdge), into the QTF store
+      TYPE(so_options), INTENT(IN) :: opts
+      REAL(8), ALLOCATABLE :: w(:)
+      INTEGER, ALLOCATABLE :: nedge(:), nseg(:), nweighted(:)
+      INTEGER :: b
+
+      ALLOCATE (w(mesh%n), nedge(mesh%nbody), nseg(mesh%nbody), nweighted(mesh%nbody))
+      CALL sharp_edge_weights(mesh, opts%qtf_edge_angle, w, nedge, nseg, nweighted)
+      DO b = 1, mesh%nbody
+         WRITE (*, '(a,I0,a,I0,a,I0,a,I0,a,F6.1,a)') ' QTF B2 edge weights: body ', b, ', ', nedge(b), &
+            ' sharp edges (', nseg(b), ' panel edges), ', nweighted(b), ' panels weighted (qtf_edge_angle', &
+            opts%qtf_edge_angle, ')'
+      END DO
+      CALL qtf_set_edge_weights(w)
+   END SUBROUTINE b2_edge_weights
 
    SUBROUTINE write_psi_rows(omega, source, psi)
       ! PSI rows of QTF_PsiCheck.txt: rho int psi_k n_l dS over the panels of the body of mode l, for all k and l
@@ -394,7 +421,7 @@ CONTAINS
          ERROR STOP 1
       END IF
       nmode = 6*mesh%nbody
-      ALLOCATE (ps(nmode), f(nmode), grad(3, cs_pts%n, nmode))
+      ALLOCATE (ps(nmode), f(nmode), grad(3, b2_pts%n, nmode))
       DO k = 1, nmode
          kb = (k - 1)/6 + 1
          ps(k)%omega = omega
@@ -413,14 +440,14 @@ CONTAINS
          END DO
       END DO
       CALL SYSTEM_CLOCK(t0, rate)
-      CALL fields_green(mesh, cs_pts, ps, opts%cs_fd_step, multi_arrays, f)
+      CALL fields_green(mesh, b2_pts, ps, opts%cs_fd_step, multi_arrays, f)
       CALL SYSTEM_CLOCK(t1)
       DO k = 1, nmode
          grad(:, :, k) = f(k)%grad
       END DO
       CALL qtf_keep_cs_psi(omega, grad)
       WRITE (*, '(a,F10.5,a,F10.2,a,I0,a,I0,a)') ' QTF B2 control surface grad psi: omega', omega, ',', &
-         REAL(t1 - t0, 8)/REAL(rate, 8), ' s for ', cs_pts%n, ' points and ', nmode, ' modes'
+         REAL(t1 - t0, 8)/REAL(rate, 8), ' s for ', b2_pts%n, ' points and ', nmode, ' modes'
    END SUBROUTINE keep_cs_psi
 
    LOGICAL FUNCTION keep_all_headings(opts)
@@ -448,6 +475,7 @@ CONTAINS
       CHARACTER(LEN=:), ALLOCATABLE :: msg
       LOGICAL :: ok
       LOGICAL, ALLOCATABLE :: free_built(:)
+      INTEGER :: i
 
       IF (.NOT. opts%do_control) THEN
          CALL build_control_surface(mesh, geom, opts, H, inputdir, cs_pts, cms, ok, msg, with_free=.TRUE., &
@@ -470,9 +498,32 @@ CONTAINS
          WRITE (*, '(a,a)') ' ', msg
          ERROR STOP 1
       END IF
+      ! B2 uses the points of C and F only: the fields at the segments of Gamma_c are neither stored nor, without the
+      ! control-surface drift, evaluated (cs_pts then holds the points of C and F only)
+      b2_idx = PACK([(i, i = 1, cs_pts%n)], cs_pts%kind /= CS_LINE)
+      CALL subset_points(cs_pts, b2_idx, b2_pts)
+      IF (.NOT. opts%do_control) THEN
+         cs_pts = b2_pts
+         b2_idx = [(i, i = 1, cs_pts%n)]
+      END IF
       WRITE (*, '(a,I0,a,I0,a,I0,a)') ' QTF B2 control surface: ', COUNT(cs_pts%kind == CS_WALL), ' panels on C and ', &
          COUNT(cs_pts%kind == CS_FREE), ' panels on F, for ', mesh%nbody, ' bodies'
    END SUBROUTINE b2_control_setup
+
+   SUBROUTINE subset_points(pts, idx, sub)
+      ! The points idx of pts
+      TYPE(cs_points), INTENT(IN) :: pts
+      INTEGER, INTENT(IN) :: idx(:)
+      TYPE(cs_points), INTENT(OUT) :: sub
+
+      sub%n = SIZE(idx)
+      sub%x = pts%x(:, idx)
+      sub%nrm = pts%nrm(:, idx)
+      sub%w = pts%w(idx)
+      sub%psize = pts%psize(idx)
+      sub%kind = pts%kind(idx)
+      sub%body = pts%body(idx)
+   END SUBROUTINE subset_points
 
    SUBROUTINE control_setup(opts, inputdir, outputdir)
       ! Builds and checks C and F of every body, writes C as CSMesh_<b>.pnl to outputdir, and opens MeanDriftControlSurface.7.
@@ -674,7 +725,7 @@ CONTAINS
       IF (opts%do_control) CALL control_frequency(opts, fields)
       IF (b2_control) THEN
          DO ib = 1, NBETA
-            CALL qtf_keep_cs_velocity(ib, fields(ib)%grad)
+            CALL qtf_keep_cs_velocity(ib, fields(ib)%grad(:, b2_idx))
          END DO
       END IF
    END SUBROUTINE so_end_frequency

@@ -7,3 +7,4 @@ velocity_method = source
 qtf_terms = body
 qtf = 1
 qtf_b2 = body
+qtf_edge_weights = off

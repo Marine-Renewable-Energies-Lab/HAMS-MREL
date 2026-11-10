@@ -17,6 +17,7 @@ module test_qtf_potential
   use ControlSurfaceMesh, only : build_control_surface
   use second_order_fixtures, only : make_cylinder, set_panel
   use SecondOrderIncident, only : incident2, incident2_pair, incident2_grad
+  use SharpEdge, only : sharp_edge_weights, DEFAULT_EDGE_DEG
   implicit none
   private
 
@@ -60,7 +61,9 @@ subroutine collect_qtf_potential(testsuite)
     new_unittest("b2_control_smooth", test_b2_control_smooth), &
     new_unittest("b2_control_closed_flux", test_b2_control_flux), &
     new_unittest("b2_control_needs_bottom_and_f", test_b2_control_check), &
-    new_unittest("pot_b2_control_assembly", test_pot_b2_control_assembly) &
+    new_unittest("pot_b2_control_assembly", test_pot_b2_control_assembly), &
+    new_unittest("b2_body_term_edge_weights", test_b2_body_term_edge_weights), &
+    new_unittest("pot_b2_control_two_bodies", test_pot_b2_control_two_bodies) &
     ]
 end subroutine collect_qtf_potential
 
@@ -633,7 +636,7 @@ subroutine make_state(mesh, geom, omega, beta, h, xi, s, phi_wl)
   type(panel_mesh), intent(in) :: mesh
   type(surface_geom), intent(in) :: geom
   real(8), intent(in) :: omega, beta, h
-  complex(8), intent(in) :: xi(6, 1)
+  complex(8), intent(in) :: xi(:, :)   ! (6, nbody)
   type(first_order_state), intent(out) :: s
   complex(8), allocatable, intent(out) :: phi_wl(:)
   integer :: i
@@ -646,7 +649,7 @@ subroutine make_state(mesh, geom, omega, beta, h, xi, s, phi_wl)
   s%g = g
   s%rho = rho
   allocate(s%phi_i(mesh%n), s%phi_p(mesh%n), s%dphi_p_dn(mesh%n), s%dphi_dn(mesh%n))
-  allocate(s%grad_i(3, mesh%n), s%grad_p(3, mesh%n), s%xi(6, 1))
+  allocate(s%grad_i(3, mesh%n), s%grad_p(3, mesh%n), s%xi(6, size(xi, 2)))
   s%xi = xi
   s%phi_p = (0d0, 0d0)
   s%grad_p = (0d0, 0d0)
@@ -1329,5 +1332,219 @@ contains
   end function normal_velocity
 
 end subroutine test_pot_b2_control_assembly
+
+!> The hull term with qtf_edge_weights off (no edge_w) is the plain one-point rule, bit for bit the same as with every
+!> weight 1; with the weights of the cylinder it is the plain rule on panels whose area is multiplied by them, and in
+!> potential_pair only B2 changes, by -i Omega rho times the change of the hull term
+subroutine test_b2_body_term_edge_weights(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh, mw
+  type(surface_geom) :: geom
+  type(cs_points) :: pts
+  type(first_order_state) :: s1, s2
+  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), u1(:,:), u2(:,:), wl1(:), wl2(:)
+  complex(8), allocatable :: gcs(:,:,:), uc1(:,:), uc2(:,:)
+  complex(8) :: x1(6, 1), x2(6, 1), h0(nmode), h1(nmode), hw(nmode), href(nmode)
+  complex(8) :: t0(nmode, NPOT_TERMS), tw(nmode, NPOT_TERMS)
+  real(8), allocatable :: w(:), ones(:)
+  integer :: nedge(1), nseg(1), nweighted(1), j
+  real(8) :: om
+
+  call cylinder_448(mesh, geom, error)
+  if (allocated(error)) return
+  call motions(x1, x2)
+  call synthetic_psi(mesh, geom, .true., psi, grad_psi, psi_wl)
+  call velocity(mesh, w1, b1, u1)
+  call velocity(mesh, w2, b2, u2)
+  allocate(w(mesh%n), ones(mesh%n))
+  ones = 1d0
+  call sharp_edge_weights(mesh, DEFAULT_EDGE_DEG, w, nedge, nseg, nweighted)
+  call check(error, nweighted(1), 64, "panels weighted on the cylinder")
+  if (allocated(error)) return
+  call b2_body_term(mesh, grad_psi, x1, u1, x2, u2, KERNEL_DIFF, h0)
+  call b2_body_term(mesh, grad_psi, x1, u1, x2, u2, KERNEL_DIFF, h1, ones)
+  call check(error, all(h0 == h1), "the hull term with every weight 1 is not the one without weights, bit for bit")
+  if (allocated(error)) return
+  call b2_body_term(mesh, grad_psi, x1, u1, x2, u2, KERNEL_DIFF, hw, w)
+  mw = mesh
+  mw%area = mesh%area * w
+  call b2_body_term(mw, grad_psi, x1, u1, x2, u2, KERNEL_DIFF, href)
+  call check(error, maxval(abs(hw - href)) <= 1d-14 * maxval(abs(href)), "the weights do not multiply the panel areas")
+  if (allocated(error)) return
+  call check(error, maxval(abs(hw - h0)) > 1d-3 * maxval(abs(h0)), "the weights change nothing")
+  if (allocated(error)) return
+
+  call control_points(mesh, geom, pts, error)
+  if (allocated(error)) return
+  call make_state(mesh, geom, w1, b1, depth, x1, s1, wl1)
+  call make_state(mesh, geom, w2, b2, depth, x2, s2, wl2)
+  call control_fields_analytic(pts, w1, b1, gcs, uc1)
+  call control_fields_analytic(pts, w2, b2, gcs, uc2)
+  om = w1 - w2
+  call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, om, rho, g, t0, cs=pts, grad_psi_cs=gcs, &
+                      u1_cs=uc1, u2_cs=uc2)
+  call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, om, rho, g, tw, cs=pts, grad_psi_cs=gcs, &
+                      u1_cs=uc1, u2_cs=uc2, edge_w=w)
+  do j = 1, NPOT_TERMS
+    if (j == TP_B2) cycle
+    call check(error, all(tw(:, j) == t0(:, j)), "a term other than B2 changes with the edge weights")
+    if (allocated(error)) return
+  end do
+  call b2_body_term(mesh, grad_psi, x1, s1%grad_i, x2, s2%grad_i, KERNEL_DIFF, h0)
+  call b2_body_term(mesh, grad_psi, x1, s1%grad_i, x2, s2%grad_i, KERNEL_DIFF, hw, w)
+  call check(error, maxval(abs(tw(:, TP_B2) - t0(:, TP_B2) + ci * om * rho * (hw - h0))) &
+             <= 1d-11 * maxval(abs(t0(:, TP_B2))), "B2 does not change by -i Omega rho times the change of the hull term")
+end subroutine test_b2_body_term_edge_weights
+
+!> Indexing of the control form for two bodies: two cylinders 200 m apart, analytic fields, psi_k of each body zero on the
+!> panels, waterline and C and F of the other (as for bodies far apart), different motions. Every term of each body equals
+!> that of the body alone (its own mesh, C and F, motion and edge weights): this checks the mode columns of psi, grad psi on
+!> C and F (per point, with cs_points%body), and the motion and reference point of each body
+subroutine test_pot_b2_control_two_bodies(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: dx = 200d0
+  type(panel_mesh) :: m1, m2, mesh
+  type(surface_geom) :: g1, g2, geom
+  type(cs_points) :: p1, p2, pts
+  type(first_order_state) :: s1, s2, r1, r2
+  complex(8), allocatable :: wl1(:), wl2(:), q1(:), q2(:), psi(:,:), gps(:,:,:), pwl(:,:), gcs(:,:,:), uc1(:,:), uc2(:,:)
+  complex(8), allocatable :: t(:,:), ta(:,:)
+  complex(8) :: x1(6, 1), x2(6, 1), xa(6, 2), xb(6, 2)
+  real(8), allocatable :: w(:)
+  integer :: b, ne(2), ns(2), nw(2), j
+  real(8) :: om, scale
+
+  call make_cylinder(10d0, 10d0, cyl_ntheta(1), cyl_nz(1), cyl_nr(1), m1, .true.)
+  call make_cylinder(10d0, 10d0, cyl_ntheta(1), cyl_nz(1), cyl_nr(1), m2, .true.)
+  m2%xnode(1, :) = m2%xnode(1, :) + dx
+  m2%xc(1, :) = m2%xc(1, :) + dx
+  m2%xr(1, 1) = dx
+  call join_two(m1, m2, mesh)
+  call geometry(mesh, geom, error)
+  if (allocated(error)) return
+  call control_points(mesh, geom, pts, error)
+  if (allocated(error)) return
+  call check(error, any(pts%body == 1) .and. any(pts%body == 2), "C and F of both bodies")
+  if (allocated(error)) return
+  call motions(x1, x2)
+  xa(:, 1) = x1(:, 1)
+  xa(:, 2) = 0.5d0 * x2(:, 1) * exp(ci * 0.7d0)
+  xb(:, 1) = x2(:, 1)
+  xb(:, 2) = -0.8d0 * x1(:, 1) + (0d0, 0.1d0)
+  call make_state(mesh, geom, w1, b1, depth, xa, s1, wl1)
+  call make_state(mesh, geom, w2, b2, depth, xb, s2, wl2)
+  call fields_two(mesh, geom, pts, psi, gps, pwl, gcs, uc1, uc2)
+  allocate(w(mesh%n), t(12, NPOT_TERMS))
+  call sharp_edge_weights(mesh, DEFAULT_EDGE_DEG, w, ne, ns, nw)
+  call check(error, all(ne == 1) .and. all(nw == 64), "one edge and 64 weighted panels per body")
+  if (allocated(error)) return
+  om = w1 - w2
+  call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, gps, pwl, om, rho, g, t, cs=pts, grad_psi_cs=gcs, &
+                      u1_cs=uc1, u2_cs=uc2, edge_w=w)
+
+  do b = 1, 2
+    if (b == 1) then
+      call alone(m1, g1, p1, ta, error)
+    else
+      call alone(m2, g2, p2, ta, error)
+    end if
+    if (allocated(error)) return
+    do j = 1, NPOT_TERMS
+      scale = maxval(abs(ta(:, j)))
+      call check(error, scale > 0d0 .and. maxval(abs(t(6*(b - 1) + 1:6*b, j) - ta(:, j))) <= 1d-12 * scale, &
+                 "a term of a body differs from the body alone")
+      if (allocated(error)) return
+    end do
+  end do
+
+contains
+
+  subroutine alone(ms, gs, ps, ts, error)
+    type(panel_mesh), intent(in) :: ms
+    type(surface_geom), intent(out) :: gs
+    type(cs_points), intent(out) :: ps
+    complex(8), allocatable, intent(out) :: ts(:,:)
+    type(error_type), allocatable, intent(out) :: error
+    complex(8), allocatable :: psi1(:,:), gps1(:,:,:), pwl1(:,:), gcs1(:,:,:), v1(:,:), v2(:,:)
+    real(8), allocatable :: ws(:)
+    integer :: ne1(1), ns1(1), nw1(1)
+
+    call geometry(ms, gs, error)
+    if (allocated(error)) return
+    call control_points(ms, gs, ps, error)
+    if (allocated(error)) return
+    call make_state(ms, gs, w1, b1, depth, xa(:, b:b), r1, q1)
+    call make_state(ms, gs, w2, b2, depth, xb(:, b:b), r2, q2)
+    call fields_two(ms, gs, ps, psi1, gps1, pwl1, gcs1, v1, v2)
+    allocate(ws(ms%n), ts(6, NPOT_TERMS))
+    call sharp_edge_weights(ms, DEFAULT_EDGE_DEG, ws, ne1, ns1, nw1)
+    call potential_pair(ms, gs, r1, r2, q1, q2, psi1, gps1, pwl1, om, rho, g, ts, cs=ps, grad_psi_cs=gcs1, &
+                        u1_cs=v1, u2_cs=v2, edge_w=ws)
+  end subroutine alone
+
+end subroutine test_pot_b2_control_two_bodies
+
+!> psi of mode column 6 (b - 1) + k: psi_field(k) on the panels, waterline and C and F points of body b, zero on the other
+!> bodies; grad psi on the hull from psi_surface_gradient, psi at the waterline from psi_waterline; the incident velocity
+!> of the two states at the points of C and F
+subroutine fields_two(mesh, geom, pts, psi, grad_psi, psi_wl, gcs, uc1, uc2)
+  type(panel_mesh), intent(in) :: mesh
+  type(surface_geom), intent(in) :: geom
+  type(cs_points), intent(in) :: pts
+  complex(8), allocatable, intent(out) :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), gcs(:,:,:), uc1(:,:), uc2(:,:)
+  complex(8) :: p, gr(3)
+  integer :: nm, i, k, b
+
+  nm = 6 * mesh%nbody
+  allocate(psi(mesh%n, nm), grad_psi(3, mesh%n, nm), psi_wl(geom%nwl, nm), gcs(3, pts%n, nm))
+  allocate(uc1(3, pts%n), uc2(3, pts%n))
+  psi = (0d0, 0d0)
+  gcs = (0d0, 0d0)
+  do b = 1, mesh%nbody
+    do k = 1, 6
+      do i = 1, mesh%n
+        if (mesh%body(i) /= b) cycle
+        call psi_field(k, mesh%xc(:, i), psi(i, 6*(b - 1) + k), gr)
+        psi(i, 6*(b - 1) + k) = psi(i, 6*(b - 1) + k) * exp(ci * 0.3d0 * real(k, 8))
+      end do
+      do i = 1, pts%n
+        if (pts%body(i) /= b) cycle
+        call psi_field(k, pts%x(:, i), p, gr)
+        gcs(:, i, 6*(b - 1) + k) = gr * exp(ci * 0.3d0 * real(k, 8))
+      end do
+    end do
+  end do
+  call psi_surface_gradient(mesh, geom, psi, grad_psi)
+  call psi_waterline(mesh, geom, psi, grad_psi, psi_wl)
+  do i = 1, pts%n
+    call incident_grad(pts%x(:, i), w1, wave_number(w1, depth), depth, 1d0, b1, g, uc1(:, i))
+    call incident_grad(pts%x(:, i), w2, wave_number(w2, depth), depth, 1d0, b2, g, uc2(:, i))
+  end do
+end subroutine fields_two
+
+!> Two single-body meshes as one two-body mesh, each with its own reference point
+subroutine join_two(m1, m2, mesh)
+  type(panel_mesh), intent(in) :: m1, m2
+  type(panel_mesh), intent(out) :: mesh
+  integer :: n, k
+
+  n = m1%n + m2%n
+  mesh%n = n; mesh%nbase = n; mesh%nnode = m1%nnode + m2%nnode; mesh%nbody = 2; mesh%nsys = 1
+  mesh%xc = reshape([m1%xc, m2%xc], [3, n])
+  mesh%nrm = reshape([m1%nrm, m2%nrm], [3, n])
+  mesh%nj = reshape([m1%nj, m2%nj], [6, n])
+  mesh%area = [m1%area, m2%area]
+  mesh%psize = [m1%psize, m2%psize]
+  mesh%xnode = reshape([m1%xnode, m2%xnode], [3, mesh%nnode])
+  mesh%ncn = [m1%ncn, m2%ncn]
+  mesh%ncon = reshape([m1%ncon, m2%ncon], [4, n])
+  do k = m1%n + 1, n
+    mesh%ncon(1:mesh%ncn(k), k) = mesh%ncon(1:mesh%ncn(k), k) + m1%nnode
+  end do
+  mesh%body = [m1%body, 2 + 0*m2%body]
+  mesh%base = [(k, k = 1, n)]
+  mesh%image = 1 + 0*mesh%base
+  mesh%xr = reshape([m1%xr(:, 1), m2%xr(:, 1)], [3, 2])
+end subroutine join_two
 
 end module test_qtf_potential

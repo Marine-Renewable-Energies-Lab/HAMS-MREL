@@ -103,6 +103,9 @@ CONTAINS
       ELSE IF (opts%qtf_max_dw < 0D0) THEN
          ok = .FALSE.
          msg = 'qtf_max_dw must not be negative in SecondOrder.in.'
+      ELSE IF (.NOT. (opts%qtf_edge_angle > 0D0 .AND. opts%qtf_edge_angle < 180D0)) THEN
+         ok = .FALSE.
+         msg = 'qtf_edge_angle must be between 0 and 180 degrees in SecondOrder.in.'
       ELSE IF (opts%qtf > 0 .AND. opts%mean_drift == 0) THEN
          ok = .FALSE.
          msg = 'qtf needs mean_drift = 1 or 2.'
@@ -197,6 +200,20 @@ CONTAINS
       CASE ('qtf_b2')
          ! Read always, used with qtf_terms = body only
          CALL choose(value, 'body', 'control', opts%qtf_b2, ios)
+         opts%qtf_b2_given = .TRUE.
+      CASE ('qtf_edge_weights')
+         ! Read always, used with qtf_terms = body and qtf_b2 = control only
+         IF (value == 'on') THEN
+            opts%qtf_edge_weights = .TRUE.
+         ELSE IF (value == 'off') THEN
+            opts%qtf_edge_weights = .FALSE.
+         ELSE
+            ios = 1
+         END IF
+         opts%qtf_edge_given = .TRUE.
+      CASE ('qtf_edge_angle')
+         READ(value, *, IOSTAT=ios) opts%qtf_edge_angle
+         opts%qtf_edge_given = .TRUE.
       CASE DEFAULT
          ok = .FALSE.
          msg = 'Unknown key "'//key//'" in SecondOrder.in.'

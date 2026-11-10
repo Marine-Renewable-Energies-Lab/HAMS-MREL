@@ -31,6 +31,7 @@ MODULE SurfaceGeometry
    PRIVATE
 
    PUBLIC :: build_surface_geom, DEFAULT_SHARP_DEG
+   PUBLIC :: body_sizes, merge_nodes, sort_index   ! for SharpEdge
 
    REAL(8), PARAMETER :: DEFAULT_SHARP_DEG = 45D0
    REAL(8), PARAMETER :: MERGE_TOL = 1D-6   ! node merging tolerance, relative to the body size

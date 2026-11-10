@@ -8,3 +8,4 @@ qtf_terms = body
 qtf = 3
 qtf_max_dw = 0.3
 qtf_b2 = body
+qtf_edge_weights = off

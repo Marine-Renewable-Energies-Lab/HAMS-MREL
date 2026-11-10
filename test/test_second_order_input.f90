@@ -32,7 +32,8 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("control_rejections", test_control_rejections), &
     new_unittest("qtf_keys", test_qtf_keys), &
     new_unittest("qtf_terms_body", test_qtf_terms_body), &
-    new_unittest("qtf_b2_key", test_qtf_b2_key) &
+    new_unittest("qtf_b2_key", test_qtf_b2_key), &
+    new_unittest("qtf_edge_keys", test_qtf_edge_keys) &
     ]
 
 end subroutine collect_second_order_input
@@ -547,6 +548,48 @@ subroutine test_qtf_b2_key(error)
                                          "qtf_b2 = hull"], 'Invalid value "hull" for key "qtf_b2" in SecondOrder.in.')
   call remove_directory(root)
 end subroutine test_qtf_b2_key
+
+!> qtf_edge_weights is on by default and reads on and off; qtf_edge_angle is 45 by default and must lie in (0, 180). Each
+!> key, and qtf_b2, is marked as given, for the note in the log when it has no effect
+subroutine test_qtf_edge_keys(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_edge"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 1", &
+                          "qtf_terms = body"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_edge_weights .and. opts%qtf_edge_angle == 45d0 .and. .not. opts%qtf_edge_given &
+             .and. .not. opts%qtf_b2_given, "defaults: on, 45 degrees, not given")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 1", &
+                          "qtf_terms = body", "QTF_Edge_Weights = Off", "qtf_edge_angle = 30", "qtf_b2 = body"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "qtf_edge_weights = off rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, .not. opts%qtf_edge_weights .and. opts%qtf_edge_angle == 30d0 .and. opts%qtf_edge_given &
+             .and. opts%qtf_b2_given, "off, 30 degrees, given")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 1", &
+                          "qtf_terms = body", "qtf_edge_weights = on"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok .and. opts%qtf_edge_weights, "qtf_edge_weights = on")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = body", &
+                                         "qtf_edge_weights = yes"], &
+                           'Invalid value "yes" for key "qtf_edge_weights" in SecondOrder.in.')
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = body", &
+                                         "qtf_edge_angle = 0"], &
+                           'qtf_edge_angle must be between 0 and 180 degrees in SecondOrder.in.')
+  call remove_directory(root)
+end subroutine test_qtf_edge_keys
 
 subroutine expect_read_message(error, root, lines, expected)
   type(error_type), allocatable, intent(out) :: error
