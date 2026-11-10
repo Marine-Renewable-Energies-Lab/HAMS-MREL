@@ -5,6 +5,8 @@ Usage:
     python qtf_compare.py check
     python qtf_compare.py <results> --reference <qtf_reference.csv> [--nemoh <folder of nemoh_* runs>] [--max-dw 0.3]
     python qtf_compare.py <results> --potential <qtf_potential.csv> [--nemoh <folder>] [--max-dw 0.3] [--exclude LO HI]
+    python qtf_compare.py <results> --against-nemoh <folder> [--hull oc4] [--reading as-is|conj|-1|-conj] [--max-dw 0.3]
+                          [--exclude LO HI]
 
 <results> holds the q_* case folders of `drift_convergence.py --qtf` (q_*/output/Wamit_format/QTF_Quadratic.10d, .10s).
 The reference CSV is from `truncated_cylinder_reference.py qtf`: T/(rho g) for omega_i <= omega_j, e^{-i omega t}, both
@@ -250,6 +252,104 @@ def compare_potential(results, path, nemoh, max_dw, exclude=None):
 READINGS = (("as-is", False, 1.0), ("conj", True, 1.0), ("-1", False, -1.0), ("-conj", True, -1.0))
 
 
+def compare_against_nemoh(results, nemoh, max_dw, exclude=None, hull="oc4", reading=None):
+    """The --against-nemoh table, for a hull without an exact reference: QTF_Indirect.11d of each q_<hull>_<motion>_m<k>
+    case against OUT_QTFM_N.dat of nemoh_<hull>_<motion>_m<k> (DUOK + HASBO, the same mesh), |HAMS - Nemoh| / max |Nemoh|
+    over the pairs omega_i <= omega_j of the HAMS file with omega_j - omega_i <= max_dw, max and median, percent. Nemoh's
+    reading is the one named, or else the one closest to HAMS by the sum of the medians (printed: with no reference,
+    agreement picks it; the sharp-cylinder runs fix it against the exact reference). exclude (lo, hi) as in compare_potential.
+    Returns the rows (case, reading, [(max, median) or None per quantity])."""
+    print("HAMS QTF_Indirect.11d against Nemoh DUOK + HASBO, %s: |HAMS - Nemoh| / max |Nemoh| over the pairs, max and median, "
+          "percent; omega_j - omega_i <= %.2f rad/s" % (hull, max_dw))
+    if exclude:
+        print("Pairs with omega_i or omega_j in [%.3f, %.3f] rad/s left out; scales from all the pairs" % tuple(exclude))
+    print("%-24s %-6s %16s %16s %16s" % ("case", "Nemoh", "F_x", "F_z", "M_y"))
+    rows = []
+    for folder in sorted(glob.glob(os.path.join(results, "q_%s_*" % hull))):
+        case = os.path.basename(folder)
+        partner = os.path.join(nemoh, "nemoh_" + case[2:])
+        hams = read_hams(os.path.join(folder, "output", "Wamit_format", "QTF_Indirect.11d"))
+        table = read_nemoh(os.path.join(partner, "results", "QTF", "OUT_QTFM_N.dat"))
+        if not hams or not table:
+            print("%-24s %s" % (case, "no QTF_Indirect.11d" if not hams else "no %s" % os.path.basename(partner)))
+            continue
+        pairs_all = sorted(set((min(w1, w2), max(w1, w2)) for w1, w2, _ in hams if abs(w2 - w1) <= max_dw + 1e-9))
+        kept = [p for p in pairs_all if not exclude or not any(exclude[0] - 1e-9 <= w <= exclude[1] + 1e-9 for w in p)]
+        best = None
+        for label, conjugate, sign in READINGS:
+            if reading and label != reading:
+                continue
+            cells = []
+            for _, index in QUANTITIES:
+                values = nemoh_values(table, index, "diff", conjugate, sign)
+                if not all(p in values for p in pairs_all):
+                    cells.append(None)
+                    continue
+                scale = max(abs(values[p]) for p in pairs_all)
+                e = errors_of({p: lookup(hams, p[0], p[1], index, "diff") for p in kept}, {p: values[p] for p in kept}, scale)
+                cells.append(e[:2] if e else None)
+            score = sum(c[1] if c else np.inf for c in cells)
+            if best is None or score < best[0]:
+                best = (score, label, cells)
+        rows.append((case, best[1], best[2]))
+        print("%-24s %-6s %16s %16s %16s" % (case, best[1], *["%7.2f %7.2f" % (100 * c[0], 100 * c[1]) if c else "-"
+                                                               for c in best[2]]))
+    return rows
+
+
+def check_against_nemoh():
+    """compare_against_nemoh on a temporary fixture: a HAMS .11d (conj(T), both halves of the square) and a Nemoh file (T as
+    written, w1 >= w2) of the same T: errors 0 and the reading "as-is"; Nemoh written conjugated: "conj"; a Nemoh run missing
+    is noted."""
+    import contextlib
+    import io
+    import tempfile
+    grid = (0.4, 0.5, 0.6)
+    rng = np.random.default_rng(5)
+    t = {(wi, wj): {index: complex(*rng.normal(size=2)) for _, index in QUANTITIES} for wi in grid for wj in grid if wi <= wj}
+    for p in t:
+        if p[0] == p[1]:
+            t[p] = {index: complex(v.real, 0.0) for index, v in t[p].items()}
+
+    def value(wi, wj, index):
+        return t[(wi, wj)][index] if wi <= wj else t[(wj, wi)][index].conjugate()
+    with tempfile.TemporaryDirectory() as d:
+        for motion, conjugate in (("fixed", False), ("free", True)):
+            folder = os.path.join(d, "results", "q_oc4_%s_m1" % motion, "output", "Wamit_format")
+            os.makedirs(folder)
+            with open(os.path.join(folder, "QTF_Indirect.11d"), "w") as f:
+                for wi in grid:
+                    for wj in grid:
+                        for _, index in QUANTITIES:
+                            v = value(wi, wj, index).conjugate()
+                            f.write("%14.6E%14.6E%14.6E%14.6E%6d%14.6E%14.6E%14.6E%14.6E\n" % (
+                                wi, wj, 0.0, 0.0, index, abs(v), 0.0, v.real, v.imag))
+            folder = os.path.join(d, "nemoh", "nemoh_oc4_%s_m1" % motion, "results", "QTF")
+            os.makedirs(folder)
+            with open(os.path.join(folder, "OUT_QTFM_N.dat"), "w") as f:
+                f.write("# header\n")
+                for w1 in grid:
+                    for w2 in grid:
+                        if w1 < w2:
+                            continue
+                        for _, index in QUANTITIES:
+                            v = value(w1, w2, index)
+                            v = v.conjugate() if conjugate else v
+                            f.write("%.6E %.6E 0. 0. %d %.6E 0. %.9E %.9E\n" % (w1, w2, index, abs(v), v.real, v.imag))
+        os.makedirs(os.path.join(d, "results", "q_oc4_free_m2", "output", "Wamit_format"))
+        with open(os.path.join(d, "results", "q_oc4_free_m2", "output", "Wamit_format", "QTF_Indirect.11d"), "w") as f:
+            f.write("%14.6E%14.6E%14.6E%14.6E%6d%14.6E%14.6E%14.6E%14.6E\n" % (0.4, 0.4, 0.0, 0.0, 1, 1.0, 0.0, 1.0, 0.0))
+        text = io.StringIO()
+        with contextlib.redirect_stdout(text):
+            rows = compare_against_nemoh(os.path.join(d, "results"), os.path.join(d, "nemoh"), 0.3)
+    found = {case: (label, cells) for case, label, cells in rows}
+    worst = max(c[0] for _, cells in found.values() for c in cells)
+    assert found["q_oc4_fixed_m1"][0] == "as-is" and found["q_oc4_free_m1"][0] == "conj", found
+    assert worst <= 1e-5, "errors of the exact fixture: %s" % found
+    assert "no nemoh_oc4_free_m2" in text.getvalue(), "no note for the missing Nemoh run"
+    return "exact fixture max %.1e %%, readings as-is and conj found, missing run noted" % (100 * worst)
+
+
 def nemoh_values(table, index, kernel, conjugate, sign=1.0):
     """(wi, wj) -> T(wi, wj) under the reading of Nemoh's value v as T(w1, w2) = sign * v, or sign * conj(v)."""
     out = {}
@@ -336,6 +436,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     if argv is None and sys.argv[1:2] == ["check"]:
         print("compare_potential    %s" % check_compare_potential())
+        print("against_nemoh        %s" % check_against_nemoh())
         return 0
     parser.add_argument("results")
     parser.add_argument("--reference", help="CSV of truncated_cylinder_reference.py qtf (needed without --potential)")
@@ -344,8 +445,18 @@ def main(argv=None):
     parser.add_argument("--nemoh", help="folder holding nemoh_<hull>_<motion>_m<k>/results/QTF")
     parser.add_argument("--max-dw", type=float, default=0.3)
     parser.add_argument("--exclude", type=float, nargs=2, metavar=("LO", "HI"),
-                        help="with --potential: leave out the pairs with a frequency in [LO, HI] rad/s (a resonance band)")
+                        help="with --potential or --against-nemoh: leave out the pairs with a frequency in [LO, HI] rad/s "
+                             "(a resonance band)")
+    parser.add_argument("--against-nemoh", metavar="FOLDER",
+                        help="compare QTF_Indirect.11d of q_<hull>_* with Nemoh's nemoh_<hull>_* under FOLDER (no exact "
+                             "reference)")
+    parser.add_argument("--hull", default="oc4", help="with --against-nemoh: the hull of the case names (default oc4)")
+    parser.add_argument("--reading", choices=[label for label, _, _ in READINGS],
+                        help="with --against-nemoh: Nemoh's reading; by default the closest to HAMS")
     args = parser.parse_args(argv)
+    if args.against_nemoh:
+        compare_against_nemoh(args.results, args.against_nemoh, args.max_dw, args.exclude, args.hull, args.reading)
+        return 0
     if args.potential:
         return compare_potential(args.results, args.potential, args.nemoh, args.max_dw, args.exclude)
     if not args.reference:
