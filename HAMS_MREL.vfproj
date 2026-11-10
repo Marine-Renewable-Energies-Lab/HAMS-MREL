@@ -92,6 +92,7 @@
 		<File RelativePath=".\src\SecondOrderOutput.f90"/>
 		<File RelativePath=".\src\QTFPotential.f90"/>
 		<File RelativePath=".\src\QTFDriver.f90"/>
+		<File RelativePath=".\src\QTFField.f90"/>
 		<File RelativePath=".\src\SecondOrderDriver.f90"/>
 		<File RelativePath=".\src\SingularIntgr.f90"/>
 		<File RelativePath=".\src\SingularIntgrMulti.f90"/>
