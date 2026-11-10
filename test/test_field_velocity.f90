@@ -4,6 +4,7 @@
 !> These tests set module globals, so the suite runs serially (see unit_tester.f90).
 module test_field_velocity
   use testdrive, only : new_unittest, unittest_type, error_type, check
+  use HAMS_mod, only : NTHREAD
   use WaveDyn_mod, only : BETA, H, V, W1, WK
   use PanelMesh_mod, only : ISX, ISY
   use SecondOrderTypes, only : panel_mesh, first_order_state, cs_points, cs_fields, CS_WALL, CS_LINE
@@ -54,7 +55,8 @@ contains
       new_unittest("green_field_matches_exact", test_green_field), &
       new_unittest("green_field_perturbation_only", test_green_perturbation_only), &
       new_unittest("source_field_matches_exact", test_source_field), &
-      new_unittest("source_field_half_matches_full", test_source_field_half) &
+      new_unittest("source_field_half_matches_full", test_source_field_half), &
+      new_unittest("green_field_thread_invariant", test_green_threads) &
       ]
   end subroutine collect_field_velocity
 
@@ -688,5 +690,56 @@ contains
     rel_phi = maxval(abs(fields_h(1)%phi - fields_w(1)%phi))/maxval(abs(fields_w(1)%phi))
     rel_grad = maxval(abs(fields_h(1)%grad - fields_w(1)%grad))/maxval(abs(fields_w(1)%grad))
   end subroutine half_against_whole
+
+  !> fields_green on 1 and on 4 threads: the points are independent and no sum crosses them, so phi and grad phi must agree bit
+  !> for bit. A state with a nonzero perturbation (smooth pattern in phi_p and dphi_p_dn), deep and finite depth (both Green
+  !> function routines), a whole hull (nsys = 1) and half hulls (nsys = 2, ISY = 1 and ISX = 1).
+  subroutine test_green_threads(error)
+    type(error_type), allocatable, intent(out) :: error
+    integer :: nthread_saved
+
+    nthread_saved = NTHREAD
+    call threads_case(10d0, 0, 0, error)
+    if (.not. allocated(error)) call threads_case(-1d0, 0, 0, error)
+    if (.not. allocated(error)) call threads_case(10d0, 0, 1, error)
+    if (.not. allocated(error)) call threads_case(-1d0, 1, 0, error)
+    NTHREAD = nthread_saved
+  end subroutine test_green_threads
+
+  subroutine threads_case(depth, isx_in, isy_in, error)
+    real(8), intent(in) :: depth
+    integer, intent(in) :: isx_in, isy_in
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: mesh
+    type(cs_points) :: pts
+    type(first_order_state) :: states(2)
+    type(cs_fields) :: f1(2), f4(2)
+    real(8), parameter :: headings(2) = [0.6d0, 2d0]
+    integer :: i, ist
+    character(len=120) :: info
+
+    call set_wave(depth)
+    call load_single(isx_in, isy_in, mesh)
+    call ring_points(8, 12, [9d0, 6.5d0, 11d0, 15d0], [0d0, -0.6d0, -2.5d0, -7d0], pts)
+    do ist = 1, 2
+      call zero_state(mesh, headings(ist), states(ist))
+      do i = 1, mesh%n
+        states(ist)%phi_p(i) = cmplx(cos(0.7d0*i + ist), sin(0.3d0*i), 8)
+        states(ist)%dphi_p_dn(i) = cmplx(sin(0.5d0*i), cos(0.2d0*i - ist), 8)
+      end do
+    end do
+    NTHREAD = 1
+    call fields_green(mesh, pts, states, step, .false., f1)
+    NTHREAD = 4
+    call fields_green(mesh, pts, states, step, .false., f4)
+    write (info, '(a,es9.2,a,2i2)') "depth ", depth, " ISX, ISY ", isx_in, isy_in
+    do ist = 1, 2
+      call check(error, all(f1(ist)%phi == f4(ist)%phi) .and. all(f1(ist)%grad == f4(ist)%grad), &
+                 "fields_green differs between 1 and 4 threads, "//trim(info))
+      if (allocated(error)) return
+      call check(error, any(abs(f1(ist)%grad) > 0d0), "The fields should not be zero")
+      if (allocated(error)) return
+    end do
+  end subroutine threads_case
 
 end module test_field_velocity

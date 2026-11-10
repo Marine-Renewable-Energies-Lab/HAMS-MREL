@@ -81,13 +81,19 @@ CONTAINS
       INTEGER :: i, c, ncomp, ist, nst
 
       nst = SIZE(states)
-      ALLOCATE (row_g(mesh%nbase, mesh%nsys), row_dg(mesh%nbase, mesh%nsys))
       DO ist = 1, nst
          ALLOCATE (fields(ist)%phi(pts%n), fields(ist)%grad(3, pts%n))
          fields(ist)%phi = (0D0, 0D0)
          fields(ist)%grad = (0D0, 0D0)
       END DO
 
+      ! The points are independent and write only their own fields(ist)%phi(i) and %grad(:, i): no reduction, so the result does
+      ! not depend on the thread count. The rows are allocated by each thread. The loop over the panels in field_influence_row
+      ! is itself an OpenMP loop, which runs on one thread inside this region (nested parallelism is off by default).
+      !$OMP PARALLEL NUM_THREADS(NTHREAD) PRIVATE(row_g, row_dg, x0, xs, delta, at_surface, with_centre, ncomp, c, ist, phi_c, &
+      !$OMP phi_plus, dphi, grad_i, phi_i)
+      ALLOCATE (row_g(mesh%nbase, mesh%nsys), row_dg(mesh%nbase, mesh%nsys))
+      !$OMP DO SCHEDULE(DYNAMIC, 4)
       DO i = 1, pts%n
          x0 = pts%x(:, i)
          delta = step*pts%psize(i)
@@ -128,6 +134,9 @@ CONTAINS
             END ASSOCIATE
          END DO
       END DO
+      !$OMP END DO
+      DEALLOCATE (row_g, row_dg)
+      !$OMP END PARALLEL
    END SUBROUTINE fields_green
 
    SUBROUTINE fields_source(mesh, pts, states, sigmas, is_multi, fields)
