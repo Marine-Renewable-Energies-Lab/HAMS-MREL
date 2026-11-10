@@ -4,7 +4,7 @@ module test_qtf_field
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use QTFField, only : field_pair, build_field_points
   use SecondOrderTypes, only : panel_mesh, cs_points
-  use second_order_fixtures, only : make_cylinder
+  use second_order_fixtures, only : make_cylinder, make_two_bodies
   use SecondOrderIncident, only : incident2, incident2_pair, incident2_phi
   use FirstOrderState, only : incident_phi, incident_grad
   use NearFieldDrift, only : KERNEL_DIFF, KERNEL_SUM
@@ -275,31 +275,6 @@ subroutine one_cylinder(mesh)
   call make_cylinder(5d0, 5d0, 24, 10, 5, mesh, .true.)
 end subroutine one_cylinder
 
-!> Two copies of the cylinder, the second shifted by dx along x.
-subroutine two_cylinders(dx, both)
-  real(8), intent(in) :: dx
-  type(panel_mesh), intent(out) :: both
-  type(panel_mesh) :: m
-  integer :: n, nn
-  call one_cylinder(m)
-  n = m%n
-  nn = m%nnode
-  both = m
-  both%n = 2 * n; both%nbase = 2 * n; both%nnode = 2 * nn; both%nbody = 2
-  both%xc = reshape([m%xc, m%xc + spread([dx, 0d0, 0d0], 2, n)], [3, 2 * n])
-  both%nrm = reshape([m%nrm, m%nrm], [3, 2 * n])
-  both%nj = reshape([m%nj, m%nj], [6, 2 * n])
-  both%area = [m%area, m%area]
-  both%psize = [m%psize, m%psize]
-  both%xnode = reshape([m%xnode, m%xnode + spread([dx, 0d0, 0d0], 2, nn)], [3, 2 * nn])
-  both%ncn = [m%ncn, m%ncn]
-  both%ncon = reshape([m%ncon, merge(m%ncon + nn, 0, m%ncon > 0)], [4, 2 * n])
-  both%body = [spread(1, 1, n), spread(2, 1, n)]
-  both%base = [m%base, m%base + n]
-  both%image = [m%image, m%image]
-  both%xr = reshape([m%xr(:, 1), m%xr(:, 1) + [dx, 0d0, 0d0]], [3, 2])
-end subroutine two_cylinders
-
 subroutine test_points_classified(error)
   type(error_type), allocatable, intent(out) :: error
   type(panel_mesh) :: mesh
@@ -385,12 +360,13 @@ end subroutine test_points_waterplane
 
 subroutine test_points_two_bodies(error)
   type(error_type), allocatable, intent(out) :: error
-  type(panel_mesh) :: mesh
+  type(panel_mesh) :: mesh, m1
   type(cs_points) :: pts
   logical, allocatable :: surface(:)
   logical :: ok
   character(len=:), allocatable :: msg
-  call two_cylinders(40d0, mesh)
+  call one_cylinder(m1)
+  call make_two_bodies(m1, 40d0, mesh)
   call build_field_points(mesh, reshape([40d0, 0d0, -2d0], [3, 1]), pts, surface, ok, msg)
   call check(error, .not. ok .and. index(msg, "body 2") > 0, "point inside body 2 not rejected")
   if (allocated(error)) return

@@ -83,7 +83,7 @@ CONTAINS
       ! a surface (elevation) point and gets z = 0, z < -1e-6 is a pressure point. psize and body are those of the nearest
       ! hull panel (centroids of the full panel set, so symmetry images are included). Rejected, checked in point order,
       ! the first failing point giving msg: above the free surface; within one local panel size of a hull panel centroid
-      ! (the rule of check_control_surface); inside a body, decided by the nearest centroid c as (x - c).n > 0, with n the
+      ! (a point has no panel size of its own, so the limit is the hull panel's size); inside a body, decided by the nearest centroid c as (x - c).n > 0, with n the
       ! panel normal, which points into the body.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       REAL(8), INTENT(IN) :: xfp(:,:)
