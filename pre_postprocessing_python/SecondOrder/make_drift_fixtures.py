@@ -12,6 +12,8 @@ import os
 import shutil
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # run with python -I: the sibling modules
+
 import make_mesh
 
 DRIFT_CYL_FREQUENCIES = (0.70, 0.95, 1.10)

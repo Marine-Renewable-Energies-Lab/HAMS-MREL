@@ -50,6 +50,8 @@ import subprocess
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # run with python -I: the sibling modules
+
 import make_drift_fixtures as fixtures
 import make_mesh
 
