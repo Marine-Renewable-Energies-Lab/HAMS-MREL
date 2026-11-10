@@ -1,6 +1,6 @@
 # Second-order wave loads: validation
 
-This page holds the evidence behind the second-order methods, defaults and advice of [SecondOrder.in](input_files.md#secondorderin-optional): the mean drift convergence study, the comparison with Nemoh, the semi-analytical reference for a sharp truncated cylinder, the control-surface study and a study of graded meshes. The integration fixtures and the limits of their tests are in [test/data/drift_cyl/README.md](../test/data/drift_cyl/README.md). All values are measured unless marked inferred.
+This page holds the evidence behind the second-order methods, defaults and advice of [SecondOrder.in](input_files.md#secondorderin-optional): the mean drift convergence study, the comparison with Nemoh, the semi-analytical reference for a sharp truncated cylinder, the control-surface study, a study of graded meshes, the quadratic QTFs and the potential part of the difference QTF. The integration fixtures and the limits of their tests are in [test/data/drift_cyl/README.md](../test/data/drift_cyl/README.md). All values are measured unless marked inferred.
 
 ## Mean drift convergence study
 
@@ -326,6 +326,120 @@ Sharp cylinder, `velocity_method = source`, heading 0, meshes m1 to m4 (448, 179
 - Every error falls with the mesh, roughly as the panel size (a factor of about 4 from 448 to 7168 panels), for HAMS and Nemoh alike. HAMS and Nemoh are close at the same mesh, and Nemoh's values need neither a conjugate nor a sign change against this convention.
 - Fixed body: the largest errors at 7168 panels are below 4%. They sit at the highest frequency (1.40 rad/s, fewest panels per wavelength) for F_x and the difference M_y, and in the middle of the range for F_z and the sum M_y.
 - Free body: the medians are below 0.2%. The largest errors all sit at pairs with a frequency at the heave resonance, 0.76 to 0.77 rad/s. There the response is steep, so a small shift of the computed resonance gives a large error at single pairs; the QTF, quadratic in the motion, amplifies it. At 4032 panels only 55 of 2666 difference pairs of F_x, and 15 of F_z, are off by more than 5%, all next to the resonance. Nemoh's largest errors sit at the same pairs.
+- Later runs of the potential part show that the sharp peak at 0.77 rad/s is the coupled surge-pitch mode, and that heave peaks at 0.80 rad/s with a much broader peak; see [the resonance and the motions](#the-resonance-and-the-motions).
+
+## QTF potential part
+
+The body forcing of the second-order potential (`qtf_terms = body`, `QTF_Indirect.11d`) against an exact reference, and against Nemoh. Runs on Snellius (`fat_genoa`, 32 threads, ifx from `intel/2024a`) on 2026-11-09 (hull form of B2, m1 to m4, fixed and free, and Nemoh) and 2026-11-10 (control-surface form of B2, free body). The per-pair tables are not in the repository.
+
+**Setup.** The sharp truncated cylinder of the [semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder) (radius 10 m, draft 10 m, depth 100 m), fixed and free, heading 0, meshes m1 to m4 (448, 1792, 4032, 7168 panels, cosine rows), `velocity_method = source`, `waterline_method = extrapolate`. 101 frequencies, 0.40 to 1.40 rad/s in steps of 0.01, `qtf = 1`, `qtf_max_dw = 0.3`: 2666 difference pairs, and ψ at 30 difference frequencies (0.01 to 0.30 rad/s), all by radiation-only solves. The cases come from `drift_convergence.py --qtf-potential`.
+
+**Reference.** `truncated_cylinder_reference.py qtf-potential` gives the quadratic part and the five terms of every pair on the same grid, by eigenfunction matching, with the free-surface integral left out as in `.11d`. Its signs are derived from the boundary-value problem, not from the HAMS code. From its default resolution to 128000 modes, and over two quadratures, B2 and T_pot change by at most 3.1e-5 at the two pairs measured ([truncated_cylinder_reference.py](../pre_postprocessing_python/SecondOrder/truncated_cylinder_reference.py) docstring). It took 11 min per motion on Snellius.
+
+**Measure.** `qtf_compare.py --potential` gives, per quantity, the largest and the median over the pairs of |HAMS − exact| / max |exact|, in percent. A term is measured against the larger of its own maximum and that of the potential part T_pot. `--exclude LO HI` leaves out the pairs with a frequency in [LO, HI] rad/s and keeps the scale of all pairs.
+
+### Fixed body
+
+Largest / median error, percent. `pot` is the potential part (`.11d` − `.10d`), `.11d` the total:
+
+| Panels | pot F_x | pot F_z | pot M_y | `.11d` F_x | `.11d` F_z | `.11d` M_y |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 448 | 0.04 / 0.02 | 0.82 / 0.54 | 1.97 / 0.27 | 5.70 / 0.96 | 5.47 / 4.50 | 5.14 / 3.86 |
+| 1792 | 0.00 / 0.00 | 0.22 / 0.14 | 0.56 / 0.08 | 3.01 / 0.49 | 2.66 / 2.16 | 2.39 / 1.91 |
+| 4032 | 0.00 / 0.00 | 0.10 / 0.06 | 0.26 / 0.04 | 2.05 / 0.34 | 1.71 / 1.38 | 1.55 / 1.26 |
+| 7168 | 0.00 / 0.00 | 0.05 / 0.03 | 0.15 / 0.02 | 1.56 / 0.26 | 1.25 / 1.01 | 1.14 / 0.94 |
+
+- On a fixed body B1, B2 and B3 are zero, and the potential part is the Froude-Krylov and diffraction loads of the second-order incident wave. It falls by a factor of about 3.5 to 4 per doubling of the panels per side, and its largest error at 7168 panels is 0.15%. The acceptance limit, 5% of max |T_pot| at the finest mesh, is met.
+- The error of `.11d` is that of the quadratic part (compare [Quadratic QTFs](#quadratic-qtfs)). The fixed body does not depend on `qtf_b2` [derived: B2 is zero].
+
+### Free body: the hull and control-surface forms of B2
+
+Largest error, percent, F_x / F_z / M_y, all 2666 pairs. Hull form: B2 integrated on the hull, the form of `qtf_b2 = body` (runs of 2026-11-09). Control: `qtf_b2 = control` with the default `cs_*` keys; fixed C: C and F of the 448-panel default (`cs_margin = cs_bottom_margin = 7.84`, `cs_panel_size = 1.96`) at 1792 panels (runs of 2026-11-10):
+
+| B2 form, panels | B1 | B2 | pot | `.11d` |
+| :--- | ---: | ---: | ---: | ---: |
+| hull, 448 | 12.4 / 7.8 / 10.3 | 19.3 / 34.6 / 78.8 | 30.1 / 31.9 / 79.0 | 98.9 / 111.9 / 13.6 |
+| hull, 1792 | 4.8 / 3.6 / 3.8 | 15.4 / 17.5 / 61.2 | 25.8 / 21.0 / 61.3 | 41.0 / 59.0 / 5.9 |
+| hull, 4032 | 2.7 / 2.3 / 2.1 | 12.5 / 17.2 / 49.4 | 21.3 / 20.7 / 49.4 | 23.8 / 38.6 / 3.6 |
+| hull, 7168 | 1.8 / 1.7 / 1.4 | 10.6 / 16.2 / 41.7 | 18.7 / 19.4 / 41.6 | 15.9 / 28.1 / 2.5 |
+| control, 448 | 12.4 / 7.8 / 10.3 | 14.0 / 21.9 / 10.0 | 20.7 / 19.3 / 11.0 | 99.0 / 111.9 / 13.6 |
+| control, 1792 | 4.8 / 3.6 / 3.8 | 7.3 / 14.2 / 7.1 | 11.8 / 13.0 / 7.9 | 41.1 / 59.0 / 5.9 |
+| fixed C, 1792 | 4.8 / 3.6 / 3.8 | 6.9 / 13.8 / 6.9 | 11.1 / 12.5 / 7.7 | 41.1 / 59.0 / 5.9 |
+
+The medians are below 0.8% in every row. The Froude-Krylov and diffraction terms are within 0.2% on every mesh, and B3 is zero in F_x and M_y and within 12.4%, 5.1%, 2.7%, 1.7% in F_z at m1 to m4.
+
+- With the hull form, B2 M_y falls slowly: 79, 61, 49, 42% at m1 to m4, a ratio of 0.84 from m3 to m4. A split of B2 into its three pieces (a debug build, not in the repository) put the error in the surface piece ∫(n × ∇ψ)·(X × u) dS, whose integrand goes like ρ^(-2/3) at the sharp bottom edge and is integrated with one point per panel and a differenced ∇ψ.
+- The control-surface form takes B2 M_y from 79 to 10% at m1 and from 61 to 7.1% at m2, better than the hull form at m4.
+- Holding C at its 448-panel size gives the same accuracy at 1792 panels, at less than half the run time (see [cost](#cost-of-the-potential-part)).
+- The largest errors left sit at pairs with a frequency in the resonance at 0.75 to 0.79 rad/s. Without these pairs:
+
+| B2 form, panels | B2, without 0.75-0.79 | pot, without 0.75-0.79 | `.11d`, without 0.75-0.79 | B2, without 0.74-0.82 | `.11d`, without 0.74-0.82 |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| hull, 448 | 3.5 / 28.7 / 13.3 | | | | |
+| hull, 1792 | 3.4 / 17.3 / 12.2 | | | | |
+| hull, 7168 | 2.8 / 10.4 / 9.7 | | | | |
+| control, 448 | 3.2 / 3.3 / 2.3 | 2.5 / 3.9 / 2.5 | 27.2 / 11.8 / 2.3 | 1.6 / 3.0 / 1.7 | 7.7 / 5.3 / 0.3 |
+| control, 1792 | 1.2 / 2.0 / 1.3 | 1.5 / 1.8 / 1.5 | 10.9 / 6.1 / 1.4 | 0.5 / 1.6 / 0.9 | 3.4 / 2.9 / 0.2 |
+| fixed C, 1792 | 1.3 / 2.2 / 1.2 | 1.5 / 1.9 / 1.4 | 10.9 / 6.1 / 1.4 | 0.6 / 1.7 / 0.8 | 3.4 / 2.9 / 0.2 |
+
+- Away from the resonance, the control-surface B2 is within 1.2% to 2.0% at 1792 panels, against 3.4% to 17.3% for the hull form at 1792 panels and 2.8% to 10.4% at 7168. The gain of the control-surface form is not a resonance effect.
+- The `.11d` maximum without 0.75 to 0.79 rad/s, 10.9% in F_x at 1792 panels, is in the quadratic part on the flanks of the resonance (0.74 and 0.80 to 0.82 rad/s). With 0.74 to 0.82 left out, it is 3.4 / 2.9 / 0.2%, close to the fixed body's 3.0 / 2.7 / 2.4% at that mesh.
+- Acceptance for the free body: away from the resonance, the potential part is within 1.8% at 1792 panels (1.5 / 1.8 / 1.5%), well below 5% of max |T_pot|. In the band it is not met (11.8 / 13.0 / 7.9% at 1792 panels with the default C), and the error there is the first-order motion error (below). The control-surface form was not run at 4032 and 7168 panels.
+
+### The resonance and the motions
+
+HAMS's `Motion.4` of the free cylinder, heading 0, has a sharp peak in surge and pitch at 0.77 rad/s: the coupled surge-pitch mode, with radiation damping only. |ξ1| is 2.9, 8.8, 10.7 and 4.5 m/m at 0.75, 0.76, 0.77 and 0.78 rad/s at 448 panels. Heave peaks at 0.80 rad/s, and its peak is much broader. The exact motions of the reference (Snellius, 2026-11-10, 12 frequencies) against HAMS, modulus error in percent of |exact| at 448 / 1792 panels:
+
+| rad/s | Surge | Heave | Pitch |
+| ---: | ---: | ---: | ---: |
+| 0.50 | 0.3 / 0.1 | 0.2 / 0.1 | −1.8 / −0.5 |
+| 0.75 | 3.7 / 1.7 | 3.2 / 1.0 | 2.3 / 1.2 |
+| 0.76 | 10.1 / 4.0 | 3.8 / 1.1 | 8.6 / 3.5 |
+| 0.77 | −7.6 / −3.3 | 4.3 / 1.3 | −8.9 / −3.8 |
+| 0.78 | −4.4 / −1.8 | 4.5 / 1.3 | −5.8 / −2.3 |
+| 1.00 | −0.5 / −0.1 | −2.8 / −0.9 | −2.1 / −0.6 |
+
+![Motions of the free sharp cylinder around the 0.77 rad/s surge-pitch resonance: HAMS at 448 and 1792 panels against the exact reference, and the error in percent](figures/qtf_motions_resonance.png)
+
+- At 0.77 rad/s the complex error at 1792 panels is 5.2% in surge and 5.5% in pitch. The sign change between 0.76 and 0.77 rad/s shows that HAMS's peak lies slightly below the exact one. The error halves from 448 to 1792 panels, as the first-order solution converges. Off the peak, HAMS is within 1% at 1792 panels.
+- B1, B2 and B3 are bilinear in the motions, so a 3% to 5% motion error at 0.76 to 0.77 rad/s gives roughly twice that at the pairs with one of these frequencies: the 7% to 14% in-band B2 error at 1792 panels [derived]. The in-band error is the first-order motion error, amplified by the lightly damped resonance, not an error of the second-order terms.
+- A real hull with a sharp bilge sheds vortices, which damp this mode. With external damping in `Hydrostatic.in` the peak, and with it the in-band error, would be smaller [derived]. This was not run.
+
+### Comparison with Nemoh
+
+Nemoh v3.0.3, built and run as in [Comparison with Nemoh](#comparison-with-nemoh), with DUOK + HASBO (body forcing, no free-surface integral) on 140 frequencies from 0.01 to 1.40 rad/s, at 448 and 1792 panels, fixed and free. The HAMS runs are those of the hull form of B2. The difference of the `.11d` maps, |HAMS − Nemoh| / max |Nemoh|, with Nemoh read in the convention closest to the exact reference:
+
+- Fixed, 1792 panels: largest 1.5 / 0.5 / 0.3% (F_x / F_z / M_y).
+- Free, 1792 panels: medians at most 1.25%; largest 55 / 16.5 / 5.5%, on the lines of the resonance at 0.77 rad/s.
+
+So HAMS and Nemoh agree as closely as their quadratic parts did ([Quadratic QTFs](#quadratic-qtfs)), except at the resonance, where both carry the motion error. Whether Nemoh's HASBO contains a term like B3 was not checked. The Nemoh outputs are not in the repository.
+
+### Cost of the potential part
+
+Wall time per run on Snellius, 32 threads, 101 frequencies and 30 radiation-only solves:
+
+| Panels | Hull form | Control, default C | Control, fixed C |
+| ---: | ---: | ---: | ---: |
+| 448 | 93 s | 15 min 34 s | |
+| 1792 | 23 min | 2 h 49 min | 1 h 18 min |
+| 4032 | 1 h 44 min | 11 to 12 h, projected (stopped) | |
+| 7168 | 5 h 23 min | not run | |
+
+- With the control-surface form, the time goes into the field passes over C and F: 6.5 s per frequency at 448 panels (1416 points), 69 s at 1792 (3212 points) and 288 s at 4032 (5648 points) with the default C, and 25 s at 1792 panels with the fixed C. The default C is refined with the hull, so its pass grows faster than the hull solve.
+- The 4032-panel run with the default C was stopped after 31 of 101 frequencies, since it would not have finished within its 7 h limit.
+- The 7168-panel free run with the hull form took 6.95 GB.
+
+### Tried and not kept
+
+| What | Result | Kept |
+| :--- | :--- | :--- |
+| `velocity_method = differencing` instead of `source`, free, 1792 panels, hull form | B2 M_y 61 → 81%, `.11d` F_x 41 → 583% | no, keep `source` |
+| Product weights at sharp edges (`qtf_edge_weights = on`), 448-panel integration fixture | B2 F_x / F_z / M_y 15.1 / 30.0 / 11.9% → 17.2 / 37.4 / 11.1% ([SharpEdge.f90](../src/SharpEdge.f90)) | no, default `off` |
+| Rows graded towards the bottom edge, power 2.5 and 3, 448 panels, control-surface B2 | power 2.5: B2 18.6 / 20.0 / 17.4%, B1 19.0 / 6.2 / 15.9%; power 3: B2 32.0 / 24.4 / 29.3%; cosine rows: B2 14.0 / 21.9 / 10.0%, B1 12.4 / 7.8 / 10.3%. The edge weights changed B2 by at most 3 points there, for the worse | no, keep cosine rows |
+| The rot and line pieces of B2 on C ∪ F as well (prototype on the exact reference, Snellius, 2026-11-10) | the line piece moves to C ∪ F by a further identity, which holds on the cylinder to within 2.6%, but gains nothing with exact fields; the rot piece has no closed form on C ∪ F, and trading it for the other hull term is much worse | no |
+
+- The product weights make the rule exact for the singular velocity ρ^p at the panel centres. With exact fields at the panel centres they help (prototype on the reference), but HAMS's constant-panel velocities next to the edge do not carry the exact singular value, so the weight over-corrects ([SharpEdge.f90](../src/SharpEdge.f90)).
+- With exact fields at 7 panels per face, the rot piece is within 1.3% to 2.6%; in HAMS at 448 panels it is off by 8% to 22%. That error comes from HAMS's velocity near the sharp edge and falls with the mesh (8.3% → 3.7% and 21.8% → 8.5% from 448 to 1792 panels).
 
 ## Open items
 
@@ -334,6 +448,11 @@ Sharp cylinder, `velocity_method = source`, heading 0, meshes m1 to m4 (448, 179
 - Nemoh at 4320 panels: the cause is unknown, and testing it needs another Nemoh run.
 - `velocity_method = source` on graded meshes: the sign of the F_z error alternates with the mesh (above). Not explained.
 - The control-surface F_z, M_x and M_y at 1.6 to 1.8 rad/s were run at m2 only.
+- QTF potential part, `qtf_b2 = control`: run on the free cylinder at 448 and 1792 panels only. The 4032-panel run with the default C was stopped (cost); a run with C held fixed was estimated at about 3.8 h and not run.
+- QTF potential part at the lightly damped surge-pitch resonance (0.75 to 0.79 rad/s): the in-band error is the first-order motion error (above). A validation with damping matched between HAMS and the reference was not done.
+- Nemoh's HASBO: whether it contains a term like B3 was not checked, and the Nemoh maps were made with the hull form of B2 only.
+- The free-surface integral of the second-order potential, and the sum-frequency potential part, are not implemented (Phase 6), so `QTF_Indirect.11d` is validated as body forcing only, against a reference that leaves out the same integral.
+- Two unit tests failed under ifx 2024a on Snellius (job of 2026-11-09, the build of the hull-form runs): `control_surface_mesh/separate_bodies_accepted` and `field_velocity/field_green_is_smooth_in_z`, in modules the potential part does not change. Both are fixed on the `second-order-drift` branch by commit 60a972e, which this branch does not contain yet. With ifort 2022.1 on Windows all tests pass ([Developer Documentation](developer_documentation.md#qtf-potential-part)).
 - WAMIT remains an option if a licence becomes available. It is still needed to settle the conjugation and axes of the WAMIT-format output. The semi-analytical reference covers the signs of the mean drift values (210 values agree at 7168 panels), not the phases of the complex outputs.
 
 ## Sources
@@ -341,3 +460,7 @@ Sharp cylinder, `velocity_method = source`, heading 0, meshes m1 to m4 (448, 179
 Garrett (1971), Yeung (1981), MacCamy and Fuchs (1954), Maruo (1960), Newman (1967) and the WAMIT v7.5 manual are listed under [the semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder).
 
 - Chen, X.-B. (2007). Middle-field formulation for the computation of wave-drift loads. J. Eng. Math. 59, 61-82.
+- Molin, B. (1979). Second-order diffraction loads upon three-dimensional bodies. Applied Ocean Research 1(4), 197-202.
+- Ogilvie, T. F. (1983). Second-order hydrodynamic effects on ocean platforms. International Workshop on Ship and Platform Motions, Berkeley.
+- Cong, P., Teng, B., Chen, X.-B., Gou, Y. (2020). Ocean Engineering 204, 107278.
+- Kurnia, R., Ducrozet, G. (2023). NEMOH: open-source boundary element solver for first- and second-order hydrodynamic loads. Computer Physics Communications 292, 108885.
