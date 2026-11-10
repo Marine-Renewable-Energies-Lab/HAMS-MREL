@@ -429,19 +429,23 @@ def write_matrix(f, matrix):
         f.write("".join("  %12.5E" % value for value in row) + "\n")
 
 
-def write_hydrostatic(path, hydro, x0, y0, external_restoring=None):
-    """external_restoring maps a 0-based mode number to a value on the diagonal of the external restoring matrix."""
+def write_hydrostatic(path, hydro, x0, y0, external_restoring=None, external_damping=None):
+    """external_restoring and external_damping map a 0-based mode number to a value on the diagonal of the external
+    restoring and the external linear damping matrix."""
     zero = [[0.0] * 6 for _ in range(6)]
     external = [[0.0] * 6 for _ in range(6)]
     for mode, value in (external_restoring or {}).items():
         external[mode][mode] = value
+    damping = [[0.0] * 6 for _ in range(6)]
+    for mode, value in (external_damping or {}).items():
+        damping[mode][mode] = value
     with open(path, "w") as f:
         f.write(" Center of Gravity:\n")
         f.write("  %.12E  %.12E  %.12E\n" % (x0, y0, hydro["zg"]))
         f.write(" Body Mass Matrix:\n")
         write_matrix(f, hydro["mass"])
         f.write(" External Linear Damping Matrix:\n")
-        write_matrix(f, zero)
+        write_matrix(f, damping)
         f.write(" External Quadratic Damping Matrix:\n")
         write_matrix(f, zero)
         f.write(" Hydrostatic Restoring Matrix:\n")
@@ -450,7 +454,8 @@ def write_hydrostatic(path, hydro, x0, y0, external_restoring=None):
         write_matrix(f, external)
 
 
-def write_body(mesh, polygon, draft, x0, y0, half_y, mesh_path, hydro_path, external_restoring=None, mesh_format="hams"):
+def write_body(mesh, polygon, draft, x0, y0, half_y, mesh_path, hydro_path, external_restoring=None, mesh_format="hams",
+              external_damping=None):
     """Check and write a mesh centred on the origin, and its hydrostatics. Returns the written mesh and hydrostatics."""
     if half_y:
         if y0 != 0.0:
@@ -463,15 +468,16 @@ def write_body(mesh, polygon, draft, x0, y0, half_y, mesh_path, hydro_path, exte
         write_nemoh_mesh(mesh_path, mesh, 1 if half_y else 0)
     else:
         write_mesh(mesh_path, mesh, 1 if half_y else 0)
-    write_hydrostatic(hydro_path, hydro, x0, y0, external_restoring)
+    write_hydrostatic(hydro_path, hydro, x0, y0, external_restoring, external_damping)
     return mesh, hydro
 
 
 def write_cylinder(mesh_path, hydro_path, radius, draft, ntheta, nz, nr, graded=False, x0=0.0, y0=0.0, half_y=False,
-                   external_restoring=None, edge_power=None):
+                   external_restoring=None, edge_power=None, external_damping=None):
     """Write the mesh and hydrostatics of a cylinder. Returns the written mesh."""
     mesh, polygon = cylinder(radius, draft, ntheta, nz, nr, graded, edge_power)
-    return write_body(mesh, polygon, draft, x0, y0, half_y, mesh_path, hydro_path, external_restoring)[0]
+    return write_body(mesh, polygon, draft, x0, y0, half_y, mesh_path, hydro_path, external_restoring,
+                      external_damping=external_damping)[0]
 
 
 def write_rounded_cylinder(mesh_path, hydro_path, radius, draft, bilge_radius, ntheta, nz, narc, nr, external_restoring=None,

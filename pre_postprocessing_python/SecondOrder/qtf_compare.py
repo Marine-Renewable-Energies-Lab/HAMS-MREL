@@ -190,7 +190,7 @@ def compare_potential(results, path, nemoh, max_dw, exclude=None):
         return not exclude or not any(exclude[0] - 1e-9 <= w <= exclude[1] + 1e-9 for w in p)
     print("%-24s %-6s %18s %18s %18s" % ("case", "what", "F_x", "F_z", "M_y"))
     for case in sorted(os.path.basename(p) for p in glob.glob(os.path.join(results, "q_sharp_*"))):
-        motion = "fixed" if "_fixed_" in case else "free"
+        motion = "fixed" if "_fixed_" in case else "free_damped" if "_damp_" in case else "free"
         if motion not in ref:
             print("%-24s no reference for the %s body in %s" % (case, motion, path))
             continue

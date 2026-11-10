@@ -120,7 +120,7 @@ class Case:
     def __init__(self, name, group, question, hull, multiple, motion="fixed", velocity="differencing", waterline="extrapolate",
                  frequencies=WIDE_FREQUENCIES, headings=(0.0, 30.0), grn=4, isolv=1, irsp=0, mean_drift=1, tier="both",
                  solver="hams", where="snellius", control=None, qtf=0, nemoh_range=None, qtf_terms=None, qtf_max_dw=None,
-                 nemoh_contrib=1, edge_power=None, qtf_edge_weights=None, extra_options=None):
+                 nemoh_contrib=1, edge_power=None, qtf_edge_weights=None, extra_options=None, damping=None):
         self.name = name
         self.group = group
         self.question = question
@@ -147,6 +147,7 @@ class Case:
         self.edge_power = edge_power   # sharp hull only: power-law rows toward the bilge (make_mesh.cylinder), None for cosine
         self.qtf_edge_weights = qtf_edge_weights   # qtf_edge_weights of SecondOrder.in: None (not written), "on" or "off"
         self.extra_options = extra_options or {}   # further SecondOrder.in keys, written as given
+        self.damping = damping or {}   # sharp hull only: external linear damping {mode 1..6: value} (Hydrostatic.in)
 
 
 def in_tier(case, tier):
@@ -327,6 +328,14 @@ def qtf_cases():
 # -17.84, so the margins are 7.84 m = 4 x the median hull panel size 1.96 m)
 CS_FIXED_M1 = dict(cs_margin=7.84, cs_bottom_margin=7.84, cs_panel_size=1.96)
 
+# External linear damping of the damped free sharp hull, 5 % of the uncoupled critical damping 2 sqrt((M + A) C) in heave
+# and pitch (moments about the origin, as in Hydrostatic.in): M = 3.12145e6 kg, I55 = 1.81584e8 kg m^2, C33 = 3.06109e6
+# N/m, C55 = 7.60372e7 N m (Hydrostatic.in of the m1 case), A33 = 1.67200e6 kg at 0.80 rad/s (heave peak) and A55 =
+# 5.51253e7 kg m^2 at 0.77 rad/s (surge-pitch peak) from truncated_cylinder_reference.added_mass_damping. A choice that
+# damps the resonances well (about twice the radiation damping there), not a model of viscous damping [derived].
+# truncated_cylinder_reference reads it for its motion "free_damped".
+SHARP_DAMPING = {3: 3.8306e5, 5: 1.3416e7}
+
 # Powers of the edge-graded meshes of the QTF potential study (make_mesh.cylinder edge_power)
 EDGE_POWERS = (2.5, 3)
 
@@ -364,6 +373,11 @@ def qtf_potential_cases():
         chosen.append(Case("q_sharp_free_fixc_%s" % tag(m), "P", "5", "sharp", m, "free", "source", frequencies=grid,
                            headings=(0.0,), qtf=1, qtf_terms="body", qtf_max_dw=QTF_POTENTIAL_MAX_DW,
                            extra_options=CS_FIXED_M1))
+    # Damped free hull (SHARP_DAMPING; the reference's motion "free_damped"): m1 with the default C, m2, m3 with C fixed
+    for m in (1, 2, 3):
+        chosen.append(Case("q_sharp_free_damp_%s" % tag(m), "P", "5", "sharp", m, "free", "source", frequencies=grid,
+                           headings=(0.0,), qtf=1, qtf_terms="body", qtf_max_dw=QTF_POTENTIAL_MAX_DW,
+                           extra_options=CS_FIXED_M1 if m > 1 else None, damping=SHARP_DAMPING))
     return chosen
 
 
@@ -527,6 +541,8 @@ def write_hams_hull(case, path):
         params = scaled(fixtures.DRIFT_CYL_MESH, ("ntheta", "nz", "nr"), m)
         if case.edge_power is not None:
             params.update(graded=False, edge_power=case.edge_power)
+        if case.damping:
+            params.update(external_damping={j - 1: v for j, v in case.damping.items()})
         mesh = make_mesh.write_cylinder(mesh_path, hydro_path, **params)
     elif case.hull == "round":
         mesh = make_mesh.write_rounded_cylinder(mesh_path, hydro_path,

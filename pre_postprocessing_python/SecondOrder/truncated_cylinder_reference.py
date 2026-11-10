@@ -1257,7 +1257,7 @@ def _same_problem(name, cyl, omega, sol):
         raise ValueError("%s: a solution was solved for another cylinder or frequency" % name)
 
 
-def motions(cyl, omega, diff, rads, motion="free"):
+def motions(cyl, omega, diff, rads, motion="free", damping=None):
     """xi_j, j = 1, 3, 5: the complex motion amplitudes per unit wave amplitude, time factor exp(-i omega t), rotations in
     rad per m (L = 1), about the origin, from [-omega**2 (M + A) - i omega B + C] xi = X with the dimensional A, B
     (added_mass_damping times rho and rho omega), X = i omega rho int phi n dS of the diffraction solution diff and
@@ -1268,6 +1268,7 @@ def motions(cyl, omega, diff, rads, motion="free"):
         return {j: 0j for j in MOTION_MODES}
     if motion != "free":
         raise ValueError("motions: motion is 'fixed' or 'free', got %r" % (motion,))
+    # damping {j: B_jj}: external linear damping on the diagonal, as HAMS's External Linear Damping Matrix (-i omega B)
     _same_problem("motions", cyl, omega, diff)
     if set(rads) != set(MOTION_MODES):
         raise ValueError("motions: rads needs the modes 1, 3 and 5")
@@ -1277,6 +1278,8 @@ def motions(cyl, omega, diff, rads, motion="free"):
     mass, restoring = body_matrices(cyl)
     rho = make_mesh.RHO
     lhs = -omega ** 2 * (mass + rho * a) - 1j * omega * (rho * omega * b) + restoring
+    for j, value in (damping or {}).items():
+        lhs[j - 1, j - 1] -= 1j * omega * value
     xi = np.linalg.solve(lhs[np.ix_(_MODE_INDEX, _MODE_INDEX)], force)
     return {j: complex(x) for j, x in zip(MOTION_MODES, xi)}
 
@@ -2263,7 +2266,9 @@ def _first_order_case(cyl, omega, motion, n_modes, p_max, orders):
     diff, rads = _solved(cyl, float(omega), int(n_modes), _spec_key(p_max), _orders_key(orders))
     if motion == "fixed":
         return diff, motions(cyl, omega, diff, None, "fixed")
-    xi = motions(cyl, omega, diff, rads)
+    # "free_damped": the free body with drift_convergence.SHARP_DAMPING (the q_sharp_free_damp_* cases)
+    damping = drift_convergence.SHARP_DAMPING if motion == "free_damped" else None
+    xi = motions(cyl, omega, diff, rads, damping=damping)
     return total_solution(diff, rads, xi), xi
 
 
@@ -4161,7 +4166,8 @@ def main(argv=None):
     p_pot = sub.add_parser("qtf-potential", help="body-forcing part of the second-order potential of the difference QTF, "
                                                  "with the quadratic part (the reference of QTF_Indirect.11d)")
     p_pot.add_argument("--out", metavar="CSV", required=True)
-    p_pot.add_argument("--motion", choices=("fixed", "free", "both"), default="both")
+    p_pot.add_argument("--motion", choices=("fixed", "free", "free_damped", "both"), default="both",
+                       help="both: fixed and free; free_damped: the free body with drift_convergence.SHARP_DAMPING")
     p_pot.add_argument("--grid", choices=("nemoh", "hams"), default="nemoh",
                        help="nemoh: 0.40 ... 1.40 step 0.05 (QTF_FREQUENCIES); hams: step 0.01, the grid of the "
                             "--qtf-potential cases (QTF_FINE_FREQUENCIES)")
