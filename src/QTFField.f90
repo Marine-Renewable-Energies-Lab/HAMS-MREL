@@ -35,8 +35,8 @@ MODULE QTFField
    !   quad_eta = -(1/g) [ 1/2 sum_m P(u_im, u_im, u_jm, u_jm) + P(eta_i, -i omega_i u_i3, eta_j, -i omega_j u_j3) ]
    !   pot_p    = i rho Omega phi2,   pot_eta = (i Omega/g) phi2,
    ! with Omega = omega_i -/+ omega_j and phi2 the second-order incident potential of the pair (SecondOrderIncident). The
-   ! physical e^{-i Omega t} amplitude of two waves a_i /= a_j is 2 a_i a_j (quad + pot); for the sum with i = j it is
-   ! a_i^2 (quad + pot).
+   ! physical e^{-i Omega t} amplitude is, for i /= j, 2 a_i a_j* (quad + pot) for the difference and 2 a_i a_j (quad + pot)
+   ! for the sum; for i = j it is a_i^2 (quad + pot) for the sum and |a_i|^2 (quad + pot) for the mean (difference).
    !
    ! The store and the file (qtf_field = 1 in SecondOrder.in). At the end of each frequency of the QTF grid the driver gives
    ! qfield_keep the first-order potential and gradient of every heading at the field points (fields_green of
@@ -109,8 +109,8 @@ CONTAINS
       ! a surface (elevation) point and gets z = 0, z < -1e-6 is a pressure point. psize and body are those of the nearest
       ! hull panel (centroids of the full panel set, so symmetry images are included). Rejected, checked in point order,
       ! the first failing point giving msg: above the free surface; within one local panel size of a hull panel centroid
-      ! (a point has no panel size of its own, so the limit is the hull panel's size); inside a body, decided by the nearest centroid c as (x - c).n > 0, with n the
-      ! panel normal, which points into the body.
+      ! (a point has no panel size of its own, so the limit is the hull panel's size); inside a body, decided by the
+      ! nearest centroid c as (x - c).n > 0, with n the panel normal, which points into the body.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       REAL(8), INTENT(IN) :: xfp(:,:)
       TYPE(cs_points), INTENT(OUT) :: pts
@@ -317,7 +317,7 @@ CONTAINS
          'ControlFile.in'
       WRITE (unit, '(a)') '# OMITTED: the second-order diffracted and radiated waves. Near the bodies the omitted part is'// &
          ' not small;'
-      WRITE (unit, '(a)') '#          use these values for the far field and for checks only.'
+      WRITE (unit, '(a)') '#          they are small only where those waves are small against the incident wave.'
       WRITE (unit, '(a)') '# Included: the quadratic part (products of first-order quantities) and the second-order'// &
          ' incident wave.'
       WRITE (unit, '(a)') '# Columns: PER1 PER2 BETA1 BETA2 K IPT TYPE Mod Pha Re Im Re_quad Im_quad Re_inc Im_inc'

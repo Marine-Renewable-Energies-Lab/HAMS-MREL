@@ -3882,7 +3882,7 @@ contains
         call check(error, npoint == 6, "Expected 6 POINT lines")
         if (allocated(error)) return
 
-        call check(error, size(f, 1) == size(d, 1) + size(s, 1), "Rows: pairs of .10d and .10s times 6 points")
+        call check(error, size(f, 1) == (size(d, 1)/6 + size(s, 1)/6)*npoint, "Rows: pairs of .10d and .10s times the points")
         if (allocated(error)) return
         call check(error, size(d, 1)/6 == 7*4 .and. size(s, 1)/6 == 9*4, "qtf_field: 7 + 9 frequency pairs and 4 heading pairs")
         if (allocated(error)) return
@@ -3943,6 +3943,8 @@ contains
             call check(error, q > 0, "A field row has no partner")
             if (allocated(error)) return
             scale = maxval(f(:,8), mask=f(:,6) == f(p,6))
+            call check(error, scale > 0d0, "qtf_field_symmetries: a point has only zero moduli")
+            if (allocated(error)) return
             sgn = merge(-1d0, 1d0, f(p,5) == 1d0)
             worst = max(worst, (abs(f(q,10) - f(p,10)) + abs(f(q,11) - sgn*f(p,11)))/scale)
         end do
@@ -4042,6 +4044,8 @@ contains
                        "qtf_field_half and qtf_field_full: the rows are not the same pairs")
             if (allocated(error)) return
             scale = maxval(f(:,8), mask=f(:,6) == f(r,6))
+            call check(error, scale > 0d0, "qtf_field_half_matches_full: a point has only zero moduli")
+            if (allocated(error)) return
             worst = max(worst, (abs(h(r,10) - f(r,10)) + abs(h(r,11) - f(r,11)))/scale)
         end do
         call report("qtf_field_half_matches_full", worst)
@@ -4085,6 +4089,8 @@ contains
             v1 = cmplx(m(r,12,1), m(r,13,1), 8)
             v2 = cmplx(m(r,12,2), m(r,13,2), 8)
             v3 = cmplx(m(r,12,3), m(r,13,3), 8)
+            call check(error, scale > 0d0, "qtf_field_converges: a point has only zero values")
+            if (allocated(error)) return
             d12 = abs(v2 - v1)/scale
             d23 = abs(v3 - v2)/scale
             max12 = max(max12, d12)
@@ -4129,6 +4135,9 @@ contains
 
         inquire (file=output_dir("qtf_round")//qtf_field_file, exist=exists)
         call check(error, .not. exists, "A run without qtf_field wrote QTF_FieldPartial.txt")
+        if (allocated(error)) return
+        inquire (file=output_dir("qtf_round")//qtf_diff_file, exist=exists)
+        call check(error, exists, "qtf_round did not run: no QTF_Quadratic.10d")
     end subroutine qtf_field_off
 
     subroutine check_same_file(path_a, path_b, error)

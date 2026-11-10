@@ -53,7 +53,7 @@ QTF_BODY_FREQUENCIES = (0.95, 1.10)
 QTF_DISTANT_FREQUENCIES = (0.80, 1.00)
 QTF_DISTANT_SEPARATION = 2000.0
 # Field points of QTF_FieldPartial.txt on the rounded hull (radius 10, draft 10): free-surface points and points below z = 0,
-# on the weather side, the lee side, ahead and astern, and two with y < 0 for the half mesh
+# on the weather side, the lee side, ahead and astern, and one with y < 0 and two on y = 0 for the half mesh
 QTF_FIELD_POINTS = ((30.0, 0.0, 0.0), (0.0, 40.0, 0.0), (-50.0, 20.0, 0.0), (30.0, 0.0, -5.0), (0.0, -40.0, -10.0),
                     (60.0, 60.0, -20.0))
 # A hull of radius and draft 0.05 m in 20 m of water at 0.9 rad/s has ka of about 0.004: the field is that of the incident

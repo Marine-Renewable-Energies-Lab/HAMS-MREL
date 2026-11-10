@@ -344,7 +344,8 @@ subroutine test_sum_continuity(error)
 
   call make_pair(w, 20d0, w, 20d0, h, ref, KERNEL_SUM)
   call make_pair(w, 20d0, w + 1d-5, 20d0, h, inc, KERNEL_SUM)
-  call check(error, abs(inc%coef - ref%coef) <= 1d-4 * abs(ref%coef), "sum-frequency coefficient is not continuous at equal frequency")
+  call check(error, abs(inc%coef - ref%coef) <= 1d-4 * abs(ref%coef), &
+             "sum-frequency coefficient is not continuous at equal frequency")
 end subroutine test_sum_continuity
 
 end module test_second_order_incident

@@ -143,6 +143,7 @@ subroutine test_mean_pressure(error)
   expected = -0.25d0 * rho * sum(abs(u1)**2)
   call check(error, abs(quad - expected) <= 1d-14 * abs(expected), "mean pressure of one wave")
   if (allocated(error)) return
+  ! Exact by construction: the difference-kernel diagonal sets coef = 0 and Omega = 0
   call check(error, abs(pot) == 0d0, "potential part on the diagonal is not zero")
   if (allocated(error)) return
 
@@ -151,6 +152,7 @@ subroutine test_mean_pressure(error)
   expected = -rho * g * k * cosh(2d0 * k * (x(3) + h)) / (2d0 * sinh(2d0 * k * h))
   call check(error, abs(quad - expected) <= 1d-12 * abs(expected), "mean pressure of the incident wave")
   if (allocated(error)) return
+  ! Exact by construction: the difference-kernel diagonal sets coef = 0 and Omega = 0
   call check(error, abs(pot) == 0d0, "incident mean pressure has a potential part")
 end subroutine test_mean_pressure
 

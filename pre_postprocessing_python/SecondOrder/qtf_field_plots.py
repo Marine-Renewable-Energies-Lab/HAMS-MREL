@@ -117,7 +117,7 @@ def plot(path, out, kernel="both", kind="both"):
             _panel(fig, axes[1], x, y, pha, "phase (deg)", "twilight", -180.0, 180.0, points_only=True)
             axes[0].set_title("modulus")
             axes[1].set_title("phase at the points (not interpolated)")
-            fig.suptitle("%s\n%s, %s%s, T1 = %.4g s, T2 = %.4g s, beta1 = %g, beta2 = %g deg"
+            fig.suptitle("%s\n%s, %s%s, PER1 = %.4g, PER2 = %.4g, beta1 = %g, beta2 = %g deg"
                          % (TITLE, KERNEL_LABEL[kern], kd, " at z = %g m" % z if typ == 1 else "",
                             per1, per2, beta1, beta2), fontsize=10)
             fig.tight_layout(rect=(0, 0, 1, 0.9))
@@ -134,7 +134,7 @@ def grid(x, y, z=0.0, exclude=()):
     ys = np.linspace(y[0], y[1], int(y[2]))
     pts = [(a, b) for a in xs for b in ys
            if not any((a - xc) ** 2 + (b - yc) ** 2 <= r * r for xc, yc, r in exclude)]
-    return ["Number_of_field_points %d" % len(pts)] + ["%.6g %.6g %.6g" % (a, b, z) for a, b in pts]
+    return ["    Number_of_field_points     %d" % len(pts)] + ["%.6g %.6g %.6g" % (a, b, z) for a, b in pts]
 
 
 # ------------------------------------------------------------------------------------------------------------- check
@@ -195,9 +195,9 @@ def check():
         test("duplicates -> markers", _markers_only(np.array([0., 1, 0, 1, 0]), np.array([0., 0, 1, 1, 0]),
                                                     np.arange(5.)) and not _markers_only(
             np.array([0., 1, 0, 1]), np.array([0., 0, 1, 1]), np.arange(4.)))
-        test("grid count", g[0] == "Number_of_field_points 16" and len(g) == 17)
+        test("grid count", int(g[0][27:43]) == 16 and len(g) == 17)
         g = grid((0, 30, 4), (0, 30, 4), exclude=[(0.0, 0.0, 12.0)])
-        test("grid with exclusion", g[0] == "Number_of_field_points 13" and len(g) == 14, g[0])
+        test("grid with exclusion", int(g[0][27:43]) == 13 and len(g) == 14, g[0])
     return 1 if failed else 0
 
 
