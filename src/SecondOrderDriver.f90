@@ -49,6 +49,7 @@ MODULE SecondOrderDriver
                             DS_MULTI_COMB, DXYZ_MULTI_COMB, NCN_MULTI_COMB, NCON_MULTI_COMB, NELEM_MULTI, NTND_MULTI, &
                             PNSZ_MULTI_COMB, XYZ_GLOBAL_MULTI_COMB, XYZ_GLOBAL_MULTI_COMB_P
    USE Inerfs_mod, ONLY: NELEM_PE
+   USE FieldOutput_mod, ONLY: NFP, XFP
    USE Potentials_mod, ONLY: MXPOT, MXPOT_MULTI_COMB
    USE IO, ONLY: CreateDirectory
    USE ImplementSubs, ONLY: InputOmega
@@ -66,6 +67,7 @@ MODULE SecondOrderDriver
    USE SecondOrderOutput, ONLY: write_drift_row, write_terms_row
    USE QTFDriver, ONLY: qtf_init, qtf_keep, qtf_finish, qtf_stored_mb, qtf_keep_psi, qtf_psi_index, qtf_psi_count, &
                         qtf_radiation_omegas
+   USE QTFField, ONLY: build_field_points, qfield_init, qfield_keep, qfield_finish, qfield_stored_mb, FIELD_FD_STEP
    IMPLICIT NONE
    PRIVATE
 
@@ -101,6 +103,8 @@ MODULE SecondOrderDriver
    LOGICAL :: body_terms = .FALSE.                     ! psi is kept at the difference frequencies
    COMPLEX(8), ALLOCATABLE :: psi_main(:,:)            ! (n, 6*nbody), psi of the current main-grid frequency
    INTEGER :: unit_psi = 0                             ! QTF_PsiCheck.txt (write_terms >= 1)
+   ! Partial second-order field at the field points of ControlFile.in (qtf_field = 1)
+   TYPE(cs_points) :: fp_pts                           ! the field points, kind CS_FREE
 
 CONTAINS
 
@@ -200,6 +204,7 @@ CONTAINS
             CALL qtf_init(opts, nqtf, WVHD(1:NBETA), geom%nwl, mesh%n, mesh%nbody, outputdir)
          END IF
       END IF
+      IF (opts%qtf_field == 1) CALL field_setup(opts, nqtf, outputdir)
       IF ((opts%do_near .OR. opts%do_control) .AND. opts%write_terms >= 1) THEN
          OPEN (NEWUNIT=unit_terms, FILE=outputdir//'/Wamit_format/MeanDriftTerms.txt', STATUS='REPLACE', ACTION='WRITE')
          WRITE (unit_terms, '(a)') '# PER BETA1 BETA2 body I term Re Im, scaled and conjugated as MeanDriftPressure.9'
@@ -235,6 +240,32 @@ CONTAINS
          END IF
       END IF
    END SUBROUTINE common_setup
+
+   SUBROUTINE field_setup(opts, nqtf, outputdir)
+      ! The field points of ControlFile.in as cs_points, and the store of the partial second-order field. A point above the
+      ! free surface, on a hull or inside a body stops the run, with the point and the body in the message. Call after the
+      ! QTF set-up, with nqtf the number of frequencies of the QTF grid.
+      TYPE(so_options), INTENT(IN) :: opts
+      INTEGER, INTENT(IN) :: nqtf
+      CHARACTER(LEN=*), INTENT(IN) :: outputdir
+      CHARACTER(LEN=:), ALLOCATABLE :: msg
+      LOGICAL, ALLOCATABLE :: surface(:)
+      LOGICAL :: ok
+
+      IF (NFP < 1) THEN
+         WRITE (*, '(a)') ' qtf_field = 1 needs field points: Number_of_field_points in ControlFile.in'
+         ERROR STOP 1
+      END IF
+      CALL build_field_points(mesh, TRANSPOSE(XFP), fp_pts, surface, ok, msg)
+      IF (.NOT. ok) THEN
+         WRITE (*, '(a,a)') ' QTF field points: ', msg
+         ERROR STOP 1
+      END IF
+      WRITE (*, '(a,I0,a,I0,a,I0,a,F10.1,a)') ' QTF field points: ', COUNT(.NOT. surface), ' pressure points and ', &
+         COUNT(surface), ' elevation points, ', nqtf, ' frequencies; the store takes', &
+         qfield_stored_mb(fp_pts%n, nqtf, NBETA), ' MB'
+      CALL qfield_init(opts, nqtf, WVHD(1:NBETA), fp_pts, surface, outputdir)
+   END SUBROUTINE field_setup
 
    SUBROUTINE body_terms_setup(opts, nqtf, outputdir)
       ! The QTF store with psi at the difference frequencies of the main grid, and QTF_PsiCheck.txt (write_terms >= 1).
@@ -351,10 +382,11 @@ CONTAINS
    END SUBROUTINE so_after_radiation_only
 
    LOGICAL FUNCTION keep_all_headings(opts)
-      ! The states of every heading of a frequency are kept: the pairs of mean_drift = 2, and the fields of the control surface
+      ! The states of every heading of a frequency are kept: the pairs of mean_drift = 2, the fields of the control surface
+      ! and those at the field points of qtf_field
       TYPE(so_options), INTENT(IN) :: opts
 
-      keep_all_headings = opts%mean_drift == 2 .OR. opts%do_control
+      keep_all_headings = opts%mean_drift == 2 .OR. opts%do_control .OR. opts%qtf_field == 1
    END FUNCTION keep_all_headings
 
    SUBROUTINE control_setup(opts, inputdir, outputdir)
@@ -549,7 +581,30 @@ CONTAINS
       IF (is_limit_frequency()) RETURN
       IF (opts%mean_drift == 2) CALL heading_pairs(opts)
       IF (opts%do_control) CALL control_frequency(opts)
+      IF (opts%qtf_field == 1) CALL field_frequency()
    END SUBROUTINE so_end_frequency
+
+   SUBROUTINE field_frequency()
+      ! The first-order potential and gradient of every heading at the field points, kept for the partial second-order field.
+      ! The states are at the current global frequency, which fields_green reads. The route is always the Green function with
+      ! the central-difference step FIELD_FD_STEP of the nearest hull panel, whatever velocity_method is. Above nu*h = 50 the
+      ! field mode of FINGREEN3D keeps the Limes acceleration of PIDCOCK, as on the control surface, so the same warning.
+      TYPE(cs_fields), ALLOCATABLE :: fields(:)
+      REAL(8), PARAMETER :: LIMES_NUH = 50D0
+      INTEGER(8) :: t0, t1, rate
+
+      IF (H >= 0D0 .AND. states(1)%nu*H > LIMES_NUH) THEN
+         WRITE (*, '(a,F10.5,a,F8.2,a)') ' QTF field points warning: omega', W1, ', nu*h =', states(1)%nu*H, &
+            ' > 50: the finite-depth field values may scatter (the Green function series still uses Limes there).'
+      END IF
+      ALLOCATE (fields(SIZE(states)))
+      CALL SYSTEM_CLOCK(t0, rate)
+      CALL fields_green(mesh, fp_pts, states, FIELD_FD_STEP, multi_arrays, fields)
+      CALL SYSTEM_CLOCK(t1)
+      WRITE (*, '(a,F10.5,a,F10.2,a,I0,a,I0,a)') ' QTF field points: omega', W1, ',', REAL(t1 - t0, 8)/REAL(rate, 8), &
+         ' s for ', fp_pts%n, ' points and ', SIZE(states), ' headings'
+      CALL qfield_keep(states, fields, OUFR)
+   END SUBROUTINE field_frequency
 
    SUBROUTINE heading_pairs(opts)
       ! The far-field and near-field loads of every heading pair of the frequency
@@ -663,6 +718,7 @@ CONTAINS
       ! Writes the QTFs, closes the result files and logs the velocity method: what differencing could not do, or the time of
       ! the source solve. Call after the frequency loop.
       CALL qtf_finish(mesh, geom, REFL)
+      CALL qfield_finish(REFL)
       IF (n_source_builds > 0) THEN
          WRITE (*, '(a,F10.2,a,I0,a,F10.2,a,I0,a)') ' Mean drift source solve: ', source_build_seconds, &
             ' s to assemble and factorize at ', n_source_builds, ' frequencies, ', source_solve_seconds, &

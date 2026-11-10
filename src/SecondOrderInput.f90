@@ -106,6 +106,12 @@ CONTAINS
       ELSE IF (opts%qtf > 0 .AND. opts%mean_drift == 0) THEN
          ok = .FALSE.
          msg = 'qtf needs mean_drift = 1 or 2.'
+      ELSE IF (opts%qtf_field < 0 .OR. opts%qtf_field > 1) THEN
+         ok = .FALSE.
+         msg = 'qtf_field must be 0 or 1 in SecondOrder.in.'
+      ELSE IF (opts%qtf_field == 1 .AND. opts%qtf == 0) THEN
+         ok = .FALSE.
+         msg = 'qtf_field needs qtf = 1, 2 or 3 in SecondOrder.in.'
       ELSE IF (opts%qtf_terms == QTF_TERMS_BODY .AND. opts%qtf == 2) THEN
          ok = .FALSE.
          msg = 'qtf_terms = body needs the difference QTF (qtf = 1 or 3); sum-frequency body forcing needs the free-surface'// &
@@ -180,6 +186,8 @@ CONTAINS
          READ(value, *, IOSTAT=ios) opts%cs_fs_rows
       CASE ('qtf')
          READ(value, *, IOSTAT=ios) opts%qtf
+      CASE ('qtf_field')
+         READ(value, *, IOSTAT=ios) opts%qtf_field
       CASE ('qtf_max_dw')
          READ(value, *, IOSTAT=ios) opts%qtf_max_dw
       CASE ('qtf_terms')

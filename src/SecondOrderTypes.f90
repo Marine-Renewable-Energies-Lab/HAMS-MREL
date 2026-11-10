@@ -56,6 +56,7 @@ MODULE SecondOrderTypes
       INTEGER :: qtf = 0                 ! 0 off, 1 difference frequency, 2 sum frequency, 3 both
       REAL(8) :: qtf_max_dw = 0D0        ! rad/s, largest |omega_i - omega_j| of QTF_Quadratic.10d; 0: all pairs
       INTEGER :: qtf_terms = QTF_TERMS_QUADRATIC
+      INTEGER :: qtf_field = 0           ! 1: QTF_FieldPartial.txt, the partial second-order field at the field points
    END TYPE so_options
 
    TYPE :: panel_mesh

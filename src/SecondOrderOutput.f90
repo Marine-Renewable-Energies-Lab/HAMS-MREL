@@ -28,7 +28,7 @@ MODULE SecondOrderOutput
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: write_drift_row, write_terms_row, write_qtf_row, write_qtf_terms_row
+   PUBLIC :: write_drift_row, write_terms_row, write_qtf_row, write_qtf_terms_row, write_field_row
 
 CONTAINS
 
@@ -95,6 +95,39 @@ CONTAINS
       WRITE (unit, '(4ES14.6,I6,*(ES24.15))') oufr1, oufr2, beta1_deg, beta2_deg, index, &
          (REAL(scaled(t), 8), AIMAG(scaled(t)), t = 1, SIZE(values))
    END SUBROUTINE write_qtf_terms_row
+
+   SUBROUTINE write_field_row(unit, oufr1, oufr2, beta1_deg, beta2_deg, kernel, ipt, surface, quad, pot, refl)
+      ! Writes one row PER1 PER2 BETA1 BETA2 K IPT TYPE Mod Pha Re Im Re_quad Im_quad Re_inc Im_inc of QTF_FieldPartial.txt.
+      ! quad and pot are the quadratic part and the second-order incident part, per unit amplitude pair, e^{-i omega t}, of
+      ! the pressure (surface false, TYPE 1) or the elevation (surface true, TYPE 2). The row holds their sum and each part,
+      ! conjugated, the pressure scaled by refl/(rho g) and the elevation by refl, so that they are pressure/(rho g A^2/L)
+      ! and elevation/(A^2/L). kernel is 1 for the difference frequency and 2 for the sum frequency; oufr1, beta1 belong to
+      ! the first component of the pair, oufr2, beta2 to the second.
+      INTEGER, INTENT(IN) :: unit, kernel, ipt
+      REAL(8), INTENT(IN) :: oufr1, oufr2, beta1_deg, beta2_deg, refl
+      LOGICAL, INTENT(IN) :: surface
+      COMPLEX(8), INTENT(IN) :: quad, pot
+      REAL(8), PARAMETER :: RAD_TO_DEG = 180D0/3.141592653589793D0
+      COMPLEX(8) :: total, q, p
+
+      q = field_value(quad, refl, surface)
+      p = field_value(pot, refl, surface)
+      total = q + p
+      WRITE (unit, '(4ES14.6,3I6,8ES14.6)') oufr1, oufr2, beta1_deg, beta2_deg, kernel, ipt, MERGE(2, 1, surface), ABS(total), &
+         ATAN2(AIMAG(total), REAL(total, 8))*RAD_TO_DEG, REAL(total, 8), AIMAG(total), REAL(q, 8), AIMAG(q), REAL(p, 8), AIMAG(p)
+   END SUBROUTINE write_field_row
+
+   PURE COMPLEX(8) FUNCTION field_value(value, refl, surface)
+      COMPLEX(8), INTENT(IN) :: value
+      REAL(8), INTENT(IN) :: refl
+      LOGICAL, INTENT(IN) :: surface
+
+      IF (surface) THEN
+         field_value = CONJG(value)*refl
+      ELSE
+         field_value = CONJG(value)*refl/(RHO*G)
+      END IF
+   END FUNCTION field_value
 
    PURE COMPLEX(8) FUNCTION output_value(value, refl, moment)
       COMPLEX(8), INTENT(IN) :: value
