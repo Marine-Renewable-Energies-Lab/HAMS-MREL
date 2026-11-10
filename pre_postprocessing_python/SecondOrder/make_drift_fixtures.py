@@ -445,9 +445,11 @@ def write_qtf_sharp_fixtures(data, body):
     with the exact reference of truncated_cylinder_reference.py. On CONTROL_THREADS threads: the fields on C and F are
     evaluated at each frequency and each difference frequency."""
     # C and F at 3 m panels (default: the median hull panel, 1474 points): B2 within 1% of the default, half the run time.
-    # The control case has the default edge weights (qtf_edge_weights = on)
+    # The control case has the default (qtf_edge_weights = off); qtf_sharp_b2_edges is the same with the weights on
     control = {key: value for key, value in body.items() if key != "qtf_edge_weights"}
     for name, base, b2 in (("qtf_sharp_b2_control", control, dict(qtf_b2="control", cs_panel_size=3.0)),
+                           ("qtf_sharp_b2_edges", control, dict(qtf_b2="control", cs_panel_size=3.0,
+                                                                qtf_edge_weights="on")),
                            ("qtf_sharp_b2_body", body, dict(qtf_b2="body"))):
         target = case_dir(data, name)
         copy_inputs(data, "drift_cyl", target, ("HullMesh.pnl", "Hydrostatic.in"))
@@ -455,7 +457,8 @@ def write_qtf_sharp_fixtures(data, body):
                       threads=CONTROL_THREADS)
         write_second_order(os.path.join(target, "SecondOrder.in"),
                            **dict(base, velocity_method="source", qtf_max_dw=0.3, **b2))
-    # Routes of qtf_b2 = control: psi of Omega = 0.23 from a radiation-only solve, from the main grid, and on the half mesh
+    # Routes of qtf_b2 = control: psi of Omega = 0.23 from a radiation-only solve, from the main grid, and on the half mesh,
+    # with the edge weights on (so that the half mesh checks them too)
     for name, hull, frequencies, max_dw in (("qtf_b2c_rad", "drift_cyl", QTF_B2C_FREQUENCIES, 0.3),
                                             ("qtf_b2c_main", "drift_cyl", QTF_B2C_MAIN_FREQUENCIES, 0.23),
                                             ("qtf_b2c_half", "drift_cyl_half", QTF_B2C_FREQUENCIES, 0.3)):
@@ -465,7 +468,7 @@ def write_qtf_sharp_fixtures(data, body):
                       threads=CONTROL_THREADS)
         write_second_order(os.path.join(target, "SecondOrder.in"),
                            **dict(control, velocity_method="source", qtf_max_dw=max_dw, qtf_b2="control",
-                                  cs_panel_size=6.0))
+                                  cs_panel_size=6.0, qtf_edge_weights="on"))
 
 
 def copy_inputs(data, source, target, files):

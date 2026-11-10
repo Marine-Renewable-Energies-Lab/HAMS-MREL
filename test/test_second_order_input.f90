@@ -549,7 +549,7 @@ subroutine test_qtf_b2_key(error)
   call remove_directory(root)
 end subroutine test_qtf_b2_key
 
-!> qtf_edge_weights is on by default and reads on and off; qtf_edge_angle is 45 by default and must lie in (0, 180). Each
+!> qtf_edge_weights is off by default and reads on and off; qtf_edge_angle is 45 by default and must lie in (0, 180). Each
 !> key, and qtf_b2, is marked as given, for the note in the log when it has no effect
 subroutine test_qtf_edge_keys(error)
   type(error_type), allocatable, intent(out) :: error
@@ -565,8 +565,8 @@ subroutine test_qtf_edge_keys(error)
   call read_second_order_options(root, opts, ok, msg)
   call check(error, ok, "read failed: "//trim(msg))
   if (allocated(error)) return
-  call check(error, opts%qtf_edge_weights .and. opts%qtf_edge_angle == 45d0 .and. .not. opts%qtf_edge_given &
-             .and. .not. opts%qtf_b2_given, "defaults: on, 45 degrees, not given")
+  call check(error, .not. opts%qtf_edge_weights .and. opts%qtf_edge_angle == 45d0 .and. .not. opts%qtf_edge_given &
+             .and. .not. opts%qtf_b2_given, "defaults: off, 45 degrees, not given")
   if (allocated(error)) return
   call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 1", &
                           "qtf_terms = body", "QTF_Edge_Weights = Off", "qtf_edge_angle = 30", "qtf_b2 = body"])

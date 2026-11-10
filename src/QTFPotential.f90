@@ -71,7 +71,7 @@ MODULE QTFPotential
    ! bottom (a C that reaches the sea bed leaves the sea bed between body and C as a boundary of D, not implemented).
    ! rot and line of the Stokes form stay on the hull.
    !
-   ! Sharp edges (qtf_edge_weights = on). The hull term is linear in u, which goes like rho^p near an edge (p = -1/3 at a
+   ! Sharp edges (qtf_edge_weights = on; off by default, see SharpEdge). The hull term is linear in u, which goes like rho^p near an edge (p = -1/3 at a
    ! 90 deg edge; SharpEdge states the corner-flow result). Its one-point rule then misses the singular part on the panels
    ! next to the edge, so b2_body_term takes the panel weights of SharpEdge (edge_w) that make the rule exact for rho^p.
    ! The rot piece psi n.(alpha x u) is linear in u too but is not weighted: on the sharp-cylinder fixture against the

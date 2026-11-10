@@ -185,12 +185,12 @@ module test_integration_drift
     ! Every second frequency of the grid: psi is solved at each Omega, so the common pairs are the same computation
     real(8), parameter :: pot_spacing_limit = 1d-10
     ! B2 of the sharp free cylinder (qtf_sharp_b2_control, 448 panels, qtf_b2 = control, C and F at 3 m panels) against the
-    ! exact reference, as max over the pairs of |HAMS - exact| / max |exact|, for F_x, F_z, M_y. Without edge weights 15.1%,
-    ! 30.0%, 11.9% measured (11.8% M_y with C and F at the default panel size; the hull form of the same run: 13.8%, 33.1%,
-    ! 95.4%), and the limits were 1.3x those. With the edge weights of the hull term (qtf_edge_weights = on, the default)
-    ! 17.2%, 37.4%, 11.1%: F_x and F_z are worse, so their limits stay where they were (no loosening); M_y is better and its
-    ! limit is 1.3x the new value
-    real(8), parameter :: b2_control_limits(3) = [0.20d0, 0.40d0, 0.15d0]
+    ! exact reference, as max over the pairs of |HAMS - exact| / max |exact|, for F_x, F_z, M_y: 15.1%, 30.0%, 11.9% measured
+    ! (11.8% M_y with C and F at the default panel size; the hull form of the same run: 13.8%, 33.1%, 95.4%). 1.3x measured
+    real(8), parameter :: b2_control_limits(3) = [0.20d0, 0.40d0, 0.16d0]
+    ! The same case with qtf_edge_weights = on (qtf_sharp_b2_edges), which keeps the option exercised: 17.2%, 37.4%, 11.1%
+    ! measured (worse than off in F_x and F_z, hence off by default). 1.3x measured
+    real(8), parameter :: b2_edges_limits(3) = [0.23d0, 0.49d0, 0.15d0]
     ! qtf_b2 = control at (0.47, 0.70) with psi of Omega = 0.23 from the main grid against a radiation-only solve, over
     ! max |T_pot| of the rows of forces or of moments: the same solve at the same frequency, 3.1e-15 measured (rounding).
     ! A fixed 1e-12
@@ -631,6 +631,8 @@ contains
                                                "CSMesh_1.pnl"], error)
         if (allocated(error)) return
         call run_case("qtf_sharp_b2_body", [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file], error)
+        if (allocated(error)) return
+        call run_case("qtf_sharp_b2_edges", [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file], error)
     end subroutine run_qtf_sharp_b2
 
     subroutine run_control_cyl(error)
@@ -3801,21 +3803,28 @@ contains
             (-0.02418447834d0, -0.7044084574d0), (-1.80851198d0, 0.195575648d0), (-0.5452006385d0, -10.02554505d0), &
             (-12.68439896d0, 13.42905143d0), (2.437011616d0, 7.401809966d0), (-62.12791973d0, 49.44764599d0), &
             (-9.32633549d0, 6.262764817d0), (1.352408003d0, 1.891009155d0), (-3.738635412d0, 2.171174783d0)], [3, 3])
-        real(8) :: ec(3), eb(3)
+        real(8) :: ec(3), eb(3), ee(3)
         integer :: q
 
         call check_no_bad_numbers(output_dir("qtf_sharp_b2_control")//qtf_indirect_file, error)
+        if (allocated(error)) return
+        call check_no_bad_numbers(output_dir("qtf_sharp_b2_edges")//qtf_indirect_file, error)
         if (allocated(error)) return
         call b2_errors("qtf_sharp_b2_control", ec, error)
         if (allocated(error)) return
         call b2_errors("qtf_sharp_b2_body", eb, error)
         if (allocated(error)) return
+        call b2_errors("qtf_sharp_b2_edges", ee, error)
+        if (allocated(error)) return
         do q = 1, 3
             call report("qtf_b2_control_sharp B2 "//label(q)//" control", ec(q))
+            call report("qtf_b2_control_sharp B2 "//label(q)//" edges  ", ee(q))
             call report("qtf_b2_control_sharp B2 "//label(q)//" hull   ", eb(q))
         end do
         do q = 1, 3
             call check_below(error, "qtf_b2_control_sharp B2 "//label(q), ec(q), b2_control_limits(q))
+            if (allocated(error)) return
+            call check_below(error, "qtf_b2_control_sharp B2 edges "//label(q), ee(q), b2_edges_limits(q))
             if (allocated(error)) return
         end do
 
@@ -3936,8 +3945,9 @@ contains
         call check_below(error, label, worst, limit)
     end subroutine compare_terms
 
-    !> The log of a qtf_b2 = control run gives the sharp edges found and the panels weighted (the bottom edge of the cylinder,
-    !> the same on the half mesh); a run that sets qtf_edge_weights or qtf_b2 where they have no effect says so, once
+    !> The log of a qtf_b2 = control run with qtf_edge_weights = on gives the sharp edges found and the panels weighted (the
+    !> bottom edge of the cylinder, the same on the half mesh), and a run with the default (off) does not; a run that sets
+    !> qtf_edge_weights or qtf_b2 where they have no effect says so, once
     subroutine qtf_b2_control_log(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=*), parameter :: edges = "QTF B2 edge weights: body 1, 1 sharp edges (32 panel edges), 64 panels weighted"
@@ -3946,8 +3956,11 @@ contains
         character(len=12), parameter :: control(3) = [character(len=12) :: "qtf_b2c_rad", "qtf_b2c_half", "qtf_b2c_main"]
         integer :: c
 
-        call check(error, count_log_lines(get_running_exe_path()//"qtf_sharp_b2_control.log", edges), 1, &
-                   "edge weights line in the log of qtf_sharp_b2_control")
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_sharp_b2_edges.log", edges), 1, &
+                   "edge weights line in the log of qtf_sharp_b2_edges")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_sharp_b2_control.log", edges), 0, &
+                   "edge weights line in the log of qtf_sharp_b2_control (default off)")
         if (allocated(error)) return
         do c = 1, size(control)
             call check(error, count_log_lines(get_running_exe_path()//trim(control(c))//".log", edges), 1, &

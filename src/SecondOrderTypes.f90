@@ -60,8 +60,9 @@ MODULE SecondOrderTypes
       INTEGER :: qtf_terms = QTF_TERMS_QUADRATIC
       INTEGER :: qtf_b2 = QTF_B2_CONTROL ! used with qtf_terms = body only
       ! Panel weights of the B2 hull term at sharp edges (SharpEdge), with qtf_b2 = control; edges where the normals differ
-      ! by more than qtf_edge_angle degrees
-      LOGICAL :: qtf_edge_weights = .TRUE.
+      ! by more than qtf_edge_angle degrees. Off by default: on the sharp-cylinder fixture they moved B2 F_x and F_z away
+      ! from the exact reference (15.1% to 17.2%, 30.0% to 37.4%) for an M_y gain of 11.9% to 11.1%
+      LOGICAL :: qtf_edge_weights = .FALSE.
       REAL(8) :: qtf_edge_angle = 45D0
       ! The keys were in SecondOrder.in, so that the log can say when they have no effect
       LOGICAL :: qtf_b2_given = .FALSE., qtf_edge_given = .FALSE.

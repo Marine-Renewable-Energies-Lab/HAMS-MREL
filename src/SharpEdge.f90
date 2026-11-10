@@ -43,7 +43,9 @@ MODULE SharpEdge
    ! symmetry image join across the plane), whose normals differ by more than edge_deg. A waterline segment belongs to one
    ! panel and is not an edge; an edge in a symmetry plane is one if its normals differ by the angle, like any other.
    ! Only convex edges (alpha_f > pi, p < 0) are weighted: at a concave edge the velocity is not singular.
-   ! f multiplies the panel area in the hull term of B2 (b2_body_term in QTFPotential).
+   ! f multiplies the panel area in the hull term of B2 (b2_body_term in QTFPotential). qtf_edge_weights is off by default:
+   ! the constant-panel velocities at the first-row centres do not carry the exact rho^p value, so the weight
+   ! over-corrects (sharp-cylinder fixture: B2 F_x 15.1% to 17.2%, F_z 30.0% to 37.4%, M_y 11.9% to 11.1% of the exact).
 
    USE SecondOrderTypes, ONLY: panel_mesh
    USE SurfaceGeometry, ONLY: body_sizes, merge_nodes, sort_index

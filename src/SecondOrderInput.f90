@@ -202,7 +202,7 @@ CONTAINS
          CALL choose(value, 'body', 'control', opts%qtf_b2, ios)
          opts%qtf_b2_given = .TRUE.
       CASE ('qtf_edge_weights')
-         ! Read always, used with qtf_terms = body and qtf_b2 = control only
+         ! Read always, used with qtf_terms = body and qtf_b2 = control only; off by default (SecondOrderTypes)
          IF (value == 'on') THEN
             opts%qtf_edge_weights = .TRUE.
          ELSE IF (value == 'off') THEN

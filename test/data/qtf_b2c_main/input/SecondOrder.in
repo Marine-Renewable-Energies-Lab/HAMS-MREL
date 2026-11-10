@@ -9,3 +9,4 @@ qtf_b2 = control
 velocity_method = source
 qtf_max_dw = 0.23
 cs_panel_size = 6.0
+qtf_edge_weights = on
