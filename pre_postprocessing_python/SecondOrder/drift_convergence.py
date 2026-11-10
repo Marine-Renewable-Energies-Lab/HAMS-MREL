@@ -120,7 +120,7 @@ class Case:
     def __init__(self, name, group, question, hull, multiple, motion="fixed", velocity="differencing", waterline="extrapolate",
                  frequencies=WIDE_FREQUENCIES, headings=(0.0, 30.0), grn=4, isolv=1, irsp=0, mean_drift=1, tier="both",
                  solver="hams", where="snellius", control=None, qtf=0, nemoh_range=None, qtf_terms=None, qtf_max_dw=None,
-                 nemoh_contrib=1, edge_power=None, qtf_edge_weights=None):
+                 nemoh_contrib=1, edge_power=None, qtf_edge_weights=None, extra_options=None):
         self.name = name
         self.group = group
         self.question = question
@@ -146,6 +146,7 @@ class Case:
         self.nemoh_contrib = nemoh_contrib   # Nemoh's QTF terms: 1 DUOK, 2 DUOK + HASBO (NEMOH_QTF_TERMS)
         self.edge_power = edge_power   # sharp hull only: power-law rows toward the bilge (make_mesh.cylinder), None for cosine
         self.qtf_edge_weights = qtf_edge_weights   # qtf_edge_weights of SecondOrder.in: None (not written), "on" or "off"
+        self.extra_options = extra_options or {}   # further SecondOrder.in keys, written as given
 
 
 def in_tier(case, tier):
@@ -322,6 +323,10 @@ def qtf_cases():
     return chosen
 
 
+# The default control surface of the free sharp hull at m1 (CSMesh_1.pnl of q_sharp_free_src_m1: radius 17.84, bottom
+# -17.84, so the margins are 7.84 m = 4 x the median hull panel size 1.96 m)
+CS_FIXED_M1 = dict(cs_margin=7.84, cs_bottom_margin=7.84, cs_panel_size=1.96)
+
 # Powers of the edge-graded meshes of the QTF potential study (make_mesh.cylinder edge_power)
 EDGE_POWERS = (2.5, 3)
 
@@ -353,6 +358,12 @@ def qtf_potential_cases():
                 chosen.append(Case(name, "P", "5", "sharp", m, "free", "source", frequencies=grid, headings=(0.0,), qtf=1,
                                    qtf_terms="body", qtf_max_dw=QTF_POTENTIAL_MAX_DW, edge_power=q,
                                    qtf_edge_weights=weights))
+    # Fixed control surface: C and F of the default at m1 (CS_FIXED_M1) at the finer hulls, where the default C moves in
+    # (margin 4 x the median hull panel size) and refines with the hull, so its field passes cost N_hull x N_C
+    for m in (2, 3):
+        chosen.append(Case("q_sharp_free_fixc_%s" % tag(m), "P", "5", "sharp", m, "free", "source", frequencies=grid,
+                           headings=(0.0,), qtf=1, qtf_terms="body", qtf_max_dw=QTF_POTENTIAL_MAX_DW,
+                           extra_options=CS_FIXED_M1))
     return chosen
 
 
@@ -561,6 +572,7 @@ def write_hams_case(case, root, threads):
         options.update(qtf_max_dw=case.qtf_max_dw)
     if case.qtf_edge_weights:
         options.update(qtf_edge_weights=case.qtf_edge_weights)
+    options.update(case.extra_options)
     fixtures.write_second_order(os.path.join(path, "SecondOrder.in"), **options)
     return path
 
