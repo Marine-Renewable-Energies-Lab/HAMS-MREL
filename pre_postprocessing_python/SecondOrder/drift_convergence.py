@@ -155,7 +155,9 @@ class Case:
         self.edge_power = edge_power   # sharp hull only: power-law rows toward the bilge (make_mesh.cylinder), None for cosine
         self.qtf_edge_weights = qtf_edge_weights   # qtf_edge_weights of SecondOrder.in: None (not written), "on" or "off"
         self.extra_options = extra_options or {}   # further SecondOrder.in keys, written as given
-        self.damping = damping or {}   # sharp hull only: external linear damping {mode 1..6: value} (Hydrostatic.in)
+        self.damping = damping or {}   # sharp and oc4 hulls: external linear damping {mode 1..6: value} (Hydrostatic.in)
+        if self.damping and hull not in ("sharp", "oc4"):
+            raise ValueError("%s: damping is written for the sharp and oc4 hulls only, not %s" % (name, hull))
 
 
 def in_tier(case, tier):
@@ -347,11 +349,15 @@ def qtf_cases():
 # -17.84, so the margins are 7.84 m = 4 x the median hull panel size 1.96 m)
 CS_FIXED_M1 = dict(cs_margin=7.84, cs_bottom_margin=7.84, cs_panel_size=1.96)
 
-# External linear damping of the damped free sharp hull, 5 % of the uncoupled critical damping 2 sqrt((M + A) C) in heave
-# and pitch (moments about the origin, as in Hydrostatic.in): M = 3.12145e6 kg, I55 = 1.81584e8 kg m^2, C33 = 3.06109e6
-# N/m, C55 = 7.60372e7 N m (Hydrostatic.in of the m1 case), A33 = 1.67200e6 kg at 0.80 rad/s (heave peak) and A55 =
-# 5.51253e7 kg m^2 at 0.77 rad/s (surge-pitch peak) from truncated_cylinder_reference.added_mass_damping. A choice that
-# damps the resonances well (about twice the radiation damping there), not a model of viscous damping [derived].
+# External linear damping of the damped free sharp hull: B33 = 0.05 x 2 sqrt((M + A33) C33) and B55 = 0.05 x 2
+# sqrt((I55 + A55) C55), moments about the origin as in Hydrostatic.in. M = 3.12145e6 kg, I55 = 1.81584e8 kg m^2,
+# C33 = 3.06109e6 N/m, C55 = 7.60372e7 N m (Hydrostatic.in of the m1 case); A33 = 1.67200e6 kg at 0.80 rad/s (the heave
+# peak) and A55 = 5.51253e7 kg m^2 at 0.77 rad/s (the coupled surge-pitch peak), from
+# truncated_cylinder_reference.added_mass_damping. So B55 takes A55 at the coupled peak, not at the uncoupled pitch
+# frequency sqrt(C55 / (I55 + A55)) (about 0.57 rad/s): it is "5 % of critical" by this formula only, not the critical
+# damping of an uncoupled pitch mode. At 0.77 rad/s it is 1.4 times (heave) and 2.1 times (pitch) the radiation damping
+# rho omega B (2.75e5 N s/m, 6.50e6 N m s; truncated_cylinder_reference check damped_motions, LIGHT_RESOLUTION). A choice
+# that damps the resonances, not a model of viscous damping.
 # truncated_cylinder_reference reads it for its motion "free_damped".
 SHARP_DAMPING = {3: 3.8306e5, 5: 1.3416e7}
 

@@ -275,6 +275,13 @@ The script exits with 1 if one fails. What each covers, and what it does not:
   which enters pitch at leading order through surge, xi_1 ~ X_1/omega**2 (a sign flip of M15 or A15 gives 4.0 or 1.7,
   dropping A15 0.86); a sign flip of the inertia gives 8.9e-3 in heave, C55 1 % high 7.6e-3 in pitch. It does not see
   B (1e-7 at this omega) nor an error of A33 or A55 below the tolerance.
+- damped_motions: free body at 0.77 rad/s (the surge-pitch peak), LIGHT_RESOLUTION: the damping argument of motions.
+  No damping, {} and zeros give the same xi (0 difference); drift_convergence.SHARP_DAMPING gives the xi of the undamped
+  solve with that damping added to the radiation damping (3.5e-16 relative), so it enters as -i omega B with the sign of
+  the radiation term; and it lowers abs(xi_1), abs(xi_3), abs(xi_5) (11.5, 3.52, 2.55 -> 1.30, 1.93, 0.249). A sign flip
+  of the external term gives 1.1. At 0.77 rad/s rho omega B33 = 2.75e5 and B55 = 6.50e6, against SHARP_DAMPING 3.83e5 and
+  1.34e7. It does not test the second-order use of the damped motions; the q_sharp_free_damp_* runs against
+  qtf-potential --motion free_damped do.
 - fx_identity: fixed and free, every WIDE_FREQUENCIES, NEAR_CHECK_RESOLUTION (gap basis (20, 4, 4), N = 64000):
   near_field's F_x against far_field_fx, to 5e-4 of abs(far F_x), with the floor of drift_convergence.percent (1e-4 of
   the motion's largest abs(far F_x)), which acts only at free 0.40 rad/s (far F_x = 3e-6). Measured: fixed below 2.4e-6,
@@ -1261,14 +1268,15 @@ def motions(cyl, omega, diff, rads, motion="free", damping=None):
     """xi_j, j = 1, 3, 5: the complex motion amplitudes per unit wave amplitude, time factor exp(-i omega t), rotations in
     rad per m (L = 1), about the origin, from [-omega**2 (M + A) - i omega B + C] xi = X with the dimensional A, B
     (added_mass_damping times rho and rho omega), X = i omega rho int phi n dS of the diffraction solution diff and
-    (M, C) = body_matrices. motion "fixed" gives zeros (rads is not used). This is HAMS's equation of motion
-    (SolveMotion in src/SolveMotion.f90, no external damping or stiffness) in the module's time convention; hams_motion
-    gives the complex value Motion.4 writes, and the modulus abs(xi_j) is Motion.4's MOD."""
+    (M, C) = body_matrices. motion "fixed" gives zeros (rads is not used). damping {j: B_jj} (None or {} for none) adds
+    an external linear damping B_jj, dimensional (N s/m, N m s), on the diagonal of mode j: -i omega B_jj on the left,
+    as HAMS's External Linear Damping Matrix of Hydrostatic.in (check_damped_motions). This is HAMS's equation of motion
+    (SolveMotion in src/SolveMotion.f90, with external damping and no external stiffness) in the module's time
+    convention; hams_motion gives the complex value Motion.4 writes, and the modulus abs(xi_j) is Motion.4's MOD."""
     if motion == "fixed":
         return {j: 0j for j in MOTION_MODES}
     if motion != "free":
         raise ValueError("motions: motion is 'fixed' or 'free', got %r" % (motion,))
-    # damping {j: B_jj}: external linear damping on the diagonal, as HAMS's External Linear Damping Matrix (-i omega B)
     _same_problem("motions", cyl, omega, diff)
     if set(rads) != set(MOTION_MODES):
         raise ValueError("motions: rads needs the modes 1, 3 and 5")
@@ -3257,6 +3265,53 @@ POLYLOG_POINTS = (-0.05, -0.5, -1.0, -1.5, -3.0, -12.0, -60.0, -1.0 + 3.0j, -0.0
                   -2.0 + 3.1j)
 
 
+DAMPED_OMEGA = 0.77
+
+
+def check_damped_motions():
+    """The damping argument of motions, free body at DAMPED_OMEGA (the surge-pitch peak), LIGHT_RESOLUTION: no damping,
+    {} and zeros give the same xi; drift_convergence.SHARP_DAMPING gives the same xi as the undamped solve with that
+    damping added to the radiation damping B (so it enters as -i omega B, the sign of the radiation term, which
+    radiation_energy and free_energy test); and it lowers abs(xi_j), j = 1, 3, 5. (The coupled surge-pitch mode does not
+    make abs(xi_5) monotonic in B55 at a fixed omega, so a sign test by a negative damping is not used.) Prints rho omega B33, rho omega B55 at DAMPED_OMEGA against SHARP_DAMPING."""
+    global added_mass_damping
+    cyl = Cylinder()
+    res = LIGHT_RESOLUTION
+    omega = DAMPED_OMEGA
+    diff = solve_diffraction(cyl, omega, (0, 1), res["n_modes"], res["p_max"])
+    rads = {j: solve_radiation(cyl, omega, j, res["n_modes"], res["p_max"]) for j in MOTION_MODES}
+    damping = drift_convergence.SHARP_DAMPING
+    plain = motions(cyl, omega, diff, rads)
+    same = max(abs(motions(cyl, omega, diff, rads, damping=d)[j] - plain[j])
+               for d in ({}, {j: 0.0 for j in damping}) for j in MOTION_MODES)
+    damped = motions(cyl, omega, diff, rads, damping=damping)
+    original = added_mass_damping
+    rho = make_mesh.RHO
+
+    def with_external(cyl_, omega_, rads_):
+        a, b = original(cyl_, omega_, rads_)
+        b = b.copy()
+        for j, value in damping.items():
+            b[j - 1, j - 1] += value / (rho * omega_)
+        return a, b
+    added_mass_damping = with_external
+    try:
+        as_radiation = motions(cyl, omega, diff, rads)
+    finally:
+        added_mass_damping = original
+    scale = max(abs(damped[j]) for j in MOTION_MODES)
+    form = max(abs(as_radiation[j] - damped[j]) for j in MOTION_MODES) / scale
+    lower = all(abs(damped[j]) < abs(plain[j]) for j in MOTION_MODES)
+    b = original(cyl, omega, rads)[1]
+    ok = same == 0.0 and form < 1e-12 and lower
+    return ok, ("zero damping: max |dxi| %.1e; as radiation damping: %.1e; |xi_1|, |xi_3|, |xi_5| %.3g, %.3g, %.3g -> "
+                "%.3g, %.3g, %.3g; rho omega B33 %.4g, B55 %.4g at %.2f rad/s against "
+                "SHARP_DAMPING %.4g, %.4g"
+                % (same, form, abs(plain[1]), abs(plain[3]), abs(plain[5]), abs(damped[1]), abs(damped[3]),
+                   abs(damped[5]), rho * omega * b[2, 2], rho * omega * b[4, 4], omega,
+                   damping[3], damping[5]))
+
+
 def check_polylog():
     """_polylog(s, mu) against the direct sum sum_(n=1)^(4000) n**(-s) e^(n mu), to 1e-10 relative, for the orders of
     _corner_models (1 and lam + 1/2, lam + 3/2 of the three families) at real mu from -0.05 to -60 (the bottom tails,
@@ -4036,6 +4091,7 @@ CHECKS = {"roots": check_roots, "inner_products": check_inner_products, "polylog
           "radiation_energy": check_radiation_energy, "particular_bottom": check_particular_bottom,
           "bottom_limit_drift": check_bottom_limit_drift, "body_matrices": check_body_matrices,
           "free_energy": check_free_energy, "long_wave_motions": check_long_wave_motions,
+          "damped_motions": check_damped_motions,
           "corner_limit": check_corner_limit, "reference_point": check_reference_point,
           "pair_symmetry": check_pair_symmetry, "fx_identity": check_fx_identity, "convergence": check_convergence,
           "compare_fixture": check_compare_fixture, "qtf_diagonal": check_qtf_diagonal,
