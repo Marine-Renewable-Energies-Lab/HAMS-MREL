@@ -8,7 +8,7 @@ Usage:
     python -I qtf_field_plots.py check
 
 plot: for every kernel, frequency pair, heading pair, type and depth level (pressure points are grouped by z), one PNG
-with two panels, the modulus and the phase (degrees, cyclic colour map) over x, y. The values are those of the file:
+with two panels, the modulus and the phase (degrees, cyclic colour map, at the points) over x, y. The values are those of the file:
 pressure / (rho g A^2 / L) and elevation / (A^2 / L), e^{+i omega t} as the other WAMIT-format files. The field is
 PARTIAL: the second-order diffracted and radiated waves are omitted, so the maps are for the far field and for checks.
 grid: prints the field-point block of ControlFile.in (Number_of_field_points and one "x y z" line per point) for a
@@ -75,12 +75,18 @@ def _collinear(x, y):
     return s[0] == 0.0 or s[1] <= 1e-9 * s[0]
 
 
-def _panel(fig, ax, x, y, v, label, cmap, vmin=None, vmax=None):
-    if _collinear(x, y):
+def _markers_only(x, y, v):
+    """True when tricontourf cannot be used: fewer than 3 non-collinear points, duplicate (x, y), or constant values."""
+    if _collinear(x, y) or np.ptp(v) == 0.0:
+        return True
+    return len({(round(a, 9), round(b, 9)) for a, b in zip(x, y)}) < len(x)
+
+
+def _panel(fig, ax, x, y, v, label, cmap, vmin=None, vmax=None, points_only=False):
+    if points_only or _markers_only(x, y, v):
         sc = ax.scatter(x, y, c=v, cmap=cmap, vmin=vmin, vmax=vmax, s=90, edgecolors="k")
     else:
-        levels = np.linspace(vmin, vmax, 25) if vmin is not None else 20
-        sc = ax.tricontourf(x, y, v, levels=levels, cmap=cmap)
+        sc = ax.tricontourf(x, y, v, levels=20, cmap=cmap)
         ax.plot(x, y, "k.", ms=3)
     ax.set_aspect("equal", adjustable="datalim")
     ax.set_xlabel("x (m)")
@@ -108,9 +114,9 @@ def plot(path, out, kernel="both", kind="both"):
             x, y, mod, pha = (np.array(c) for c in zip(*pts))
             fig, axes = plt.subplots(1, 2, figsize=(12, 5))
             _panel(fig, axes[0], x, y, mod, "modulus, " + QUANTITY[kd], "viridis")
-            _panel(fig, axes[1], x, y, pha, "phase (deg)", "twilight", -180.0, 180.0)
+            _panel(fig, axes[1], x, y, pha, "phase (deg)", "twilight", -180.0, 180.0, points_only=True)
             axes[0].set_title("modulus")
-            axes[1].set_title("phase")
+            axes[1].set_title("phase at the points (not interpolated)")
             fig.suptitle("%s\n%s, %s%s, T1 = %.4g s, T2 = %.4g s, beta1 = %g, beta2 = %g deg"
                          % (TITLE, KERNEL_LABEL[kern], kd, " at z = %g m" % z if typ == 1 else "",
                             per1, per2, beta1, beta2), fontsize=10)
@@ -186,6 +192,9 @@ def check():
         test("kernel/type filter", plot(path, os.path.join(tmp, "f"), "diff", "elevation")
              == ["field_diff_8.0000_9.0000_0_30_elevation.png"])
         g = grid((0, 30, 4), (0, 30, 4))
+        test("duplicates -> markers", _markers_only(np.array([0., 1, 0, 1, 0]), np.array([0., 0, 1, 1, 0]),
+                                                    np.arange(5.)) and not _markers_only(
+            np.array([0., 1, 0, 1]), np.array([0., 0, 1, 1]), np.arange(4.)))
         test("grid count", g[0] == "Number_of_field_points 16" and len(g) == 17)
         g = grid((0, 30, 4), (0, 30, 4), exclude=[(0.0, 0.0, 12.0)])
         test("grid with exclusion", g[0] == "Number_of_field_points 13" and len(g) == 14, g[0])
