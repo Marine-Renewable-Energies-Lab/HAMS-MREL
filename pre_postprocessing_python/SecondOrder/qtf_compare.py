@@ -4,7 +4,7 @@ Compare the quadratic QTFs of HAMS-MREL with the exact reference of the sharp tr
 Usage:
     python qtf_compare.py check
     python qtf_compare.py <results> --reference <qtf_reference.csv> [--nemoh <folder of nemoh_* runs>] [--max-dw 0.3]
-    python qtf_compare.py <results> --potential <qtf_potential.csv> [--nemoh <folder>] [--max-dw 0.3]
+    python qtf_compare.py <results> --potential <qtf_potential.csv> [--nemoh <folder>] [--max-dw 0.3] [--exclude LO HI]
 
 <results> holds the q_* case folders of `drift_convergence.py --qtf` (q_*/output/Wamit_format/QTF_Quadratic.10d, .10s).
 The reference CSV is from `truncated_cylinder_reference.py qtf`: T/(rho g) for omega_i <= omega_j, e^{-i omega t}, both
@@ -177,11 +177,17 @@ def _term(terms, t):
     return value
 
 
-def compare_potential(results, path, nemoh, max_dw):
-    """The --potential tables; see the module docstring."""
+def compare_potential(results, path, nemoh, max_dw, exclude=None):
+    """The --potential tables; see the module docstring. exclude (lo, hi): leave out the pairs with omega_i or omega_j
+    in [lo, hi] from the max and median, keeping the scales of all the pairs."""
     ref = read_potential_reference(path, max_dw)
     print("Potential part (qtf_terms = body), exact sharp cylinder: |HAMS - exact| / max |exact| over the pairs, max and "
           "median, percent; omega_j - omega_i <= %.2f rad/s; a term against the larger of its and T_pot's max" % max_dw)
+    if exclude:
+        print("Pairs with omega_i or omega_j in [%.3f, %.3f] rad/s left out; scales from all the pairs" % tuple(exclude))
+
+    def kept(p):
+        return not exclude or not any(exclude[0] - 1e-9 <= w <= exclude[1] + 1e-9 for w in p)
     print("%-24s %-6s %18s %18s %18s" % ("case", "what", "F_x", "F_z", "M_y"))
     for case in sorted(os.path.basename(p) for p in glob.glob(os.path.join(results, "q_sharp_*"))):
         motion = "fixed" if "_fixed_" in case else "free"
@@ -207,9 +213,10 @@ def compare_potential(results, path, nemoh, max_dw):
             cells = []
             for q, index in QUANTITIES:
                 exact = {p: v[q] for p, v in ref[motion][key].items()}
-                scale = None
+                scale = max(abs(v) for v in exact.values()) if exclude else None
                 if against:
                     scale = max(max(abs(v) for v in exact.values()), max(abs(v[q]) for v in ref[motion][against].values()))
+                exact = {p: v for p, v in exact.items() if kept(p)}
                 cells.append(_potential_cell({p: source(p[0], p[1], index) for p in exact}, exact, scale))
             print("%-24s %-6s %18s %18s %18s" % (case, label, *cells))
     if nemoh:
@@ -334,9 +341,11 @@ def main(argv=None):
                                             "and QTF_PotentialTerms.txt")
     parser.add_argument("--nemoh", help="folder holding nemoh_<hull>_<motion>_m<k>/results/QTF")
     parser.add_argument("--max-dw", type=float, default=0.3)
+    parser.add_argument("--exclude", type=float, nargs=2, metavar=("LO", "HI"),
+                        help="with --potential: leave out the pairs with a frequency in [LO, HI] rad/s (a resonance band)")
     args = parser.parse_args(argv)
     if args.potential:
-        return compare_potential(args.results, args.potential, args.nemoh, args.max_dw)
+        return compare_potential(args.results, args.potential, args.nemoh, args.max_dw, args.exclude)
     if not args.reference:
         parser.error("--reference is needed without --potential")
     ref = read_reference(args.reference)
