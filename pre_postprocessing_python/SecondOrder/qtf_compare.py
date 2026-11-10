@@ -235,7 +235,9 @@ def compare_potential(results, path, nemoh, max_dw, exclude=None):
                 cells, medians = [], []
                 for q, index in QUANTITIES:
                     exact = {p: v[q] for p, v in ref[motion]["total"].items()}
-                    e = errors_of(nemoh_values(table, index, "diff", conjugate, sign), exact)
+                    scale = max(abs(v) for v in exact.values()) if exclude else None
+                    exact = {p: v for p, v in exact.items() if kept(p)}
+                    e = errors_of(nemoh_values(table, index, "diff", conjugate, sign), exact, scale)
                     cells.append("%7.2f %7.2f" % (100 * e[0], 100 * e[1]) if e else "-")
                     medians.append(e[1] if e else np.inf)
                 if best is None or sum(medians) < best[0]:
