@@ -125,7 +125,7 @@ CONTAINS
 
       active = opts%qtf > 0
       IF (.NOT. active) RETURN
-      body_active = opts%qtf_terms == QTF_TERMS_BODY .AND. (opts%qtf == 1 .OR. opts%qtf == 3)
+      body_active = opts%qtf_terms >= QTF_TERMS_BODY .AND. (opts%qtf == 1 .OR. opts%qtf == 3)
       IF (body_active) THEN
          IF (.NOT. PRESENT(omegas_main)) THEN
             WRITE (*, '(a)') ' QTF: qtf_init needs the main-grid frequencies for qtf_terms = body.'

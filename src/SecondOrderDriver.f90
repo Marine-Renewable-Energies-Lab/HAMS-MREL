@@ -60,7 +60,7 @@ MODULE SecondOrderDriver
    USE IO, ONLY: CreateDirectory
    USE ImplementSubs, ONLY: InputOmega
    USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom, cs_points, cs_fields, CS_WALL, CS_LINE, &
-                               CS_FREE, QTF_TERMS_BODY, QTF_B2_CONTROL
+                               CS_FREE, QTF_TERMS_BODY, QTF_TERMS_FULL, QTF_B2_CONTROL
    USE FirstOrderState, ONLY: expand_images, build_state, radiation_psi
    USE SurfaceGeometry, ONLY: build_surface_geom, DEFAULT_SHARP_DEG
    USE SurfaceVelocity, ONLY: velocity_differencing, source_operator, build_source_operator, velocity_source
@@ -169,12 +169,16 @@ CONTAINS
       END IF
 
       b2_control = uses_b2_control(opts)
-      IF (opts%qtf_b2_given .AND. .NOT. (opts%qtf_terms == QTF_TERMS_BODY .AND. (opts%qtf == 1 .OR. opts%qtf == 3))) THEN
-         WRITE (*, '(a)') ' QTF note: qtf_b2 is ignored; it applies with qtf_terms = body and the difference QTF only.'
+      IF (opts%qtf_b2_given .AND. .NOT. (opts%qtf_terms >= QTF_TERMS_BODY .AND. (opts%qtf == 1 .OR. opts%qtf == 3))) THEN
+         WRITE (*, '(a)') ' QTF note: qtf_b2 is ignored; it applies with qtf_terms = body or full and the difference QTF only.'
       END IF
       IF (opts%qtf_edge_given .AND. .NOT. b2_control) THEN
-         WRITE (*, '(a)') ' QTF note: qtf_edge_weights and qtf_edge_angle are ignored; they apply with qtf_terms = body,'// &
+         WRITE (*, '(a)') ' QTF note: qtf_edge_weights and qtf_edge_angle are ignored; they apply with qtf_terms = body or full,'// &
             ' the difference QTF and qtf_b2 = control only.'
+      END IF
+      IF (opts%qtf_fs_given .AND. .NOT. (opts%qtf_terms == QTF_TERMS_FULL .AND. (opts%qtf == 1 .OR. opts%qtf == 3))) THEN
+         WRITE (*, '(a)') ' QTF note: qtf_fs_radius, qtf_fs_rows, qtf_fs_modes and qtf_fs_evanescent are ignored; they apply'// &
+            ' with qtf_terms = full and the difference QTF only.'
       END IF
       ALLOCATE (states(MERGE(NBETA, 1, keep_all_headings(opts))))
       ! Only the near-field and control-surface methods use the surface geometry (the control surface takes the waterplane
@@ -219,7 +223,7 @@ CONTAINS
          nqtf = NPER - MERGE(2, 0, SYBO == 1)
          WRITE (*, '(a,F10.1,a,I0,a,I0,a)') ' QTF: the first-order states take', &
             qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA), ' MB for ', nqtf, ' frequencies and ', NBETA, ' headings'
-         body_terms = opts%qtf_terms == QTF_TERMS_BODY .AND. (opts%qtf == 1 .OR. opts%qtf == 3)
+         body_terms = opts%qtf_terms >= QTF_TERMS_BODY .AND. (opts%qtf == 1 .OR. opts%qtf == 3)
          IF (body_terms) THEN
             CALL body_terms_setup(opts, nqtf, outputdir)
          ELSE
@@ -409,7 +413,7 @@ CONTAINS
       TYPE(so_options), INTENT(IN) :: opts
       INTEGER, INTENT(IN) :: kk
 
-      IF (.NOT. body_terms .OR. opts%qtf_terms /= QTF_TERMS_BODY .OR. is_limit_frequency()) RETURN
+      IF (.NOT. body_terms .OR. opts%qtf_terms < QTF_TERMS_BODY .OR. is_limit_frequency()) RETURN
       IF (ABS(W1 - WVFQ(kk)) > 1D-12*W1) THEN
          WRITE (*, '(a,I0)') ' QTF: so_after_radiation called with the wave of another frequency than ', kk
          ERROR STOP 1
@@ -432,7 +436,7 @@ CONTAINS
       REAL(8), INTENT(IN) :: omega
       COMPLEX(8), ALLOCATABLE :: psi(:, :)
 
-      IF (.NOT. body_terms .OR. opts%qtf_terms /= QTF_TERMS_BODY) RETURN
+      IF (.NOT. body_terms .OR. opts%qtf_terms < QTF_TERMS_BODY) RETURN
       ALLOCATE (psi(mesh%n, 6*mesh%nbody))
       IF (multi_arrays) THEN
          CALL radiation_psi(mesh, omega, MXPOT_MULTI_COMB, psi)
@@ -506,7 +510,7 @@ CONTAINS
       ! qtf_b2 = control applies: the potential part of the difference QTF is computed
       TYPE(so_options), INTENT(IN) :: opts
 
-      uses_b2_control = opts%qtf_terms == QTF_TERMS_BODY .AND. opts%qtf_b2 == QTF_B2_CONTROL .AND. &
+      uses_b2_control = opts%qtf_terms >= QTF_TERMS_BODY .AND. opts%qtf_b2 == QTF_B2_CONTROL .AND. &
                         (opts%qtf == 1 .OR. opts%qtf == 3)
    END FUNCTION uses_b2_control
 
