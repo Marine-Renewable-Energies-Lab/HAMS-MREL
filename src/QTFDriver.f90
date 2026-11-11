@@ -59,6 +59,11 @@ MODULE QTFDriver
    ! frequency (qtf_keep_cs_psi, indexed like psi_store). With qtf_edge_weights the panel weights of the hull term at sharp
    ! edges come with qtf_set_edge_weights.
    !
+   ! With qtf_direct = 1 (Phase 7a) the potential part is also found by the direct method: phi_D is solved on the body at
+   ! each difference frequency (QTFDirect), in the loop of radiation-only solves after the frequency loop, where the store
+   ! is complete and the solver is at Omega. qtf_direct_at_omega puts T_dir of every pair of that Omega into tdir, which
+   ! has the slots of tpot.
+   !
    ! A psi with NaN or Inf (a radiation solve that failed) is kept, but counted and logged by qtf_keep_psi, and every pair
    ! whose terms are not finite is counted by potential_part. The files are still written (.10d does not use psi); the main
    ! program ends with exit code 1 when qtf_nonfinite_psi() or qtf_nonfinite_pairs() is not zero, as for first-order NaN.
@@ -67,6 +72,7 @@ MODULE QTFDriver
    USE NearFieldDrift, ONLY: near_field_pair, KERNEL_DIFF, KERNEL_SUM
    USE SecondOrderOutput, ONLY: write_qtf_row, write_qtf_terms_row
    USE QTFPotential, ONLY: potential_pair, psi_surface_gradient, psi_waterline, NPOT_TERMS
+   USE QTFDirect, ONLY: direct_at_omega
    USE FirstOrderState, ONLY: wave_gravity
    USE, INTRINSIC :: IEEE_ARITHMETIC, ONLY: IEEE_IS_FINITE
    IMPLICIT NONE
@@ -75,6 +81,7 @@ MODULE QTFDriver
    PUBLIC :: qtf_init, qtf_keep, qtf_pair_load, qtf_finish, qtf_stored_mb, qtf_kept
    PUBLIC :: qtf_radiation_list, qtf_radiation_omegas, qtf_direct_omegas, qtf_omega_on_grid, qtf_keep_psi, qtf_psi_index, qtf_psi_count, qtf_psi_tolerance
    PUBLIC :: qtf_nonfinite_psi, qtf_nonfinite_pairs
+   PUBLIC :: qtf_direct_at_omega, qtf_direct_pairs
    PUBLIC :: qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, qtf_set_edge_weights
 
    LOGICAL :: active = .FALSE.
@@ -97,6 +104,11 @@ MODULE QTFDriver
    LOGICAL :: body_active = .FALSE.                      ! QTF_Indirect.11d is written
    LOGICAL :: pot_terms = .FALSE.                        ! QTF_PotentialTerms.txt is written (write_terms >= 1)
    COMPLEX(8), ALLOCATABLE :: tpot(:, :, :, :)           ! (6*nbody, nfreq, nfreq, heading pairs), e^{-i omega t}
+   ! Direct method (qtf_direct = 1, Phase 7a): T_dir of each pair, in the slots of tpot, filled Omega by Omega by
+   ! qtf_direct_at_omega during the radiation-only loop after the frequency loop, when the store is complete
+   LOGICAL :: direct_active = .FALSE.
+   COMPLEX(8), ALLOCATABLE :: tdir(:, :, :, :)           ! (6*nbody, nfreq, nfreq, heading pairs), e^{-i omega t}
+   LOGICAL, ALLOCATABLE :: tdir_kept(:)                  ! (nneed), the direct solve has run at psi_need(m)
    ! qtf_b2 = control: points of C and F of every body, and the fields there
    LOGICAL :: b2_control = .FALSE.
    TYPE(cs_points) :: cs
@@ -175,6 +187,8 @@ CONTAINS
       IF (ALLOCATED(psi_store)) DEALLOCATE (psi_store)
       IF (ALLOCATED(psi_kept)) DEALLOCATE (psi_kept)
       IF (ALLOCATED(tpot)) DEALLOCATE (tpot)
+      IF (ALLOCATED(tdir)) DEALLOCATE (tdir)
+      IF (ALLOCATED(tdir_kept)) DEALLOCATE (tdir_kept)
       CALL free_control_surface()
       n_bad_psi = 0
       n_bad_pairs = 0
@@ -187,6 +201,13 @@ CONTAINS
          ALLOCATE (tpot(6*nbody, nfreq, nfreq, heading_pairs(nbeta)), STAT=st)
          IF (st /= 0) CALL out_of_memory(body=.TRUE.)
          tpot = (0D0, 0D0)
+      END IF
+      direct_active = body_active .AND. opts%qtf_direct == 1
+      IF (direct_active) THEN
+         ALLOCATE (tdir(6*nbody, nfreq, nfreq, heading_pairs(nbeta)), tdir_kept(SIZE(psi_need)), STAT=st)
+         IF (st /= 0) CALL out_of_memory(body=.TRUE.)
+         tdir = (0D0, 0D0)
+         tdir_kept = .FALSE.
       END IF
 
    CONTAINS
@@ -542,6 +563,88 @@ CONTAINS
       qtf_nonfinite_pairs = n_bad_pairs
    END FUNCTION qtf_nonfinite_pairs
 
+   SUBROUTINE qtf_direct_pairs(omega, pairs)
+      ! The pairs of the difference QTF whose |omega_i - omega_j| is the difference frequency omega (qtf_psi_index), with
+      ! omega_i /= omega_j and within qtf_max_dw, as potential_part takes them: pairs(4, npair) = frequency and heading of
+      ! state 1, then of state 2, in the store. Empty unless qtf_direct = 1, or before the frequencies are kept.
+      REAL(8), INTENT(IN) :: omega
+      INTEGER, ALLOCATABLE, INTENT(OUT) :: pairs(:, :)
+      INTEGER, ALLOCATABLE :: tmp(:, :)
+      REAL(8) :: dw
+      INTEGER :: m, i, j, b1, b2, np
+
+      ALLOCATE (pairs(4, 0))
+      IF (.NOT. direct_active) RETURN
+      m = qtf_psi_index(omega)
+      IF (m == 0) RETURN
+      ALLOCATE (tmp(4, nkept*nkept*heading_pairs(nbeta)))
+      np = 0
+      DO b1 = 1, nbeta
+         DO b2 = 1, nbeta
+            IF (all_headings_pairs == 0 .AND. b1 /= b2) CYCLE
+            DO i = 1, nkept
+               DO j = 1, nkept
+                  ! Heading 1 stands for all, as in potential_part
+                  dw = store(i, 1)%omega - store(j, 1)%omega
+                  IF (dw == 0D0) CYCLE
+                  IF (max_dw > 0D0 .AND. ABS(dw) > max_dw*(1D0 + 1D-9)) CYCLE
+                  IF (qtf_psi_index(ABS(dw)) /= m) CYCLE
+                  np = np + 1
+                  tmp(:, np) = [i, b1, j, b2]
+               END DO
+            END DO
+         END DO
+      END DO
+      pairs = tmp(:, 1:np)
+   END SUBROUTINE qtf_direct_pairs
+
+   SUBROUTINE qtf_direct_at_omega(mesh, geom, omega, npair, seconds)
+      ! The direct method at the difference frequency omega (qtf_direct = 1): T_dir of every pair with that Omega
+      ! (qtf_direct_pairs), by direct_at_omega, into tdir. Call after the frequency loop, when every frequency is kept,
+      ! with the solver at omega after its radiation solve (RadiationOnlySolves). Pairs with NaN or Inf are counted in
+      ! qtf_nonfinite_pairs() and logged. npair and seconds (optional): the number of pairs, and the times of
+      ! direct_at_omega, for the log.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(surface_geom), INTENT(IN) :: geom
+      REAL(8), INTENT(IN) :: omega
+      INTEGER, INTENT(OUT), OPTIONAL :: npair
+      REAL(8), INTENT(OUT), OPTIONAL :: seconds(3)
+      REAL(8) :: sec(3)
+      INTEGER, ALLOCATABLE :: pairs(:, :)
+      COMPLEX(8), ALLOCATABLE :: t(:, :)
+      INTEGER :: m, p, nbad
+
+      IF (PRESENT(npair)) npair = 0
+      IF (PRESENT(seconds)) seconds = 0D0
+      IF (.NOT. direct_active) RETURN
+      m = qtf_psi_index(omega)
+      IF (m == 0) THEN
+         WRITE (*, '(a,ES14.6,a)') ' QTF direct: omega =', omega, ' rad/s is not a difference frequency of the grid.'
+         ERROR STOP 1
+      END IF
+      IF (nkept /= SIZE(store, 1)) THEN
+         WRITE (*, '(a,I0,a,I0,a)') ' QTF direct: ', nkept, ' of ', SIZE(store, 1), &
+            ' frequencies are kept; the direct solve runs after the frequency loop.'
+         ERROR STOP 1
+      END IF
+      CALL qtf_direct_pairs(omega, pairs)
+      ALLOCATE (t(6*mesh%nbody, SIZE(pairs, 2)))
+      CALL direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, omega_tol=psi_tol, seconds=sec)
+      IF (PRESENT(npair)) npair = SIZE(pairs, 2)
+      IF (PRESENT(seconds)) seconds = sec
+      nbad = 0
+      DO p = 1, SIZE(pairs, 2)
+         tdir(:, pairs(1, p), pairs(3, p), heading_pair(pairs(2, p), pairs(4, p))) = t(:, p)
+         IF (.NOT. ALL(IEEE_IS_FINITE(REAL(t(:, p), 8)) .AND. IEEE_IS_FINITE(AIMAG(t(:, p))))) nbad = nbad + 1
+      END DO
+      tdir_kept(m) = .TRUE.
+      IF (nbad > 0) THEN
+         n_bad_pairs = n_bad_pairs + nbad
+         WRITE (*, '(a,I0,a,ES14.6,a)') ' QTF error: T_dir has NaN or Inf at ', nbad, ' frequency and heading pairs with'// &
+            ' Omega =', psi_need(m), ' rad/s.'
+      END IF
+   END SUBROUTINE qtf_direct_at_omega
+
    SUBROUTINE qtf_keep(ib, s, phi_wl, oufr)
       ! Keeps the state of heading ib of the current frequency. Heading 1 starts a new frequency, so the driver must call
       ! this for every heading of a frequency, in order, and only for the frequencies of the QTF grid.
@@ -634,9 +737,11 @@ CONTAINS
       DEALLOCATE (store, store_wl, store_oufr)
       IF (ALLOCATED(psi_store)) DEALLOCATE (psi_store, psi_kept, psi_need, psi_reuse)
       IF (ALLOCATED(tpot)) DEALLOCATE (tpot)
+      IF (ALLOCATED(tdir)) DEALLOCATE (tdir, tdir_kept)
       CALL free_control_surface()
       active = .FALSE.
       body_active = .FALSE.
+      direct_active = .FALSE.
 
    CONTAINS
 

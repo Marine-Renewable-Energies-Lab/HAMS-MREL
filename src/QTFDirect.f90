@@ -87,33 +87,324 @@ MODULE QTFDirect
    !
    ! The Green function is taken at the wave of the solver globals (V, WVN, NK, H): the caller sets them to Omega, and
    ! with stored integrals CALGREEN (CALGREEN_MULTI) must have been run at Omega.
+   !
+   ! The solve at Omega (direct_at_omega). The matrix of the phi_D problem is AMAT of the radiation problem at Omega
+   ! (AMAT_MULTI for several bodies). With ISOLV = 1 ASSB_LEFT leaves it as its LU factors in place (ZGETRF), and
+   ! RADIATION_SOLVER and DIFFRACTION_SOLVER call ZGETRS on them. With ISOLV = 2 ASSB_LEFT leaves AMAT unfactored for
+   ! GMRES, and direct_factor factors it in place once per Omega: the direct solve is the last use of AMAT at that Omega.
+   ! The right sides of all the pairs of one Omega are then one block: ZGETRS with NRHS = number of pairs, per symmetry
+   ! block, as RADIATION_SOLVER. For each pair (s1, s2), Omega = omega_1 - omega_2:
+   !    b = B1 + B3 - dphi_I2/dn       panel values, through ASSB_RHS_FIELD
+   !      + B2                          through direct_rhs_b2_block (the Stokes form with G, ruling R7-1)
+   !    T_dir,k = i Omega rho int_S (phi_I2 + phi_D) n_k dS
+   ! with B1, B3, phi_I2 and the n_k (generalized normals of the body of mode k) taken as potential_pair takes them, so
+   ! that T_dir equals T_pot of potential_pair (qtf_b2 = body) by Green's theorem, to the mesh error. A pair with Omega < 0
+   ! is treated as potential_pair treats it: its phi_D solves the problem at -|Omega|, whose matrix and Green function are
+   ! the conjugates of those at |Omega|, so phi_D = conj(A^-1 r[conj b]), with r[.] the right side at |Omega|.
+   ! The free-surface forcing of phi_D is not included (Phase 7b). IRSP = 1 is refused (validate_second_order).
 
    USE Const_mod, ONLY: RXY
-   USE HAMS_mod, ONLY: NTHREAD
-   USE WaveDyn_mod, ONLY: H, NK, V, WVN
-   USE PanelMesh_mod, ONLY: ISX, ISY, DS, PNSZ, XYZ_P, DS_MULTI_COMB, PNSZ_MULTI_COMB, XYZ_GLOBAL_MULTI_COMB_P
+   USE HAMS_mod, ONLY: NTHREAD, ISOLV
+   USE WaveDyn_mod, ONLY: H, NK, V, WVN, W1
+   USE PanelMesh_mod, ONLY: ISX, ISY, DS, PNSZ, XYZ_P, DS_MULTI_COMB, PNSZ_MULTI_COMB, XYZ_GLOBAL_MULTI_COMB_P, IPIV, &
+                            IPIV_MULTI_COMB
+   USE LinearMatrix_mod, ONLY: AMAT, AMAT_MULTI
    USE Potentials_mod, ONLY: CGRN, RKBN, CGRN_MULTI_COMB, RKBN_MULTI_COMB
+   USE AssbMatx, ONLY: ASSB_RHS_FIELD
+   USE AssbMatxMulti, ONLY: ASSB_RHS_FIELD_MULTI
    USE SurfaceGeometry, ONLY: body_sizes, merge_nodes
    USE SharpEdge, ONLY: DEFAULT_EDGE_DEG
    USE INFG3D_Open, ONLY: INFGREEN3D
    USE FinGreen3D_Open, ONLY: FINGREEN3D
    USE SecondOrderTypes, ONLY: panel_mesh, surface_geom, first_order_state
-   USE FirstOrderState, ONLY: image_signs
+   USE FirstOrderState, ONLY: image_signs, wave_gravity
    USE NearFieldDrift, ONLY: pair_cross, rigid_displacement, waterline_point, KERNEL_DIFF
    USE WaterlineField, ONLY: rankine_panel_integral
    USE QTFPotential, ONLY: waterline_velocity
+   USE SecondOrderIncident, ONLY: incident2, incident2_pair, incident2_phi, incident2_grad
    USE SurfaceVelocity, ONLY: tangential_fit
    IMPLICIT NONE
    PRIVATE
 
    PUBLIC :: direct_rhs_b2, direct_rhs_b2_block, b2_stokes_densities, b2_stokes_at_point
    PUBLIC :: green_panel_integrals, stored_panel_integrals, green_line_integral, rankine_moments, sharp_edge_panels
+   PUBLIC :: direct_setup, direct_edge_mask, direct_factor, direct_solve, direct_at_omega
 
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
    ! As CALGREEN: a panel closer than this many panel sizes gets panel integrals of 1/r and of its image
    REAL(8), PARAMETER :: NEAR_PANEL_SIZES = 50D0
+   ! direct_at_omega takes the pairs of one Omega in blocks of at most this many bytes of work arrays (about 20 complex
+   ! values per panel and pair: the fields, the right sides, the B2 densities and their linear parts, phi_D)
+   REAL(8), PARAMETER :: DIRECT_BLOCK_BYTES = 256D6
+   ! The sharp-edge mask of the run (direct_setup): panels that keep the one-point rule in the B2 right side
+   LOGICAL, ALLOCATABLE :: edge_mask(:)
 
 CONTAINS
+
+   SUBROUTINE direct_setup(mesh, edge_deg, nmask)
+      ! Once per run, before direct_at_omega: the sharp-edge mask of sharp_edge_panels for the B2 right side, with edge_deg
+      ! (qtf_edge_angle). nmask, optional: the number of panels that keep the one-point rule.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      REAL(8), INTENT(IN) :: edge_deg
+      INTEGER, INTENT(OUT), OPTIONAL :: nmask
+
+      IF (ALLOCATED(edge_mask)) DEALLOCATE (edge_mask)
+      CALL sharp_edge_panels(mesh, edge_deg, edge_mask)
+      IF (PRESENT(nmask)) nmask = COUNT(edge_mask)
+   END SUBROUTINE direct_setup
+
+   FUNCTION direct_edge_mask() RESULT(mask)
+      ! The mask of direct_setup (empty before it)
+      LOGICAL, ALLOCATABLE :: mask(:)
+
+      IF (ALLOCATED(edge_mask)) THEN
+         mask = edge_mask
+      ELSE
+         ALLOCATE (mask(0))
+      END IF
+   END FUNCTION direct_edge_mask
+
+   SUBROUTINE direct_factor(mesh, is_multi)
+      ! With ISOLV /= 1, the LU factors of AMAT (AMAT_MULTI) in place, with the pivots in IPIV (IPIV_MULTI_COMB). With
+      ! ISOLV = 1 ASSB_LEFT has factored it already, and nothing is done. Once per Omega, after the radiation solve there.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      LOGICAL, INTENT(IN), OPTIONAL :: is_multi
+      INTEGER :: ip, nb, info
+      LOGICAL :: multi
+
+      IF (ISOLV == 1) RETURN
+      multi = mesh%nbody > 1
+      IF (PRESENT(is_multi)) multi = is_multi
+      nb = mesh%nbase
+      DO ip = 1, mesh%nsys
+         IF (multi) THEN
+            CALL ZGETRF(nb, nb, AMAT_MULTI(:, :, ip), nb, IPIV_MULTI_COMB(:, ip), info)
+         ELSE
+            CALL ZGETRF(nb, nb, AMAT(:, :, ip), nb, IPIV(:, ip), info)
+         END IF
+         IF (info /= 0) WRITE (*, '(a,I0,a,I0)') ' QTF direct: the factorisation of block ', ip, ' failed, INFO = ', info
+      END DO
+   END SUBROUTINE direct_factor
+
+   SUBROUTINE direct_solve(mesh, rhs, phi, is_multi)
+      ! phi_D for nrhs right sides at once, with the LU factors of AMAT (AMAT_MULTI) at Omega:
+      !   rhs  (nbase, nrhs, nsys), the block layout of ASSB_RHS_FIELD; overwritten by the solution of each block
+      !   phi  (n, nrhs), phi_D on the full panels: image a of base panel i is sum_ip RXY(a, ip) x(i, :, ip)/nsys, as
+      !        RADIATION_SOLVER builds MXPOT and radiation_psi expands it
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      COMPLEX(8), INTENT(INOUT) :: rhs(:, :, :)
+      COMPLEX(8), INTENT(OUT) :: phi(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL :: is_multi
+      INTEGER :: ip, nb, nrhs, info, f, im
+      LOGICAL :: multi
+
+      nb = mesh%nbase
+      nrhs = SIZE(rhs, 2)
+      IF (SIZE(rhs, 1) /= nb .OR. SIZE(rhs, 3) /= mesh%nsys .OR. SIZE(phi, 1) /= mesh%n .OR. SIZE(phi, 2) /= nrhs) THEN
+         WRITE (*, '(a)') ' direct_solve: rhs or phi does not have the size of the mesh.'
+         ERROR STOP 1
+      END IF
+      multi = mesh%nbody > 1
+      IF (PRESENT(is_multi)) multi = is_multi
+      IF (nrhs == 0) RETURN
+      DO ip = 1, mesh%nsys
+         IF (multi) THEN
+            CALL ZGETRS('No transpose', nb, nrhs, AMAT_MULTI(:, :, ip), nb, IPIV_MULTI_COMB(:, ip), rhs(:, :, ip), nb, info)
+         ELSE
+            CALL ZGETRS('No transpose', nb, nrhs, AMAT(:, :, ip), nb, IPIV(:, ip), rhs(:, :, ip), nb, info)
+         END IF
+      END DO
+      DO f = 1, mesh%n
+         im = mesh%image(f)
+         phi(f, :) = (0D0, 0D0)
+         DO ip = 1, mesh%nsys
+            phi(f, :) = phi(f, :) + RXY(im, ip)*rhs(mesh%base(f), :, ip)
+         END DO
+         phi(f, :) = phi(f, :)/mesh%nsys
+      END DO
+   END SUBROUTINE direct_solve
+
+   SUBROUTINE direct_at_omega(mesh, geom, omega, store, store_wl, pairs, tdir, is_multi, omega_tol, phi2_constant, seconds)
+      ! The direct load T_dir of every pair of the difference frequency omega (> 0), per unit amplitudes (header):
+      !   store, store_wl  the first-order states (nfreq, nbeta) and their waterline potentials (nwl, nfreq, nbeta), as
+      !                    QTFDriver keeps them
+      !   pairs            (4, npair): frequency and heading of state 1, then of state 2, in store; each pair with
+      !                    |omega_1 - omega_2| = omega within omega_tol (default 1e-6 max(omega_1, omega_2))
+      !   tdir             (6 nbody, npair), T_dir,k of each pair, e^{-i omega t}, as the sum of the terms of potential_pair
+      !   phi2_constant    optional test hook, as potential_pair: phi_I2 replaced by this constant (dphi_I2/dn = 0)
+      !   seconds          optional (3): wall time of the pair forcing with ASSB_RHS_FIELD, of the B2 right side
+      !                    (direct_rhs_b2_block) and of the factorisation, solve and load, for the log
+      ! The solver globals must be at omega, with CALGREEN (CALGREEN_MULTI) and ASSB_LEFT (ASSB_LEFT_MULTI) run there, as
+      ! RadiationOnlySolves leaves them after the radiation solve at omega; W1 is checked. direct_setup must have been
+      ! called for this mesh. AMAT is factored in place when ISOLV /= 1 (direct_factor).
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(surface_geom), INTENT(IN) :: geom
+      REAL(8), INTENT(IN) :: omega
+      TYPE(first_order_state), INTENT(IN) :: store(:, :)
+      COMPLEX(8), INTENT(IN) :: store_wl(:, :, :)
+      INTEGER, INTENT(IN) :: pairs(:, :)
+      COMPLEX(8), INTENT(OUT) :: tdir(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL :: is_multi
+      REAL(8), INTENT(IN), OPTIONAL :: omega_tol
+      COMPLEX(8), INTENT(IN), OPTIONAL :: phi2_constant
+      REAL(8), INTENT(OUT), OPTIONAL :: seconds(3)
+      COMPLEX(8), ALLOCATABLE :: vf(:, :, :), rf(:, :, :), r2(:, :, :), a(:, :), c(:, :, :), cl(:, :, :, :), e(:, :), &
+                                 phi(:, :), p2(:, :)
+      REAL(8), ALLOCATABLE :: dws(:)
+      INTEGER :: npair, nb, ns, n, nmode, first, last, nc, col, ncol_max
+      INTEGER(8) :: c0, c1, rate
+      REAL(8) :: sec(3)
+      LOGICAL :: multi
+
+      npair = SIZE(pairs, 2)
+      nb = mesh%nbase
+      ns = mesh%nsys
+      n = mesh%n
+      nmode = 6*mesh%nbody
+      IF (SIZE(pairs, 1) /= 4 .OR. SIZE(tdir, 1) /= nmode .OR. SIZE(tdir, 2) /= npair .OR. &
+          SIZE(store_wl, 1) /= geom%nwl) THEN
+         WRITE (*, '(a)') ' direct_at_omega: pairs, tdir or store_wl does not have the size of the mesh.'
+         ERROR STOP 1
+      END IF
+      IF (.NOT. ALLOCATED(edge_mask)) THEN
+         WRITE (*, '(a)') ' direct_at_omega: direct_setup has not been called.'
+         ERROR STOP 1
+      END IF
+      IF (SIZE(edge_mask) /= n) THEN
+         WRITE (*, '(a)') ' direct_at_omega: direct_setup was called for another mesh.'
+         ERROR STOP 1
+      END IF
+      IF (.NOT. (omega > 0D0) .OR. ABS(W1 - omega) > 1D-12*omega) THEN
+         WRITE (*, '(a,ES14.6,a,ES14.6,a)') ' direct_at_omega: Omega =', omega, ' rad/s, but the solver is at', W1, &
+            ' rad/s; the matrix and the Green function must be those of Omega.'
+         ERROR STOP 1
+      END IF
+      multi = mesh%nbody > 1
+      IF (PRESENT(is_multi)) multi = is_multi
+      tdir = (0D0, 0D0)
+      sec = 0D0
+      IF (PRESENT(seconds)) seconds = 0D0
+      IF (npair == 0) RETURN
+
+      CALL SYSTEM_CLOCK(c0, rate)
+      CALL direct_factor(mesh, multi)
+      CALL SYSTEM_CLOCK(c1)
+      sec(3) = sec(3) + REAL(c1 - c0, 8)/REAL(rate, 8)
+      ncol_max = MAX(1, INT(DIRECT_BLOCK_BYTES/(16D0*20D0*REAL(n, 8))))
+      DO first = 1, npair, ncol_max
+         last = MIN(npair, first + ncol_max - 1)
+         nc = last - first + 1
+         ALLOCATE (vf(nb, nc, ns), rf(nb, nc, ns), r2(nb, nc, ns), a(n, nc), c(3, n, nc), cl(3, 4, n, nc), &
+                   e(geom%nwl, nc), phi(n, nc), p2(n, nc), dws(nc))
+         CALL SYSTEM_CLOCK(c0)
+         DO col = 1, nc
+            CALL pair_forcing(first + col - 1, col)
+         END DO
+         IF (multi) THEN
+            CALL ASSB_RHS_FIELD_MULTI(vf, rf, nb, ns, nc)
+         ELSE
+            CALL ASSB_RHS_FIELD(vf, rf, nb, ns, nc)
+         END IF
+         CALL SYSTEM_CLOCK(c1)
+         sec(1) = sec(1) + REAL(c1 - c0, 8)/REAL(rate, 8)
+         CALL direct_rhs_b2_block(mesh, geom, a, c, e, r2, multi, cl)
+         CALL SYSTEM_CLOCK(c0)
+         sec(2) = sec(2) + REAL(c0 - c1, 8)/REAL(rate, 8)
+         rf = rf + r2
+         CALL direct_solve(mesh, rf, phi, multi)
+         DO col = 1, nc
+            IF (dws(col) < 0D0) phi(:, col) = CONJG(phi(:, col))
+            CALL pair_load(first + col - 1, col)
+         END DO
+         CALL SYSTEM_CLOCK(c1)
+         sec(3) = sec(3) + REAL(c1 - c0, 8)/REAL(rate, 8)
+         DEALLOCATE (vf, rf, r2, a, c, cl, e, phi, p2, dws)
+      END DO
+      IF (PRESENT(seconds)) seconds = sec
+
+   CONTAINS
+
+      SUBROUTINE pair_forcing(p, col)
+         ! Column col of the block for pair p: the panel field b - B2 (vf), the B2 densities and phi_I2 at the panels
+         ! (p2). The forcing is conjugated for Omega < 0 (header); p2 is not.
+         INTEGER, INTENT(IN) :: p, col
+         TYPE(incident2) :: inc
+         COMPLEX(8) :: gr2(3), dn2, d1(3), d2(3), v1(3), v2(3), q1(3), q2(3), hx(3), b1v, b3v, zero3(3), field
+         REAL(8) :: nv(3), x(3), dw, tol, g_wave
+         INTEGER :: f, b
+
+         ASSOCIATE (s1 => store(pairs(1, p), pairs(2, p)), s2 => store(pairs(3, p), pairs(4, p)))
+            dw = s1%omega - s2%omega
+            tol = 1D-6*MAX(s1%omega, s2%omega)
+            IF (PRESENT(omega_tol)) tol = omega_tol
+            IF (dw == 0D0 .OR. ABS(ABS(dw) - omega) > tol) THEN
+               WRITE (*, '(a,I0,a,ES14.6,a,ES14.6,a)') ' direct_at_omega: pair ', p, ' has Omega =', dw, &
+                  ' rad/s, not +-', omega, ' rad/s.'
+               ERROR STOP 1
+            END IF
+            dws(col) = dw
+            zero3 = (0D0, 0D0)
+            ! phi_I2 with the gravity of the first-order wave, as potential_part
+            g_wave = wave_gravity(s1%omega, s1%k, s1%h)
+            IF (.NOT. PRESENT(phi2_constant)) THEN
+               CALL incident2_pair(s1%omega, s1%k, s1%beta, s2%omega, s2%k, s2%beta, s1%h, g_wave, inc)
+            END IF
+            DO f = 1, n
+               b = mesh%body(f)
+               nv = mesh%nrm(:, f)
+               x = mesh%xc(:, f) - mesh%xr(:, b)
+               IF (PRESENT(phi2_constant)) THEN
+                  p2(f, col) = phi2_constant
+                  dn2 = (0D0, 0D0)
+               ELSE
+                  p2(f, col) = incident2_phi(inc, mesh%xc(:, f))
+                  CALL incident2_grad(inc, mesh%xc(:, f), gr2)
+                  dn2 = SUM(nv*gr2)
+               END IF
+               ! B1 = (Xdot - u).(alpha x n) = n.[(Xdot - u) x alpha], as potential_pair
+               d1 = rigid_displacement(s1%xi(:, b), x)
+               d2 = rigid_displacement(s2%xi(:, b), x)
+               v1 = -CI*s1%omega*d1 - (s1%grad_i(:, f) + s1%grad_p(:, f))
+               v2 = -CI*s2%omega*d2 - (s2%grad_i(:, f) + s2%grad_p(:, f))
+               b1v = SUM(nv*pair_cross(KERNEL_DIFF, v1, s1%xi(4:6, b), v2, s2%xi(4:6, b)))
+               ! B3 = n.d/dt(H x), H x = (1/2) alpha x (alpha x x)
+               q1 = rigid_displacement([zero3, s1%xi(4:6, b)], x)
+               q2 = rigid_displacement([zero3, s2%xi(4:6, b)], x)
+               hx = 0.5D0*pair_cross(KERNEL_DIFF, s1%xi(4:6, b), q1, s2%xi(4:6, b), q2)
+               b3v = -CI*dw*SUM(nv*hx)
+               field = b1v + b3v - dn2
+               IF (dw < 0D0) field = CONJG(field)
+               vf(mesh%base(f), col, mesh%image(f)) = field
+            END DO
+            ! B2 densities with the sharp-edge mask of the run (direct_setup)
+            CALL b2_stokes_densities(mesh, geom, s1, s2, store_wl(:, pairs(1, p), pairs(2, p)), &
+                                     store_wl(:, pairs(3, p), pairs(4, p)), a(:, col), c(:, :, col), e(:, col), &
+                                     cl(:, :, :, col), edge_mask)
+            IF (dw < 0D0) THEN
+               a(:, col) = CONJG(a(:, col))
+               c(:, :, col) = CONJG(c(:, :, col))
+               e(:, col) = CONJG(e(:, col))
+               cl(:, :, :, col) = CONJG(cl(:, :, :, col))
+            END IF
+         END ASSOCIATE
+      END SUBROUTINE pair_forcing
+
+      SUBROUTINE pair_load(p, col)
+         ! T_dir,k = i Omega rho int_S (phi_I2 + phi_D) n_k dS over the panels of the body of mode k
+         INTEGER, INTENT(IN) :: p, col
+         INTEGER :: f, b, j
+
+         DO f = 1, n
+            b = mesh%body(f)
+            DO j = 1, 6
+               tdir(6*(b - 1) + j, p) = tdir(6*(b - 1) + j, p) + (p2(f, col) + phi(f, col))*mesh%nj(j, f)*mesh%area(f)
+            END DO
+         END DO
+         tdir(:, p) = CI*dws(col)*store(pairs(1, p), pairs(2, p))%rho*tdir(:, p)
+      END SUBROUTINE pair_load
+
+   END SUBROUTINE direct_at_omega
+
 
    SUBROUTINE direct_rhs_b2(mesh, geom, s1, s2, wl1, wl2, rhs, is_multi, stored, edge_deg)
       ! The B2 part of the right side for the pair (s1, s2), difference-frequency kernel:
@@ -331,10 +622,15 @@ CONTAINS
       COMPLEX(8), INTENT(OUT) :: out(:)
       COMPLEX(8), INTENT(IN), OPTIONAL :: cl(:, :, :, :)
       INTEGER, INTENT(IN), OPTIONAL :: row
-      COMPLEX(8) :: g_int, grad_int(3), g_line
-      REAL(8) :: xv(3, 4), m0, g0(3), m1(3, 3), m1i(3, 3), mg(3), mgi(3)
-      INTEGER :: p, iw, k, nv
+      COMPLEX(8) :: g_int, grad_int(3), g_line, acc
+      REAL(8) :: xv(3, 4), m0, g0(3), m1(3, 3), m1i(3, 3), mg(3), mgi(3), xim(3)
+      INTEGER :: p, iw, k, nv, m, ia, ib
+      ! The loops below are written out: under /heap-arrays0 an array temporary (an array constructor, a vector
+      ! subscript, SUM of an array expression) is a heap allocation, and the threads of direct_rhs_b2_block then wait
+      ! on each other in the allocator. With this routine, rankine_moments and stored_panel_integrals written so, the B2
+      ! right side on 480 panels went from 0.9 s at both 1 and 4 threads to 0.68 s and 0.34 s (Phase 7a Task 3)
 
+      xim = [x(1), x(2), -x(3)]
       out = (0D0, 0D0)
       DO p = 1, mesh%n
          IF (PRESENT(row)) THEN
@@ -343,23 +639,35 @@ CONTAINS
             CALL green_panel_integrals(mesh, x, p, is_multi, g_int, grad_int)
          END IF
          DO k = 1, SIZE(out)
-            out(k) = out(k) + g_int*a(p, k) + SUM(grad_int*c(:, p, k))
+            out(k) = out(k) + g_int*a(p, k) + (grad_int(1)*c(1, p, k) + grad_int(2)*c(2, p, k) + grad_int(3)*c(3, p, k))
          END DO
          IF (.NOT. PRESENT(cl)) CYCLE
-         IF (NORM2(x - mesh%xc(:, p)) > NEAR_PANEL_SIZES*mesh%psize(p)) CYCLE
+         IF ((x(1) - mesh%xc(1, p))**2 + (x(2) - mesh%xc(2, p))**2 + (x(3) - mesh%xc(3, p))**2 > &
+             (NEAR_PANEL_SIZES*mesh%psize(p))**2) CYCLE
          nv = mesh%ncn(p)
-         xv(:, 1:nv) = mesh%xnode(:, mesh%ncon(1:nv, p))
+         DO m = 1, nv
+            xv(:, m) = mesh%xnode(:, mesh%ncon(m, p))
+         END DO
          CALL rankine_moments(xv, nv, mesh%nrm(:, p), x, mesh%xc(:, p), m0, g0, m1, mg)
-         CALL rankine_moments(xv, nv, mesh%nrm(:, p), [x(1), x(2), -x(3)], mesh%xc(:, p), m0, g0, m1i, mgi)
+         CALL rankine_moments(xv, nv, mesh%nrm(:, p), xim, mesh%xc(:, p), m0, g0, m1i, mgi)
          m1 = m1 + m1i
          mg = mg + mgi
          DO k = 1, SIZE(out)
-            out(k) = out(k) + SUM(m1*cl(:, 1:3, p, k)) + SUM(mg*cl(:, 4, p, k))
+            acc = (0D0, 0D0)
+            DO ib = 1, 3
+               DO ia = 1, 3
+                  acc = acc + m1(ia, ib)*cl(ia, ib, p, k)
+               END DO
+               acc = acc + mg(ib)*cl(ib, 4, p, k)
+            END DO
+            out(k) = out(k) + acc
          END DO
       END DO
       DO iw = 1, geom%nwl
          CALL green_line_integral(x, geom%wl_x1(:, iw), geom%wl_x2(:, iw), mesh%psize(geom%wl_panel(iw)), g_line)
-         out = out - g_line*e(iw, :)
+         DO k = 1, SIZE(out)
+            out(k) = out(k) - g_line*e(iw, k)
+         END DO
       END DO
    END SUBROUTINE b2_stokes_at_point
 
@@ -371,27 +679,45 @@ CONTAINS
       LOGICAL, INTENT(IN) :: is_multi
       COMPLEX(8), INTENT(OUT) :: g_int, grad_int(3)
       COMPLEX(8) :: grn(4)
-      REAL(8) :: rk(4), f(3), area, dist, psz
-      INTEGER :: i, j, is
+      REAL(8) :: rk(4), f(3), area, dist2, psz
+      INTEGER :: i, j, is, k
+      ! Scalar code, no array temporaries (see b2_stokes_at_point): this runs n^2 times per Omega
 
       i = mesh%base(row)
       j = mesh%base(p)
       is = MERGE(1, 2, mesh%image(row) == mesh%image(p))
-      f = image_signs(mesh%image(p), ISX, ISY)
+      ! image_signs(mesh%image(p), ISX, ISY)
+      f = 1D0
+      IF (mesh%image(p) == 2) THEN
+         IF (ISX == 1 .AND. ISY == 0) THEN
+            f(1) = -1D0
+         ELSE
+            f(2) = -1D0
+         END IF
+      END IF
+      dist2 = 0D0
       IF (is_multi) THEN
-         grn = CGRN_MULTI_COMB(i, j, is, :)
-         rk = RKBN_MULTI_COMB(i, j, is, :)
+         DO k = 1, 4
+            grn(k) = CGRN_MULTI_COMB(i, j, is, k)
+            rk(k) = RKBN_MULTI_COMB(i, j, is, k)
+         END DO
          area = DS_MULTI_COMB(j)
          psz = PNSZ_MULTI_COMB(j)
-         dist = NORM2(XYZ_GLOBAL_MULTI_COMB_P(i, :) - XYZ_GLOBAL_MULTI_COMB_P(j, :))
+         DO k = 1, 3
+            dist2 = dist2 + (XYZ_GLOBAL_MULTI_COMB_P(i, k) - XYZ_GLOBAL_MULTI_COMB_P(j, k))**2
+         END DO
       ELSE
-         grn = CGRN(i, j, is, :)
-         rk = RKBN(i, j, is, :)
+         DO k = 1, 4
+            grn(k) = CGRN(i, j, is, k)
+            rk(k) = RKBN(i, j, is, k)
+         END DO
          area = DS(j)
          psz = PNSZ(j)
-         dist = NORM2(XYZ_P(i, :) - XYZ_P(j, :))
+         DO k = 1, 3
+            dist2 = dist2 + (XYZ_P(i, k) - XYZ_P(j, k))**2
+         END DO
       END IF
-      IF (dist <= NEAR_PANEL_SIZES*psz) THEN
+      IF (SQRT(dist2) <= NEAR_PANEL_SIZES*psz) THEN
          g_int = rk(1) + grn(1)*area
          grad_int = f*(rk(2:4) + grn(2:4)*area)
       ELSE
@@ -560,21 +886,37 @@ CONTAINS
       REAL(8), INTENT(OUT) :: m0, g0(3), m1(3, 3)
       REAL(8), INTENT(OUT), OPTIONAL :: mg(3)
       REAL(8) :: e1(3), e2(3), o(3), q(2, 4), xp(2), qc(2), cen(2), z, az, p1(2), p2(2), tau(2), nu(2), el, s0, h, &
-                 r1, r2, i0, t1, t2, g2(2), m2(2, 2), tiny, mr(2), dd
+                 r1, r2, i0, t1, t2, g2(2), m2(2, 2), tiny, mr(2), dd, dv(3), dp(2)
       INTEGER :: k
+      ! Written without array expressions as arguments or constructors: under /heap-arrays0 each is a heap allocation, and
+      ! the threads of direct_rhs_b2_block then wait on each other in the allocator (this routine runs twice per near pair)
 
-      o = SUM(xv(:, 1:nv), 2)/nv
-      e1 = xv(:, 1) - o
-      e1 = e1 - DOT_PRODUCT(e1, nrm)*nrm
-      e1 = e1/NORM2(e1)
-      e2 = [nrm(2)*e1(3) - nrm(3)*e1(2), nrm(3)*e1(1) - nrm(1)*e1(3), nrm(1)*e1(2) - nrm(2)*e1(1)]
+      o = 0D0
       DO k = 1, nv
-         q(:, k) = [DOT_PRODUCT(xv(:, k) - o, e1), DOT_PRODUCT(xv(:, k) - o, e2)]
+         o = o + xv(:, k)
       END DO
-      cen = SUM(q(:, 1:nv), 2)/nv
-      xp = [DOT_PRODUCT(x - o, e1), DOT_PRODUCT(x - o, e2)]
-      qc = [DOT_PRODUCT(xc - o, e1), DOT_PRODUCT(xc - o, e2)]
-      z = DOT_PRODUCT(x - o, nrm)
+      o = o/nv
+      e1 = xv(:, 1) - o
+      e1 = e1 - (e1(1)*nrm(1) + e1(2)*nrm(2) + e1(3)*nrm(3))*nrm
+      e1 = e1/SQRT(e1(1)**2 + e1(2)**2 + e1(3)**2)
+      e2(1) = nrm(2)*e1(3) - nrm(3)*e1(2)
+      e2(2) = nrm(3)*e1(1) - nrm(1)*e1(3)
+      e2(3) = nrm(1)*e1(2) - nrm(2)*e1(1)
+      cen = 0D0
+      DO k = 1, nv
+         dv = xv(:, k) - o
+         q(1, k) = dv(1)*e1(1) + dv(2)*e1(2) + dv(3)*e1(3)
+         q(2, k) = dv(1)*e2(1) + dv(2)*e2(2) + dv(3)*e2(3)
+         cen = cen + q(:, k)
+      END DO
+      cen = cen/nv
+      dv = x - o
+      xp(1) = dv(1)*e1(1) + dv(2)*e1(2) + dv(3)*e1(3)
+      xp(2) = dv(1)*e2(1) + dv(2)*e2(2) + dv(3)*e2(3)
+      z = dv(1)*nrm(1) + dv(2)*nrm(2) + dv(3)*nrm(3)
+      dv = xc - o
+      qc(1) = dv(1)*e1(1) + dv(2)*e1(2) + dv(3)*e1(3)
+      qc(2) = dv(1)*e2(1) + dv(2)*e2(2) + dv(3)*e2(3)
       az = ABS(z)
 
       m0 = 0D0
@@ -584,16 +926,21 @@ CONTAINS
       DO k = 1, nv
          p1 = q(:, k)
          p2 = q(:, MOD(k, nv) + 1)
-         el = NORM2(p2 - p1)
+         dp = p2 - p1
+         el = SQRT(dp(1)**2 + dp(2)**2)
          IF (el <= 0D0) CYCLE
          tiny = 1D-12*el
-         tau = (p2 - p1)/el
-         nu = [tau(2), -tau(1)]
-         IF (DOT_PRODUCT(nu, 0.5D0*(p1 + p2) - cen) < 0D0) nu = -nu
-         s0 = DOT_PRODUCT(xp - p1, tau)
-         h = DOT_PRODUCT(p1 - xp, nu)
-         r1 = SQRT(SUM((p1 - xp)**2) + z*z)
-         r2 = SQRT(SUM((p2 - xp)**2) + z*z)
+         tau = dp/el
+         nu(1) = tau(2)
+         nu(2) = -tau(1)
+         dp = 0.5D0*(p1 + p2) - cen
+         IF (nu(1)*dp(1) + nu(2)*dp(2) < 0D0) nu = -nu
+         dp = p1 - xp
+         s0 = -(dp(1)*tau(1) + dp(2)*tau(2))
+         h = dp(1)*nu(1) + dp(2)*nu(2)
+         r1 = SQRT(dp(1)**2 + dp(2)**2 + z*z)
+         dp = p2 - xp
+         r2 = SQRT(dp(1)**2 + dp(2)**2 + z*z)
          i0 = 0D0
          IF (r1 + r2 - el > tiny) i0 = LOG((r1 + r2 + el)/(r1 + r2 - el))
          IF (ABS(h) > tiny) THEN

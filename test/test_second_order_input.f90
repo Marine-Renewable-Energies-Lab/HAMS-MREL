@@ -253,6 +253,18 @@ subroutine test_validate_rejects(error)
   call check(error, .not. ok, "source velocity with irregular frequency removal accepted")
   if (allocated(error)) return
   call check(error, index(msg, "IRSP") > 0, "irsp message: "//trim(msg))
+  if (allocated(error)) return
+
+  ! The direct method (qtf_direct = 1) has no lid rows for irregular frequency removal
+  src = near; src%qtf = 1; src%qtf_terms = QTF_TERMS_BODY; src%qtf_direct = 1
+  call validate_second_order(src, 1, -1d0, 1, 1, .false., ok, msg)
+  call check(error, .not. ok, "qtf_direct with irregular frequency removal accepted")
+  if (allocated(error)) return
+  call check(error, trim(msg) == "qtf_direct = 1 cannot be used with irregular frequency removal (IRSP=1) in ControlFile.in.", &
+             "qtf_direct irsp message: "//trim(msg))
+  if (allocated(error)) return
+  call validate_second_order(src, 1, -1d0, 1, 0, .false., ok, msg)
+  call check(error, ok, "qtf_direct without irregular frequency removal refused: "//trim(msg))
 end subroutine test_validate_rejects
 
 subroutine test_validate_accepts(error)

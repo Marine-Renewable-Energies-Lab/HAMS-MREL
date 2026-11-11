@@ -5,21 +5,25 @@
 !> (see unit_tester.f90).
 module test_qtf_direct
   use testdrive, only : new_unittest, unittest_type, error_type, check
-  use HAMS_mod, only : NTHREAD
+  use HAMS_mod, only : NTHREAD, ISOLV
   use WaveDyn_mod, only : VWAVE => V
   use PanelMesh_mod, only : ISX, ISY, NSYS, NELEM, DS, PNSZ, XYZ_P, DXYZ_P, DS_MULTI_COMB, PNSZ_MULTI_COMB, &
-                            XYZ_GLOBAL_MULTI_COMB_P, DXYZ_MULTI_COMB
+                            XYZ_GLOBAL_MULTI_COMB_P, DXYZ_MULTI_COMB, IPIV, IPIV_MULTI_COMB
   use Inerfs_mod, only : TNELEM
-  use Potentials_mod, only : CGRN, RKBN, CGRN_MULTI_COMB, RKBN_MULTI_COMB
+  use Potentials_mod, only : CGRN, RKBN, CGRN_MULTI_COMB, RKBN_MULTI_COMB, MXPOT, MXPOT_MULTI_COMB
+  use LinearMatrix_mod, only : AMAT, BRMAT, AMAT_MULTI, BRMAT_MULTI
   use Const_mod, only : RXY
-  use AssbMatx, only : ASSB_RBC, ASSB_RHS_FIELD
-  use AssbMatxMulti, only : ASSB_RBC_MULTI, ASSB_RHS_FIELD_MULTI
+  use AssbMatx, only : ASSB_RBC, ASSB_RHS_FIELD, ASSB_LEFT, RADIATION_SOLVER
+  use AssbMatxMulti, only : ASSB_RBC_MULTI, ASSB_RHS_FIELD_MULTI, ASSB_LEFT_MULTI, RADIATION_SOLVER_MULTI
+  use ImplementSubs, only : SetWaveFromOmega
   use SecondOrderTypes, only : panel_mesh, surface_geom, first_order_state
-  use FirstOrderState, only : image_signs
+  use FirstOrderState, only : image_signs, radiation_psi, wave_gravity
+  use QTFPotential, only : potential_pair, psi_surface_gradient, psi_waterline, NPOT_TERMS
   use SurfaceVelocity, only : tangential_fit
   use NearFieldDrift, only : pair_product, rigid_displacement, KERNEL_DIFF
   use QTFDirect, only : direct_rhs_b2, b2_stokes_densities, b2_stokes_at_point, green_panel_integrals, rankine_moments, &
-                        sharp_edge_panels
+                        sharp_edge_panels, direct_rhs_b2_block, direct_setup, direct_edge_mask, direct_factor, &
+                        direct_solve, direct_at_omega
   use SharpEdge, only : DEFAULT_EDGE_DEG
   use CalGreenFunc, only : CALGREEN
   use CalGreenFuncMulti, only : CALGREEN_MULTI
@@ -52,6 +56,15 @@ module test_qtf_direct
   real(8), parameter :: stored_limit = 1d-5
   ! Sphere of radius 5 at centre depth 20: 128, 512 and 2048 panels
   integer, parameter :: sph_nlat(3) = [8, 16, 32]
+  ! Phase 7a Task 3. B2 by the Stokes form against ASSB_RHS_FIELD of the analytic panel values (512-panel sphere): the
+  ! mesh error, 7.9e-3 measured; a sign error gives about 2
+  real(8), parameter :: b2_sign_limit = 2d-2
+  ! b = n_k against psi_k: the same matrix and right side, rounding only
+  real(8), parameter :: unit_normal_limit = 1d-10
+  ! The guard effect on the production path against the same B2 parts through direct_solve: rounding only
+  real(8), parameter :: guard_limit = 1d-8
+  ! T_dir against T_pot of the indirect method (512-panel sphere): the mesh error, 9.5e-4 measured
+  real(8), parameter :: indirect_limit = 3d-3
 
 contains
 
@@ -65,7 +78,12 @@ contains
       new_unittest("rhs_b2_stokes_vs_direct_off_surface", test_b2_off_surface), &
       new_unittest("rhs_b2_half_matches_whole", test_b2_half), &
       new_unittest("rhs_b2_stored_matches_direct", test_b2_stored), &
-      new_unittest("rhs_b2_sharp_edge_fallback", test_b2_sharp_edge) &
+      new_unittest("rhs_b2_sharp_edge_fallback", test_b2_sharp_edge), &
+      new_unittest("rhs_b2_sign_through_rhs_field", test_b2_sign), &
+      new_unittest("direct_zero_forcing", test_direct_zero_forcing), &
+      new_unittest("direct_unit_normal_is_radiation", test_direct_unit_normal), &
+      new_unittest("direct_edge_guard_production", test_direct_edge_guard), &
+      new_unittest("direct_matches_indirect_pair", test_direct_vs_indirect) &
       ]
   end subroutine collect_qtf_direct
 
@@ -941,5 +959,333 @@ contains
     print '(4x,a)', trim(line)
     call check(error, nmask == 64 .and. wrong == 0 .and. nlinear == mesh%n - nmask, line)
   end subroutine test_b2_sharp_edge
+
+  ! ------------------------------------------------------------------------------------------------ the solve at Omega
+
+  !> The radiation problem at omega on the ne base panels of load_panels (multi = .false.) or load_multi (two bodies), as
+  !> SolveRadiation and SolveRadiationMulti of HAMS_Prog run it with IRSP = 0 and the ISOLV of the caller: the stored Green
+  !> function, AMAT (factored when ISOLV = 1), BRMAT and MXPOT at omega. The wave of the solver globals is set to omega
+  !> by SetWaveFromOmega, as RadiationOnlySolves does it; the depth is that of the last set_wave.
+  subroutine radiation_at(omega, multi, ne)
+    real(8), intent(in) :: omega
+    logical, intent(in) :: multi
+    integer, intent(in) :: ne
+    call SetWaveFromOmega(omega)
+    TNELEM = ne
+    if (.not. multi) then
+      if (allocated(CGRN)) deallocate(CGRN)
+      if (allocated(RKBN)) deallocate(RKBN)
+      if (allocated(AMAT)) deallocate(AMAT)
+      if (allocated(BRMAT)) deallocate(BRMAT)
+      if (allocated(IPIV)) deallocate(IPIV)
+      allocate(CGRN(ne, ne, NSYS, 4), RKBN(ne, ne, NSYS, 4), AMAT(ne, ne, NSYS), BRMAT(ne, 6, NSYS), IPIV(ne, NSYS))
+      call CALGREEN
+      call ASSB_LEFT(AMAT, IPIV, ne, NSYS)
+      call ASSB_RBC(BRMAT, ne, NSYS)
+      call RADIATION_SOLVER(AMAT, BRMAT, IPIV, MXPOT, ne, NSYS)
+    else
+      if (allocated(CGRN_MULTI_COMB)) deallocate(CGRN_MULTI_COMB)
+      if (allocated(RKBN_MULTI_COMB)) deallocate(RKBN_MULTI_COMB)
+      if (allocated(AMAT_MULTI)) deallocate(AMAT_MULTI)
+      if (allocated(BRMAT_MULTI)) deallocate(BRMAT_MULTI)
+      if (allocated(IPIV_MULTI_COMB)) deallocate(IPIV_MULTI_COMB)
+      allocate(CGRN_MULTI_COMB(ne, ne, NSYS, 4), RKBN_MULTI_COMB(ne, ne, NSYS, 4), AMAT_MULTI(ne, ne, NSYS), &
+               BRMAT_MULTI(ne, 12, NSYS), IPIV_MULTI_COMB(ne, NSYS))
+      call CALGREEN_MULTI
+      call ASSB_LEFT_MULTI(AMAT_MULTI, IPIV_MULTI_COMB, ne, NSYS)
+      BRMAT_MULTI = (0d0, 0d0)
+      call ASSB_RBC_MULTI(BRMAT_MULTI(:, 1:6, :), ne, NSYS, 1, ne/2)
+      call ASSB_RBC_MULTI(BRMAT_MULTI(:, 7:12, :), ne, NSYS, ne/2 + 1, ne)
+      call RADIATION_SOLVER_MULTI(AMAT_MULTI, BRMAT_MULTI, IPIV_MULTI_COMB, MXPOT_MULTI_COMB, ne, NSYS)
+    end if
+  end subroutine radiation_at
+
+  !> The QTF store of two states (frequency 1 and 2, one heading) and the pairs (1, 2) and (2, 1), Omega = +-(w1 - w2).
+  subroutine two_state_store(mesh, geom, depth, x1, x2, store, store_wl, pairs)
+    type(panel_mesh), intent(in) :: mesh
+    type(surface_geom), intent(in) :: geom
+    real(8), intent(in) :: depth
+    complex(8), intent(in) :: x1(:, :), x2(:, :)
+    type(first_order_state), allocatable, intent(out) :: store(:, :)
+    complex(8), allocatable, intent(out) :: store_wl(:, :, :)
+    integer, allocatable, intent(out) :: pairs(:, :)
+    complex(8), allocatable :: wl1(:), wl2(:)
+    allocate(store(2, 1), store_wl(geom%nwl, 2, 1))
+    call make_state(mesh, geom, w1, b1, depth, x1, store(1, 1), wl1)
+    call make_state(mesh, geom, w2, b2, depth, x2, store(2, 1), wl2)
+    store_wl(:, 1, 1) = wl1
+    store_wl(:, 2, 1) = wl2
+    pairs = reshape([1, 1, 2, 1, 2, 1, 1, 1], [4, 2])
+  end subroutine two_state_store
+
+  !> The unit normals n_k of each mode as panel fields in the layout of ASSB_RHS_FIELD: V(i, k, a) on image a of base
+  !> panel i, n_k (mesh%nj) on the panels of the body of mode k and 0 on the others.
+  subroutine unit_normal_fields(mesh, vf)
+    type(panel_mesh), intent(in) :: mesh
+    complex(8), allocatable, intent(out) :: vf(:, :, :)
+    integer :: f, k, kb
+    allocate(vf(mesh%nbase, 6*mesh%nbody, mesh%nsys))
+    vf = (0d0, 0d0)
+    do f = 1, mesh%n
+      do k = 1, 6*mesh%nbody
+        kb = (k - 1)/6 + 1
+        if (mesh%body(f) == kb) vf(mesh%base(f), k, mesh%image(f)) = mesh%nj(k - 6*(kb - 1), f)
+      end do
+    end do
+  end subroutine unit_normal_fields
+
+  !> M4: the B2 right side of direct_rhs_b2 (Stokes form with G, stored integrals) against ASSB_RHS_FIELD with the
+  !> analytic panel values B2 = -n.[(X.grad)u], on the sphere of the smooth test (512 panels, depth 50). Both are
+  !> int G B2 dS at the collocation points, so they agree to the mesh error, and a sign error in either would make
+  !> them differ by twice the right side. This pins the sign of B2 on the path where it is added to the other parts of b.
+  subroutine test_b2_sign(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: full, mesh
+    type(surface_geom) :: geom
+    type(first_order_state) :: s1, s2
+    complex(8) :: x1(6, 1), x2(6, 1)
+    complex(8), allocatable :: wd(:), wg(:, :), vf(:, :, :), rf(:, :, :), r(:, :), wl(:)
+    real(8) :: rel, rel_flipped
+    character(len=200) :: line
+
+    call set_wave(50d0)
+    NTHREAD = 4
+    call make_sphere(5d0, [0d0, 0d0, -20d0], sph_nlat(2), full)
+    call load_panels(full, 0, 0, mesh)
+    call geometry(mesh, geom, error)
+    if (allocated(error)) return
+    if (allocated(CGRN)) deallocate(CGRN)
+    if (allocated(RKBN)) deallocate(RKBN)
+    allocate(CGRN(NELEM, NELEM, NSYS, 4), RKBN(NELEM, NELEM, NSYS, 4))
+    call CALGREEN
+    call motions(x1, x2)
+    call velocity_state(mesh, w1, b1, x1, s1)
+    call velocity_state(mesh, w2, b2, x2, s2)
+    call direct_density(mesh, geom, x1, x2, wd, wg)
+    allocate(vf(mesh%nbase, 1, 1), rf(mesh%nbase, 1, 1), r(mesh%nbase, 1), wl(0))
+    vf(:, 1, 1) = -wd
+    call ASSB_RHS_FIELD(vf, rf, mesh%nbase, 1, 1)
+    call direct_rhs_b2(mesh, geom, s1, s2, wl, wl, r)
+    rel = maxval(abs(rf(:, 1, 1) - r(:, 1)))/maxval(abs(r))
+    rel_flipped = maxval(abs(rf(:, 1, 1) + r(:, 1)))/maxval(abs(r))
+    write(line, '(a,es10.2,a,es10.2)') "B2 by the Stokes form against ASSB_RHS_FIELD of the panel values, relative ", rel, &
+      "; with the sign flipped ", rel_flipped
+    print '(4x,a)', trim(line)
+    call check(error, rel < b2_sign_limit .and. rel_flipped > 1d0, line)
+  end subroutine test_b2_sign
+
+  !> With b = 0 the load is zero: both bodies fixed (xi = 0, so B1 = B2 = B3 = 0) and phi_I2 = 0 (the test hook of
+  !> potential_pair), on the production path direct_at_omega, for Omega > 0 and < 0. With the motions the load is not zero.
+  subroutine test_direct_zero_forcing(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: full, mesh
+    type(surface_geom) :: geom
+    type(first_order_state), allocatable :: store(:, :)
+    complex(8), allocatable :: store_wl(:, :, :), t(:, :)
+    integer, allocatable :: pairs(:, :)
+    complex(8) :: zx(6, 1), x1(6, 1), x2(6, 1)
+    character(len=200) :: line
+
+    call make_cylinder(5d0, 5d0, 16, 4, 3, full, .true.)
+    call set_wave(10d0)
+    NTHREAD = 4
+    ISOLV = 1
+    call load_panels(full, 0, 0, mesh)
+    call geometry(mesh, geom, error)
+    if (allocated(error)) return
+    call radiation_at(w1 - w2, .false., mesh%nbase)
+    call direct_setup(mesh, DEFAULT_EDGE_DEG)
+    zx = (0d0, 0d0)
+    call two_state_store(mesh, geom, 10d0, zx, zx, store, store_wl, pairs)
+    allocate(t(6, 2))
+    call direct_at_omega(mesh, geom, w1 - w2, store, store_wl, pairs, t, phi2_constant=(0d0, 0d0))
+    write(line, '(a,es10.2)') "b = 0: largest |T_dir| ", maxval(abs(t))
+    print '(4x,a)', trim(line)
+    call check(error, all(t == (0d0, 0d0)), line)
+    if (allocated(error)) return
+    call motions(x1, x2)
+    call two_state_store(mesh, geom, 10d0, x1, x2, store, store_wl, pairs)
+    call direct_at_omega(mesh, geom, w1 - w2, store, store_wl, pairs, t, phi2_constant=(0d0, 0d0))
+    write(line, '(a,es10.2)') "with the motions: smallest pair max |T_dir| ", minval(maxval(abs(t), dim=1))
+    print '(4x,a)', trim(line)
+    call check(error, minval(maxval(abs(t), dim=1)) > 0d0, line)
+  end subroutine test_direct_zero_forcing
+
+  !> With b = n_k the solution of direct_solve (right side by ASSB_RHS_FIELD, the factored AMAT at Omega) is psi_k of the
+  !> radiation solve at Omega (RADIATION_SOLVER, radiation_psi): the same matrix and the same right side, so to rounding.
+  !> The cylinder of the half test, whole at depth 10, half (ISY = 1) in deep water, two cylinders in the multi-body arrays
+  !> at depth 10, and whole with ISOLV = 2 (AMAT unfactored by ASSB_LEFT, factored by direct_factor).
+  subroutine test_direct_unit_normal(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: full, mesh
+    complex(8), allocatable :: vf(:, :, :), rf(:, :, :), phi(:, :), psi(:, :)
+    real(8) :: worst, w, d
+    real(8), parameter :: om = 0.4d0
+    integer :: icase, nb
+    logical :: multi
+    character(len=200) :: line
+
+    call make_cylinder(5d0, 5d0, 16, 4, 3, full, .true.)
+    worst = 0d0
+    do icase = 1, 4
+      d = merge(-1d0, 10d0, icase == 2)
+      multi = icase == 3
+      call set_wave(d)
+      NTHREAD = 4
+      ISOLV = 1
+      if (multi) then
+        call load_multi(0, mesh)
+      else
+        call load_panels(full, 0, merge(1, 0, icase == 2), mesh)
+      end if
+      nb = mesh%nbase
+      call radiation_at(om, multi, nb)
+      allocate(psi(mesh%n, 6*mesh%nbody), phi(mesh%n, 6*mesh%nbody), rf(nb, 6*mesh%nbody, mesh%nsys))
+      if (multi) then
+        call radiation_psi(mesh, om, MXPOT_MULTI_COMB, psi)
+      else
+        call radiation_psi(mesh, om, MXPOT, psi)
+      end if
+      if (icase == 4) then
+        ISOLV = 2
+        call ASSB_LEFT(AMAT, IPIV, nb, NSYS)
+        call direct_factor(mesh)
+      end if
+      call unit_normal_fields(mesh, vf)
+      if (multi) then
+        call ASSB_RHS_FIELD_MULTI(vf, rf, nb, mesh%nsys, 6*mesh%nbody)
+      else
+        call ASSB_RHS_FIELD(vf, rf, nb, mesh%nsys, 6*mesh%nbody)
+      end if
+      call direct_solve(mesh, rf, phi, multi)
+      w = maxval(abs(phi - psi))/maxval(abs(psi))
+      write(line, '(a,i0,a,i0,a,i0,a,es10.2)') "case ", icase, ": ", mesh%n, " panels, nsys ", mesh%nsys, &
+        ", |phi - psi_k| relative ", w
+      print '(4x,a)', trim(line)
+      worst = max(worst, w)
+      deallocate(psi, phi, rf, vf)
+    end do
+    ISOLV = 1
+    ISX = 0; ISY = 0; NSYS = 1
+    write(line, '(a,es10.2)') "b = n_k against psi_k, worst relative difference ", worst
+    call check(error, worst <= unit_normal_limit, line)
+  end subroutine test_direct_unit_normal
+
+  !> M9: the sharp-edge guard on the production path. On the sharp cylinder (448 panels), direct_setup at the default
+  !> angle masks the 64 rim panels, and the load of direct_at_omega changes from the unmasked run (direct_setup at 180
+  !> degrees, no panel masked) by exactly the B2 linear parts of the masked panels: their right side through direct_solve
+  !> and the load integral.
+  subroutine test_direct_edge_guard(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: full, mesh
+    type(surface_geom) :: geom
+    type(first_order_state), allocatable :: store(:, :)
+    complex(8), allocatable :: store_wl(:, :, :), tm(:, :), tn(:, :), a(:, :), c(:, :, :), e(:, :), clm(:, :, :, :), &
+                               cln(:, :, :, :), rm(:, :, :), rn(:, :, :), dphi(:, :)
+    integer, allocatable :: pairs(:, :)
+    logical, allocatable :: mask(:)
+    complex(8) :: x1(6, 1), x2(6, 1), delta(6)
+    real(8) :: worst, om
+    integer :: nmask, nnone, f, j
+    character(len=250) :: line
+
+    call make_cylinder(10d0, 10d0, 32, 8, 6, full, .true.)
+    call set_wave(-1d0)
+    NTHREAD = 4
+    ISOLV = 1
+    call load_panels(full, 0, 0, mesh)
+    call geometry(mesh, geom, error)
+    if (allocated(error)) return
+    om = w1 - w2
+    call radiation_at(om, .false., mesh%nbase)
+    call motions(x1, x2)
+    call two_state_store(mesh, geom, -1d0, x1, x2, store, store_wl, pairs)
+    pairs = pairs(:, 1:1)
+    allocate(tm(6, 1), tn(6, 1))
+    call direct_setup(mesh, DEFAULT_EDGE_DEG, nmask)
+    mask = direct_edge_mask()
+    call direct_at_omega(mesh, geom, om, store, store_wl, pairs, tm)
+    call direct_setup(mesh, 180d0, nnone)
+    call direct_at_omega(mesh, geom, om, store, store_wl, pairs, tn)
+    ! The B2 linear parts on the masked panels alone, through the same solve and load
+    allocate(a(mesh%n, 1), c(3, mesh%n, 1), e(geom%nwl, 1), clm(3, 4, mesh%n, 1), cln(3, 4, mesh%n, 1), &
+             rm(mesh%nbase, 1, 1), rn(mesh%nbase, 1, 1), dphi(mesh%n, 1))
+    call b2_stokes_densities(mesh, geom, store(1, 1), store(2, 1), store_wl(:, 1, 1), store_wl(:, 2, 1), a(:, 1), &
+                             c(:, :, 1), e(:, 1), clm(:, :, :, 1), mask)
+    call b2_stokes_densities(mesh, geom, store(1, 1), store(2, 1), store_wl(:, 1, 1), store_wl(:, 2, 1), a(:, 1), &
+                             c(:, :, 1), e(:, 1), cln(:, :, :, 1))
+    call direct_rhs_b2_block(mesh, geom, a, c, e, rm, cl=clm)
+    call direct_rhs_b2_block(mesh, geom, a, c, e, rn, cl=cln)
+    rm = rm - rn
+    call direct_solve(mesh, rm, dphi)
+    delta = (0d0, 0d0)
+    do f = 1, mesh%n
+      do j = 1, 6
+        delta(j) = delta(j) + dphi(f, 1)*mesh%nj(j, f)*mesh%area(f)
+      end do
+    end do
+    delta = (0d0, 1d0)*om*store(1, 1)%rho*delta
+    worst = maxval(abs(tm(:, 1) - tn(:, 1) - delta))/maxval(abs(delta))
+    write(line, '(a,i0,a,i0,a,es10.2,a,es10.2)') "masked ", nmask, " (none at 180 deg: ", nnone, &
+      "); guard effect relative to T_dir ", maxval(abs(delta))/maxval(abs(tm)), ", against the B2 parts alone ", worst
+    print '(4x,a)', trim(line)
+    call check(error, nmask == 64 .and. count(mask) == 64 .and. nnone == 0 .and. &
+               maxval(abs(delta)) > 1d-6*maxval(abs(tm)) .and. worst <= guard_limit, line)
+    call direct_setup(mesh, DEFAULT_EDGE_DEG)
+  end subroutine test_direct_edge_guard
+
+  !> End to end: T_dir of direct_at_omega against T_pot of potential_pair (the indirect method, qtf_b2 = body, psi_k from
+  !> the radiation solve at Omega) on the submerged sphere (512 panels, depth 50), for the pairs (1, 2) and (2, 1). The
+  !> two are equal by Green's theorem, so they differ by the mesh error only; a sign or slot error would be of order 1.
+  subroutine test_direct_vs_indirect(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: full, mesh
+    type(surface_geom) :: geom
+    type(first_order_state), allocatable :: store(:, :)
+    complex(8), allocatable :: store_wl(:, :, :), t(:, :), psi(:, :), gpsi(:, :, :), pwl(:, :)
+    integer, allocatable :: pairs(:, :)
+    complex(8) :: x1(6, 1), x2(6, 1), terms(6, NPOT_TERMS), tp(6, 2)
+    real(8) :: om, rel, seconds, seconds_rad
+    integer :: p
+    integer(8) :: c0, c1, rate
+    character(len=250) :: line
+
+    call set_wave(50d0)
+    NTHREAD = 4
+    ISOLV = 1
+    call make_sphere(5d0, [0d0, 0d0, -20d0], sph_nlat(2), full)
+    call load_panels(full, 0, 0, mesh)
+    call geometry(mesh, geom, error)
+    if (allocated(error)) return
+    om = w1 - w2
+    call system_clock(c0, rate)
+    call radiation_at(om, .false., mesh%nbase)
+    call system_clock(c1)
+    seconds_rad = real(c1 - c0, 8)/real(rate, 8)
+    allocate(psi(mesh%n, 6), gpsi(3, mesh%n, 6), pwl(geom%nwl, 6), t(6, 2))
+    call radiation_psi(mesh, om, MXPOT, psi)
+    call psi_surface_gradient(mesh, geom, psi, gpsi)
+    call psi_waterline(mesh, geom, psi, gpsi, pwl)
+    call motions(x1, x2)
+    call two_state_store(mesh, geom, 50d0, x1, x2, store, store_wl, pairs)
+    call direct_setup(mesh, DEFAULT_EDGE_DEG)
+    call system_clock(c0)
+    call direct_at_omega(mesh, geom, om, store, store_wl, pairs, t)
+    call system_clock(c1)
+    seconds = real(c1 - c0, 8)/real(rate, 8)
+    do p = 1, 2
+      associate (s1 => store(pairs(1, p), 1), s2 => store(pairs(3, p), 1))
+        call potential_pair(mesh, geom, s1, s2, store_wl(:, pairs(1, p), 1), store_wl(:, pairs(3, p), 1), psi, gpsi, &
+                            pwl, om, s1%rho, wave_gravity(s1%omega, s1%k, s1%h), terms)
+      end associate
+      tp(:, p) = sum(terms, dim=2)
+    end do
+    rel = maxval(abs(t - tp))/maxval(abs(tp))
+    write(line, '(a,es10.2,a,2es10.2,a,f7.3,a,f7.3,a)') "T_dir against T_pot, relative to max |T_pot| ", rel, &
+      " (|T_pot| of the pairs", maxval(abs(tp), dim=1), "); direct_at_omega ", seconds, " s, radiation solve ", &
+      seconds_rad, " s"
+    print '(4x,a)', trim(line)
+    call check(error, rel <= indirect_limit, line)
+  end subroutine test_direct_vs_indirect
 
 end module test_qtf_direct

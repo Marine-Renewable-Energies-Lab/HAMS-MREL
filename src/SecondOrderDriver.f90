@@ -74,7 +74,8 @@ MODULE SecondOrderDriver
    USE QTFDriver, ONLY: qtf_init, qtf_keep, qtf_finish, qtf_stored_mb, qtf_keep_psi, qtf_psi_index, qtf_psi_count, &
                         qtf_radiation_list, qtf_psi_tolerance, &
                         qtf_radiation_omegas, qtf_omega_on_grid, qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, &
-                        qtf_set_edge_weights
+                        qtf_set_edge_weights, qtf_direct_at_omega
+   USE QTFDirect, ONLY: direct_setup
    USE QTFPotential, ONLY: b2_control_check
    USE SharpEdge, ONLY: sharp_edge_weights
    USE QTFField, ONLY: build_field_points, qfield_init, qfield_keep, qfield_finish, qfield_stored_mb, FIELD_FD_STEP
@@ -172,9 +173,9 @@ CONTAINS
       IF (opts%qtf_b2_given .AND. .NOT. (opts%qtf_terms == QTF_TERMS_BODY .AND. (opts%qtf == 1 .OR. opts%qtf == 3))) THEN
          WRITE (*, '(a)') ' QTF note: qtf_b2 is ignored; it applies with qtf_terms = body and the difference QTF only.'
       END IF
-      IF (opts%qtf_edge_given .AND. .NOT. b2_control) THEN
+      IF (opts%qtf_edge_given .AND. .NOT. (b2_control .OR. opts%qtf_direct == 1)) THEN
          WRITE (*, '(a)') ' QTF note: qtf_edge_weights and qtf_edge_angle are ignored; they apply with qtf_terms = body,'// &
-            ' the difference QTF and qtf_b2 = control only.'
+            ' the difference QTF and qtf_b2 = control (qtf_edge_angle also with qtf_direct = 1) only.'
       END IF
       ALLOCATE (states(MERGE(NBETA, 1, keep_all_headings(opts))))
       ! Only the near-field and control-surface methods use the surface geometry (the control surface takes the waterplane
@@ -298,7 +299,7 @@ CONTAINS
       REAL(8) :: omegas(nqtf), mb, mb_cs
       REAL(8), ALLOCATABLE :: need(:)
       INTEGER, ALLOCATABLE :: reuse(:)
-      INTEGER :: i, first, nneed, nreuse, npairs
+      INTEGER :: i, first, nneed, nreuse, npairs, nmask
 
       first = MERGE(2, 0, SYBO == 1)
       DO i = 1, nqtf
@@ -312,6 +313,8 @@ CONTAINS
       WRITE (*, '(a,I0,a,I0,a,I0,a)') ' QTF body forcing: psi at ', nneed, ' difference frequencies, ', nreuse, &
          ' from the main grid and ', nneed - nreuse, ' radiation-only solves (each costs about one radiation solve)'
       npairs = MERGE(NBETA*NBETA, NBETA, opts%mean_drift == 2)
+      ! qtf_direct = 1 keeps T_dir beside T_pot, of the same size
+      IF (opts%qtf_direct == 1) npairs = 2*npairs
       mb = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs)
       IF (b2_control) THEN
          ! The share of C and F is what the points add to the store, so qtf_stored_mb is the one formula
@@ -331,6 +334,12 @@ CONTAINS
          IF (opts%qtf_edge_weights) CALL b2_edge_weights(opts)
       END IF
       WRITE (*, '(a)') ' QTF_Indirect.11d: body forcing only, the free-surface integral is omitted.'
+      IF (opts%qtf_direct == 1) THEN
+         ! The sharp-edge mask of the B2 right side, once for the run (ruling M9 of Phase 7a)
+         CALL direct_setup(mesh, opts%qtf_edge_angle, nmask)
+         WRITE (*, '(a,I0,a,I0,a,F6.1,a)') ' QTF direct: phi_D solved at every difference frequency; ', nmask, ' of ', &
+            mesh%n, ' panels at sharp edges (qtf_edge_angle', opts%qtf_edge_angle, ') keep the one-point rule in B2.'
+      END IF
       ALLOCATE (psi_main(mesh%n, 6*mesh%nbody))
       psi_main = (0D0, 0D0)
       IF (opts%write_terms >= 1) THEN
@@ -439,13 +448,27 @@ CONTAINS
    END SUBROUTINE so_after_radiation_only
 
    SUBROUTINE so_direct_solve(opts, omega)
-      ! The direct solution of the second-order problem at the difference frequency omega (Phase 7a), with the solver
-      ! globals at omega. Task 3 fills this in.
+      ! The direct solution of the second-order problem at the difference frequency omega (Phase 7a): T_dir of every pair
+      ! with that Omega into the QTF store (qtf_direct_at_omega). RadiationOnlySolves calls so_after_radiation_only right
+      ! after SetWaveFromOmega(omega) and the radiation solve there (CALGREEN and ASSB_LEFT, or their multi-body forms),
+      ! and nothing in between changes CGRN, RKBN, DS or AMAT, so the stored Green integrals and the matrix are those of
+      ! omega. W1 is checked here and in direct_at_omega.
       TYPE(so_options), INTENT(IN) :: opts
       REAL(8), INTENT(IN) :: omega
+      INTEGER(8) :: t0, t1, rate
+      REAL(8) :: sec(3)
+      INTEGER :: npair
 
-      ! No-op until Task 3
-      IF (opts%qtf_direct /= 1 .OR. omega <= 0D0) RETURN
+      IF (opts%qtf_direct /= 1 .OR. .NOT. (omega > 0D0)) RETURN
+      IF (ABS(W1 - omega) > 1D-12*omega) THEN
+         WRITE (*, '(a,ES14.6,a)') ' QTF direct: omega =', omega, ' rad/s, but the solver is at another frequency.'
+         ERROR STOP 1
+      END IF
+      CALL SYSTEM_CLOCK(t0, rate)
+      CALL qtf_direct_at_omega(mesh, geom, omega, npair, sec)
+      CALL SYSTEM_CLOCK(t1)
+      WRITE (*, '(a,F10.5,a,I0,a,F9.2,a,3F9.2,a)') ' QTF direct: omega = ', omega, ' rad/s, ', npair, ' pairs, ', &
+         REAL(t1 - t0, 8)/REAL(rate, 8), ' s (forcing, B2, solve:', sec, ' s)'
    END SUBROUTINE so_direct_solve
 
    SUBROUTINE keep_radiation_only_psi(opts, omega)

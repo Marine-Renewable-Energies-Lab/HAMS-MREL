@@ -199,9 +199,16 @@ CONTAINS
       INTEGER IEL,JEL,IS,IA,IB,IP
       REAL*8 DIST
       COMPLEX*16 DUM(2)
-      COMPLEX*16,ALLOCATABLE:: BTMP(:,:)
+      COMPLEX*16,ALLOCATABLE:: BTMP(:,:),VT(:,:,:)
 
       B=CMPLX(0.0D0,0.0D0)
+      ! V with the field index first, so that the innermost update reads it contiguously (many fields per Omega)
+      ALLOCATE(VT(NRHS,NELEM,NSYS))
+      DO IB=1, NSYS
+       DO JEL=1, NELEM
+        VT(:,JEL,IB)=V(JEL,:,IB)
+       ENDDO
+      ENDDO
 
 !$OMP PARALLEL NUM_THREADS(NTHREAD) PRIVATE(BTMP)
       ALLOCATE(BTMP(NRHS,NSYS))
@@ -221,7 +228,7 @@ CONTAINS
         DO IA=1, NSYS
          DO IB=1, NSYS
           IS=MERGE(1,2,IA.EQ.IB)
-          BTMP(:,IA)=BTMP(:,IA)+DUM(IS)*V(JEL,:,IB)
+          BTMP(:,IA)=BTMP(:,IA)+DUM(IS)*VT(:,JEL,IB)
          ENDDO
         ENDDO
        ENDDO
@@ -234,6 +241,7 @@ CONTAINS
 !$OMP END DO
       DEALLOCATE(BTMP)
 !$OMP END PARALLEL
+      DEALLOCATE(VT)
 
       RETURN
       END SUBROUTINE ASSB_RHS_FIELD
