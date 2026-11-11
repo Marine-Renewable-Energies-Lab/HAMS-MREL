@@ -42,12 +42,13 @@ MODULE PartialWaves
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: pw_set, pw_sample_points, pw_decompose, pw_eval_surface, pw_bessel_k, pw_evanescent_from_wvn
+   PUBLIC :: pw_set, pw_radial, pw_sample_points, pw_decompose, pw_eval_surface, pw_eval_point, pw_radial_at, pw_bessel_k
+   PUBLIC :: pw_evanescent_from_wvn, PW_KR_MAX
 
    REAL(8), PARAMETER :: PI = 3.14159265358979323846D0
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
    ! K_m(kn R) below this underflows in the coefficients (K_0(x) ~ e^{-x}); the decomposition stops rather than divide by it
-   REAL(8), PARAMETER :: KR_MAX = 600D0
+   REAL(8), PARAMETER :: KR_MAX = 600D0, PW_KR_MAX = KR_MAX
 
    TYPE :: pw_set
       ! The modes of one field. a(m, 0) multiplies H_m(k0 r) Z_0(z), a(m, n) multiplies K_m(kn r) Z_n(z), n = 1..nev.
@@ -56,6 +57,14 @@ MODULE PartialWaves
       REAL(8), ALLOCATABLE :: kev(:)          ! (nev)
       COMPLEX(8), ALLOCATABLE :: a(:, :)      ! (-mmax:mmax, 0:nev)
    END TYPE pw_set
+
+   TYPE :: pw_radial
+      ! The radial functions of a pw_set at one radius r (pw_radial_at): H_m(k0 r) and K_m(kn r) for m = 0..mmax + 1
+      REAL(8) :: r = -1D0
+      INTEGER :: mmax = -1, nev = -1
+      COMPLEX(8), ALLOCATABLE :: hk(:)        ! (0:mmax+1)
+      REAL(8), ALLOCATABLE :: kv(:, :)        ! (0:mmax+1, nev)
+   END TYPE pw_radial
 
 CONTAINS
 
@@ -177,22 +186,87 @@ CONTAINS
       END DO
    END SUBROUTINE pw_decompose
 
-   PURE SUBROUTINE pw_eval_surface(pw, x, phi, grad, phizz)
-      ! phi, grad phi and phi_zz on z = 0 at the horizontal position x(1:2) (x(3) is not used), from the modes of pw. For
-      ! r >= R only, where the expansion holds. phi_z = Z'(0) phi per mode: k0 tanh k0h and -kn tan knh, both omega^2/g;
-      ! phi_zz = Z''(0) phi per mode: k0^2 and -kn^2.
+   PURE SUBROUTINE pw_radial_at(pw, r, rad)
+      ! The radial functions of the modes of pw at r: H_m(k0 r) and K_m(kn r), m = 0..mmax + 1 (the derivatives need
+      ! mmax + 1). They depend on r only, so a caller that evaluates many points at one radius (a ring, or the samples of
+      ! the circle) computes them once and passes rad to pw_eval_surface or pw_eval_point.
+      TYPE(pw_set), INTENT(IN) :: pw
+      REAL(8), INTENT(IN) :: r
+      TYPE(pw_radial), INTENT(OUT) :: rad
+      INTEGER :: m, n
+
+      rad%r = r
+      rad%mmax = pw%mmax
+      rad%nev = pw%nev
+      ALLOCATE (rad%hk(0:pw%mmax + 1), rad%kv(0:pw%mmax + 1, pw%nev))
+      DO m = 0, pw%mmax + 1
+         rad%hk(m) = CMPLX(BESSEL_JN(m, pw%k0*r), BESSEL_YN(m, pw%k0*r), KIND=8)
+      END DO
+      DO n = 1, pw%nev
+         CALL pw_bessel_k(pw%mmax + 1, pw%kev(n)*r, rad%kv(:, n))
+      END DO
+   END SUBROUTINE pw_radial_at
+
+   PURE SUBROUTINE pw_eval_point(pw, x, phi, rad)
+      ! phi at the point x from the modes of pw, at any depth -h <= x(3) <= 0 and horizontally at r >= R, where the
+      ! expansion holds: sum_m e^{i m theta} [ a(m, 0) H_m(k0 r) Z_0(z) + sum_n a(m, n) K_m(kn r) Z_n(z) ]. At z = 0 it is the
+      ! phi of pw_eval_surface. For the mode check on the circle samples, which lie at depth. rad as for pw_eval_surface.
       TYPE(pw_set), INTENT(IN) :: pw
       REAL(8), INTENT(IN) :: x(3)
-      COMPLEX(8), INTENT(OUT) :: phi, grad(3), phizz
-      COMPLEX(8) :: hk(0:pw%mmax + 1), rad(-pw%mmax:pw%mmax), drad(-pw%mmax:pw%mmax), e, sgn, dr, dth
-      COMPLEX(8) :: phiz
-      REAL(8) :: kv(0:pw%mmax + 1), dxy(2), r, th, xk, dz0, dzn
-      INTEGER :: m, n, am, mmax
+      COMPLEX(8), INTENT(OUT) :: phi
+      TYPE(pw_radial), INTENT(IN), OPTIONAL :: rad
+      TYPE(pw_radial) :: own
+      COMPLEX(8) :: s, f, df, sgn
+      REAL(8) :: dxy(2), r, th, zf
+      INTEGER :: m, n, am
 
-      mmax = pw%mmax
       dxy = x(1:2) - pw%centre
       r = NORM2(dxy)
       th = ATAN2(dxy(2), dxy(1))
+      CALL radial_values(pw, r, own, rad)
+
+      phi = (0D0, 0D0)
+      DO n = 0, pw%nev
+         IF (n == 0) THEN
+            zf = z0_mode(pw%k0, pw%h, x(3))
+         ELSE
+            zf = COS(pw%kev(n)*(x(3) + pw%h))/COS(pw%kev(n)*pw%h)
+         END IF
+         s = (0D0, 0D0)
+         DO m = -pw%mmax, pw%mmax
+            am = ABS(m)
+            IF (n == 0) THEN
+               sgn = MERGE(-1D0, 1D0, m < 0 .AND. MODULO(am, 2) == 1)
+               CALL hankel_pair(own%hk, am, sgn, pw%k0, f, df)
+            ELSE
+               CALL bessel_k_pair(own%kv(:, n), am, pw%kev(n), f, df)
+            END IF
+            s = s + EXP(CI*(m*th))*pw%a(m, n)*f
+         END DO
+         phi = phi + zf*s
+      END DO
+   END SUBROUTINE pw_eval_point
+
+   PURE SUBROUTINE pw_eval_surface(pw, x, phi, grad, phizz, rad)
+      ! phi, grad phi and phi_zz on z = 0 at the horizontal position x(1:2) (x(3) is not used), from the modes of pw. For
+      ! r >= R only, where the expansion holds. phi_z = Z'(0) phi per mode: k0 tanh k0h and -kn tan knh, both omega^2/g;
+      ! phi_zz = Z''(0) phi per mode: k0^2 and -kn^2. rad, if given and made by pw_radial_at for pw at this r, holds the
+      ! radial functions; otherwise they are computed here.
+      TYPE(pw_set), INTENT(IN) :: pw
+      REAL(8), INTENT(IN) :: x(3)
+      COMPLEX(8), INTENT(OUT) :: phi, grad(3), phizz
+      TYPE(pw_radial), INTENT(IN), OPTIONAL :: rad
+      TYPE(pw_radial) :: own
+      COMPLEX(8) :: rd, drd, e, sgn, dr, dth, phiz
+      REAL(8) :: dxy(2), r, th, dz0, dzn
+      INTEGER :: m, n, am
+
+      dxy = x(1:2) - pw%centre
+      r = NORM2(dxy)
+      th = ATAN2(dxy(2), dxy(1))
+      ! The radial functions: those of rad if they are at this r, else computed here (own is then a copy, so that no
+      ! branch below refers to rad, which may be absent)
+      CALL radial_values(pw, r, own, rad)
 
       phi = (0D0, 0D0)
       dr = (0D0, 0D0)
@@ -201,48 +275,31 @@ CONTAINS
       phizz = (0D0, 0D0)
 
       ! Propagating mode: H_m and H_m' = (H_{m-1} - H_{m+1}) / 2, H_{-1} = -H_1
-      xk = pw%k0*r
-      DO m = 0, mmax + 1
-         hk(m) = CMPLX(BESSEL_JN(m, xk), BESSEL_YN(m, xk), KIND=8)
-      END DO
       dz0 = pw%k0*TANH(pw%k0*pw%h)
-      DO m = -mmax, mmax
+      DO m = -pw%mmax, pw%mmax
          am = ABS(m)
          sgn = MERGE(-1D0, 1D0, m < 0 .AND. MODULO(am, 2) == 1)
-         rad(m) = sgn*hk(am)
-         IF (am == 0) THEN
-            drad(m) = -hk(1)*pw%k0
-         ELSE
-            drad(m) = sgn*0.5D0*(hk(am - 1) - hk(am + 1))*pw%k0
-         END IF
-      END DO
-      DO m = -mmax, mmax
+         CALL hankel_pair(own%hk, am, sgn, pw%k0, rd, drd)
          e = EXP(CI*(m*th))*pw%a(m, 0)
-         phi = phi + e*rad(m)
-         dr = dr + e*drad(m)
-         dth = dth + CI*m*e*rad(m)
-         phiz = phiz + dz0*e*rad(m)
-         phizz = phizz + pw%k0**2*e*rad(m)
+         phi = phi + e*rd
+         dr = dr + e*drd
+         dth = dth + CI*m*e*rd
+         phiz = phiz + dz0*e*rd
+         phizz = phizz + pw%k0**2*e*rd
       END DO
 
       ! Evanescent modes: K_m and K_m' = -(K_{m-1} + K_{m+1}) / 2, K_{-1} = K_1
       DO n = 1, pw%nev
-         xk = pw%kev(n)*r
-         CALL pw_bessel_k(mmax + 1, xk, kv)
          dzn = -pw%kev(n)*TAN(pw%kev(n)*pw%h)
-         DO m = -mmax, mmax
+         DO m = -pw%mmax, pw%mmax
             am = ABS(m)
+            CALL bessel_k_pair(own%kv(:, n), am, pw%kev(n), rd, drd)
             e = EXP(CI*(m*th))*pw%a(m, n)
-            IF (am == 0) THEN
-               drad(m) = -kv(1)*pw%kev(n)
-            ELSE
-               drad(m) = -0.5D0*(kv(am - 1) + kv(am + 1))*pw%kev(n)
-            END IF
-            phi = phi + e*kv(am)
-            dr = dr + e*drad(m)
-            dth = dth + CI*m*e*kv(am)
-            phiz = phiz + dzn*e*kv(am)
-            phizz = phizz - pw%kev(n)**2*e*kv(am)
+            phi = phi + e*rd
+            dr = dr + e*drd
+            dth = dth + CI*m*e*rd
+            phiz = phiz + dzn*e*rd
+            phizz = phizz - pw%kev(n)**2*e*rd
          END DO
       END DO
 
@@ -250,6 +307,63 @@ CONTAINS
       grad(2) = SIN(th)*dr + COS(th)*dth/r
       grad(3) = phiz
    END SUBROUTINE pw_eval_surface
+
+   PURE SUBROUTINE radial_values(pw, r, own, rad)
+      ! own = rad if rad is present and holds the radial functions of pw at r, else pw_radial_at(pw, r)
+      TYPE(pw_set), INTENT(IN) :: pw
+      REAL(8), INTENT(IN) :: r
+      TYPE(pw_radial), INTENT(OUT) :: own
+      TYPE(pw_radial), INTENT(IN), OPTIONAL :: rad
+      LOGICAL :: cached
+
+      cached = .FALSE.
+      IF (PRESENT(rad)) cached = radial_fits(pw, r, rad)
+      IF (cached) THEN
+         own = rad
+      ELSE
+         CALL pw_radial_at(pw, r, own)
+      END IF
+   END SUBROUTINE radial_values
+
+   PURE LOGICAL FUNCTION radial_fits(pw, r, rad)
+      ! rad holds the radial functions of pw at r (to rounding)
+      TYPE(pw_set), INTENT(IN) :: pw
+      REAL(8), INTENT(IN) :: r
+      TYPE(pw_radial), INTENT(IN) :: rad
+
+      radial_fits = .FALSE.
+      IF (.NOT. (ALLOCATED(rad%hk) .AND. ALLOCATED(rad%kv))) RETURN
+      radial_fits = rad%mmax == pw%mmax .AND. rad%nev == pw%nev .AND. ABS(rad%r - r) <= 1D-12*MAX(r, 1D0)
+   END FUNCTION radial_fits
+
+   PURE SUBROUTINE hankel_pair(hk, am, sgn, k0, f, df)
+      ! H_m(k0 r) and dH_m(k0 r)/dr for m = +-am (sgn = (-1)^am for m < 0, else 1), from hk = H_0..H_{am+1} at k0 r
+      COMPLEX(8), INTENT(IN) :: hk(0:), sgn
+      INTEGER, INTENT(IN) :: am
+      REAL(8), INTENT(IN) :: k0
+      COMPLEX(8), INTENT(OUT) :: f, df
+
+      f = sgn*hk(am)
+      IF (am == 0) THEN
+         df = -hk(1)*k0
+      ELSE
+         df = sgn*0.5D0*(hk(am - 1) - hk(am + 1))*k0
+      END IF
+   END SUBROUTINE hankel_pair
+
+   PURE SUBROUTINE bessel_k_pair(kv, am, kn, f, df)
+      ! K_m(kn r) and dK_m(kn r)/dr, K_{-m} = K_m, from kv = K_0..K_{am+1} at kn r
+      REAL(8), INTENT(IN) :: kv(0:), kn
+      INTEGER, INTENT(IN) :: am
+      COMPLEX(8), INTENT(OUT) :: f, df
+
+      f = kv(am)
+      IF (am == 0) THEN
+         df = -kv(1)*kn
+      ELSE
+         df = -0.5D0*(kv(am - 1) + kv(am + 1))*kn
+      END IF
+   END SUBROUTINE bessel_k_pair
 
    PURE SUBROUTINE pw_bessel_k(mmax, x, k)
       ! Modified Bessel functions of the second kind K_0(x)..K_mmax(x), x > 0. K_0 and K_1 by their power series for x <= 2

@@ -8,7 +8,8 @@ module test_partial_waves
   use SecondOrderTypes, only : panel_mesh, first_order_state, cs_points, cs_fields, CS_WALL, CS_LINE, CS_FREE
   use FirstOrderState, only : wave_gravity
   use FieldVelocity, only : fields_green
-  use PartialWaves, only : pw_set, pw_sample_points, pw_decompose, pw_eval_surface, pw_bessel_k, pw_evanescent_from_wvn
+  use PartialWaves, only : pw_set, pw_radial, pw_sample_points, pw_decompose, pw_eval_surface, pw_eval_point, pw_radial_at, &
+                           pw_bessel_k, pw_evanescent_from_wvn
   use second_order_fixtures, only : make_cylinder, maccamy_fuchs_state
   use test_waterline_field, only : set_wave, load_panels
   implicit none
@@ -53,6 +54,7 @@ subroutine collect_partial_waves(testsuite)
   testsuite = [ &
     new_unittest("pw_bessel_k_values", test_bessel_k_values), &
     new_unittest("pw_round_trip", test_round_trip), &
+    new_unittest("pw_eval_point_matches", test_eval_point), &
     new_unittest("pw_hams_field", test_hams_field) &
     ]
 end subroutine collect_partial_waves
@@ -234,6 +236,106 @@ subroutine test_round_trip(error)
   call check(error, err_phi <= 1d-12 .and. err_grad <= 1d-12 .and. err_zz <= 1d-12, trim(info))
 end subroutine test_round_trip
 
+! ---------------------------------------------------------------------------------------------- pw_eval_point
+
+!> pw_eval_point against pw_eval_surface on z = 0 (1e-14 relative), and against an independent sum of the modes at depth,
+!> at the circle samples (with and without the radial functions of pw_radial_at) and at r = 1.4 R (1e-12). Also
+!> pw_eval_surface with the radial functions of pw_radial_at equals it without them, to the bit (the same arithmetic).
+!> A pw_set of known coefficients: mmax 5, nev 3, h 18, R 9, centre (-1, 2), omega 1.0.
+subroutine test_eval_point(error)
+  type(error_type), allocatable, intent(out) :: error
+  integer, parameter :: mmax = 5, nev = 3, npt = 9
+  real(8), parameter :: h = 18d0, radius = 9d0, omega = 1.0d0, centre(2) = [-1d0, 2d0]
+  real(8) :: wvn_local(nev + 1), x(3), th, r, zf, kvals(0:mmax + 1), worst_s, worst_d, worst_c, scale
+  complex(8) :: hk(0:mmax + 1), phi, phi_s, grad(3), phizz, phi_c, grad_c(3), phizz_c, ref, sgn
+  type(pw_set) :: pw
+  type(pw_radial) :: rad
+  type(cs_points) :: pts
+  integer :: m, n, ip, i, am
+  character(len=160) :: info
+  external :: DISPERSION
+
+  call DISPERSION(wvn_local, nev + 1, omega, h)
+  pw%mmax = mmax
+  pw%nev = nev
+  pw%k0 = wvn_local(1)
+  pw%h = h
+  pw%radius = radius
+  pw%centre = centre
+  allocate (pw%kev(nev), pw%a(-mmax:mmax, 0:nev))
+  pw%kev = wvn_local(2:)
+  do n = 0, nev
+    do m = -mmax, mmax
+      pw%a(m, n) = cmplx(cos(0.8d0 * m + 2.1d0 * n + 0.4d0), sin(1.9d0 * m - 0.6d0 * n), 8)
+    end do
+  end do
+
+  ! z = 0: pw_eval_point is the phi of pw_eval_surface; with the radial functions given, pw_eval_surface is unchanged
+  worst_s = 0d0; worst_c = 0d0; scale = 0d0
+  do ip = 1, npt
+    th = 2d0 * pi * (ip - 0.41d0) / npt
+    r = radius * (1d0 + 0.3d0 * ip)
+    x = [centre(1) + r * cos(th), centre(2) + r * sin(th), 0d0]
+    call pw_eval_point(pw, x, phi)
+    call pw_eval_surface(pw, x, phi_s, grad, phizz)
+    call pw_radial_at(pw, r, rad)
+    call pw_eval_surface(pw, x, phi_c, grad_c, phizz_c, rad=rad)
+    scale = max(scale, abs(phi_s))
+    worst_s = max(worst_s, abs(phi - phi_s))
+    if (phi_c /= phi_s .or. any(grad_c /= grad) .or. phizz_c /= phizz) worst_c = 1d0
+  end do
+  print '(4x,a,es10.2)', "pw_eval_point against pw_eval_surface on z = 0, relative ", worst_s / scale
+  write (info, '(a,es10.3)') "pw_eval_point differs from pw_eval_surface on z = 0, relative ", worst_s / scale
+  call check(error, worst_s <= 1d-14 * scale, trim(info))
+  if (allocated(error)) return
+  call check(error, worst_c == 0d0, "pw_eval_surface with the radial functions of pw_radial_at differs from without")
+  if (allocated(error)) return
+
+  ! At depth: the circle samples (r = R, with and without the radial functions) and r = 1.4 R, against a direct sum
+  call pw_sample_points(centre, radius, h, mmax, nev, pts)
+  call pw_radial_at(pw, radius, rad)
+  worst_d = 0d0; scale = 0d0
+  do i = 1, pts%n + npt
+    if (i <= pts%n) then
+      x = pts%x(:, i)
+    else
+      th = 2d0 * pi * (i - pts%n - 0.2d0) / npt
+      x = [centre(1) + 1.4d0 * radius * cos(th), centre(2) + 1.4d0 * radius * sin(th), -h * (i - pts%n) / (npt + 1d0)]
+    end if
+    r = norm2(x(1:2) - centre)
+    th = atan2(x(2) - centre(2), x(1) - centre(1))
+    call hankel_all(mmax, pw%k0 * r, hk)
+    ref = (0d0, 0d0)
+    do n = 0, nev
+      if (n == 0) then
+        zf = cosh(pw%k0 * (x(3) + h)) / cosh(pw%k0 * h)
+      else
+        zf = cos(pw%kev(n) * (x(3) + h)) / cos(pw%kev(n) * h)
+        call pw_bessel_k(mmax + 1, pw%kev(n) * r, kvals)
+      end if
+      do m = -mmax, mmax
+        am = abs(m)
+        if (n == 0) then
+          sgn = merge(-1d0, 1d0, m < 0 .and. mod(am, 2) == 1)
+          ref = ref + pw%a(m, n) * exp(ci * m * th) * sgn * hk(am) * zf
+        else
+          ref = ref + pw%a(m, n) * exp(ci * m * th) * kvals(am) * zf
+        end if
+      end do
+    end do
+    call pw_eval_point(pw, x, phi)
+    scale = max(scale, abs(ref))
+    worst_d = max(worst_d, abs(phi - ref))
+    if (i <= pts%n) then
+      call pw_eval_point(pw, x, phi_c, rad=rad)
+      worst_d = max(worst_d, abs(phi_c - ref))
+    end if
+  end do
+  print '(4x,a,es10.2)', "pw_eval_point at depth against the direct sum of the modes, relative ", worst_d / scale
+  write (info, '(a,es10.3)') "pw_eval_point at depth differs from the direct sum of the modes, relative ", worst_d / scale
+  call check(error, worst_d <= 1d-12 * scale, trim(info))
+end subroutine test_eval_point
+
 ! ---------------------------------------------------------------------------------------------- HAMS field
 
 !> The scattered field of one state on the 448-panel sharp cylinder, by fields_green: sampled on r = R = 15 m, decomposed,
@@ -242,16 +344,16 @@ end subroutine test_round_trip
 !> green_perturbation_only). The unit tests have no BEM solve; whatever the hull data, a sum of Green functions over the
 !> panels satisfies Laplace, the free-surface and bottom conditions and the radiation condition outside the hull, which is
 !> all the decomposition assumes.
-!> The gate (1e-4) is on that Green-function sum: the mesh is given to fields_green with psize = 0.09 m, so that no panel is
-!> within 50 psize (4.5 m) of a point (the nearest centroid is 5.05 m from r = R) and every panel takes its centroid value.
-!> With the mesh as it is, panels within 50 psize take the panel integrals of 1/r and of its image in z = 0 in place of
+!> The gate (1e-4) is on that Green-function sum: fields_green is called with centroid_only, so that every panel takes its
+!> centroid value (near_panel = .false. of field_influence_row), the route by which the driver samples the circle.
+!> With the stock route, panels within 50 psize take the panel integrals of 1/r and of its image in z = 0 in place of
 !> their centroid values (field_influence_row). That correction satisfies phi_z = 0 on z = 0, not the free-surface
 !> condition, so it is not a sum of the modes; at r = R it is extrapolated by the propagating modes. Measured with the
-!> mesh as it is: 4.9e-4 (phi) and 3.8e-4 (gradient), the same for mmax = 16..32 and nev = 8..16; the correction alone is
-!> 2.5e-4 at the rings. That route is checked against 1e-3, the level at which Task 6 warns about the mode check.
+!> stock route: 4.9e-4 (phi) and 3.8e-4 (gradient), the same for mmax = 16..32 and nev = 8..16; the correction alone is
+!> 2.5e-4 at the rings. That route is checked against 1e-3, the level at which the mode check warns.
 subroutine test_hams_field(error)
   type(error_type), allocatable, intent(out) :: error
-  type(panel_mesh) :: full, mesh, centroid_mesh
+  type(panel_mesh) :: full, mesh
   type(first_order_state) :: states(1)
   real(8) :: err_phi, err_grad
   integer :: nthread_saved
@@ -266,10 +368,8 @@ subroutine test_hams_field(error)
   if (allocated(error)) return
   call maccamy_fuchs_state(mesh, 10d0, hf_depth, WK, W1, 1d0, BETA, wave_gravity(W1, WK, hf_depth), 1000d0, states(1))
   states(1)%amp = 0d0
-  centroid_mesh = mesh
-  centroid_mesh%psize = 0.09d0
 
-  call hams_field_errors(centroid_mesh, states, err_phi, err_grad, error)
+  call hams_field_errors(mesh, states, .true., err_phi, err_grad, error)
   if (allocated(error)) then
     NTHREAD = nthread_saved
     return
@@ -290,21 +390,23 @@ subroutine test_hams_field(error)
     return
   end if
 
-  call hams_field_errors(mesh, states, err_phi, err_grad, error)
+  call hams_field_errors(mesh, states, .false., err_phi, err_grad, error)
   NTHREAD = nthread_saved
   if (allocated(error)) return
-  print '(4x,a,2es10.2)', "the same with the near-panel integrals of fields_green (mesh as it is): phi and gradient errors ", &
+  print '(4x,a,2es10.2)', "the same with the near-panel integrals of fields_green (stock route): phi and gradient errors ", &
     err_phi, err_grad
   write (info, '(a,2es10.3)') "partial waves against fields_green with near-panel integrals (phi, gradient) ", &
     err_phi, err_grad
   call check(error, err_phi <= hf_stock_limit .and. err_grad <= hf_stock_limit, trim(info))
 end subroutine test_hams_field
 
-!> pw_hams_field for one mesh: sample by fields_green on r = R, decompose, and compare pw_eval_surface with fields_green at
+!> pw_hams_field for one route: sample by fields_green on r = R, decompose, and compare pw_eval_surface with fields_green at
 !> 16 points on each of r = 20 m and 30 m, z = 0. Errors relative to the largest |phi_P| and |grad_h phi_P| there.
-subroutine hams_field_errors(mesh, states, err_phi, err_grad, error)
+!> centroid: both fields_green calls with centroid_only (every panel at its centroid value), else the stock route.
+subroutine hams_field_errors(mesh, states, centroid, err_phi, err_grad, error)
   type(panel_mesh), intent(in) :: mesh
   type(first_order_state), intent(in) :: states(1)
+  logical, intent(in) :: centroid
   real(8), intent(out) :: err_phi, err_grad
   type(error_type), allocatable, intent(out) :: error
   integer, parameter :: nring = 16
@@ -320,7 +422,7 @@ subroutine hams_field_errors(mesh, states, err_phi, err_grad, error)
   ! CS_FREE (the kind only decides whether phi is computed)
   call pw_sample_points([0d0, 0d0], hf_radius, hf_depth, hf_mmax, hf_nev, pts)
   pts%kind = CS_FREE
-  call fields_green(mesh, pts, states, step, .false., fields)
+  call fields_green(mesh, pts, states, step, .false., fields, centroid_only=centroid)
   call pw_evanescent_from_wvn(hf_nev, kev)
   call check(error, all(kev == WVN(2:hf_nev + 1)), "pw_evanescent_from_wvn does not return WVN(2:nev+1)")
   if (allocated(error)) return
@@ -342,7 +444,7 @@ subroutine hams_field_errors(mesh, states, err_phi, err_grad, error)
       ring%nrm(:, i) = [cos(th), sin(th), 0d0]
     end do
   end do
-  call fields_green(mesh, ring, states, step, .false., ref)
+  call fields_green(mesh, ring, states, step, .false., ref, centroid_only=centroid)
 
   max_phi = 0d0; max_grad = 0d0; err_phi = 0d0; err_grad = 0d0
   do i = 1, ring%n

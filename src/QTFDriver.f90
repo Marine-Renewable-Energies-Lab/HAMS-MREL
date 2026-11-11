@@ -59,11 +59,22 @@ MODULE QTFDriver
    ! frequency (qtf_keep_cs_psi, indexed like psi_store). With qtf_edge_weights the panel weights of the hull term at sharp
    ! edges come with qtf_set_edge_weights.
    !
+   ! With qtf_terms = full the store also holds what the free-surface integral of the second-order potential needs
+   ! (QTFFreeSurface, PartialWaves), allocated by qtf_init: per kept frequency and heading the total first-order fields at
+   ! the n_fs inner free-surface points (fs_point_field: phi, grad phi, phi_zz; qtf_keep_fs_state, indexed like store) and
+   ! the partial waves of the scattered potential outside the circle r = R; per difference frequency psi_k at the inner
+   ! points (value only) and the partial waves of each psi_k (qtf_keep_fs_psi, indexed like psi_store). Each pw_set holds
+   ! (2M + 1)(N_ev + 1) complex coefficients, so the free-surface share is 16 (5 n_fs + n_pw) bytes per frequency and
+   ! heading plus 16 x 6 nbody (n_fs + n_pw) bytes per difference frequency (qtf_stored_mb with nfs and npw).
+   !
    ! A psi with NaN or Inf (a radiation solve that failed) is kept, but counted and logged by qtf_keep_psi, and every pair
    ! whose terms are not finite is counted by potential_part. The files are still written (.10d does not use psi); the main
    ! program ends with exit code 1 when qtf_nonfinite_psi() or qtf_nonfinite_pairs() is not zero, as for first-order NaN.
 
-   USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom, cs_points, QTF_TERMS_BODY
+   USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom, cs_points, QTF_TERMS_BODY, &
+                               QTF_TERMS_FULL
+   USE QTFFreeSurface, ONLY: fs_point_field
+   USE PartialWaves, ONLY: pw_set
    USE NearFieldDrift, ONLY: near_field_pair, KERNEL_DIFF, KERNEL_SUM
    USE SecondOrderOutput, ONLY: write_qtf_row, write_qtf_terms_row
    USE QTFPotential, ONLY: potential_pair, psi_surface_gradient, psi_waterline, NPOT_TERMS
@@ -76,6 +87,7 @@ MODULE QTFDriver
    PUBLIC :: qtf_radiation_list, qtf_radiation_omegas, qtf_keep_psi, qtf_psi_index, qtf_psi_count, qtf_psi_tolerance
    PUBLIC :: qtf_nonfinite_psi, qtf_nonfinite_pairs
    PUBLIC :: qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, qtf_set_edge_weights
+   PUBLIC :: qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active
 
    LOGICAL :: active = .FALSE.
    INTEGER :: kind_qtf = 0, nbeta = 0, nkept = 0, all_headings_pairs = 0
@@ -105,22 +117,38 @@ MODULE QTFDriver
    COMPLEX(8), ALLOCATABLE :: cs_gpsi(:, :, :, :)        ! (3, cs%n, 6*nbody, nneed), grad psi_k, as psi_store
    LOGICAL, ALLOCATABLE :: cs_psi_kept(:)                ! (nneed)
    REAL(8), ALLOCATABLE :: edge_w(:)                     ! (n_panels), weights of the B2 hull term at sharp edges, if set
+   ! qtf_terms = full: the inner free surface, the circle and the fields there
+   LOGICAL :: fs_active = .FALSE.
+   TYPE(cs_points) :: fs_store_pts                       ! the inner free-surface points (build_fs_inner)
+   REAL(8) :: fs_store_centre(2) = 0D0, fs_store_radius = 0D0   ! the circle r = R of the partial waves
+   INTEGER :: fs_store_mmax = 0, fs_store_nev = 0        ! M and N_ev of every pw_set of the store
+   TYPE(fs_point_field), ALLOCATABLE :: fs_f(:, :, :)    ! (n_fs, nfreq, nbeta), total first-order fields, as store
+   TYPE(pw_set), ALLOCATABLE :: fs_pw(:, :)              ! (nfreq, nbeta), partial waves of the scattered potential
+   LOGICAL, ALLOCATABLE :: fs_kept(:, :)                 ! (nfreq, nbeta)
+   COMPLEX(8), ALLOCATABLE :: fs_psi(:, :, :)            ! (n_fs, 6*nbody, nneed), psi_k at the inner points, as psi_store
+   TYPE(pw_set), ALLOCATABLE :: fs_pw_psi(:, :)          ! (6*nbody, nneed), partial waves of each psi_k
+   LOGICAL, ALLOCATABLE :: fs_psi_kept(:)                ! (nneed)
    ! Non-finite results of the potential part, over the run (reset by qtf_init, kept after qtf_finish for the exit code)
    INTEGER :: n_bad_psi = 0                              ! difference frequencies whose psi has NaN or Inf
    INTEGER :: n_bad_pairs = 0                            ! frequency and heading pairs whose T_pot has NaN or Inf
 
 CONTAINS
 
-   SUBROUTINE qtf_init(opts, nfreq, beta_in_deg, nwl, n_panels, nbody, outputdir, omegas_main)
+   SUBROUTINE qtf_init(opts, nfreq, beta_in_deg, nwl, n_panels, nbody, outputdir, omegas_main, fs_pts, fs_centre, fs_radius, &
+                       fs_mmax, fs_nev)
       ! Allocates the whole store for up to nfreq frequencies, the headings beta_in_deg, n_panels panels and nbody bodies,
       ! so that a run that does not fit stops here, before the first-order solves. outputdir holds Wamit_format.
       ! omegas_main (rad/s), the nfreq frequencies of the QTF grid, is needed for qtf_terms = body: the store then also holds
-      ! psi at every difference frequency.
+      ! psi at every difference frequency. qtf_terms = full needs as well the inner free-surface points fs_pts, the circle
+      ! (fs_centre, fs_radius) and the mode counts fs_mmax, fs_nev of the partial waves, for the free-surface store.
       TYPE(so_options), INTENT(IN) :: opts
       INTEGER, INTENT(IN) :: nfreq, nwl, n_panels, nbody
       REAL(8), INTENT(IN) :: beta_in_deg(:)
       CHARACTER(LEN=*), INTENT(IN) :: outputdir
       REAL(8), INTENT(IN), OPTIONAL :: omegas_main(:)
+      TYPE(cs_points), INTENT(IN), OPTIONAL :: fs_pts
+      REAL(8), INTENT(IN), OPTIONAL :: fs_centre(2), fs_radius
+      INTEGER, INTENT(IN), OPTIONAL :: fs_mmax, fs_nev
       INTEGER :: st, i, b
 
       active = opts%qtf > 0
@@ -176,6 +204,7 @@ CONTAINS
       IF (ALLOCATED(psi_kept)) DEALLOCATE (psi_kept)
       IF (ALLOCATED(tpot)) DEALLOCATE (tpot)
       CALL free_control_surface()
+      CALL free_free_surface()
       n_bad_psi = 0
       n_bad_pairs = 0
       pot_terms = body_active .AND. opts%write_terms >= 1
@@ -188,8 +217,55 @@ CONTAINS
          IF (st /= 0) CALL out_of_memory(body=.TRUE.)
          tpot = (0D0, 0D0)
       END IF
+      IF (body_active .AND. opts%qtf_terms == QTF_TERMS_FULL) CALL init_free_surface()
 
    CONTAINS
+
+      SUBROUTINE init_free_surface()
+         ! The free-surface store of qtf_terms = full, touched (default initialisation and zeros) so that it is taken now
+         INTEGER :: m, k
+
+         IF (.NOT. (PRESENT(fs_pts) .AND. PRESENT(fs_centre) .AND. PRESENT(fs_radius) .AND. PRESENT(fs_mmax) .AND. &
+                    PRESENT(fs_nev))) THEN
+            WRITE (*, '(a)') ' QTF: qtf_init needs the inner free surface, the circle and the mode counts for qtf_terms = full.'
+            ERROR STOP 1
+         END IF
+         fs_store_pts = fs_pts
+         fs_store_centre = fs_centre
+         fs_store_radius = fs_radius
+         fs_store_mmax = fs_mmax
+         fs_store_nev = fs_nev
+         ALLOCATE (fs_f(fs_pts%n, nfreq, nbeta), fs_pw(nfreq, nbeta), fs_kept(nfreq, nbeta), &
+                   fs_psi(fs_pts%n, 6*nbody, SIZE(psi_need)), fs_pw_psi(6*nbody, SIZE(psi_need)), &
+                   fs_psi_kept(SIZE(psi_need)), STAT=st)
+         IF (st /= 0) CALL out_of_memory(body=.TRUE., fs=.TRUE.)
+         fs_f = fs_point_field()
+         fs_psi = (0D0, 0D0)
+         DO b = 1, nbeta
+            DO i = 1, nfreq
+               CALL alloc_pw(fs_pw(i, b))
+            END DO
+         END DO
+         DO m = 1, SIZE(psi_need)
+            DO k = 1, 6*nbody
+               CALL alloc_pw(fs_pw_psi(k, m))
+            END DO
+         END DO
+         fs_kept = .FALSE.
+         fs_psi_kept = .FALSE.
+         fs_active = .TRUE.
+      END SUBROUTINE init_free_surface
+
+      SUBROUTINE alloc_pw(pw)
+         TYPE(pw_set), INTENT(OUT) :: pw
+
+         pw%mmax = fs_store_mmax
+         pw%nev = fs_store_nev
+         ALLOCATE (pw%kev(fs_store_nev), pw%a(-fs_store_mmax:fs_store_mmax, 0:fs_store_nev), STAT=st)
+         IF (st /= 0) CALL out_of_memory(body=.TRUE., fs=.TRUE.)
+         pw%kev = 0D0
+         pw%a = (0D0, 0D0)
+      END SUBROUTINE alloc_pw
 
       SUBROUTINE check_grid(w)
          ! Two frequencies of the grid that are equal to within psi_tol but not exactly would give an Omega that is neither
@@ -315,6 +391,118 @@ CONTAINS
       cs_gpsi(:, :, :, m) = grad
       cs_psi_kept(m) = .TRUE.
    END SUBROUTINE qtf_keep_cs_psi
+
+   SUBROUTINE free_free_surface()
+      fs_active = .FALSE.
+      IF (ALLOCATED(fs_f)) DEALLOCATE (fs_f)
+      IF (ALLOCATED(fs_pw)) DEALLOCATE (fs_pw)
+      IF (ALLOCATED(fs_kept)) DEALLOCATE (fs_kept)
+      IF (ALLOCATED(fs_psi)) DEALLOCATE (fs_psi)
+      IF (ALLOCATED(fs_pw_psi)) DEALLOCATE (fs_pw_psi)
+      IF (ALLOCATED(fs_psi_kept)) DEALLOCATE (fs_psi_kept)
+      fs_store_pts%n = 0
+   END SUBROUTINE free_free_surface
+
+   LOGICAL FUNCTION qtf_fs_active()
+      ! The free-surface store of qtf_terms = full is allocated
+      qtf_fs_active = fs_active
+   END FUNCTION qtf_fs_active
+
+   LOGICAL FUNCTION pw_fits(pw)
+      ! pw has the mode counts of the free-surface store
+      TYPE(pw_set), INTENT(IN) :: pw
+
+      pw_fits = ALLOCATED(pw%a) .AND. ALLOCATED(pw%kev)
+      IF (pw_fits) pw_fits = pw%mmax == fs_store_mmax .AND. pw%nev == fs_store_nev
+   END FUNCTION pw_fits
+
+   SUBROUTINE qtf_keep_fs_state(ib, f, pw)
+      ! qtf_terms = full: keeps f(n_fs), the total first-order fields at the inner free-surface points, and pw, the partial
+      ! waves of the scattered potential outside R, of heading ib of the frequency kept last by qtf_keep
+      INTEGER, INTENT(IN) :: ib
+      TYPE(fs_point_field), INTENT(IN) :: f(:)
+      TYPE(pw_set), INTENT(IN) :: pw
+
+      IF (.NOT. fs_active) RETURN
+      IF (nkept == 0 .OR. ib < 1 .OR. ib > nbeta .OR. SIZE(f) /= fs_store_pts%n .OR. .NOT. pw_fits(pw)) THEN
+         WRITE (*, '(a,I0)') ' QTF: qtf_keep_fs_state called out of order or with another size, heading ', ib
+         ERROR STOP 1
+      END IF
+      fs_f(:, nkept, ib) = f
+      fs_pw(nkept, ib) = pw
+      fs_kept(nkept, ib) = .TRUE.
+   END SUBROUTINE qtf_keep_fs_state
+
+   SUBROUTINE qtf_keep_fs_psi(omega, psi_pts, pw_psi, ok)
+      ! qtf_terms = full: keeps psi_pts(n_fs, 6*nbody), psi_k at the inner free-surface points, and pw_psi(6*nbody), the
+      ! partial waves of each psi_k, of the difference frequency omega. An omega that is not a difference frequency, or
+      ! values of another size, stop the run; with ok present they are not kept and ok is false instead.
+      REAL(8), INTENT(IN) :: omega
+      COMPLEX(8), INTENT(IN) :: psi_pts(:, :)
+      TYPE(pw_set), INTENT(IN) :: pw_psi(:)
+      LOGICAL, INTENT(OUT), OPTIONAL :: ok
+      INTEGER :: m, k
+      LOGICAL :: fits
+
+      IF (PRESENT(ok)) ok = .FALSE.
+      IF (.NOT. fs_active) RETURN
+      m = qtf_psi_index(omega)
+      fits = m > 0 .AND. SIZE(psi_pts, 1) == SIZE(fs_psi, 1) .AND. SIZE(psi_pts, 2) == SIZE(fs_psi, 2) .AND. &
+             SIZE(pw_psi) == SIZE(fs_pw_psi, 1)
+      IF (fits) THEN
+         DO k = 1, SIZE(pw_psi)
+            fits = fits .AND. pw_fits(pw_psi(k))
+         END DO
+      END IF
+      IF (.NOT. fits) THEN
+         IF (PRESENT(ok)) RETURN
+         WRITE (*, '(a,ES14.6,a)') ' QTF: psi on the inner free surface at omega =', omega, &
+            ' rad/s is not of a difference frequency, or has another size.'
+         ERROR STOP 1
+      END IF
+      fs_psi(:, :, m) = psi_pts
+      fs_pw_psi(:, m) = pw_psi
+      fs_psi_kept(m) = .TRUE.
+      IF (PRESENT(ok)) ok = .TRUE.
+   END SUBROUTINE qtf_keep_fs_psi
+
+   SUBROUTINE qtf_fs_state(i, ib, f, pw)
+      ! The free-surface fields and partial waves kept for frequency i (in the order of qtf_keep) and heading ib. Stops if
+      ! they were not kept.
+      INTEGER, INTENT(IN) :: i, ib
+      TYPE(fs_point_field), ALLOCATABLE, INTENT(OUT) :: f(:)
+      TYPE(pw_set), INTENT(OUT) :: pw
+      LOGICAL :: kept
+
+      kept = fs_active
+      IF (kept) kept = i >= 1 .AND. i <= nkept .AND. ib >= 1 .AND. ib <= nbeta
+      IF (kept) kept = fs_kept(i, ib)
+      IF (.NOT. kept) THEN
+         WRITE (*, '(a,I0,a,I0,a)') ' QTF: the free-surface fields of frequency ', i, ' and heading ', ib, ' were not stored.'
+         ERROR STOP 1
+      END IF
+      f = fs_f(:, i, ib)
+      pw = fs_pw(i, ib)
+   END SUBROUTINE qtf_fs_state
+
+   SUBROUTINE qtf_fs_psi(omega, psi_pts, pw_psi, ok)
+      ! psi_k at the inner free-surface points and the partial waves of each psi_k kept for the difference frequency omega;
+      ! ok is false (and nothing is returned) if they were not kept.
+      REAL(8), INTENT(IN) :: omega
+      COMPLEX(8), ALLOCATABLE, INTENT(OUT) :: psi_pts(:, :)
+      TYPE(pw_set), ALLOCATABLE, INTENT(OUT) :: pw_psi(:)
+      LOGICAL, INTENT(OUT) :: ok
+      INTEGER :: m
+
+      ok = .FALSE.
+      IF (.NOT. fs_active) RETURN
+      m = qtf_psi_index(omega)
+      IF (m == 0) RETURN
+      IF (.NOT. fs_psi_kept(m)) RETURN
+      psi_pts = fs_psi(:, :, m)
+      pw_psi = fs_pw_psi(:, m)
+      ok = .TRUE.
+   END SUBROUTINE qtf_fs_psi
 
    INTEGER FUNCTION heading_pairs(nb)
       ! Number of heading pairs of the files for nb headings
@@ -567,14 +755,16 @@ CONTAINS
       qtf_kept = nkept
    END FUNCTION qtf_kept
 
-   REAL(8) FUNCTION qtf_stored_mb(n_panels, nwl, nbody, nfreq, nb, npsi, npairs, ncs)
+   REAL(8) FUNCTION qtf_stored_mb(n_panels, nwl, nbody, nfreq, nb, npsi, npairs, ncs, nfs, npw)
       ! Size of the store in MB for nfreq frequencies and nb headings: 8 complex values per panel, 6 per body, 1 per segment.
       ! With npsi, also psi at npsi difference frequencies: 6*nbody complex values per panel. With npairs heading pairs, also
       ! T_pot: 6*nbody complex values per frequency pair and heading pair. With ncs points of C and F (qtf_b2 = control, with
       ! npsi), also the velocity there (3 complex values per point, frequency and heading) and grad psi_k (3 per point, mode
-      ! and difference frequency).
+      ! and difference frequency). With nfs inner free-surface points and npw = (2M + 1)(N_ev + 1) partial-wave coefficients
+      ! (qtf_terms = full), also the fields there (5 complex values per point) and a pw_set per frequency and heading, and, with
+      ! npsi, psi_k at the points (1 per point) and a pw_set per mode and difference frequency.
       INTEGER, INTENT(IN) :: n_panels, nwl, nbody, nfreq, nb
-      INTEGER, INTENT(IN), OPTIONAL :: npsi, npairs, ncs
+      INTEGER, INTENT(IN), OPTIONAL :: npsi, npairs, ncs, nfs, npw
 
       qtf_stored_mb = 16D0*REAL(8*n_panels + 6*nbody + nwl, 8)*REAL(nfreq, 8)*REAL(nb, 8)/1D6
       IF (PRESENT(npsi)) qtf_stored_mb = qtf_stored_mb + 16D0*REAL(n_panels, 8)*REAL(6*nbody, 8)*REAL(npsi, 8)/1D6
@@ -582,6 +772,10 @@ CONTAINS
       IF (PRESENT(ncs)) THEN
          qtf_stored_mb = qtf_stored_mb + 16D0*3D0*REAL(ncs, 8)*REAL(nfreq, 8)*REAL(nb, 8)/1D6
          IF (PRESENT(npsi)) qtf_stored_mb = qtf_stored_mb + 16D0*3D0*REAL(ncs, 8)*REAL(6*nbody, 8)*REAL(npsi, 8)/1D6
+      END IF
+      IF (PRESENT(nfs) .AND. PRESENT(npw)) THEN
+         qtf_stored_mb = qtf_stored_mb + 16D0*REAL(5*nfs + npw, 8)*REAL(nfreq, 8)*REAL(nb, 8)/1D6
+         IF (PRESENT(npsi)) qtf_stored_mb = qtf_stored_mb + 16D0*REAL(6*nbody, 8)*REAL(nfs + npw, 8)*REAL(npsi, 8)/1D6
       END IF
    END FUNCTION qtf_stored_mb
 
@@ -613,6 +807,7 @@ CONTAINS
       IF (ALLOCATED(psi_store)) DEALLOCATE (psi_store, psi_kept, psi_need, psi_reuse)
       IF (ALLOCATED(tpot)) DEALLOCATE (tpot)
       CALL free_control_surface()
+      CALL free_free_surface()
       active = .FALSE.
       body_active = .FALSE.
 
@@ -776,9 +971,10 @@ CONTAINS
       IF (unit /= 0) CLOSE (unit)
    END SUBROUTINE potential_part
 
-   SUBROUTINE out_of_memory(body)
-      ! body: the store of qtf_terms = body (psi, T_pot, the fields on C and F), whose size the log gave before
-      LOGICAL, INTENT(IN), OPTIONAL :: body
+   SUBROUTINE out_of_memory(body, fs)
+      ! body: the store of qtf_terms = body (psi, T_pot, the fields on C and F), whose size the log gave before; fs: also
+      ! the free-surface store of qtf_terms = full
+      LOGICAL, INTENT(IN), OPTIONAL :: body, fs
 
       WRITE (*, '(a)') ' QTF: not enough memory to keep the first-order states of every frequency. Use fewer frequencies,'
       WRITE (*, '(a)') ' headings or panels, or qtf = 0.'
@@ -788,6 +984,13 @@ CONTAINS
             WRITE (*, '(a)') ' above): a smaller qtf_max_dw, or a uniform omega grid (whose differences coincide), needs fewer.'
             WRITE (*, '(a)') ' With qtf_b2 = control the fields on C and F add to it: qtf_b2 = body avoids them, a larger'
             WRITE (*, '(a)') ' cs_panel_size reduces them.'
+         END IF
+      END IF
+      IF (PRESENT(fs)) THEN
+         IF (fs) THEN
+            WRITE (*, '(a)') ' With qtf_terms = full the fields at the inner free-surface points and the partial waves add to it'
+            WRITE (*, '(a)') ' (size in the log above): qtf_terms = body avoids them, a smaller qtf_fs_radius or qtf_fs_modes'
+            WRITE (*, '(a)') ' reduces them.'
          END IF
       END IF
       ERROR STOP 1

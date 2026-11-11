@@ -93,6 +93,7 @@ program unit_tester
                                      .and. testsuites(is)%name /= "field_velocity" &
                                      .and. testsuites(is)%name /= "qtf" &
                                      .and. testsuites(is)%name /= "qtf_potential" &
+                                     .and. testsuites(is)%name /= "qtf_free_surface" &
                                      .and. testsuites(is)%name /= "partial_waves"))
     end do
 
