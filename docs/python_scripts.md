@@ -207,11 +207,14 @@ python qtf_compare.py check
 python qtf_compare.py RESULTS --reference qtf_reference.csv [--nemoh FOLDER] [--max-dw 0.3]
 python qtf_compare.py RESULTS --potential qtf_potential.csv [--nemoh FOLDER] [--max-dw 0.3] [--exclude LO HI]
 python qtf_compare.py RESULTS --against-nemoh FOLDER [--hull oc4] [--reading as-is|conj|-1|-conj] [--max-dw 0.3] [--exclude LO HI]
+python qtf_compare.py RESULTS --against-wamit FILE [--hull oc4w] [--reading as-is|conj|-1|-conj] [--max-dw 0.3] [--max-omega 1.90] [--exclude LO HI]
 ```
 
-- `check` runs the self-checks of `--potential` and `--against-nemoh` on temporary fixtures.
+- `check` runs the self-checks of `--potential`, `--against-nemoh` and `--against-wamit` on temporary fixtures.
 - `--reference` compares `QTF_Quadratic.10d` and `.10s` with the CSV of `truncated_cylinder_reference.py qtf`; `--potential` compares `QTF_Indirect.11d`, `.11d` − `.10d` and each term of `QTF_PotentialTerms.txt` with the CSV of `qtf-potential`. `--nemoh` adds Nemoh's `OUT_QTFM_N.dat` against the same reference.
 - `--against-nemoh FOLDER` compares `QTF_Indirect.11d` of each `q_<hull>_<motion>_m<k>` case with Nemoh's `nemoh_<hull>_<motion>_m<k>` run under FOLDER, when there is no exact reference. `--hull` names the hull (default `oc4`). `--reading` sets how Nemoh's value is read: `as-is` (default, the reading that matched the exact reference on the sharp cylinder), its conjugate, or either with the sign changed. The reading is never chosen by agreement with HAMS; the table warns when another reading would agree much better.
+- `--against-wamit FILE` compares `QTF_Indirect.11d` and `QTF_Quadratic.10d` of each `q_<hull>_*` case with a WAMIT numeric `.12d` (difference QTF), such as `marin_semi.12d` of the OpenFAST r-test. `--hull` names the hull (default `oc4w`). The `.12d` is read as written, with the periods turned into ω and the value conjugated back like the HAMS files; `--reading` is as for `--against-nemoh`, and is never chosen by agreement. It prints, per case and file, the largest and median error over the pairs with ω ≤ `--max-omega` for three sets: all off-diagonal pairs, those with 0 < ω_j − ω_i ≤ `--max-dw`, and the diagonal (the mean drift), with the median ratio Re(HAMS) / Re(WAMIT) on the diagonal. The diagonal fixes the sign but not the conjugation, since it is real.
+- `--max-omega` limits the pairs to ω_i and ω_j ≤ max-omega (default 1.90 rad/s, the top of the `q_oc4w` grid).
 - `--exclude LO HI` leaves out the pairs with a frequency in [LO, HI] rad/s, such as a resonance band, and keeps the scale of all pairs.
 - `--max-dw` limits the difference pairs to ω_j − ω_i ≤ max-dw (default 0.3 rad/s).
 

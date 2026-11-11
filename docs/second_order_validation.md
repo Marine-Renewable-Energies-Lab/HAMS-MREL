@@ -353,7 +353,7 @@ Largest / median error, percent. `pot` is the potential part (`.11d` − `.10d`)
 
 ### Free body: the hull and control-surface forms of B2
 
-Largest error, percent, F_x / F_z / M_y, all 2666 pairs. Hull form: B2 integrated on the hull, the form of `qtf_b2 = body` (runs of 2026-11-09). Control: `qtf_b2 = control` with the default `cs_*` keys; fixed C: C and F of the 448-panel default (`cs_margin = cs_bottom_margin = 7.84`, `cs_panel_size = 1.96`) at 1792 and 4032 panels (runs of 2026-11-10; B1 of the 4032-panel run was not tabulated):
+Largest error, percent, F_x / F_z / M_y, all 2666 pairs. Hull form: B2 integrated on the hull, the form of `qtf_b2 = body` (runs of 2026-11-09). Control: `qtf_b2 = control` with the default `cs_*` keys; fixed C: C and F of the 448-panel default (`cs_margin = cs_bottom_margin = 7.84`, `cs_panel_size = 1.96`) at 1792 and 4032 panels (runs of 2026-11-10; B1 of the 4032-panel run was not tabulated). The control row at 4032 panels, with the default `cs_*` keys, is the run of 2026-11-11 (11 h 52 min):
 
 | B2 form, panels | B1 | B2 | pot | `.11d` |
 | :--- | ---: | ---: | ---: | ---: |
@@ -363,6 +363,7 @@ Largest error, percent, F_x / F_z / M_y, all 2666 pairs. Hull form: B2 integrate
 | hull, 7168 | 1.8 / 1.7 / 1.4 | 10.6 / 16.2 / 41.7 | 18.7 / 19.4 / 41.6 | 15.9 / 28.1 / 2.5 |
 | control, 448 | 12.4 / 7.8 / 10.3 | 14.0 / 21.9 / 10.0 | 20.7 / 19.3 / 11.0 | 99.0 / 111.9 / 13.6 |
 | control, 1792 | 4.8 / 3.6 / 3.8 | 7.3 / 14.2 / 7.1 | 11.8 / 13.0 / 7.9 | 41.1 / 59.0 / 5.9 |
+| control, 4032 | | 4.75 / 10.42 / 5.40 | 8.17 / 9.65 / 5.86 | 23.89 / 38.57 / 3.60 |
 | fixed C, 1792 | 4.8 / 3.6 / 3.8 | 6.9 / 13.8 / 6.9 | 11.1 / 12.5 / 7.7 | 41.1 / 59.0 / 5.9 |
 | fixed C, 4032 | | 4.1 / 9.9 / 5.3 | 6.9 / 9.1 / 5.8 | 23.9 / 38.6 / 3.6 |
 
@@ -371,6 +372,7 @@ The medians are below 0.8% in every row. The Froude-Krylov and diffraction terms
 - With the hull form, B2 M_y falls slowly: 79, 61, 49, 42% at m1 to m4, a ratio of 0.84 from m3 to m4. A split of B2 into its three pieces (a debug build, not in the repository) put the error in the surface piece ∫(n × ∇ψ)·(X × u) dS, whose integrand goes like ρ^(-2/3) at the sharp bottom edge and is integrated with one point per panel and a differenced ∇ψ.
 - The control-surface form takes B2 M_y from 79 to 10% at m1 and from 61 to 7.1% at m2, better than the hull form at m4.
 - Holding C at its 448-panel size gives the same accuracy at 1792 panels, at less than half the run time (see [cost](#cost-of-the-potential-part)). With C still held there, B2 keeps converging with the hull: 6.9 / 13.8 / 6.9% at 1792 panels and 4.1 / 9.9 / 5.3% at 4032.
+- At 4032 panels the default C and C held at its 448-panel size give the same accuracy: B2 4.75 / 10.42 / 5.40% against 4.09 / 9.92 / 5.30%, and the potential part 8.17 / 9.65 / 5.86% against 6.93 / 9.09 / 5.76%. The `.11d` errors are identical to the printed digits (23.89 / 38.57 / 3.60%), since they are those of the quadratic part. The fixed C takes 3 h 58 min against 11 h 52 min ([cost](#cost-of-the-potential-part)). The default C is a little worse in all three, by at most 1.2 points (F_x of the potential part).
 - The largest errors left sit at pairs with a frequency in the resonance at 0.75 to 0.79 rad/s. Without these pairs:
 
 | B2 form, panels | B2, without 0.75-0.79 | pot, without 0.75-0.79 | `.11d`, without 0.75-0.79 | B2, without 0.74-0.82 | `.11d`, without 0.74-0.82 |
@@ -380,12 +382,13 @@ The medians are below 0.8% in every row. The Froude-Krylov and diffraction terms
 | hull, 7168 | 2.8 / 10.4 / 9.7 | | | | |
 | control, 448 | 3.2 / 3.3 / 2.3 | 2.5 / 3.9 / 2.5 | 27.2 / 11.8 / 2.3 | 1.6 / 3.0 / 1.7 | 7.7 / 5.3 / 0.3 |
 | control, 1792 | 1.2 / 2.0 / 1.3 | 1.5 / 1.8 / 1.5 | 10.9 / 6.1 / 1.4 | 0.5 / 1.6 / 0.9 | 3.4 / 2.9 / 0.2 |
+| control, 4032 | 0.67 / 1.51 / 1.20 | 1.08 / 1.43 / 1.27 | 5.98 / 4.07 / 0.94 | | |
 | fixed C, 1792 | 1.3 / 2.2 / 1.2 | 1.5 / 1.9 / 1.4 | 10.9 / 6.1 / 1.4 | 0.6 / 1.7 / 0.8 | 3.4 / 2.9 / 0.2 |
 | fixed C, 4032 | 0.8 / 1.6 / 1.1 | 0.9 / 1.4 / 1.2 | 6.0 / 4.1 / 0.9 | | |
 
-- Away from the resonance, the control-surface B2 is within 1.2% to 2.0% at 1792 panels, against 3.4% to 17.3% for the hull form at 1792 panels and 2.8% to 10.4% at 7168. The gain of the control-surface form is not a resonance effect. With C fixed, B2 is within 0.82 / 1.63 / 1.09% at 4032 panels.
+- Away from the resonance, the control-surface B2 is within 1.2% to 2.0% at 1792 panels, against 3.4% to 17.3% for the hull form at 1792 panels and 2.8% to 10.4% at 7168. The gain of the control-surface form is not a resonance effect. With C fixed, B2 is within 0.82 / 1.63 / 1.09% at 4032 panels, and with the default C within 0.67 / 1.51 / 1.20%.
 - The `.11d` maximum without 0.75 to 0.79 rad/s, 10.9% in F_x at 1792 panels, is in the quadratic part on the flanks of the resonance (0.74 and 0.80 to 0.82 rad/s). With 0.74 to 0.82 left out, it is 3.4 / 2.9 / 0.2%, close to the fixed body's 3.0 / 2.7 / 2.4% at that mesh.
-- Acceptance for the free body: away from the resonance, the potential part is within 1.8% at 1792 panels (1.5 / 1.8 / 1.5%) and within 1.41% at 4032 panels with C fixed (0.94 / 1.41 / 1.16%), well below 5% of max |T_pot|. In the band it is not met (11.8 / 13.0 / 7.9% at 1792 panels with the default C, 6.9 / 9.1 / 5.8% at 4032 with C fixed), and the error there is the first-order motion error (below). With damping it is met over all pairs ([damped free body](#damped-free-body)). The control-surface form was not run at 7168 panels.
+- Acceptance for the free body: away from the resonance, the potential part is within 1.8% at 1792 panels (1.5 / 1.8 / 1.5%) and within 1.41% at 4032 panels with C fixed (0.94 / 1.41 / 1.16%) and within 1.43% with the default C (1.08 / 1.43 / 1.27%), well below 5% of max |T_pot|. In the band it is not met (11.8 / 13.0 / 7.9% at 1792 panels with the default C, 6.9 / 9.1 / 5.8% at 4032 with C fixed, 8.17 / 9.65 / 5.86% at 4032 with the default C), and the error there is the first-order motion error (below). With damping it is met over all pairs ([damped free body](#damped-free-body)). The control-surface form was not run at 7168 panels.
 
 ### The resonance and the motions
 
@@ -445,38 +448,98 @@ On the fixed body the two codes are equally close to the reference at each mesh,
 
 ### OC4 semisubmersible against Nemoh
 
-A second hull, of four columns standing on three wider base columns, for which there is no exact reference: HAMS (`QTF_Indirect.11d`) against Nemoh v3.0.3 (DUOK + HASBO) on the same mesh, mass, centre of gravity and mooring. Cases `q_oc4_fixed_m1`, `q_oc4_free_m1`, `nemoh_oc4_fixed_m1` and `nemoh_oc4_free_m1` of `drift_convergence.py --qtf-potential`; the model is written by `make_mesh.write_oc4` ([make_mesh.py](../pre_postprocessing_python/SecondOrder/make_mesh.py)).
+A second hull, of four columns standing on three wider base columns, for which there is no exact reference: HAMS (`QTF_Indirect.11d`) against Nemoh v3.0.3 (DUOK + HASBO) on the same mesh, mass, centre of gravity and mooring. Cases `q_oc4_fixed_m1`, `q_oc4_free_m1`, `nemoh_oc4_fixed_m1` and `nemoh_oc4_free_m1`, and the same at m2 (4608 panels), of `drift_convergence.py --qtf-potential`; the model is written by `make_mesh.write_oc4` ([make_mesh.py](../pre_postprocessing_python/SecondOrder/make_mesh.py)).
 
 **Model.**
 
 - Geometry of the OC4-DeepCwind semisubmersible (Robertson et al. 2014, Tables 3-1 and 3-2): the main column and the three offset columns with their base columns, draft 20 m, depth 200 m. Only the columns are panelled. The pontoons and cross braces (1.6 m diameter) are left out, as in the OC4 mesh of the Nemoh 3.0.3 test case. So the volume and restoring differ from the report's by the braces (`python make_mesh.py oc4` prints both), and the results are those of this column model, not of the full platform.
-- Mesh m1: 1224 panels, full mesh (no symmetry), rows cosine-spaced towards the waterline and the edges. Its volume is 1.50% below that of the exact columns (inscribed polygons).
+- Mesh m1: 1224 panels, full mesh (no symmetry), rows cosine-spaced towards the waterline and the edges. Its volume is 1.50% below that of the exact columns (inscribed polygons). Mesh m2: 4608 panels, with the same C (1400 panels) and F triangulated finer (1384 triangles).
 - Mass, centre of gravity (13.46 m below the still water line) and inertias of the platform alone, without tower and turbine (Robertson et al. 2014, Table 3-3). Linearized mooring (Eq. 5-15) as the external restoring matrix; the signs of its surge-pitch and sway-roll couplings are inferred (`make_mesh.oc4_mooring_signs`). The hydrostatic restoring is computed from the mesh.
 - HAMS has ρ = 1000 kg/m³ built in. The mass, the inertias and the mooring are scaled by 1000/1025, which keeps the motions and the loads over ρg of the report's platform [inferred: every term of the equation of motion scales with ρ]. Nemoh gets ρ = 1000 and the same matrices.
 - The four waterlines are not star-shaped, so C and F come from files (`cs_shape = file`, `CSMesh_1.pnl` and `FSMesh_1.pnl`): C is a vertical cylinder of radius 48.87 m about the origin with a bottom at z = −28 m (1400 panels), and F is triangulated between the column waterlines and C (750 triangles at m1).
 - HAMS: `velocity_method = source`, `qtf = 1`, `qtf_terms = body`, `qtf_b2 = control`, `qtf_max_dw = 0.3`, heading 0, 101 frequencies from 0.40 to 1.40 rad/s. Nemoh: DUOK + HASBO on 140 frequencies from 0.01 to 1.40 rad/s; its fixed body is held by an external stiffness of 1e15.
-- Runs of 2026-11-10 on Snellius: HAMS 52 min per case (32 threads), Nemoh 56 min for both cases side by side (24 CPUs).
+- Runs on Snellius. m1 (2026-11-10): HAMS 52 min per case (32 threads), Nemoh 56 min for both cases side by side (24 CPUs). m2: HAMS 5 h 29 min per case (32 threads), Nemoh 13 h 17 min for both cases side by side (24 CPUs).
 
 **Motions.** HAMS's free heave RAO (`Motion.4`) has a near-zero, 0.013 m/m, at 0.41 rad/s, where the heave excitation (`ExcForce.3`) cancels, and a broad peak of 0.283 m/m at 0.51 rad/s. No resonance lies in the grid. Surge, pitch and yaw resonate well below 0.40 rad/s [inferred from the restoring and the mass; see `qtf_potential_cases` in `drift_convergence.py`].
 
 **Measure.** `qtf_compare.py --against-nemoh`: |HAMS − Nemoh| / max |Nemoh| per pair of `.11d`, largest and median over the pairs with ω_j − ω_i ≤ 0.30 rad/s, in percent. Nemoh is read as written (`--reading as-is`), the reading that matched the exact reference on the sharp cylinder ([Quadratic QTFs](#quadratic-qtfs)). The second row of each body leaves out the pairs with a frequency in 0.40 to 0.45 rad/s (`--exclude 0.40 0.45`), around the heave near-zero, and keeps the scale of all pairs.
 
-| Body | Pairs | F_x | F_z | M_y |
-| :--- | :--- | ---: | ---: | ---: |
-| fixed | all | 5.17 / 1.83 | 5.65 / 0.99 | 1.83 / 0.23 |
-| fixed | without 0.40-0.45 | 5.17 / 2.01 | 5.65 / 1.03 | 1.83 / 0.25 |
-| free | all | 5.23 / 1.85 | 12.70 / 1.76 | 4.08 / 0.76 |
-| free | without 0.40-0.45 | 5.23 / 1.84 | 8.05 / 1.71 | 4.08 / 0.71 |
+| Body | Panels | Pairs | F_x | F_z | M_y |
+| :--- | ---: | :--- | ---: | ---: | ---: |
+| fixed | 1224 | all | 5.17 / 1.83 | 5.65 / 0.99 | 1.83 / 0.23 |
+| fixed | 1224 | without 0.40-0.45 | 5.17 / 2.01 | 5.65 / 1.03 | 1.83 / 0.25 |
+| fixed | 4608 | all | 3.06 / 1.10 | 4.98 / 0.74 | 1.00 / 0.15 |
+| fixed | 4608 | without 0.40-0.45 | 3.06 / 1.22 | 4.98 / 0.75 | 1.00 / 0.16 |
+| free | 1224 | all | 5.23 / 1.85 | 12.70 / 1.76 | 4.08 / 0.76 |
+| free | 1224 | without 0.40-0.45 | 5.23 / 1.84 | 8.05 / 1.71 | 4.08 / 0.71 |
+| free | 4608 | all | 3.59 / 1.29 | 10.12 / 1.23 | 4.15 / 0.56 |
+| free | 4608 | without 0.40-0.45 | 3.59 / 1.27 | 7.68 / 1.14 | 4.15 / 0.53 |
 
-- The two codes agree to within about 5% of the largest Nemoh value in F_x and F_z on the fixed body and in F_x on the free body, with medians below 2.1%. M_y agrees to within 1.83% (fixed) and 4.08% (free).
-- The largest free F_z difference, 12.70%, sits at pairs with a frequency in 0.40 to 0.45 rad/s. Without them it is 8.05%. Around 0.41 rad/s the heave excitation and motion change fast with ω, so a small shift between the codes gives a larger difference there [inferred].
+- At 1224 panels the two codes agree to within about 5% of the largest Nemoh value in F_x and F_z on the fixed body and in F_x on the free body, with medians below 2.1%. M_y agrees to within 1.83% (fixed) and 4.08% (free).
+- From 1224 to 4608 panels the difference falls in F_x and F_z: on the fixed body, F_x 5.17 to 3.06%, F_z 5.65 to 4.98% and M_y 1.83 to 1.00%; on the free body, F_x 5.23 to 3.59% and F_z 12.70 to 10.12%. The medians fall too (fixed F_x 1.83 to 1.10%, free F_z 1.76 to 1.23%). The free M_y is about the same, 4.08 and 4.15% largest and 0.76 and 0.56% median. Where the difference falls with the mesh, the two codes converge towards each other; the free M_y shows no such trend [inferred].
+- The largest free F_z difference, 10.12% at 4608 panels (12.70% at 1224), sits at pairs with a frequency in 0.40 to 0.45 rad/s. Without them it is 7.68% (8.05%). Around 0.41 rad/s the heave excitation and motion change fast with ω, so a small shift between the codes gives a larger difference there [inferred].
 - On the sharp cylinder at 448 panels, the largest `.11d` errors of each code against the exact reference were 4.9% to 5.7% on the fixed body ([Comparison with Nemoh](#comparison-with-nemoh-1)). A difference of about 5% between the codes at one coarse mesh is of the size of their mesh errors there [inferred].
 
 What this does not show:
 
 - Accuracy. There is no exact reference, so the table measures agreement between two codes, not the error of either.
-- Convergence. It is one mesh (1224 panels).
+- Convergence of either code. The two meshes show that the difference between the codes changes with the mesh, not which code moves.
 - The full OC4 platform: the pontoons and braces are not in the model.
+
+### OC4 against WAMIT
+
+The same columns-only hull, compared with the WAMIT run of the OpenFAST r-test (`glue-codes/openfast/5MW_Baseline/HydroData/marin_semi.12d`, WAMIT output of 10 January 2014), as reproduced by Al-Ghuwaidi (2025). The same file is the reference of Roland et al. (2026), a benchmark of boundary element solvers for second-order loads on floating wind turbines. Cases `q_oc4w_free_m1` and `q_oc4w_free_m2` of `drift_convergence.py --qtf-potential`; the model is `make_mesh.write_oc4(model="wamit")`.
+
+**Model.**
+
+- The meshes, C and F of the Nemoh comparison above (1224 and 4608 panels), free body only, with the mass, the linearized mooring and the hydrostatic restoring of the WAMIT run (`make_mesh.oc4w_matrices`) in place of those of the platform report. The WAMIT mesh has the pontoons and braces (6258 panels, volume 13675.84 m³); ours has the columns only, so the hydrostatic restoring is that of the WAMIT run, not of our mesh.
+- 34 frequencies from 0.25 to 1.90 rad/s in steps of 0.05, the grid of the WAMIT file. The grid stops below the first irregular frequency of the OC4 hull, about 1.98 rad/s [derived], and since `velocity_method = source` rejects irregular-frequency removal it cannot go higher. All pairs of the grid (`qtf_max_dw = 0`), heading 0, `qtf = 1`, `qtf_terms = body`, `qtf_b2 = control`.
+- Runs on Snellius: m1 (1224 panels) 24 min 30 s; m2 (4608 panels) 2 h 23 min 40 s.
+
+**Measure.** `qtf_compare.py --against-wamit` ([Python scripts](python_scripts.md#mesh-generation-for-second-order-cases)): |HAMS − WAMIT| / max |WAMIT| per pair, largest and median over the pairs, in percent, for `QTF_Indirect.11d` (quadratic part plus body forcing) and `QTF_Quadratic.10d` (quadratic part only). WAMIT's `.12d` is read as written, conjugated back like the HAMS files. Sets: all pairs; the pairs with ω_j − ω_i ≤ 0.30 rad/s; the diagonal, the mean drift. The last three columns give the median ratio Re(HAMS) / Re(WAMIT) on the diagonal, for F_x, F_z and M_y. The mean drift is the same in `.10d` and `.11d`, so the diagonal rows of the two are equal.
+
+Largest / median error, percent, F_x, F_z, M_y:
+
+| Panels | File | Set | F_x | F_z | M_y | Diagonal ratio |
+| ---: | :--- | :--- | ---: | ---: | ---: | :--- |
+| 1224 | `.11d` | all | 135.50 / 1.06 | 157.75 / 0.95 | 155.89 / 0.59 | |
+| 1224 | `.11d` | Δω ≤ 0.30 | 114.24 / 1.82 | 153.34 / 1.24 | 172.26 / 1.10 | |
+| 1224 | `.11d` | diagonal | 11.07 / 1.48 | 75.27 / 4.12 | 121.97 / 3.08 | 0.947, 0.823, 1.003 |
+| 1224 | `.10d` | all | 126.98 / 19.51 | 116.51 / 6.89 | 127.08 / 13.47 | |
+| 1224 | `.10d` | Δω ≤ 0.30 | 114.00 / 22.85 | 142.45 / 17.71 | 179.02 / 22.70 | |
+| 4608 | `.11d` | all | 232.70 / 0.50 | 185.83 / 0.61 | 183.53 / 0.53 | |
+| 4608 | `.11d` | Δω ≤ 0.30 | 119.03 / 1.14 | 185.20 / 1.35 | 195.95 / 0.97 | |
+| 4608 | `.11d` | diagonal | 6.34 / 0.62 | 62.34 / 1.98 | 113.97 / 4.23 | 0.966, 0.990, 1.050 |
+| 4608 | `.10d` | all | 129.59 / 19.37 | 127.92 / 6.62 | 141.30 / 13.13 | |
+| 4608 | `.10d` | Δω ≤ 0.30 | 118.80 / 22.74 | 164.16 / 14.33 | 203.56 / 20.57 | |
+
+The largest values are far above the medians. They sit at pairs with a frequency in 0.25 to 0.35 rad/s, the pitch and heave natural frequencies, where the motions and the loads change fast with ω (see the heave mean drift in the figure below). Without these pairs (`--exclude 0.25 0.35`, scale from all pairs):
+
+| Panels | File | Set | F_x | F_z | M_y | Diagonal ratio |
+| ---: | :--- | :--- | ---: | ---: | ---: | :--- |
+| 1224 | `.11d` | all | 15.43 / 0.88 | 8.92 / 0.75 | 4.88 / 0.47 | |
+| 1224 | `.11d` | Δω ≤ 0.30 | 10.53 / 1.61 | 8.07 / 1.19 | 6.24 / 0.96 | |
+| 1224 | `.11d` | diagonal | 11.07 / 1.50 | 18.16 / 2.88 | 11.38 / 2.86 | 0.947, 0.823, 1.003 |
+| 4608 | `.11d` | all | 24.11 / 0.35 | 18.13 / 0.52 | 5.51 / 0.45 | |
+| 4608 | `.11d` | Δω ≤ 0.30 | 5.68 / 1.06 | 3.71 / 1.17 | 3.01 / 0.82 | |
+| 4608 | `.11d` | diagonal | 6.34 / 0.62 | 10.66 / 1.86 | 15.11 / 3.95 | 0.966, 0.990, 1.050 |
+| 4608 | `.10d` | all | 61.58 / 19.03 | 42.31 / 6.05 | 33.20 / 13.30 | |
+| 4608 | `.10d` | Δω ≤ 0.30 | 106.26 / 25.24 | 42.10 / 15.07 | 44.60 / 22.27 | |
+
+![Mean drift F_x, F_z and M_y of the free OC4 hull, heading 0: HAMS at 1224 and 4608 panels against the WAMIT run of OpenFAST; the band of 0.25 to 0.35 rad/s is grey](figures/oc4w_mean_drift.png)
+
+![Modulus of the difference-frequency QTF of the free OC4 hull against ω_i, at ω_j − ω_i = 0.10 and 0.30 rad/s, F_x, F_z and M_y: HAMS `.11d` at 1224 and 4608 panels and `.10d` at 4608 panels against the WAMIT run of OpenFAST; the band of 0.25 to 0.35 rad/s is grey](figures/oc4w_qtf_offdiagonal.png)
+
+- WAMIT's `.12d` agrees with the full `.11d`, not with `.10d`. The medians of `.11d` against it are 0.50 to 1.35% at 4608 panels (all pairs and Δω ≤ 0.30); those of `.10d` are 6.62 to 22.74%. So the WAMIT file contains the potential part [inferred from the agreement], and HAMS's potential part agrees with it.
+- Away from the natural frequencies, the largest difference for Δω ≤ 0.30 halves from 1224 to 4608 panels: 10.53 / 8.07 / 6.24% to 5.68 / 3.71 / 3.01%. The medians stay at about 1%.
+- The mean drift converges to WAMIT's. The median ratio of the heave mean drift goes from 0.823 to 0.990, and those of F_x and M_y from 0.947 to 0.966 and from 1.003 to 1.050. The 18% gap in heave at 1224 panels was mesh error, not a difference of geometry [inferred: the same hull, the finer mesh closes it]. The M_y ratio moves away from 1, by 5%.
+- The largest values over all pairs do not fall with the mesh (F_x 15.43% to 24.11%, F_z 8.92% to 18.13% without 0.25 to 0.35 rad/s). They are pairs of 0.35 rad/s, the heave natural frequency, where HAMS's heave RAO is 2.7 m/m, with 1.55 to 1.85 rad/s. A slight shift of the heave resonance between the two models gives a large difference at such pairs [inferred]. They are not in the range of the slow-drift forces, Δω ≤ 0.30 rad/s.
+
+What this does not show:
+
+- Accuracy. WAMIT is a code comparison, not a truth, and its mesh differs from ours: it has the pontoons and braces, ours has the columns only. The effect of the missing pontoons and braces on the loads was not separated from the mesh error.
+- A close match at the natural frequencies. The pairs there, which carry the largest differences, are sensitive to the damping and the restoring, which we take from the files of the WAMIT run, and to the viscous damping that neither code has.
+- The conjugation and the axes of the WAMIT-format output. The diagonal fixes the sign but, being real, not the conjugation; the off-diagonal reading is fixed in advance and never chosen by agreement ([Open items](#open-items)).
 
 ### Cost of the potential part
 
@@ -486,11 +549,11 @@ Wall time per run on Snellius, 32 threads, 101 frequencies and 30 radiation-only
 | ---: | ---: | ---: | ---: |
 | 448 | 93 s | 15 min 34 s | |
 | 1792 | 23 min | 2 h 49 min | 1 h 18 min |
-| 4032 | 1 h 44 min | 11 to 12 h, projected (stopped) | 3 h 58 min |
+| 4032 | 1 h 44 min | 11 h 52 min | 3 h 58 min |
 | 7168 | 5 h 23 min | not run | |
 
 - With the control-surface form, the time goes into the field passes over C and F: 6.5 s per frequency at 448 panels (1416 points), 69 s at 1792 (3212 points) and 288 s at 4032 (5648 points) with the default C, and 25 s at 1792 panels with the fixed C. The default C is refined with the hull, so its pass grows faster than the hull solve.
-- The 4032-panel run with the default C was stopped after 31 of 101 frequencies, since it would not have finished within its 7 h limit. With C fixed at its 448-panel size, the 4032-panel run took 3 h 58 min.
+- An earlier 4032-panel run with the default C was stopped after 31 of 101 frequencies, since it would not have finished within its 7 h limit. It was rerun with a longer limit (job of 2026-11-11, 32 threads) and took 11 h 52 min. With C fixed at its 448-panel size, the 4032-panel run took 3 h 58 min, about a third of the time.
 - The 7168-panel free run with the hull form took 6.95 GB.
 
 ### Tried and not kept
@@ -556,14 +619,13 @@ The largest d12 is 1.427e-3 and the largest d23 8.17e-4, a ratio of 0.573. The p
 - Nemoh at 4320 panels: the cause is unknown, and testing it needs another Nemoh run.
 - `velocity_method = source` on graded meshes: the sign of the F_z error alternates with the mesh (above). Not explained.
 - The control-surface F_z, M_x and M_y at 1.6 to 1.8 rad/s were run at m2 only.
-- QTF potential part, `qtf_b2 = control`: run on the free cylinder at 448 and 1792 panels with the default C, and at 1792 and 4032 panels with C fixed; not at 7168 panels. The damped free body was run at 448 and 1792 panels.
-- The sharp cylinder at 4032 panels (m3) with the default control surface: run in progress.
-- OC4 semisubmersible: HAMS against Nemoh at 1224 panels only, with no exact reference and without the pontoons and braces.
-- OC4 at 4608 panels: run in progress.
+- QTF potential part, `qtf_b2 = control`: run on the free cylinder at 448, 1792 and 4032 panels with the default C, and at 1792 and 4032 panels with C fixed; not at 7168 panels. The damped free body was run at 448 and 1792 panels.
+- OC4 semisubmersible: HAMS against Nemoh at 1224 and 4608 panels, with no exact reference and without the pontoons and braces. The free M_y difference (4.08% and 4.15%) does not fall with the mesh, and the free F_z difference is still 10.12% at 4608 panels; neither was traced to a cause.
+- OC4 against WAMIT: the pairs with a frequency in 0.25 to 0.35 rad/s differ by over 100% in the largest value at both meshes, and the largest values away from them (15.43 / 8.92 / 4.88% at 1224 panels, 24.11 / 18.13 / 5.51% at 4608) do not fall with the mesh. Whether this is the hull model (pontoons and braces), the restoring and damping, or the resonance was not separated.
 - Nemoh's HASBO: whether it contains a term like B3 was not checked, and the sharp-cylinder Nemoh maps were made with the hull form of B2 only.
 - The free-surface integral of the second-order potential, and the sum-frequency potential part, are not implemented (Phase 6), so `QTF_Indirect.11d` is validated as body forcing only, against a reference that leaves out the same integral.
 - Two unit tests failed under ifx 2024a on Snellius (job of 2026-11-09, the build of the hull-form runs): `control_surface_mesh/separate_bodies_accepted` and `field_velocity/field_green_is_smooth_in_z`, in modules the potential part does not change. Both are fixed on the `second-order-drift` branch by commit 60a972e, which this branch does not contain yet. With ifort 2022.1 on Windows all tests pass ([Developer Documentation](developer_documentation.md#qtf-potential-part)).
-- WAMIT remains an option if a licence becomes available. It is still needed to settle the conjugation and axes of the WAMIT-format output. The semi-analytical reference covers the signs of the mean drift values (210 values agree at 7168 panels), not the phases of the complex outputs.
+- WAMIT: the OC4 comparison with the public WAMIT run of OpenFAST now exists ([OC4 against WAMIT](#oc4-against-wamit)). A WAMIT licence would still be needed to settle the conjugation and axes of the WAMIT-format output on a hull with a known answer, since the diagonal of that comparison is real. The semi-analytical reference covers the signs of the mean drift values (210 values agree at 7168 panels), not the phases of the complex outputs.
 
 ## Sources
 
@@ -574,5 +636,7 @@ Garrett (1971), Yeung (1981), MacCamy and Fuchs (1954), Maruo (1960), Newman (19
 - Ogilvie, T. F. (1983). Second-order hydrodynamic effects on ocean platforms. International Workshop on Ship and Platform Motions, Berkeley.
 - Cong, P., Teng, B., Chen, L., Gou, Y. (2020). A novel solution to the second-order wave radiation force on an oscillating truncated cylinder based on the application of control surfaces. Ocean Engineering 204, 107278.
 - Robertson, A., Jonkman, J., Masciola, M., Song, H., Goupee, A., Coulling, A., Luan, C. (2014). Definition of the Semisubmersible Floating System for Phase II of OC4. NREL/TP-5000-60601, National Renewable Energy Laboratory.
+- Al-Ghuwaidi (2025). Reproduction of the WAMIT run of the OpenFAST r-test for the OC4-DeepCwind semisubmersible (`marin_semi.12d`). Zenodo, doi:10.5281/zenodo.16940342, CC BY 4.0.
+- Roland, S. et al. (2026). A benchmark of boundary element method solvers for predicting second-order hydrodynamic loads on floating offshore wind turbines. J. Phys.: Conf. Ser. 3346, 012006.
 - Zhang, Y., Tosdevin, T., Tang, T., Stansby, P. (2026). Second-order difference-frequency effects on floating wind turbine responses: full-QTF modelling and experimental comparison. arXiv:2610.27940.
 - Kurnia, R., Ducrozet, G. (2023). NEMOH: open-source boundary element solver for first- and second-order hydrodynamic loads. Computer Physics Communications 292, 108885.
