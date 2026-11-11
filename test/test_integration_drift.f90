@@ -75,6 +75,9 @@ module test_integration_drift
     character(len=*), parameter :: near_file = "Wamit_format/MeanDriftPressure.9"
     character(len=*), parameter :: qtf_diff_file = "Wamit_format/QTF_Quadratic.10d"
     character(len=*), parameter :: qtf_sum_file = "Wamit_format/QTF_Quadratic.10s"
+    character(len=*), parameter :: psi_file = "Wamit_format/QTF_PsiCheck.txt"
+    character(len=*), parameter :: qtf_indirect_file = "Wamit_format/QTF_Indirect.11d"
+    character(len=*), parameter :: pot_terms_file = "Wamit_format/QTF_PotentialTerms.txt"
     character(len=*), parameter :: terms_file = "Wamit_format/MeanDriftTerms.txt"
     character(len=*), parameter :: control_file = "Wamit_format/MeanDriftControlSurface.7"
     character(len=*), parameter :: offset_cases(4) = [character(len=17) :: "drift_field_0p005", "drift_field_0p01", &
@@ -148,6 +151,63 @@ module test_integration_drift
     ! 42.3% (F_z of body 1 at heading 30, 0.41 against 0.71; M_x and M_y at most 18%) (measured): 1.5x measured
     real(8), parameter :: control_two_vertical_limit = 6.4d-1
 
+    ! Radiation potentials psi of the indirect method (qtf_terms = body).
+    ! rho int psi n dS against AmssDamp.1: the same panel sum as RFORCE, so only the 7 printed digits of AmssDamp.1 (ES14.6)
+    ! differ; 3.6e-7 measured. A fixed 1e-6 (the plan's 1e-8 is below the printed digits)
+    real(8), parameter :: psi_added_mass_limit = 1d-6
+    ! The indirect excitation against ExcForce.3. The Haskind identity int phi_D n_k = int psi_k dphi_D/dn holds for the
+    ! continuous problem; for the panel solution it holds to the discretization error, since the discrete operator is not
+    ! symmetric. Measured on the 480-panel rounded hull: 2.6e-4 to 5.5e-4 in surge and pitch, 2.47e-3 in heave at 1.10 rad/s.
+    ! 2x measured (the plan's 1e-6 assumed an exact discrete identity)
+    real(8), parameter :: psi_haskind_limit = 5d-3
+    ! Low frequency, from the plan: A11 and A55 at 0.05 rad/s within 5% of the zero frequency (0.19%, 0.09% measured), B/omega
+    ! of those modes below 5% of A(0) (4e-5, 2e-5 measured)
+    real(8), parameter :: psi_low_a_limit = 5d-2
+    real(8), parameter :: psi_low_b_limit = 5d-2
+    ! Heave in finite depth does not tend to the zero-frequency (rigid-lid) A33: the heaving body is a source of volume flux,
+    ! whose wave at kh << 1 spreads in two dimensions, so A33 grows like log(1/kR) and B33/omega tends to rho A_wp^2/(4h)
+    ! (from the energy flux of a shallow-water source, derived for this test). Measured at 0.05 rad/s, h = 100 m (kh = 0.16):
+    ! A33 8.9% above A33(0), B33/omega 0.88% above rho A_wp^2/(4h). The heave check is the latter, at a fixed 5%
+    real(8), parameter :: psi_low_heave_limit = 5d-2
+
+    ! QTF potential part (qtf_terms = body), QTF_Indirect.11d and QTF_PotentialTerms.txt.
+    ! .11d and .10d hold 7 digits (ES14.6), so a component of .11d - .10d is known to half a unit in the last digit of each,
+    ! 5e-7 of |.11d| + |.10d|; the plan's 1e-12 is below the printed digits. A fixed 1e-6 of that sum
+    real(8), parameter :: pot_printed_limit = 1d-6
+    ! Hermitian symmetry of the terms file (ES24.15): the same arithmetic with psi and its conjugate
+    real(8), parameter :: pot_hermitian_limit = 1d-10
+    ! IRSP = 1 against the whole mesh without removal, and two hulls 2000 m apart against one alone, over max |T_pot| of the
+    ! rows of forces or of moments: the plan's 2% (8.7e-4 and 6.8e-3 measured)
+    real(8), parameter :: pot_irsp_limit = 2d-2
+    ! The half mesh is the same discrete problem as the whole mesh, by images: 5.9e-7 measured, 2x measured, rounded up
+    real(8), parameter :: pot_half_limit = 1.2d-6
+    real(8), parameter :: pot_distant_limit = 2d-2
+    ! Every second frequency of the grid: psi is solved at each Omega, so the common pairs are the same computation
+    real(8), parameter :: pot_spacing_limit = 1d-10
+    ! B2 of the sharp free cylinder (qtf_sharp_b2_control, 448 panels, qtf_b2 = control, C and F at 3 m panels) against the
+    ! exact reference, as max over the pairs of |HAMS - exact| / max |exact|, for F_x, F_z, M_y: 15.1%, 30.0%, 11.9% measured
+    ! (11.8% M_y with C and F at the default panel size; the hull form of the same run: 13.8%, 33.1%, 95.4%). 1.3x measured
+    real(8), parameter :: b2_control_limits(3) = [0.20d0, 0.40d0, 0.16d0]
+    ! The same case with qtf_edge_weights = on (qtf_sharp_b2_edges), which keeps the option exercised: 17.2%, 37.4%, 11.1%
+    ! measured (worse than off in F_x and F_z, hence off by default). 1.3x measured
+    real(8), parameter :: b2_edges_limits(3) = [0.23d0, 0.49d0, 0.15d0]
+    ! qtf_b2 = control at (0.47, 0.70) with psi of Omega = 0.23 from the main grid against a radiation-only solve, over
+    ! max |T_pot| of the rows of forces or of moments: the same solve at the same frequency, 3.1e-15 measured (rounding).
+    ! A fixed 1e-12
+    real(8), parameter :: b2_main_grid_limit = 1d-12
+    ! The half mesh against the whole mesh with qtf_b2 = control and edge weights: 7.0e-8 measured, 2x measured, rounded up
+    real(8), parameter :: b2_half_limit = 1.5d-7
+    ! The default qtf_b2 = control against its qtf_b2 = body twin (final review, Important 2). The other four terms come from
+    ! the same first-order solution and psi; the control runs use 4 threads and the twins 1, so they agree to rounding only:
+    ! 9.5e-16 (two bodies) and 5.8e-15 (IRSP = 1) measured, a fixed 1e-12 over max |T_pot| of the rows of forces or of moments
+    real(8), parameter :: b2_twin_other_limit = 1d-12
+    ! B2 by C and F at the default panel size against the hull form, over max |T_pot| of the rows of forces or of moments:
+    ! two bodies 7.5e-2 measured (7.4e-2 and 7.5e-2 for bodies 1 and 2), IRSP = 1 3.1e-2. 1.3x measured, rounded
+    real(8), parameter :: b2_twin_limits(2) = [0.10d0, 0.04d0]
+    ! drift_methods = control together with qtf_b2 = control (B2 takes C and F from the drift, b2_idx not the identity)
+    ! against qtf_b2c_rad: 0 measured (the same .11d to the bit), a fixed 1e-12
+    real(8), parameter :: b2_drift_limit = 1d-12
+
 contains
 
     subroutine setup_drift(testsuite)
@@ -192,6 +252,12 @@ contains
             new_unittest("run_drift_source_two_round", run_drift_source_two_round), &
             new_unittest("run_qtf_round", run_qtf_round), &
             new_unittest("run_qtf_two_round", run_qtf_two_round), &
+            new_unittest("run_qtf_round_body", run_qtf_round_body), &
+            new_unittest("run_qtf_round_low", run_qtf_round_low), &
+            new_unittest("run_qtf_body_cases", run_qtf_body_cases), &
+            new_unittest("run_qtf_sharp_b2", run_qtf_sharp_b2), &
+            new_unittest("run_qtf_b2_routes", run_qtf_b2_routes), &
+            new_unittest("run_qtf_b2_defaults", run_qtf_b2_defaults), &
             new_unittest("run_control_cyl", run_control_cyl), &
             new_unittest("run_control_cyl_sybo", run_control_cyl_sybo), &
             new_unittest("run_control_cases", run_control_cases) &
@@ -271,7 +337,27 @@ contains
             new_unittest("qtf_rows", qtf_rows), &
             new_unittest("qtf_diagonal_is_mean_drift", qtf_diagonal_is_mean_drift), &
             new_unittest("qtf_symmetries", qtf_symmetries), &
-            new_unittest("qtf_off_without_key", qtf_off_without_key) &
+            new_unittest("qtf_off_without_key", qtf_off_without_key), &
+            new_unittest("psi_added_mass", psi_added_mass), &
+            new_unittest("psi_haskind", psi_haskind), &
+            new_unittest("psi_low_frequency", psi_low_frequency), &
+            new_unittest("qtf_off_unchanged", qtf_off_unchanged), &
+            new_unittest("qtf_body_diagonal", qtf_body_diagonal), &
+            new_unittest("qtf_body_sum_of_terms", qtf_body_sum_of_terms), &
+            new_unittest("qtf_body_hermitian", qtf_body_hermitian), &
+            new_unittest("qtf_body_irsp_and_half", qtf_body_irsp_and_half), &
+            new_unittest("qtf_body_two_distant", qtf_body_two_distant), &
+            new_unittest("qtf_body_spacing", qtf_body_spacing), &
+            new_unittest("qtf_body_absent", qtf_body_absent), &
+            new_unittest("qtf_body_log", qtf_body_log), &
+            new_unittest("qtf_b2_control_sharp", qtf_b2_control_sharp), &
+            new_unittest("qtf_b2_control_other_terms", qtf_b2_control_other_terms), &
+            new_unittest("qtf_b2_control_main_grid", qtf_b2_control_main_grid), &
+            new_unittest("qtf_b2_control_half", qtf_b2_control_half), &
+            new_unittest("qtf_b2_control_log", qtf_b2_control_log), &
+            new_unittest("qtf_b2_default_twins", qtf_b2_default_twins), &
+            new_unittest("qtf_b2_control_with_drift", qtf_b2_control_with_drift), &
+            new_unittest("qtf_period_grid", qtf_period_grid) &
         ]
     end subroutine collect_tests_drift
 
@@ -504,6 +590,86 @@ contains
         type(error_type), allocatable, intent(out) :: error
         call run_case("qtf_two_round", [character(len=40) :: near_file, qtf_diff_file, qtf_sum_file], error)
     end subroutine run_qtf_two_round
+
+    subroutine run_qtf_round_body(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("qtf_round_body", [character(len=40) :: near_file, qtf_diff_file, qtf_sum_file, psi_file, &
+                                         qtf_indirect_file, pot_terms_file], error)
+    end subroutine run_qtf_round_body
+
+    subroutine run_qtf_round_low(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("qtf_round_low", [character(len=40) :: near_file, qtf_diff_file, psi_file, qtf_indirect_file, &
+                                        pot_terms_file], error)
+    end subroutine run_qtf_round_low
+
+    !> The fixtures of the QTF potential part besides qtf_round_body and qtf_round_low, in one setup test
+    subroutine run_qtf_body_cases(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=21), parameter :: cases(7) = [character(len=21) :: "qtf_round_body_ref", "qtf_round_body_irsp", &
+            "qtf_half_body", "qtf_two_round_body", "qtf_isolated_body", "qtf_round_low_spacing", "qtf_period_body"]
+        type(error_type), allocatable :: one
+        integer :: c
+
+        ! Every case runs, so that one failure does not hide the others; the first failure is reported
+        do c = 1, size(cases)
+            call run_case(trim(cases(c)), [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file], one)
+            if (allocated(one)) then
+                print '(4x,a)', trim(cases(c))//": "//one%message
+                if (.not. allocated(error)) call move_alloc(one, error)
+            end if
+        end do
+    end subroutine run_qtf_body_cases
+
+    !> Routes of qtf_b2 = control on the hull of drift_cyl with C and F at 6 m panels: psi of Omega = 0.23 from a radiation-only
+    !> solve, from the main grid, and on the half mesh
+    subroutine run_qtf_b2_routes(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=12), parameter :: cases(3) = [character(len=12) :: "qtf_b2c_rad", "qtf_b2c_main", "qtf_b2c_half"]
+        type(error_type), allocatable :: one
+        integer :: c
+
+        do c = 1, size(cases)
+            call run_case(trim(cases(c)), [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file], one)
+            if (allocated(one)) then
+                print '(4x,a)', trim(cases(c))//": "//one%message
+                if (.not. allocated(error)) call move_alloc(one, error)
+            end if
+        end do
+    end subroutine run_qtf_b2_routes
+
+    !> The default qtf_b2 = control with two bodies, with IRSP = 1, and together with drift_methods = control
+    subroutine run_qtf_b2_defaults(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=21), parameter :: cases(2) = [character(len=21) :: "qtf_two_round_control", "qtf_irsp_control"]
+        type(error_type), allocatable :: one
+        integer :: c
+
+        do c = 1, size(cases)
+            call run_case(trim(cases(c)), [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file], one)
+            if (allocated(one)) then
+                print '(4x,a)', trim(cases(c))//": "//one%message
+                if (.not. allocated(error)) call move_alloc(one, error)
+            end if
+        end do
+        call run_case("qtf_b2c_drift", [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file, &
+                                        control_file], one)
+        if (allocated(one)) then
+            print '(4x,a)', "qtf_b2c_drift: "//one%message
+            if (.not. allocated(error)) call move_alloc(one, error)
+        end if
+    end subroutine run_qtf_b2_defaults
+
+    !> The sharp cylinder of drift_cyl, free, with B2 by the control surface (qtf_b2 = control) and by the hull
+    subroutine run_qtf_sharp_b2(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("qtf_sharp_b2_control", [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file, &
+                                               "CSMesh_1.pnl"], error)
+        if (allocated(error)) return
+        call run_case("qtf_sharp_b2_body", [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file], error)
+        if (allocated(error)) return
+        call run_case("qtf_sharp_b2_edges", [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file], error)
+    end subroutine run_qtf_sharp_b2
 
     subroutine run_control_cyl(error)
         type(error_type), allocatable, intent(out) :: error
@@ -3083,5 +3249,886 @@ contains
         inquire (file=output_dir("drift_source_round")//qtf_sum_file, exist=exists)
         call check(error, .not. exists, "A run without qtf wrote QTF_Quadratic.10s")
     end subroutine qtf_off_without_key
+
+    ! ---------------------------------------------------------------------------------------------- radiation potentials psi
+
+    !> PSI rows (omega, source, k, l, Re, Im) or EXC rows (omega, beta_deg, k, Re, Im) of QTF_PsiCheck.txt, by tag
+    subroutine read_psi_check(path, tag, ncol, rows, error)
+        character(len=*), intent(in) :: path, tag
+        integer, intent(in) :: ncol
+        real(8), allocatable, intent(out) :: rows(:,:)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=:), allocatable :: lines(:)
+        integer :: r, n, ios
+
+        call read_lines(path, lines, error)
+        if (allocated(error)) return
+        allocate (rows(size(lines), ncol))
+        n = 0
+        do r = 1, size(lines)
+            if (lines(r)(1:4) /= tag//' ') cycle
+            n = n + 1
+            read (lines(r)(5:), *, iostat=ios) rows(n,:)
+            call check(error, ios == 0, "Bad row in "//path//": "//trim(lines(r)))
+            if (allocated(error)) return
+        end do
+        rows = rows(1:n,:)
+    end subroutine read_psi_check
+
+    !> Rows PER I J A B of AmssDamp.1 with the limit frequencies of SYBO = 1, whose rows have no B (B = 0 here).
+    subroutine read_amssdamp_limits(path, rows, error)
+        character(len=*), intent(in) :: path
+        real(8), allocatable, intent(out) :: rows(:,:)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=:), allocatable :: lines(:)
+        integer :: r, ios
+
+        call read_lines(path, lines, error)
+        if (allocated(error)) return
+        allocate (rows(size(lines), 5))
+        do r = 1, size(lines)
+            read (lines(r), *, iostat=ios) rows(r,1:5)
+            if (ios /= 0) then
+                rows(r,5) = 0d0
+                read (lines(r), *, iostat=ios) rows(r,1:4)
+            end if
+            call check(error, ios == 0, "Bad row in "//path//": "//trim(lines(r)))
+            if (allocated(error)) return
+        end do
+    end subroutine read_amssdamp_limits
+
+    !> rho int psi_k n_l dS = A_lk + i B_lk/omega at the main-grid frequencies of qtf_round_body, against AmssDamp.1 of the
+    !> same run (A/rho and B/(rho omega)). Relative to each entry, or to the largest entry of the frequency for the entries
+    !> below 1e-6 of it (zero by symmetry).
+    subroutine psi_added_mass(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: psi(:,:), amss(:,:)
+        real(8) :: worst, scale, a, b
+        integer :: p, r, matched, freqs
+
+        call read_psi_check(output_dir("qtf_round_body")//psi_file, "PSI", 6, psi, error)
+        if (allocated(error)) return
+        call read_amssdamp_limits(output_dir("qtf_round_body")//"Wamit_format/AmssDamp.1", amss, error)
+        if (allocated(error)) return
+        worst = 0d0
+        matched = 0
+        freqs = 0
+        do p = 1, size(psi, 1)
+            if (nint(psi(p,2)) /= 1) cycle
+            if (nint(psi(p,3)) == 1 .and. nint(psi(p,4)) == 1) freqs = freqs + 1
+            scale = maxval(abs(amss(:,4)) + abs(amss(:,5)), mask=abs(amss(:,1) - psi(p,1)) < 1d-9)
+            do r = 1, size(amss, 1)
+                if (abs(amss(r,1) - psi(p,1)) > 1d-9) cycle
+                if (nint(amss(r,2)) /= nint(psi(p,4)) .or. nint(amss(r,3)) /= nint(psi(p,3))) cycle
+                matched = matched + 1
+                a = psi(p,5)/rho
+                b = psi(p,6)/rho
+                worst = max(worst, abs(a - amss(r,4))/max(abs(amss(r,4)), 1d-6*scale))
+                worst = max(worst, abs(b - amss(r,5))/max(abs(amss(r,5)), 1d-6*scale))
+            end do
+        end do
+        call check(error, freqs == 3, "qtf_round_body: expected PSI rows at the 3 main-grid frequencies")
+        if (allocated(error)) return
+        call check(error, matched == 3*36, "qtf_round_body: a PSI row has no AmssDamp.1 row")
+        if (allocated(error)) return
+        call report("psi_added_mass", worst)
+        call check_below(error, "psi_added_mass", worst, psi_added_mass_limit)
+    end subroutine psi_added_mass
+
+    !> The indirect excitation i omega rho [int phi_I n_k dS - int psi_k dphi_I/dn dS] against ExcForce.3 of the same run,
+    !> conj(F)/(rho g A), at every main-grid frequency and heading. Modes with no excitation by symmetry are left out.
+    subroutine psi_haskind(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: ind(:,:), exc(:,:)
+        real(8) :: worst, scale
+        complex(8) :: direct, indirect
+        integer :: p, r, used, matched
+
+        call read_psi_check(output_dir("qtf_round_body")//psi_file, "EXC", 5, ind, error)
+        if (allocated(error)) return
+        call read_exc(output_dir("qtf_round_body")//"Wamit_format/ExcForce.3", exc, error)
+        if (allocated(error)) return
+        call check(error, size(ind, 1) == 3*2*6, "qtf_round_body: expected EXC rows for 3 frequencies, 2 headings, 6 modes")
+        if (allocated(error)) return
+        worst = 0d0
+        used = 0
+        matched = 0
+        do p = 1, size(ind, 1)
+            do r = 1, size(exc, 1)
+                if (abs(exc(r,1) - ind(p,1)) > 1d-5 .or. abs(exc(r,2) - ind(p,2)) > 1d-5) cycle
+                if (nint(exc(r,3)) /= nint(ind(p,3))) cycle
+                matched = matched + 1
+                scale = maxval(exc(:,4), mask=abs(exc(:,1) - exc(r,1)) < 1d-5 .and. abs(exc(:,2) - exc(r,2)) < 1d-5)
+                if (exc(r,4) < 1d-3*scale) cycle
+                direct = conjg(cmplx(exc(r,6), exc(r,7), kind=8))
+                indirect = cmplx(ind(p,4), ind(p,5), kind=8)/(rho*g)
+                worst = max(worst, abs(indirect - direct)/abs(direct))
+                used = used + 1
+            end do
+        end do
+        call check(error, matched == size(ind, 1), "qtf_round_body: an EXC row has no ExcForce.3 row")
+        if (allocated(error)) return
+        call check(error, used >= 18, "Too few modes with excitation in psi_haskind")
+        if (allocated(error)) return
+        call report("psi_haskind", worst)
+        call check_below(error, "psi_haskind", worst, psi_haskind_limit)
+    end subroutine psi_haskind
+
+    !> qtf_round_low (h = 100 m): psi at the smallest difference, 0.05 rad/s (kh = 0.16), is finite; its A11 and A55 are within
+    !> 5% of the zero-frequency values of the same run (SYBO = 1) and their B/omega is small against them; its B33/omega is
+    !> the shallow-water source value rho A_wp^2/(4h), with A_wp = C33/(rho g) from Hydrostat.hst (REFL = 1).
+    subroutine psi_low_frequency(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), parameter :: depth = 100d0
+        real(8), allocatable :: psi(:,:), amss(:,:), hst(:,:)
+        real(8) :: a0(6), a_low(6), b_low(6), worst_a, worst_b, awp, heave
+        integer :: p, r, j, m, n_low
+
+        call check_no_bad_numbers(output_dir("qtf_round_low")//psi_file, error)
+        if (allocated(error)) return
+        call read_psi_check(output_dir("qtf_round_low")//psi_file, "PSI", 6, psi, error)
+        if (allocated(error)) return
+        call read_amssdamp_limits(output_dir("qtf_round_low")//"Wamit_format/AmssDamp.1", amss, error)
+        if (allocated(error)) return
+        call check(error, count(nint(psi(:,2)) == 2 .and. nint(psi(:,3)) == 1 .and. nint(psi(:,4)) == 1) == 4, &
+                   "qtf_round_low: expected radiation-only rows at 4 differences")
+        if (allocated(error)) return
+        a0 = -1d0
+        a_low = 0d0
+        b_low = 0d0
+        n_low = 0
+        do j = 1, 6
+            do r = 1, size(amss, 1)
+                if (abs(amss(r,1)) < 1d-9 .and. nint(amss(r,2)) == j .and. nint(amss(r,3)) == j) a0(j) = amss(r,4)
+            end do
+            do p = 1, size(psi, 1)
+                if (abs(psi(p,1) - 0.05d0) > 1d-6 .or. nint(psi(p,3)) /= j .or. nint(psi(p,4)) /= j) cycle
+                a_low(j) = psi(p,5)/rho
+                b_low(j) = psi(p,6)/rho
+                n_low = n_low + 1
+            end do
+        end do
+        call check(error, n_low == 6 .and. a0(1) > 0d0 .and. a0(3) > 0d0, "qtf_round_low: rows at 0.05 rad/s or zero frequency")
+        if (allocated(error)) return
+        ! A(Omega) and B(Omega)/Omega of the differences and of the main grid, for the log
+        do p = 1, size(psi, 1)
+            if (nint(psi(p,3)) == nint(psi(p,4)) .and. (nint(psi(p,3)) == 1 .or. nint(psi(p,3)) == 3)) then
+                print '(4x,a,F6.3,a,I1,a,I1,a,2ES12.4)', "psi_low_frequency omega", psi(p,1), " source ", nint(psi(p,2)), &
+                    " A_jj, B_jj/omega j = ", nint(psi(p,3)), ":", psi(p,5)/rho, psi(p,6)/rho
+            end if
+        end do
+        print '(4x,a,3ES12.4)', "psi_low_frequency zero-frequency A11, A33, A55:", a0(1), a0(3), a0(5)
+        worst_a = 0d0
+        worst_b = 0d0
+        do m = 1, 5, 4
+            worst_a = max(worst_a, abs(a_low(m) - a0(m))/a0(m))
+            worst_b = max(worst_b, abs(b_low(m))/a0(m))
+        end do
+        call read_columns(output_dir("qtf_round_low")//"Wamit_format/Hydrostat.hst", 3, hst, error)
+        if (allocated(error)) return
+        awp = -1d0
+        do r = 1, size(hst, 1)
+            if (nint(hst(r,1)) == 3 .and. nint(hst(r,2)) == 3) awp = hst(r,3)
+        end do
+        call check(error, awp > 0d0, "qtf_round_low: no C33 in Hydrostat.hst")
+        if (allocated(error)) return
+        heave = abs(b_low(3) - awp*awp/(4d0*depth))/(awp*awp/(4d0*depth))
+        call report("psi_low_frequency A11, A55 against A(0)", worst_a)
+        call report("psi_low_frequency B11, B55 over omega A(0)", worst_b)
+        call report("psi_low_frequency A33 against A33(0), not limited", abs(a_low(3) - a0(3))/a0(3))
+        call report("psi_low_frequency B33/omega against rho A_wp^2/(4h)", heave)
+        call check_below(error, "psi_low_frequency A", worst_a, psi_low_a_limit)
+        if (allocated(error)) return
+        call check_below(error, "psi_low_frequency B/omega", worst_b, psi_low_b_limit)
+        if (allocated(error)) return
+        call check_below(error, "psi_low_frequency heave", heave, psi_low_heave_limit)
+    end subroutine psi_low_frequency
+
+    !> qtf_terms = quadratic solves no radiation-only problem and writes no psi check; qtf_terms = body changes no output of
+    !> the quadratic case it extends, and logs one line per radiation-only solve (0.15 and 0.25 rad/s within qtf_max_dw = 0.3,
+    !> 0.05 to 0.20 rad/s for qtf_round_low).
+    subroutine qtf_off_unchanged(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=40), parameter :: same_files(7) = [character(len=40) :: "Wamit_format/AmssDamp.1", &
+            "Wamit_format/ExcForce.3", "Wamit_format/Motion.4", far_file, near_file, qtf_diff_file, &
+            qtf_sum_file]
+        logical :: exists
+        integer :: i
+
+        inquire (file=output_dir("qtf_round")//psi_file, exist=exists)
+        call check(error, .not. exists, "qtf_terms = quadratic wrote "//psi_file)
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_round.log", "Radiation only"), 0, &
+                   "radiation-only lines in the log of qtf_round")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_round_body.log", "Radiation only"), 2, &
+                   "radiation-only lines in the log of qtf_round_body")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_round_low.log", "Radiation only"), 4, &
+                   "radiation-only lines in the log of qtf_round_low")
+        if (allocated(error)) return
+        do i = 1, size(same_files)
+            call check_same_file(output_dir("qtf_round")//trim(same_files(i)), &
+                                 output_dir("qtf_round_body")//trim(same_files(i)), error)
+            if (allocated(error)) return
+        end do
+    end subroutine qtf_off_unchanged
+
+    ! ---------------------------------------------------------------------------------------------- QTF potential part
+
+    !> Rows PER1 PER2 BETA1 BETA2 I, then Re Im of each of the 5 terms (Froude-Krylov, incident diffraction, B1, B2, B3), of
+    !> QTF_PotentialTerms.txt: 15 columns
+    subroutine read_pot_terms(path, rows, error)
+        character(len=*), intent(in) :: path
+        real(8), allocatable, intent(out) :: rows(:,:)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=:), allocatable :: lines(:)
+        integer :: r, n, ios
+
+        call read_lines(path, lines, error)
+        if (allocated(error)) return
+        allocate (rows(size(lines), 15))
+        n = 0
+        do r = 1, size(lines)
+            if (lines(r)(1:1) == '#') cycle
+            n = n + 1
+            read (lines(r), *, iostat=ios) rows(n,:)
+            call check(error, ios == 0, "Bad row in "//path//": "//trim(lines(r)))
+            if (allocated(error)) return
+        end do
+        rows = rows(1:n,:)
+    end subroutine read_pot_terms
+
+    !> T_pot of each row of the terms file: (PER1, PER2, BETA1, BETA2, I, Re, Im), the sum of the 5 terms
+    subroutine read_pot_total(path, rows, error)
+        character(len=*), intent(in) :: path
+        real(8), allocatable, intent(out) :: rows(:,:)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: t(:,:)
+
+        call read_pot_terms(path, t, error)
+        if (allocated(error)) return
+        allocate (rows(size(t, 1), 7))
+        rows(:,1:5) = t(:,1:5)
+        rows(:,6) = t(:,6) + t(:,8) + t(:,10) + t(:,12) + t(:,14)
+        rows(:,7) = t(:,7) + t(:,9) + t(:,11) + t(:,13) + t(:,15)
+    end subroutine read_pot_total
+
+    !> Row q of b with the keys PER1 PER2 BETA1 BETA2 I of row p of a, or 0
+    integer function matching_row(a, p, b)
+        real(8), intent(in) :: a(:,:), b(:,:)
+        integer, intent(in) :: p
+        integer :: q
+
+        matching_row = 0
+        do q = 1, size(b, 1)
+            if (same(b(q,1), a(p,1)) .and. same(b(q,2), a(p,2)) .and. b(q,3) == a(p,3) .and. b(q,4) == a(p,4) &
+                .and. b(q,5) == a(p,5)) then
+                matching_row = q
+                return
+            end if
+        end do
+    end function matching_row
+
+    !> Largest |T| of the rows of forces, or of moments, as the row of index
+    real(8) function kind_scale(t, index)
+        real(8), intent(in) :: t(:,:)   ! columns 5 (I), 6 (Re), 7 (Im)
+        real(8), intent(in) :: index
+        kind_scale = maxval(hypot(t(:,6), t(:,7)), mask=same_index_kind(t(:,5), index))
+    end function kind_scale
+
+    !> On the exact diagonal, and at equal frequencies with two headings, .11d is .10d: the same text, row for row. The
+    !> files have the same rows in the same order.
+    subroutine qtf_body_diagonal(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=21), parameter :: cases(6) = [character(len=21) :: "qtf_round_body", "qtf_round_low", &
+                                                    "qtf_two_round_body", "qtf_sharp_b2_control", "qtf_two_round_control", &
+                                                    "qtf_period_body"]
+        character(len=:), allocatable :: a(:), b(:)
+        real(8), allocatable :: d(:,:)
+        integer :: c, r, diagonal
+
+        do c = 1, size(cases)
+            call read_lines(output_dir(trim(cases(c)))//qtf_diff_file, a, error)
+            if (allocated(error)) return
+            call read_lines(output_dir(trim(cases(c)))//qtf_indirect_file, b, error)
+            if (allocated(error)) return
+            call read_qtf(output_dir(trim(cases(c)))//qtf_diff_file, d, error)
+            if (allocated(error)) return
+            call check(error, size(a) == size(b), trim(cases(c))//": .11d and .10d have different numbers of rows")
+            if (allocated(error)) return
+            diagonal = 0
+            do r = 1, size(a)
+                call check(error, a(r)(1:62) == b(r)(1:62), trim(cases(c))//": .11d row of other keys than .10d: "//trim(b(r)))
+                if (allocated(error)) return
+                if (d(r,1) /= d(r,2)) cycle
+                diagonal = diagonal + 1
+                call check(error, a(r) == b(r), trim(cases(c))//": .11d differs from .10d on the diagonal: "//trim(b(r)))
+                if (allocated(error)) return
+            end do
+            call check(error, diagonal > 0 .and. diagonal < size(a), trim(cases(c))//": no diagonal or no off-diagonal rows")
+            if (allocated(error)) return
+        end do
+    end subroutine qtf_body_diagonal
+
+    !> .11d - .10d is the sum of the 5 terms of QTF_PotentialTerms.txt, to the printed digits; the terms file has a row for
+    !> each pair with Omega /= 0 and only those
+    subroutine qtf_body_sum_of_terms(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=21), parameter :: cases(5) = [character(len=21) :: "qtf_round_body", "qtf_two_round_body", &
+                                                    "qtf_sharp_b2_control", "qtf_two_round_control", "qtf_period_body"]
+        real(8), allocatable :: d(:,:), x(:,:), t(:,:)
+        real(8) :: worst
+        integer :: c, r, q, n
+
+        do c = 1, size(cases)
+            call read_qtf(output_dir(trim(cases(c)))//qtf_diff_file, d, error)
+            if (allocated(error)) return
+            call read_qtf(output_dir(trim(cases(c)))//qtf_indirect_file, x, error)
+            if (allocated(error)) return
+            call read_pot_total(output_dir(trim(cases(c)))//pot_terms_file, t, error)
+            if (allocated(error)) return
+            call check(error, size(x, 1) == size(d, 1), trim(cases(c))//": .11d and .10d have different numbers of rows")
+            if (allocated(error)) return
+            worst = 0d0
+            n = 0
+            do r = 1, size(x, 1)
+                q = matching_row(x, r, t)
+                if (x(r,1) == x(r,2)) then
+                    call check(error, q == 0, trim(cases(c))//": a terms row at Omega = 0")
+                    if (allocated(error)) return
+                    cycle
+                end if
+                call check(error, q > 0, trim(cases(c))//": a .11d row has no terms row")
+                if (allocated(error)) return
+                n = n + 1
+                worst = max(worst, abs(x(r,8) - d(r,8) - t(q,6))/max(abs(x(r,8)) + abs(d(r,8)), tiny(1d0)), &
+                            abs(x(r,9) - d(r,9) - t(q,7))/max(abs(x(r,9)) + abs(d(r,9)), tiny(1d0)))
+            end do
+            call report("qtf_body_sum_of_terms "//trim(cases(c)), worst)
+            call check(error, n == size(t, 1) .and. n > 0, trim(cases(c))//": terms rows that are not in .11d")
+            if (allocated(error)) return
+            call check_below(error, "qtf_body_sum_of_terms", worst, pot_printed_limit)
+            if (allocated(error)) return
+        end do
+    end subroutine qtf_body_sum_of_terms
+
+    !> .11d(i, beta1; j, beta2) = conj .11d(j, beta2; i, beta1) to the printed digits, over the frequency and the heading
+    !> pairs, and T_pot of the terms file the same to its digits
+    subroutine qtf_body_hermitian(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=21), parameter :: cases(6) = [character(len=21) :: "qtf_round_body", "qtf_round_low", &
+                                                    "qtf_two_round_body", "qtf_sharp_b2_control", "qtf_two_round_control", &
+                                                    "qtf_period_body"]
+        real(8), allocatable :: x(:,:), t(:,:)
+        real(8) :: worst, scale
+        integer :: c, p, q, partners
+
+        do c = 1, size(cases)
+            call read_qtf(output_dir(trim(cases(c)))//qtf_indirect_file, x, error)
+            if (allocated(error)) return
+            worst = 0d0
+            partners = 0
+            do p = 1, size(x, 1)
+                scale = maxval(x(:,6), mask=same_index_kind(x(:,5), x(p,5)))
+                q = partner_row(x, p)
+                if (q == 0) cycle
+                partners = partners + 1
+                worst = max(worst, (abs(x(q,8) - x(p,8)) + abs(x(q,9) + x(p,9)))/scale)
+            end do
+            call report("qtf_body_hermitian .11d "//trim(cases(c)), worst)
+            call check(error, partners == size(x, 1), trim(cases(c))//": a .11d row has no partner")
+            if (allocated(error)) return
+            call check_below(error, "qtf_body_hermitian", worst, pot_printed_limit)
+            if (allocated(error)) return
+
+            call read_pot_total(output_dir(trim(cases(c)))//pot_terms_file, t, error)
+            if (allocated(error)) return
+            worst = 0d0
+            partners = 0
+            do p = 1, size(t, 1)
+                q = partner_row(t, p)
+                if (q == 0) cycle
+                partners = partners + 1
+                worst = max(worst, hypot(t(q,6) - t(p,6), t(q,7) + t(p,7))/kind_scale(t, t(p,5)))
+            end do
+            call report("qtf_body_hermitian terms "//trim(cases(c)), worst)
+            call check(error, partners == size(t, 1), trim(cases(c))//": a terms row has no partner")
+            if (allocated(error)) return
+            call check_below(error, "qtf_body_hermitian terms", worst, pot_hermitian_limit)
+            if (allocated(error)) return
+        end do
+    end subroutine qtf_body_hermitian
+
+    !> Row of the pair (j, beta2; i, beta1) of row p, the same index, or 0
+    integer function partner_row(t, p)
+        real(8), intent(in) :: t(:,:)
+        integer, intent(in) :: p
+        integer :: q
+
+        partner_row = 0
+        do q = 1, size(t, 1)
+            if (same(t(q,1), t(p,2)) .and. same(t(q,2), t(p,1)) .and. t(q,3) == t(p,4) .and. t(q,4) == t(p,3) &
+                .and. t(q,5) == t(p,5)) then
+                partner_row = q
+                return
+            end if
+        end do
+    end function partner_row
+
+    !> T_pot with IRSP = 1, and on the half mesh, against the whole mesh without removal (velocity by differencing in all
+    !> three: the source solve does not take IRSP = 1), within 2% of max |T_pot| for IRSP = 1 and to the solver's rounding for
+    !> the half mesh. Omega = 0.15 rad/s and the main grid are well below the first irregular frequency of the hull (about
+    !> 1.5 rad/s), so this checks that psi lives on the hull panels only and that the lid shifts no index, not that the
+    !> removal acts on psi.
+    subroutine qtf_body_irsp_and_half(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=19), parameter :: cases(2) = [character(len=19) :: "qtf_round_body_irsp", "qtf_half_body"]
+        real(8), parameter :: limits(2) = [pot_irsp_limit, pot_half_limit]
+        real(8), allocatable :: ref(:,:), t(:,:)
+        real(8) :: worst
+        integer :: c, p, q
+
+        call read_pot_total(output_dir("qtf_round_body_ref")//pot_terms_file, ref, error)
+        if (allocated(error)) return
+        do c = 1, size(cases)
+            call read_pot_total(output_dir(trim(cases(c)))//pot_terms_file, t, error)
+            if (allocated(error)) return
+            call check(error, size(t, 1) == size(ref, 1) .and. size(t, 1) > 0, trim(cases(c))//": other rows than the reference")
+            if (allocated(error)) return
+            worst = 0d0
+            do p = 1, size(ref, 1)
+                q = matching_row(ref, p, t)
+                call check(error, q > 0, trim(cases(c))//": a reference row is missing")
+                if (allocated(error)) return
+                worst = max(worst, hypot(t(q,6) - ref(p,6), t(q,7) - ref(p,7))/kind_scale(ref, ref(p,5)))
+            end do
+            call report("qtf_body_irsp_and_half "//trim(cases(c)), worst)
+            call check_below(error, "qtf_body_irsp_and_half "//trim(cases(c)), worst, limits(c))
+            if (allocated(error)) return
+        end do
+    end subroutine qtf_body_irsp_and_half
+
+    !> Two small rounded hulls 2000 m apart: T_pot of each within 2% of max |T_pot| of the hull alone. Body 2 sits at
+    !> y = 2000 m, where the waves of heading 0 have the phase they have at the origin; at heading 30 the pair has the
+    !> phase factor exp(-i (k_i - k_j) 2000 sin 30), so those rows of body 2 are compared in modulus. The difference is
+    !> the physical interaction: the first-order wave scattered by the other hull (it changes .10d by 0.78% here, at 0.80
+    !> and 1.00 rad/s; at 1.35 and 1.55 rad/s by 5.9%, where T_pot differed by 5.4%)
+    subroutine qtf_body_two_distant(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: two(:,:), one(:,:), key(:,:)
+        real(8) :: worst, scale
+        integer :: p, q, b, n
+
+        call read_pot_total(output_dir("qtf_two_round_body")//pot_terms_file, two, error)
+        if (allocated(error)) return
+        call read_pot_total(output_dir("qtf_isolated_body")//pot_terms_file, one, error)
+        if (allocated(error)) return
+        worst = 0d0
+        n = 0
+        do p = 1, size(two, 1)
+            if (two(p,3) /= two(p,4)) cycle
+            b = (nint(two(p,5)) - 1)/6 + 1
+            key = two(p:p,:)
+            key(1,5) = real(nint(two(p,5)) - 6*(b - 1), 8)
+            q = matching_row(key, 1, one)
+            call check(error, q > 0, "qtf_isolated_body: a row of qtf_two_round_body is missing")
+            if (allocated(error)) return
+            n = n + 1
+            scale = kind_scale(one, one(q,5))
+            if (b == 1 .or. two(p,3) == 0d0) then
+                worst = max(worst, hypot(two(p,6) - one(q,6), two(p,7) - one(q,7))/scale)
+            else
+                worst = max(worst, abs(hypot(two(p,6), two(p,7)) - hypot(one(q,6), one(q,7)))/scale)
+            end if
+        end do
+        call report("qtf_body_two_distant", worst)
+        call check(error, n == 2*size(one, 1) .and. n > 0, "qtf_two_round_body: expected both bodies at every pair")
+        if (allocated(error)) return
+        call check_below(error, "qtf_body_two_distant", worst, pot_distant_limit)
+    end subroutine qtf_body_two_distant
+
+    !> Every second frequency of qtf_round_low gives the same .11d and terms at the common pairs, to 1e-10 of max |T|
+    subroutine qtf_body_spacing(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: full(:,:), half(:,:), tf(:,:), th(:,:), total(:,:)
+        real(8) :: worst
+        integer :: p, q, k
+
+        call read_qtf(output_dir("qtf_round_low")//qtf_indirect_file, full, error)
+        if (allocated(error)) return
+        call read_qtf(output_dir("qtf_round_low_spacing")//qtf_indirect_file, half, error)
+        if (allocated(error)) return
+        call check(error, size(half, 1) == 9*2*6, "qtf_round_low_spacing: expected 3 x 3 pairs, 2 headings, 6 rows")
+        if (allocated(error)) return
+        worst = 0d0
+        do p = 1, size(half, 1)
+            q = matching_row(half, p, full)
+            call check(error, q > 0, "qtf_round_low: a pair of qtf_round_low_spacing is missing")
+            if (allocated(error)) return
+            worst = max(worst, (abs(half(p,8) - full(q,8)) + abs(half(p,9) - full(q,9))) &
+                               /maxval(half(:,6), mask=same_index_kind(half(:,5), half(p,5))))
+        end do
+        call report("qtf_body_spacing .11d", worst)
+        call check_below(error, "qtf_body_spacing .11d", worst, pot_spacing_limit)
+        if (allocated(error)) return
+
+        call read_pot_terms(output_dir("qtf_round_low")//pot_terms_file, tf, error)
+        if (allocated(error)) return
+        call read_pot_terms(output_dir("qtf_round_low_spacing")//pot_terms_file, th, error)
+        if (allocated(error)) return
+        call read_pot_total(output_dir("qtf_round_low_spacing")//pot_terms_file, total, error)
+        if (allocated(error)) return
+        call check(error, size(th, 1) == 6*2*6, "qtf_round_low_spacing: expected 6 pairs with Omega /= 0 in the terms file")
+        if (allocated(error)) return
+        worst = 0d0
+        do p = 1, size(th, 1)
+            q = matching_row(th, p, tf)
+            call check(error, q > 0, "qtf_round_low: a terms row of qtf_round_low_spacing is missing")
+            if (allocated(error)) return
+            do k = 6, 15
+                worst = max(worst, abs(th(p,k) - tf(q,k))/kind_scale(total, th(p,5)))
+            end do
+        end do
+        call report("qtf_body_spacing terms", worst)
+        call check_below(error, "qtf_body_spacing terms", worst, pot_spacing_limit)
+    end subroutine qtf_body_spacing
+
+    !> Without qtf_terms = body there is no .11d and no terms file
+    subroutine qtf_body_absent(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=18), parameter :: cases(3) = [character(len=18) :: "qtf_round", "qtf_two_round", "drift_source_round"]
+        logical :: exists
+        integer :: c
+
+        do c = 1, size(cases)
+            inquire (file=output_dir(trim(cases(c)))//qtf_indirect_file, exist=exists)
+            call check(error, .not. exists, trim(cases(c))//" wrote "//qtf_indirect_file)
+            if (allocated(error)) return
+            inquire (file=output_dir(trim(cases(c)))//pot_terms_file, exist=exists)
+            call check(error, .not. exists, trim(cases(c))//" wrote "//pot_terms_file)
+            if (allocated(error)) return
+        end do
+    end subroutine qtf_body_absent
+
+    !> The log of a body run says that the free-surface integral is omitted, once; a quadratic run does not
+    subroutine qtf_body_log(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: line = "QTF_Indirect.11d: body forcing only, the free-surface integral is omitted."
+
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_round_body.log", line), 1, &
+                   "free-surface line in the log of qtf_round_body")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_two_round_body.log", line), 1, &
+                   "free-surface line in the log of qtf_two_round_body")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_round.log", line), 0, &
+                   "free-surface line in the log of qtf_round")
+    end subroutine qtf_body_log
+
+    !> B2 of the sharp free cylinder against the exact reference (truncated_cylinder_reference.py qtf-potential, free, 0.01
+    !> rad/s grid, N 64000, gap basis (20, 4, 4), converged to 2e-5 in B2), in e^{-i omega t} per rho g, for the pairs
+    !> (omega_i, omega_j) of the fixtures. The terms file holds conj(T)/(rho g). Error per quantity: max over the pairs of
+    !> |HAMS - exact| / max over the pairs of |exact|, as qtf_compare.py. .11d is finite. The hull form of the same mesh is
+    !> printed beside it (its M_y error was 79% at this mesh on the full grid).
+    subroutine qtf_b2_control_sharp(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), parameter :: pairs(2, 3) = reshape([0.47d0, 0.70d0, 0.47d0, 0.77d0, 0.70d0, 0.77d0], [2, 3])
+        integer, parameter :: mode_i(3) = [1, 3, 5]
+        character(len=3), parameter :: label(3) = ["F_x", "F_z", "M_y"]
+        ! exact(quantity, pair): F_x, F_z, M_y of B2 at (0.47, 0.70), (0.47, 0.77), (0.70, 0.77)
+        complex(8), parameter :: exact(3, 3) = reshape([ &
+            (-0.02418447834d0, -0.7044084574d0), (-1.80851198d0, 0.195575648d0), (-0.5452006385d0, -10.02554505d0), &
+            (-12.68439896d0, 13.42905143d0), (2.437011616d0, 7.401809966d0), (-62.12791973d0, 49.44764599d0), &
+            (-9.32633549d0, 6.262764817d0), (1.352408003d0, 1.891009155d0), (-3.738635412d0, 2.171174783d0)], [3, 3])
+        real(8) :: ec(3), eb(3), ee(3)
+        integer :: q
+
+        call check_no_bad_numbers(output_dir("qtf_sharp_b2_control")//qtf_indirect_file, error)
+        if (allocated(error)) return
+        call check_no_bad_numbers(output_dir("qtf_sharp_b2_edges")//qtf_indirect_file, error)
+        if (allocated(error)) return
+        call b2_errors("qtf_sharp_b2_control", ec, error)
+        if (allocated(error)) return
+        call b2_errors("qtf_sharp_b2_body", eb, error)
+        if (allocated(error)) return
+        call b2_errors("qtf_sharp_b2_edges", ee, error)
+        if (allocated(error)) return
+        do q = 1, 3
+            call report("qtf_b2_control_sharp B2 "//label(q)//" control", ec(q))
+            call report("qtf_b2_control_sharp B2 "//label(q)//" edges  ", ee(q))
+            call report("qtf_b2_control_sharp B2 "//label(q)//" hull   ", eb(q))
+        end do
+        do q = 1, 3
+            call check_below(error, "qtf_b2_control_sharp B2 "//label(q), ec(q), b2_control_limits(q))
+            if (allocated(error)) return
+            call check_below(error, "qtf_b2_control_sharp B2 edges "//label(q), ee(q), b2_edges_limits(q))
+            if (allocated(error)) return
+        end do
+
+    contains
+
+        subroutine b2_errors(name, e, error)
+            character(len=*), intent(in) :: name
+            real(8), intent(out) :: e(3)
+            type(error_type), allocatable, intent(out) :: error
+            real(8), allocatable :: t(:,:)
+            real(8) :: scale
+            complex(8) :: v
+            integer :: p, r, q, found
+
+            call read_pot_terms(output_dir(name)//pot_terms_file, t, error)
+            if (allocated(error)) return
+            do q = 1, 3
+                scale = maxval(abs(exact(q, :)))
+                e(q) = 0d0
+                do p = 1, 3
+                    found = 0
+                    do r = 1, size(t, 1)
+                        if (.not. (same(t(r,1), pairs(1,p)) .and. same(t(r,2), pairs(2,p)) .and. t(r,3) == 0d0 &
+                                   .and. t(r,4) == 0d0 .and. nint(t(r,5)) == mode_i(q))) cycle
+                        found = found + 1
+                        v = cmplx(t(r,12), -t(r,13), kind=8)
+                        e(q) = max(e(q), abs(v - exact(q, p))/scale)
+                    end do
+                    call check(error, found == 1, name//": no single terms row of a reference pair")
+                    if (allocated(error)) return
+                end do
+            end do
+        end subroutine b2_errors
+
+    end subroutine qtf_b2_control_sharp
+
+    !> qtf_b2 = control changes B2 only: the other four terms of the terms file are those of qtf_b2 = body, digit for digit
+    !> (the same first-order solution and psi), and B2 differs
+    subroutine qtf_b2_control_other_terms(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: tc(:,:), tb(:,:)
+        integer :: p, q
+        logical :: b2_differs
+
+        call read_pot_terms(output_dir("qtf_sharp_b2_control")//pot_terms_file, tc, error)
+        if (allocated(error)) return
+        call read_pot_terms(output_dir("qtf_sharp_b2_body")//pot_terms_file, tb, error)
+        if (allocated(error)) return
+        call check(error, size(tc, 1) == size(tb, 1) .and. size(tc, 1) > 0, "qtf_sharp_b2: other rows in the two runs")
+        if (allocated(error)) return
+        b2_differs = .false.
+        do p = 1, size(tc, 1)
+            q = matching_row(tc, p, tb)
+            call check(error, q > 0, "qtf_sharp_b2_body: a row of the control run is missing")
+            if (allocated(error)) return
+            call check(error, all(tc(p, [6, 7, 8, 9, 10, 11, 14, 15]) == tb(q, [6, 7, 8, 9, 10, 11, 14, 15])), &
+                       "qtf_sharp_b2: FK, diffraction, B1 or B3 differ between qtf_b2 = control and body")
+            if (allocated(error)) return
+            if (any(tc(p, 12:13) /= tb(q, 12:13))) b2_differs = .true.
+        end do
+        call check(error, b2_differs, "qtf_sharp_b2: B2 is the same with qtf_b2 = control and body")
+    end subroutine qtf_b2_control_other_terms
+
+    !> qtf_b2 = control with psi of Omega from the main grid (so_after_radiation, keep_cs_psi there): the terms of the pair
+    !> (0.47, 0.70) are those of the run where Omega = 0.23 comes from a radiation-only solve, and the log shows the route
+    subroutine qtf_b2_control_main_grid(error)
+        type(error_type), allocatable, intent(out) :: error
+
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_b2c_main.log", &
+                                          "1 from the main grid and 0 radiation-only solves"), 1, &
+                   "qtf_b2c_main: psi of Omega = 0.23 is not taken from the main grid")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_b2c_rad.log", &
+                                          "0 from the main grid and 1 radiation-only solves"), 1, &
+                   "qtf_b2c_rad: psi of Omega = 0.23 is not from a radiation-only solve")
+        if (allocated(error)) return
+        call compare_terms("qtf_b2c_main", "qtf_b2c_rad", "qtf_b2_control_main_grid", b2_main_grid_limit, error)
+    end subroutine qtf_b2_control_main_grid
+
+    !> qtf_b2 = control on the half mesh (images expanded before C, F and the edge weights are built) equals the whole mesh
+    subroutine qtf_b2_control_half(error)
+        type(error_type), allocatable, intent(out) :: error
+        call compare_terms("qtf_b2c_half", "qtf_b2c_rad", "qtf_b2_control_half", b2_half_limit, error)
+    end subroutine qtf_b2_control_half
+
+    !> Every term of every row of the terms file of case a against the same row of case b (the same rows in both), over
+    !> max |T_pot| of the rows of forces or of moments of b; B2 apart, then all terms
+    subroutine compare_terms(a, b, label, limit, error)
+        character(len=*), intent(in) :: a, b, label
+        real(8), intent(in) :: limit
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: ta(:,:), tb(:,:), total(:,:)
+        real(8) :: worst, worst_b2, scale
+        integer :: p, q, k
+
+        call read_pot_terms(output_dir(a)//pot_terms_file, ta, error)
+        if (allocated(error)) return
+        call read_pot_terms(output_dir(b)//pot_terms_file, tb, error)
+        if (allocated(error)) return
+        call read_pot_total(output_dir(b)//pot_terms_file, total, error)
+        if (allocated(error)) return
+        call check(error, size(ta, 1) == size(tb, 1) .and. size(ta, 1) > 0, label//": other rows in "//a//" and "//b)
+        if (allocated(error)) return
+        worst = 0d0
+        worst_b2 = 0d0
+        do p = 1, size(tb, 1)
+            q = matching_row(tb, p, ta)
+            call check(error, q > 0, label//": a row of "//b//" is missing in "//a)
+            if (allocated(error)) return
+            scale = kind_scale(total, tb(p,5))
+            do k = 6, 14, 2
+                worst = max(worst, hypot(ta(q,k) - tb(p,k), ta(q,k+1) - tb(p,k+1))/scale)
+            end do
+            worst_b2 = max(worst_b2, hypot(ta(q,12) - tb(p,12), ta(q,13) - tb(p,13))/scale)
+        end do
+        call report(label//" B2", worst_b2)
+        call report(label//" all terms", worst)
+        call check_below(error, label, worst, limit)
+    end subroutine compare_terms
+
+    !> The log of a qtf_b2 = control run with qtf_edge_weights = on gives the sharp edges found and the panels weighted (the
+    !> bottom edge of the cylinder, the same on the half mesh), and a run with the default (off) does not; a run that sets
+    !> qtf_edge_weights or qtf_b2 where they have no effect says so, once
+    subroutine qtf_b2_control_log(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: edges = "QTF B2 edge weights: body 1, 1 sharp edges (32 panel edges), 64 panels weighted"
+        character(len=*), parameter :: edge_note = "QTF note: qtf_edge_weights and qtf_edge_angle are ignored"
+        character(len=*), parameter :: b2_note = "QTF note: qtf_b2 is ignored"
+        character(len=12), parameter :: control(3) = [character(len=12) :: "qtf_b2c_rad", "qtf_b2c_half", "qtf_b2c_main"]
+        integer :: c
+
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_sharp_b2_edges.log", edges), 1, &
+                   "edge weights line in the log of qtf_sharp_b2_edges")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_sharp_b2_control.log", edges), 0, &
+                   "edge weights line in the log of qtf_sharp_b2_control (default off)")
+        if (allocated(error)) return
+        do c = 1, size(control)
+            call check(error, count_log_lines(get_running_exe_path()//trim(control(c))//".log", edges), 1, &
+                       "edge weights line in the log of "//trim(control(c)))
+            if (allocated(error)) return
+        end do
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_sharp_b2_control.log", edge_note), 0, &
+                   "edge note in the log of qtf_sharp_b2_control")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_sharp_b2_body.log", edge_note), 1, &
+                   "edge note in the log of qtf_sharp_b2_body (qtf_edge_weights = off with qtf_b2 = body)")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_sharp_b2_body.log", edges), 0, &
+                   "edge weights line in the log of qtf_sharp_b2_body")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_two_round.log", b2_note), 1, &
+                   "qtf_b2 note in the log of qtf_two_round (quadratic part only)")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_round_body.log", b2_note), 0, &
+                   "qtf_b2 note in the log of qtf_round_body")
+    end subroutine qtf_b2_control_log
+
+    !> The default qtf_b2 = control with two bodies and with IRSP = 1 against the same case with qtf_b2 = body: .11d is
+    !> finite, the other four terms are the same to rounding, and B2 differs, by no more than the measured gap between C
+    !> and the hull. A wiring error of the multi-body or IRSP route (the body of a point of C, its reference point, the
+    !> per-body dpsi/dn) would show as a B2 far outside the gap.
+    subroutine qtf_b2_default_twins(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=21), parameter :: control(2) = [character(len=21) :: "qtf_two_round_control", "qtf_irsp_control"]
+        character(len=21), parameter :: body(2) = [character(len=21) :: "qtf_two_round_body", "qtf_round_body_irsp"]
+        real(8), allocatable :: tc(:,:), tb(:,:), total(:,:)
+        real(8) :: other, gap, scale
+        integer :: c, p, q, k
+        logical :: b2_differs
+
+        do c = 1, size(control)
+            call check_no_bad_numbers(output_dir(trim(control(c)))//qtf_indirect_file, error)
+            if (allocated(error)) return
+            call read_pot_terms(output_dir(trim(control(c)))//pot_terms_file, tc, error)
+            if (allocated(error)) return
+            call read_pot_terms(output_dir(trim(body(c)))//pot_terms_file, tb, error)
+            if (allocated(error)) return
+            call read_pot_total(output_dir(trim(body(c)))//pot_terms_file, total, error)
+            if (allocated(error)) return
+            call check(error, size(tc, 1) == size(tb, 1) .and. size(tc, 1) > 0, trim(control(c))//": other rows than the twin")
+            if (allocated(error)) return
+            other = 0d0
+            gap = 0d0
+            b2_differs = .false.
+            do p = 1, size(tc, 1)
+                q = matching_row(tc, p, tb)
+                call check(error, q > 0, trim(body(c))//": a row of "//trim(control(c))//" is missing")
+                if (allocated(error)) return
+                scale = kind_scale(total, tb(q,5))
+                do k = 6, 14, 2
+                    if (k == 12) cycle
+                    other = max(other, hypot(tc(p,k) - tb(q,k), tc(p,k+1) - tb(q,k+1))/scale)
+                end do
+                gap = max(gap, hypot(tc(p,12) - tb(q,12), tc(p,13) - tb(q,13))/scale)
+                if (any(tc(p, 12:13) /= tb(q, 12:13))) b2_differs = .true.
+            end do
+            call report("qtf_b2_default_twins "//trim(control(c))//" other terms", other)
+            call report("qtf_b2_default_twins "//trim(control(c))//" B2", gap)
+            call check(error, b2_differs, trim(control(c))//": B2 is that of qtf_b2 = body")
+            if (allocated(error)) return
+            call check_below(error, "qtf_b2_default_twins "//trim(control(c))//" other terms", other, b2_twin_other_limit)
+            if (allocated(error)) return
+            call check_below(error, "qtf_b2_default_twins "//trim(control(c))//" B2", gap, b2_twin_limits(c))
+            if (allocated(error)) return
+        end do
+    end subroutine qtf_b2_default_twins
+
+    !> drift_methods = control together with qtf_b2 = control: B2 takes C and F of the drift without its segments of
+    !> Gamma_c (b2_idx is not the identity), so the terms are those of qtf_b2c_rad, which builds C and F for B2 alone
+    subroutine qtf_b2_control_with_drift(error)
+        type(error_type), allocatable, intent(out) :: error
+        call compare_terms("qtf_b2c_drift", "qtf_b2c_rad", "qtf_b2_control_with_drift", b2_drift_limit, error)
+    end subroutine qtf_b2_control_with_drift
+
+    !> A grid in periods (Input_frequency_type 4) whose differences include two 1.1e-6 rad/s apart: every pair has its psi
+    !> (6 radiation-only solves, none merged), and .11d has every pair, finite
+    subroutine qtf_period_grid(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: x(:,:)
+
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_period_body.log", &
+                                          "psi at 6 difference frequencies, 0 from the main grid and 6 radiation-only"), 1, &
+                   "qtf_period_body: expected psi at the 6 distinct differences")
+        if (allocated(error)) return
+        call read_qtf(output_dir("qtf_period_body")//qtf_indirect_file, x, error)
+        if (allocated(error)) return
+        call check(error, size(x, 1) == 16*6, "qtf_period_body: expected 4 x 4 pairs, 6 rows each in .11d")
+        if (allocated(error)) return
+        call check_no_bad_numbers(output_dir("qtf_period_body")//qtf_indirect_file, error)
+    end subroutine qtf_period_grid
+
+    !> Lines of a file that contain text, or -1 if it cannot be opened
+    integer function count_log_lines(path, text)
+        character(len=*), intent(in) :: path, text
+        character(len=512) :: line
+        integer :: unit, ios
+
+        count_log_lines = -1
+        open (newunit=unit, file=path, status='old', action='read', iostat=ios)
+        if (ios /= 0) return
+        count_log_lines = 0
+        do
+            read (unit, '(A)', iostat=ios) line
+            if (ios /= 0) exit
+            if (index(line, text) > 0) count_log_lines = count_log_lines + 1
+        end do
+        close (unit)
+    end function count_log_lines
+
+    subroutine check_same_file(path_a, path_b, error)
+        character(len=*), intent(in) :: path_a, path_b
+        type(error_type), allocatable, intent(out) :: error
+        character(len=:), allocatable :: a(:), b(:)
+        integer :: r
+
+        call read_lines(path_a, a, error)
+        if (allocated(error)) return
+        call read_lines(path_b, b, error)
+        if (allocated(error)) return
+        call check(error, size(a) == size(b), "Different number of lines: "//path_a//" and "//path_b)
+        if (allocated(error)) return
+        do r = 1, size(a)
+            call check(error, a(r) == b(r), "Files differ: "//path_a//" and "//path_b//" at "//trim(a(r)))
+            if (allocated(error)) return
+        end do
+    end subroutine check_same_file
 
 end module test_integration_drift

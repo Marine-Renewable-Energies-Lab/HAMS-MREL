@@ -27,7 +27,8 @@ SecondOrder/
 ├── make_mesh.py
 ├── make_drift_fixtures.py
 ├── drift_convergence.py
-└── truncated_cylinder_reference.py
+├── truncated_cylinder_reference.py
+└── qtf_compare.py
 ```
 
 Dependencies: `numpy`, `matplotlib`, `shapely`. The WEC-Sim conversion scripts additionally use `cmath`, `os`, and `datetime` (all standard library).
@@ -173,10 +174,17 @@ python make_mesh.py box --lx 20 --ly 10 --draft 5 --nx 10 --ny 5 --nz 4 --out Hu
 - The hull has no lid. The script stops if any panel normal, computed as HAMS does, points into the fluid.
 - `--x0` and `--y0` shift the body in the horizontal plane. `--half-y` keeps the panels with y > 0 and sets the y symmetry flag. `--graded` spaces the cylinder rows by a cosine, finer at the waterline and the bilge. `--hydro-out` sets the path of the hydrostatic file, which by default is `Hydrostatic.in` next to the mesh.
 - The hydrostatics are those of a freely floating, uniform solid prism on the discretized waterplane polygon: mass $\rho V$, centre of gravity and of buoyancy at half draft, about the point $(x_0, y_0, 0)$. Give that point as the rotation centre in `ControlFile.in`. External damping and stiffness are zero. These are whole-body values, also with `--half-y`. The script stops if a metacentric height is not positive, and prints the values it writes.
+- `python make_mesh.py oc4 --multiple 1|2 [--out-dir D]` writes the columns of the OC4 semisubmersible (1224 or 4608 panels), its `Hydrostatic.in` (platform mass and linearized mooring), and the control surface and free surface as `CSMesh_1.pnl` and `FSMesh_1.pnl` (for `cs_shape = file`), after checking them, and prints the checks. The model and its sources are in [Second-order validation](second_order_validation.md#oc4-semisubmersible-against-nemoh).
 
 **`SecondOrder/make_drift_fixtures.py`** regenerates all the `test/data/drift_*` inputs, including `ControlFile.in` and `SecondOrder.in`. See `test/data/drift_cyl/README.md`.
 
-**`SecondOrder/drift_convergence.py`** generates and runs the mean drift convergence study of [Second-order validation](second_order_validation.md#mean-drift-convergence-study) (HAMS-MREL, and Nemoh as a separate program), writes Slurm scripts for it, and collects the results into a table. Run it with `list` to see the cases. Its `collect` step needs `scipy`, for the MacCamy-Fuchs value.
+**`SecondOrder/drift_convergence.py`** generates and runs the mean drift convergence study of [Second-order validation](second_order_validation.md#mean-drift-convergence-study) (HAMS-MREL, and Nemoh as a separate program), writes Slurm scripts for it, and collects the results into a table. Run it with `list` to see the cases. Its `collect` step needs `scipy`, for the MacCamy-Fuchs value. With `--qtf-potential` it covers the cases of the [QTF potential part](second_order_validation.md#qtf-potential-part):
+
+- `q_sharp_{fixed,free}_src_m1` to `_m4`: the sharp cylinder with `qtf_terms = body`, and `nemoh_sharp_{fixed,free}_m1`, `_m2` with Nemoh's DUOK + HASBO.
+- `q_sharp_free_g2p5_*`, `q_sharp_free_g3_*` (and `q_sharp_free_g2p5w_*`, `q_sharp_free_g3w_*` with `qtf_edge_weights = on`), m1 and m2: rows graded towards the bottom edge by a power law.
+- `q_sharp_free_fixc_m2`, `_m3`: the control surface held at the 448-panel default (`cs_margin`, `cs_bottom_margin`, `cs_panel_size` set).
+- `q_sharp_free_damp_m1` to `_m3`: external damping `SHARP_DAMPING` in heave and pitch in `Hydrostatic.in`, C fixed as above at m2 and m3. Damping is written for the `sharp` and `oc4` hulls only; on another hull a case with damping raises an error.
+- `q_oc4_{fixed,free}_m1`, `_m2` and `nemoh_oc4_{fixed,free}_m1`, `_m2`: the OC4 semisubmersible of `make_mesh.py oc4`, HAMS and Nemoh on the same model.
 
 **`SecondOrder/truncated_cylinder_reference.py`** computes a semi-analytical reference (eigenfunction matching, no panels) for the sharp truncated cylinder of the convergence study: A, B, X, RAOs, far-field F_x, and near-field F_x, F_z and M_y with each of the six terms, fixed and free. It needs `numpy` and `scipy`. Results, checks and the comparison with HAMS are in [Second-order validation](second_order_validation.md#semi-analytical-reference-sharp-truncated-cylinder). Run it from its folder:
 
@@ -188,4 +196,20 @@ python -I truncated_cylinder_reference.py compare RESULTS --out tc_compare.csv [
 
 - `check` runs the named self-checks, or all but the two slow ones (`uncertainty`, `compare_signs`), and exits with 1 if one fails. A check that cannot run for want of data (`compare_signs` without the study's results) prints SKIP and is not counted as passed. 5 min 4 s on a laptop.
 - `reference` writes the reference values at 11 frequencies, fixed and free, with their stated uncertainties, prints the convergence table and runs all 22 checks. 7 min 11 s. The stated uncertainties hold for this hull at the default resolution only; for any other cylinder or resolution they are `nan` (not measured), an empty field in the CSV.
+- `qtf-potential --out CSV [--motion fixed|free|free_damped|both] [--light]` writes the quadratic part and the five body-forcing terms of the difference QTF on the grid of the QTF runs. `free_damped` is the free body with `drift_convergence.SHARP_DAMPING`, for the `q_sharp_free_damp_*` cases. `check damped_motions` checks that this damping enters the motions as −iωB (under 1 s).
 - `compare` reads the `a_sharp_*` case folders of the study under `RESULTS` (`output/Wamit_format/`) and prints, per case and frequency, the percentage difference of HAMS from the reference. Folders that are not study cases, or have no output, are skipped with a note. 93 s, nearly all of it the reference rows; `--reference` reads them from a CSV of `reference` instead (under 1 s). The uncertainty shown after each drift percentage is the one the reference rows carry.
+
+**`SecondOrder/qtf_compare.py`** compares the QTFs of the `q_*` cases of `drift_convergence.py` with the exact reference of `truncated_cylinder_reference.py` and with Nemoh. The measure is |value − reference| / max |reference| per pair, and the table gives its largest and median over the pairs, per case. Run it from its folder:
+
+```
+python qtf_compare.py check
+python qtf_compare.py RESULTS --reference qtf_reference.csv [--nemoh FOLDER] [--max-dw 0.3]
+python qtf_compare.py RESULTS --potential qtf_potential.csv [--nemoh FOLDER] [--max-dw 0.3] [--exclude LO HI]
+python qtf_compare.py RESULTS --against-nemoh FOLDER [--hull oc4] [--reading as-is|conj|-1|-conj] [--max-dw 0.3] [--exclude LO HI]
+```
+
+- `check` runs the self-checks of `--potential` and `--against-nemoh` on temporary fixtures.
+- `--reference` compares `QTF_Quadratic.10d` and `.10s` with the CSV of `truncated_cylinder_reference.py qtf`; `--potential` compares `QTF_Indirect.11d`, `.11d` − `.10d` and each term of `QTF_PotentialTerms.txt` with the CSV of `qtf-potential`. `--nemoh` adds Nemoh's `OUT_QTFM_N.dat` against the same reference.
+- `--against-nemoh FOLDER` compares `QTF_Indirect.11d` of each `q_<hull>_<motion>_m<k>` case with Nemoh's `nemoh_<hull>_<motion>_m<k>` run under FOLDER, when there is no exact reference. `--hull` names the hull (default `oc4`). `--reading` sets how Nemoh's value is read: `as-is` (default, the reading that matched the exact reference on the sharp cylinder), its conjugate, or either with the sign changed. The reading is never chosen by agreement with HAMS; the table warns when another reading would agree much better.
+- `--exclude LO HI` leaves out the pairs with a frequency in [LO, HI] rad/s, such as a resonance band, and keeps the scale of all pairs.
+- `--max-dw` limits the difference pairs to ω_j − ω_i ≤ max-dw (default 0.3 rad/s).

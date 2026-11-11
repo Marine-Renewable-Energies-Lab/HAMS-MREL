@@ -28,7 +28,7 @@ MODULE SecondOrderOutput
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: write_drift_row, write_terms_row, write_qtf_row
+   PUBLIC :: write_drift_row, write_terms_row, write_qtf_row, write_qtf_terms_row
 
 CONTAINS
 
@@ -76,6 +76,25 @@ CONTAINS
       WRITE (unit, '(4ES14.6,I6,4ES14.6)') oufr1, oufr2, beta1_deg, beta2_deg, index, ABS(scaled), &
          ATAN2(AIMAG(scaled), REAL(scaled, 8))*RAD_TO_DEG, REAL(scaled, 8), AIMAG(scaled)
    END SUBROUTINE write_qtf_row
+
+   SUBROUTINE write_qtf_terms_row(unit, oufr1, oufr2, beta1_deg, beta2_deg, index, values, refl, moment)
+      ! Writes one row PER1 PER2 BETA1 BETA2 I, then Re Im of each of values, of QTF_PotentialTerms.txt. The keys are as in
+      ! write_qtf_row; each value is scaled and conjugated as there, and written with 16 digits, so that the sum of the
+      ! terms can be checked against QTF_Indirect.11d - QTF_Quadratic.10d. QTFDriver writes the rows in ascending
+      ! |omega_1 - omega_2|, not in the order of .11d: match them by their keys.
+      INTEGER, INTENT(IN) :: unit, index
+      REAL(8), INTENT(IN) :: oufr1, oufr2, beta1_deg, beta2_deg, refl
+      COMPLEX(8), INTENT(IN) :: values(:)
+      LOGICAL, INTENT(IN) :: moment
+      COMPLEX(8) :: scaled(SIZE(values))
+      INTEGER :: t
+
+      DO t = 1, SIZE(values)
+         scaled(t) = output_value(values(t), refl, moment)
+      END DO
+      WRITE (unit, '(4ES14.6,I6,*(ES24.15))') oufr1, oufr2, beta1_deg, beta2_deg, index, &
+         (REAL(scaled(t), 8), AIMAG(scaled(t)), t = 1, SIZE(values))
+   END SUBROUTINE write_qtf_terms_row
 
    PURE COMPLEX(8) FUNCTION output_value(value, refl, moment)
       COMPLEX(8), INTENT(IN) :: value

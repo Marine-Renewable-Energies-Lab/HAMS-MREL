@@ -27,9 +27,13 @@ MODULE SecondOrderTypes
    PRIVATE
 
    PUBLIC :: so_options, panel_mesh, first_order_state, surface_geom, cs_points, cs_fields
-   PUBLIC :: CS_WALL, CS_LINE, CS_FREE
+   PUBLIC :: CS_WALL, CS_LINE, CS_FREE, QTF_TERMS_QUADRATIC, QTF_TERMS_BODY, QTF_B2_BODY, QTF_B2_CONTROL
 
    INTEGER, PARAMETER :: CS_WALL = 1, CS_LINE = 2, CS_FREE = 3   ! C panel, Gamma_c segment midpoint, F panel
+   ! qtf_terms: the quadratic part only, or also the potential part with the body forcing (indirect method)
+   INTEGER, PARAMETER :: QTF_TERMS_QUADRATIC = 0, QTF_TERMS_BODY = 1
+   ! qtf_b2: the surface piece of B2 integrated on the hull, or moved to a control surface C and the free surface F
+   INTEGER, PARAMETER :: QTF_B2_BODY = 1, QTF_B2_CONTROL = 2
 
    TYPE :: so_options
       LOGICAL :: active = .FALSE.
@@ -53,6 +57,15 @@ MODULE SecondOrderTypes
       ! Quadratic part of the QTFs (near-field method)
       INTEGER :: qtf = 0                 ! 0 off, 1 difference frequency, 2 sum frequency, 3 both
       REAL(8) :: qtf_max_dw = 0D0        ! rad/s, largest |omega_i - omega_j| of QTF_Quadratic.10d; 0: all pairs
+      INTEGER :: qtf_terms = QTF_TERMS_QUADRATIC
+      INTEGER :: qtf_b2 = QTF_B2_CONTROL ! used with qtf_terms = body only
+      ! Panel weights of the B2 hull term at sharp edges (SharpEdge), with qtf_b2 = control; edges where the normals differ
+      ! by more than qtf_edge_angle degrees. Off by default: on the sharp-cylinder fixture they moved B2 F_x and F_z away
+      ! from the exact reference (15.1% to 17.2%, 30.0% to 37.4%) for an M_y gain of 11.9% to 11.1%
+      LOGICAL :: qtf_edge_weights = .FALSE.
+      REAL(8) :: qtf_edge_angle = 45D0
+      ! The keys were in SecondOrder.in, so that the log can say when they have no effect
+      LOGICAL :: qtf_b2_given = .FALSE., qtf_edge_given = .FALSE.
    END TYPE so_options
 
    TYPE :: panel_mesh
@@ -84,6 +97,9 @@ MODULE SecondOrderTypes
       REAL(8), ALLOCATABLE :: wl_x1(:,:), wl_x2(:,:), wl_xm(:,:), wl_len(:)   ! (3,nwl), (3,nwl), (3,nwl), (nwl)
       REAL(8), ALLOCATABLE :: wl_nh(:,:), wl_nz(:)    ! unit horizontal normal into the body (3,nwl); n_z of the panel
       INTEGER, ALLOCATABLE :: wl_panel(:), wl_body(:)
+      ! Neighbours along the waterline loop: wl_next starts at the end node of the segment, wl_prev ends at its start
+      ! node (nwl); 0 at a gap or where more than two segments meet.
+      INTEGER, ALLOCATABLE :: wl_prev(:), wl_next(:)
       REAL(8), ALLOCATABLE :: awp(:), xf(:), yf(:), l11(:), l12(:), l22(:), vol(:), xb(:), yb(:), zb(:)   ! (nbody)
       INTEGER, ALLOCATABLE :: n_wl_gaps(:)            ! (nbody)
    END TYPE surface_geom

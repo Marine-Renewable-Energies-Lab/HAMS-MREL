@@ -2,7 +2,7 @@
 module test_second_order_input
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use IO, only : CreateDirectory
-  use SecondOrderTypes, only : so_options
+  use SecondOrderTypes, only : so_options, QTF_TERMS_QUADRATIC, QTF_TERMS_BODY, QTF_B2_BODY, QTF_B2_CONTROL
   use SecondOrderInput, only : read_second_order_options, validate_second_order
   implicit none
   private
@@ -30,7 +30,10 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("control_keys_parse", test_control_keys), &
     new_unittest("control_defaults", test_control_defaults), &
     new_unittest("control_rejections", test_control_rejections), &
-    new_unittest("qtf_keys", test_qtf_keys) &
+    new_unittest("qtf_keys", test_qtf_keys), &
+    new_unittest("qtf_terms_body", test_qtf_terms_body), &
+    new_unittest("qtf_b2_key", test_qtf_b2_key), &
+    new_unittest("qtf_edge_keys", test_qtf_edge_keys) &
     ]
 
 end subroutine collect_second_order_input
@@ -448,8 +451,8 @@ subroutine test_qtf_keys(error)
   call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 4"], &
                            "qtf must be 0, 1, 2 or 3 in SecondOrder.in.")
   if (allocated(error)) return
-  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = body"], &
-                           "qtf_terms = body and full are not implemented (Phase 5); use quadratic.")
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = full"], &
+                           "qtf_terms = full is not implemented (Phase 6); use quadratic or body.")
   if (allocated(error)) return
   call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_max_dw = -1"], &
                            "qtf_max_dw must not be negative in SecondOrder.in.")
@@ -467,6 +470,126 @@ subroutine test_qtf_keys(error)
   call check(error, trim(msg) == "qtf needs drift_methods to include near.", "near message: "//trim(msg))
   call remove_directory(root)
 end subroutine test_qtf_keys
+
+!> qtf_terms = body is read with the difference QTF (qtf = 1 or 3) and rejected with the sum frequency only; quadratic is
+!> the default.
+subroutine test_qtf_terms_body(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_body"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+  integer :: q
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 1"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_terms, QTF_TERMS_QUADRATIC, "qtf_terms default")
+  if (allocated(error)) return
+  do q = 1, 3, 2
+    write (msg, '(a,I0)') "qtf = ", q
+    call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", trim(msg), &
+                            "qtf_terms = body"])
+    call read_second_order_options(root, opts, ok, msg)
+    call check(error, ok, "qtf_terms = body rejected: "//trim(msg))
+    if (allocated(error)) return
+    call check(error, opts%qtf_terms, QTF_TERMS_BODY, "qtf_terms = body")
+    if (allocated(error)) return
+    call validate_second_order(opts, 1, -1d0, 1, 0, .false., ok, msg)
+    call check(error, ok, "qtf_terms = body not validated: "//trim(msg))
+    if (allocated(error)) return
+  end do
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 2", &
+                                         "qtf_terms = body"], &
+                           "qtf_terms = body needs the difference QTF (qtf = 1 or 3); sum-frequency body forcing needs "// &
+                           "the free-surface integrals (Phase 6).")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 3", &
+                                         "qtf_terms = full"], &
+                           "qtf_terms = full is not implemented (Phase 6); use quadratic or body.")
+  call remove_directory(root)
+end subroutine test_qtf_terms_body
+
+!> qtf_b2 is control by default, reads body and control, and rejects other values
+subroutine test_qtf_b2_key(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_b2"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 1", &
+                          "qtf_terms = body"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_b2, QTF_B2_CONTROL, "qtf_b2 default")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 1", &
+                          "qtf_terms = body", "qtf_b2 = body"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "qtf_b2 = body rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_b2, QTF_B2_BODY, "qtf_b2 = body")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 1", &
+                          "qtf_terms = body", "QTF_B2 = Control"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "qtf_b2 = control rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_b2, QTF_B2_CONTROL, "qtf_b2 = control")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = body", &
+                                         "qtf_b2 = hull"], 'Invalid value "hull" for key "qtf_b2" in SecondOrder.in.')
+  call remove_directory(root)
+end subroutine test_qtf_b2_key
+
+!> qtf_edge_weights is off by default and reads on and off; qtf_edge_angle is 45 by default and must lie in (0, 180). Each
+!> key, and qtf_b2, is marked as given, for the note in the log when it has no effect
+subroutine test_qtf_edge_keys(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_edge"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 1", &
+                          "qtf_terms = body"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, .not. opts%qtf_edge_weights .and. opts%qtf_edge_angle == 45d0 .and. .not. opts%qtf_edge_given &
+             .and. .not. opts%qtf_b2_given, "defaults: off, 45 degrees, not given")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 1", &
+                          "qtf_terms = body", "QTF_Edge_Weights = Off", "qtf_edge_angle = 30", "qtf_b2 = body"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "qtf_edge_weights = off rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, .not. opts%qtf_edge_weights .and. opts%qtf_edge_angle == 30d0 .and. opts%qtf_edge_given &
+             .and. opts%qtf_b2_given, "off, 30 degrees, given")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 1", &
+                          "qtf_terms = body", "qtf_edge_weights = on"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok .and. opts%qtf_edge_weights, "qtf_edge_weights = on")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = body", &
+                                         "qtf_edge_weights = yes"], &
+                           'Invalid value "yes" for key "qtf_edge_weights" in SecondOrder.in.')
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = body", &
+                                         "qtf_edge_angle = 0"], &
+                           'qtf_edge_angle must be between 0 and 180 degrees in SecondOrder.in.')
+  call remove_directory(root)
+end subroutine test_qtf_edge_keys
 
 subroutine expect_read_message(error, root, lines, expected)
   type(error_type), allocatable, intent(out) :: error

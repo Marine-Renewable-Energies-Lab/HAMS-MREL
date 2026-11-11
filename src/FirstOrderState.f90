@@ -32,7 +32,7 @@ MODULE FirstOrderState
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: depth_factor, wave_gravity, incident_phi, incident_grad, image_signs, expand_images, build_state
+   PUBLIC :: depth_factor, wave_gravity, incident_phi, incident_grad, image_signs, expand_images, build_state, radiation_psi
 
 CONTAINS
 
@@ -227,5 +227,33 @@ CONTAINS
          state%dphi_p_dn(i) = acc - SUM(state%grad_i(:, i)*mesh%nrm(:, i))
       END DO
    END SUBROUTINE build_state
+
+   SUBROUTINE radiation_psi(mesh, omega, mxpot, psi)
+      ! The unit-velocity radiation potentials psi(n, 6*nbody) on the full panel set, time factor e^{-i omega t}:
+      ! dpsi_k/dn = n_k (mesh%nj, n out of the fluid) on the panels of the body of mode k, 0 on the other bodies, and the
+      ! radiation potential of a motion xi_k is -i omega xi_k psi_k. As in build_state, HAMS's MXPOT(:,k,:) is psi_k with no
+      ! factor of i, on the base panels (hull panels only, also with IRSP = 1) and per symmetry image; RFORCE takes
+      ! A_lk + i B_lk/omega = rho int psi_k n_l dS from it. The images are expanded as for phi in build_state.
+      !   mxpot(nbase, 6*nbody+1, nsys)  HAMS MXPOT after the radiation solve at omega (> 0, not a limit frequency)
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      REAL(8), INTENT(IN) :: omega
+      COMPLEX(8), INTENT(IN) :: mxpot(:,:,:)
+      COMPLEX(8), INTENT(OUT) :: psi(:,:)
+      INTEGER :: i, j
+
+      IF (.NOT. (omega > 0D0)) THEN
+         WRITE (*, *) 'radiation_psi: omega must be positive, got ', omega
+         ERROR STOP 1
+      END IF
+      IF (SIZE(psi, 1) /= mesh%n .OR. SIZE(psi, 2) /= 6*mesh%nbody .OR. SIZE(mxpot, 2) < 6*mesh%nbody) THEN
+         WRITE (*, *) 'radiation_psi: psi or mxpot does not have the size of the mesh'
+         ERROR STOP 1
+      END IF
+      DO j = 1, 6*mesh%nbody
+         DO i = 1, mesh%n
+            psi(i, j) = mxpot(mesh%base(i), j, mesh%image(i))
+         END DO
+      END DO
+   END SUBROUTINE radiation_psi
 
 END MODULE FirstOrderState

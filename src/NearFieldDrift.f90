@@ -35,7 +35,7 @@ MODULE NearFieldDrift
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: pair_minus, pair_plus, pair_product, KERNEL_DIFF, KERNEL_SUM
+   PUBLIC :: pair_minus, pair_plus, pair_product, pair_cross, KERNEL_DIFF, KERNEL_SUM
    PUBLIC :: waterline_point, waterline_extrapolate, near_field_pair, elevation, force_and_moment
    PUBLIC :: vertical_motion, rigid_displacement, add_hydrostatic_term
    PUBLIC :: T_WATERLINE, T_FLARE, T_VELOCITY, T_DISPLACEMENT, T_ROTATION, T_HYDROSTATIC

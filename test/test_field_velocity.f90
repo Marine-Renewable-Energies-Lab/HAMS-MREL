@@ -4,6 +4,7 @@
 !> These tests set module globals, so the suite runs serially (see unit_tester.f90).
 module test_field_velocity
   use testdrive, only : new_unittest, unittest_type, error_type, check
+  use HAMS_mod, only : NTHREAD
   use WaveDyn_mod, only : BETA, H, V, W1, WK
   use PanelMesh_mod, only : ISX, ISY
   use SecondOrderTypes, only : panel_mesh, first_order_state, cs_points, cs_fields, CS_WALL, CS_LINE
@@ -52,8 +53,10 @@ contains
       new_unittest("incident_stencil", test_incident_stencil), &
       new_unittest("maccamy_fuchs_field_consistent", test_maccamy_fuchs_field), &
       new_unittest("green_field_matches_exact", test_green_field), &
+      new_unittest("green_field_perturbation_only", test_green_perturbation_only), &
       new_unittest("source_field_matches_exact", test_source_field), &
-      new_unittest("source_field_half_matches_full", test_source_field_half) &
+      new_unittest("source_field_half_matches_full", test_source_field_half), &
+      new_unittest("green_field_thread_invariant", test_green_threads) &
       ]
   end subroutine collect_field_velocity
 
@@ -536,6 +539,45 @@ contains
     call check(error, err_grad <= green_grad_limit, trim(info))
   end subroutine test_green_field
 
+  !> The route of grad psi_k on C and F (qtf_b2 = control, SecondOrderDriver keep_cs_psi): a state with no incident wave
+  !> (amp = 0) whose perturbation potential and normal derivative are given on the hull. fields_green must then return the
+  !> gradient of the boundary integral of that perturbation alone. Here the perturbation is the MacCamy-Fuchs scattered
+  !> wave, so the reference is the exact total field minus the incident wave; same points and limit as test_green_field.
+  subroutine test_green_perturbation_only(error)
+    type(error_type), allocatable, intent(out) :: error
+    real(8), parameter :: radius = 5d0, depth = 10d0
+    type(panel_mesh) :: full, mesh
+    type(first_order_state) :: states(1)
+    type(cs_points) :: pts
+    type(cs_fields) :: fields(1)
+    complex(8) :: phi_ref, grad_ref(3), grad_inc(3)
+    real(8) :: g_w, max_grad, err_grad
+    integer :: i
+    character(len=120) :: info
+
+    call set_wave(depth)
+    call make_cylinder(radius, depth, 64, 16, 1, full, .false.)
+    call load_panels(full, 0, 0, mesh)
+    g_w = wave_gravity(W1, WK, depth)
+    call maccamy_fuchs_state(mesh, radius, depth, WK, W1, 1d0, BETA, g_w, 1000d0, states(1))
+    states(1)%amp = 0d0
+    call ring_points(10, 30, [7.5d0, 7.5d0, 7.5d0, 7.5d0], [0d0, -1d0, -4d0, -8d0], pts)
+    call fields_green(mesh, pts, states, step, .false., fields)
+    max_grad = 0d0
+    err_grad = 0d0
+    do i = 1, pts%n
+      call maccamy_fuchs_field(pts%x(:, i), radius, depth, WK, W1, 1d0, BETA, g_w, phi_ref, grad_ref)
+      call incident_grad(pts%x(:, i), W1, WK, depth, 1d0, BETA, g_w, grad_inc)
+      max_grad = max(max_grad, sqrt(sum(abs(grad_ref - grad_inc)**2)))
+      err_grad = max(err_grad, sqrt(sum(abs(fields(1)%grad(:, i) - (grad_ref - grad_inc))**2)))
+    end do
+    err_grad = err_grad/max_grad
+    print '(4x,a,es10.2)', "Green field of the scattered wave alone (amp = 0): gradient error, relative to the largest ", &
+      err_grad
+    write (info, '(a,es10.3)') "scattered gradient against MacCamy-Fuchs, relative to max |gradient| ", err_grad
+    call check(error, err_grad <= green_grad_limit, trim(info))
+  end subroutine test_green_perturbation_only
+
   !> As test_green_field, by the source route: sigma from the solve of the exact normal derivative, then fields_source.
   !> Measured: 6.41e-3 for phi and 8.28e-3 for the gradient; limits 2e-2 and 3e-2, fixed before the measurement.
   subroutine test_source_field(error)
@@ -650,5 +692,56 @@ contains
     rel_phi = maxval(abs(fields_h(1)%phi - fields_w(1)%phi))/maxval(abs(fields_w(1)%phi))
     rel_grad = maxval(abs(fields_h(1)%grad - fields_w(1)%grad))/maxval(abs(fields_w(1)%grad))
   end subroutine half_against_whole
+
+  !> fields_green on 1 and on 4 threads: the points are independent and no sum crosses them, so phi and grad phi must agree bit
+  !> for bit. A state with a nonzero perturbation (smooth pattern in phi_p and dphi_p_dn), deep and finite depth (both Green
+  !> function routines), a whole hull (nsys = 1) and half hulls (nsys = 2, ISY = 1 and ISX = 1).
+  subroutine test_green_threads(error)
+    type(error_type), allocatable, intent(out) :: error
+    integer :: nthread_saved
+
+    nthread_saved = NTHREAD
+    call threads_case(10d0, 0, 0, error)
+    if (.not. allocated(error)) call threads_case(-1d0, 0, 0, error)
+    if (.not. allocated(error)) call threads_case(10d0, 0, 1, error)
+    if (.not. allocated(error)) call threads_case(-1d0, 1, 0, error)
+    NTHREAD = nthread_saved
+  end subroutine test_green_threads
+
+  subroutine threads_case(depth, isx_in, isy_in, error)
+    real(8), intent(in) :: depth
+    integer, intent(in) :: isx_in, isy_in
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: mesh
+    type(cs_points) :: pts
+    type(first_order_state) :: states(2)
+    type(cs_fields) :: f1(2), f4(2)
+    real(8), parameter :: headings(2) = [0.6d0, 2d0]
+    integer :: i, ist
+    character(len=120) :: info
+
+    call set_wave(depth)
+    call load_single(isx_in, isy_in, mesh)
+    call ring_points(8, 12, [9d0, 6.5d0, 11d0, 15d0], [0d0, -0.6d0, -2.5d0, -7d0], pts)
+    do ist = 1, 2
+      call zero_state(mesh, headings(ist), states(ist))
+      do i = 1, mesh%n
+        states(ist)%phi_p(i) = cmplx(cos(0.7d0*i + ist), sin(0.3d0*i), 8)
+        states(ist)%dphi_p_dn(i) = cmplx(sin(0.5d0*i), cos(0.2d0*i - ist), 8)
+      end do
+    end do
+    NTHREAD = 1
+    call fields_green(mesh, pts, states, step, .false., f1)
+    NTHREAD = 4
+    call fields_green(mesh, pts, states, step, .false., f4)
+    write (info, '(a,es9.2,a,2i2)') "depth ", depth, " ISX, ISY ", isx_in, isy_in
+    do ist = 1, 2
+      call check(error, all(f1(ist)%phi == f4(ist)%phi) .and. all(f1(ist)%grad == f4(ist)%grad), &
+                 "fields_green differs between 1 and 4 threads, "//trim(info))
+      if (allocated(error)) return
+      call check(error, any(abs(f1(ist)%grad) > 0d0), "The fields should not be zero")
+      if (allocated(error)) return
+    end do
+  end subroutine threads_case
 
 end module test_field_velocity

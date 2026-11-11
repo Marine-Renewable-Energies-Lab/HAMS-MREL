@@ -103,9 +103,16 @@ CONTAINS
       ELSE IF (opts%qtf_max_dw < 0D0) THEN
          ok = .FALSE.
          msg = 'qtf_max_dw must not be negative in SecondOrder.in.'
+      ELSE IF (.NOT. (opts%qtf_edge_angle > 0D0 .AND. opts%qtf_edge_angle < 180D0)) THEN
+         ok = .FALSE.
+         msg = 'qtf_edge_angle must be between 0 and 180 degrees in SecondOrder.in.'
       ELSE IF (opts%qtf > 0 .AND. opts%mean_drift == 0) THEN
          ok = .FALSE.
          msg = 'qtf needs mean_drift = 1 or 2.'
+      ELSE IF (opts%qtf_terms == QTF_TERMS_BODY .AND. opts%qtf == 2) THEN
+         ok = .FALSE.
+         msg = 'qtf_terms = body needs the difference QTF (qtf = 1 or 3); sum-frequency body forcing needs the free-surface'// &
+               ' integrals (Phase 6).'
       END IF
       IF (.NOT. ok) RETURN
 
@@ -179,13 +186,34 @@ CONTAINS
       CASE ('qtf_max_dw')
          READ(value, *, IOSTAT=ios) opts%qtf_max_dw
       CASE ('qtf_terms')
-         IF (value == 'body' .OR. value == 'full') THEN
+         IF (value == 'quadratic') THEN
+            opts%qtf_terms = QTF_TERMS_QUADRATIC
+         ELSE IF (value == 'body') THEN
+            opts%qtf_terms = QTF_TERMS_BODY
+         ELSE IF (value == 'full') THEN
             ok = .FALSE.
-            msg = 'qtf_terms = body and full are not implemented (Phase 5); use quadratic.'
+            msg = 'qtf_terms = full is not implemented (Phase 6); use quadratic or body.'
             RETURN
-         ELSE IF (value /= 'quadratic') THEN
+         ELSE
             ios = 1
          END IF
+      CASE ('qtf_b2')
+         ! Read always, used with qtf_terms = body only
+         CALL choose(value, 'body', 'control', opts%qtf_b2, ios)
+         opts%qtf_b2_given = .TRUE.
+      CASE ('qtf_edge_weights')
+         ! Read always, used with qtf_terms = body and qtf_b2 = control only; off by default (SecondOrderTypes)
+         IF (value == 'on') THEN
+            opts%qtf_edge_weights = .TRUE.
+         ELSE IF (value == 'off') THEN
+            opts%qtf_edge_weights = .FALSE.
+         ELSE
+            ios = 1
+         END IF
+         opts%qtf_edge_given = .TRUE.
+      CASE ('qtf_edge_angle')
+         READ(value, *, IOSTAT=ios) opts%qtf_edge_angle
+         opts%qtf_edge_given = .TRUE.
       CASE DEFAULT
          ok = .FALSE.
          msg = 'Unknown key "'//key//'" in SecondOrder.in.'

@@ -63,6 +63,13 @@ BOX_FINE_FREQUENCIES = (0.80, 1.00, 1.40)
 NEMOH_FREQUENCY_RANGE = (0.40, 1.40, 21)
 # The QTF study (--qtf) runs HAMS and Nemoh on a finer grid, so that the QTF curves along omega_j = omega_i + dw are smooth
 QTF_FREQUENCY_RANGE = (0.40, 1.40, 101)
+# The QTF potential study (--qtf-potential): HAMS on QTF_FREQUENCY_RANGE with qtf_terms = body and qtf_max_dw, and Nemoh from
+# 0.01 rad/s, since Nemoh takes the first-order solutions at the difference frequencies from its own frequency list
+QTF_POTENTIAL_MAX_DW = 0.3
+QTF_POTENTIAL_NEMOH_RANGE = (0.01, 1.40, 140)
+# Nemoh.cal, QTF section: the contributing terms (1 DUOK, 2 DUOK + HASBO, 3 full) and the flags of the terms the
+# post-processor adds to the total, (DUOK, HASBO, HASFS + ASYMP)
+NEMOH_QTF_TERMS = {1: (1, 0, 0), 2: (1, 1, 0)}
 NEMOH_STAGES = (("preProcessor", "preProc"), ("Solver", "solver"), ("postProcessor", "postProc"),
                 (os.path.join("QTF", "PreProcessor"), "QTFpreProc"), (os.path.join("QTF", "Solver"), "QTFsolver"),
                 (os.path.join("QTF", "PostProcessor"), "QTFpostProc"))
@@ -87,6 +94,10 @@ NEMOH_N2 = 6.0e-6
 NEMOH_N3 = 0.5e-9
 NEMOH_QTF_N2 = 6.2e-6
 NEMOH_BYTES = 102.0   # per N^2, measured at 1792 panels
+# Snellius time of a Nemoh run over nemoh_seconds: nemoh_sharp_*_m2 (1792 panels, 140 frequencies, DUOK + HASBO) took
+# 2 h 34 min on one thread (job 29017289) against 1.635 h from nemoh_seconds. One point only: an N^3 share above the modelled
+# one would make larger runs slower, which the time limit of twice the estimate covers
+NEMOH_SNELLIUS_FACTOR = 2.567 / 1.635
 
 # Bytes per N^2 per symmetry image, from the ALLOCATE statements of HAMS_Prog.f90 and SurfaceVelocity.f90
 BYTES_AMAT = 16.0
@@ -101,6 +112,10 @@ CPUS = 32
 MEMORY_GB = 64
 CHARGED_CPUS = 48
 SBU_PER_JOB_HOUR = 72.0
+# Nemoh runs on one thread per case, side by side in one allocation, which asks for the 24 CPUs that fat_genoa bills at least,
+# and little memory (a few GB per run)
+NEMOH_CPUS = 24
+NEMOH_MEMORY_GB = 24
 # ifx 2024.2 with -heap-arrays 0 stops with SIGSEGV when it frees the temporary of an array constructor of a type with allocatable
 # parts, as in far_field_pair. A small program with no HAMS code does the same. So the jobs leave that flag out, and give the
 # threads a large stack instead. A stack overflow stops the run, so it cannot change a number silently.
@@ -112,7 +127,8 @@ class Case:
 
     def __init__(self, name, group, question, hull, multiple, motion="fixed", velocity="differencing", waterline="extrapolate",
                  frequencies=WIDE_FREQUENCIES, headings=(0.0, 30.0), grn=4, isolv=1, irsp=0, mean_drift=1, tier="both",
-                 solver="hams", where="snellius", control=None, qtf=0, nemoh_range=None):
+                 solver="hams", where="snellius", control=None, qtf=0, nemoh_range=None, qtf_terms=None, qtf_max_dw=None,
+                 nemoh_contrib=1, edge_power=None, qtf_edge_weights=None, extra_options=None, damping=None):
         self.name = name
         self.group = group
         self.question = question
@@ -133,6 +149,15 @@ class Case:
         self.control = control   # None, "green" or "source": the cs_velocity of drift_methods = control
         self.qtf = qtf           # qtf of SecondOrder.in: 0 off, 3 both quadratic QTFs
         self.nemoh_range = nemoh_range or NEMOH_FREQUENCY_RANGE   # (low, high, count) of a Nemoh run
+        self.qtf_terms = qtf_terms     # qtf_terms of SecondOrder.in: None (not written, quadratic) or "body"
+        self.qtf_max_dw = qtf_max_dw   # qtf_max_dw of SecondOrder.in, or None (not written)
+        self.nemoh_contrib = nemoh_contrib   # Nemoh's QTF terms: 1 DUOK, 2 DUOK + HASBO (NEMOH_QTF_TERMS)
+        self.edge_power = edge_power   # sharp hull only: power-law rows toward the bilge (make_mesh.cylinder), None for cosine
+        self.qtf_edge_weights = qtf_edge_weights   # qtf_edge_weights of SecondOrder.in: None (not written), "on" or "off"
+        self.extra_options = extra_options or {}   # further SecondOrder.in keys, written as given
+        self.damping = damping or {}   # sharp and oc4 hulls: external linear damping {mode 1..6: value} (Hydrostatic.in)
+        if self.damping and hull not in ("sharp", "oc4"):
+            raise ValueError("%s: damping is written for the sharp and oc4 hulls only, not %s" % (name, hull))
 
 
 def in_tier(case, tier):
@@ -147,6 +172,16 @@ HULLS = {
     "box": dict(depth=50.0, panels=440),
     "round_box": dict(depth=50.0, panels=500),
     "corner_box": dict(depth=50.0, panels=440),
+    # OC4 semisubmersible (make_mesh.OC4_MESH): the panels per multiple, since the transition rows do not scale as m^2. Its
+    # C and F (CSMesh_1.pnl, FSMesh_1.pnl, cs_shape = file) are the same at every multiple: C 1400 panels, F per multiple.
+    # cf_points counts the panels of C and F only: B2 evaluates no field at the segments of Gamma_c (b2_control_setup in
+    # SecondOrderDriver.f90), so the 1416 points of B2_PASS_SECONDS are likewise C and F points only.
+    # Its Nemoh runs have allocations per multiple (nemoh_batches).
+    # A fixed Nemoh body needs a stiffer hold than NEMOH_FIXED_STIFFNESS: wave moments of order 1e9 N m per metre of amplitude
+    "oc4": dict(depth=make_mesh.OC4_DEPTH, panels={1: 1224, 2: 4608}, cf_points={1: 1400 + 750, 2: 1400 + 1384},
+                fixed_stiffness=1.0e15, nemoh_batches=True),
+    # The same meshes with the matrices of the OpenFAST WAMIT run (make_mesh.OC4W_*, write_oc4 model "wamit"): HAMS only
+    "oc4w": dict(depth=make_mesh.OC4_DEPTH, panels={1: 1224, 2: 4608}, cf_points={1: 1400 + 750, 2: 1400 + 1384}),
 }
 # Both radii are for a box 20 x 10 x 5. 1.5 is the bilge radius of the rounded cylinder over its draft, times the draft here
 ROUND_BOX_MESH = dict(lx=20.0, ly=10.0, draft=5.0, corner_radius=2.5, bilge_radius=1.5, nx=16, ny=6, ncorner=4, nz=3, narc=2)
@@ -163,7 +198,10 @@ def scaled(mesh, keys, multiple):
 
 
 def panels_of(case):
-    return int(round(HULLS[case.hull]["panels"] * case.multiple ** 2))
+    panels = HULLS[case.hull]["panels"]
+    if isinstance(panels, dict):
+        return panels[case.multiple]
+    return int(round(panels * case.multiple ** 2))
 
 
 def lid_panels_of(case):
@@ -309,8 +347,109 @@ def qtf_cases():
     return chosen
 
 
+# The default control surface of the free sharp hull at m1 (CSMesh_1.pnl of q_sharp_free_src_m1: radius 17.84, bottom
+# -17.84, so the margins are 7.84 m = 4 x the median hull panel size 1.96 m)
+CS_FIXED_M1 = dict(cs_margin=7.84, cs_bottom_margin=7.84, cs_panel_size=1.96)
+
+# External linear damping of the damped free sharp hull: B33 = 0.05 x 2 sqrt((M + A33) C33) and B55 = 0.05 x 2
+# sqrt((I55 + A55) C55), moments about the origin as in Hydrostatic.in. M = 3.12145e6 kg, I55 = 1.81584e8 kg m^2,
+# C33 = 3.06109e6 N/m, C55 = 7.60372e7 N m (Hydrostatic.in of the m1 case); A33 = 1.67200e6 kg at 0.80 rad/s (the heave
+# peak) and A55 = 5.51253e7 kg m^2 at 0.77 rad/s (the coupled surge-pitch peak), from
+# truncated_cylinder_reference.added_mass_damping. So B55 takes A55 at the coupled peak, not at the uncoupled pitch
+# frequency sqrt(C55 / (I55 + A55)) (about 0.57 rad/s): it is "5 % of critical" by this formula only, not the critical
+# damping of an uncoupled pitch mode. At 0.77 rad/s it is 1.4 times (heave) and 2.1 times (pitch) the radiation damping
+# rho omega B (2.75e5 N s/m, 6.50e6 N m s; truncated_cylinder_reference check damped_motions, LIGHT_RESOLUTION). A choice
+# that damps the resonances, not a model of viscous damping.
+# truncated_cylinder_reference reads it for its motion "free_damped".
+SHARP_DAMPING = {3: 3.8306e5, 5: 1.3416e7}
+
+# Grid of the q_oc4w cases: the omega of the WAMIT .12d of OpenFAST (marin_semi.12d: 0.25 to 3.00 rad/s in steps of 0.05) up
+# to 1.90, below the first irregular frequency of OC4, about 1.98 rad/s (upper columns, J0 zero under a deep lid [derived]):
+# velocity_method = source rejects IRSP = 1, so the grid stops there. 34 frequencies, 33 distinct differences
+OC4W_FREQUENCIES = tuple(round(0.25 + 0.05 * i, 4) for i in range(34))
+
+# Powers of the edge-graded meshes of the QTF potential study (make_mesh.cylinder edge_power)
+EDGE_POWERS = (2.5, 3)
+
+
+def qtf_potential_cases():
+    """The cases of the QTF potential study (--qtf-potential): the sharp hull of qtf_cases, fixed and free, source velocity,
+    m1 to m4, with qtf_terms = body (QTF_Indirect.11d and QTF_PotentialTerms.txt) on QTF_FREQUENCY_RANGE, qtf_max_dw =
+    QTF_POTENTIAL_MAX_DW, heading 0, difference QTF only (qtf = 1); and Nemoh with DUOK + HASBO (body forcing, no free
+    surface integral) at m1 and m2, from 0.01 rad/s (QTF_POTENTIAL_NEMOH_RANGE). The exact reference is
+    truncated_cylinder_reference.py qtf-potential; qtf_compare.py --potential compares them. The OC4 semisubmersible
+    (q_oc4_*, nemoh_oc4_*) has no exact reference: qtf_compare.py --against-nemoh compares HAMS with Nemoh on it. q_oc4w_*
+    is OC4 with the matrices of the OpenFAST WAMIT run: qtf_compare.py --against-wamit compares it with that run's .12d."""
+    grid = tuple(round(w, 4) for w in nemoh_frequencies(QTF_FREQUENCY_RANGE))
+    chosen = []
+    for motion in ("fixed", "free"):
+        for m in (1, 2, 3, 4):
+            chosen.append(Case("q_sharp_%s_src_%s" % (motion, tag(m)), "P", "5", "sharp", m, motion, "source",
+                               frequencies=grid, headings=(0.0,), qtf=1, qtf_terms="body",
+                               qtf_max_dw=QTF_POTENTIAL_MAX_DW))
+    for motion in ("fixed", "free"):
+        for m in (1, 2):
+            chosen.append(Case("nemoh_sharp_%s_%s" % (motion, tag(m)), "P", "5", "sharp", m, motion, headings=(0.0,),
+                               solver="nemoh", nemoh_range=QTF_POTENTIAL_NEMOH_RANGE, nemoh_contrib=2))
+    # Edge grading: the free hull with power-law rows toward the sharp bilge (EDGE_POWERS), the same panel count, with the
+    # sharp-edge weights off and on (q_sharp_free_g<q>[w]_m<k>, 2.5 as g2p5). The cosine rows of the
+    # other cases are close to q = 2, so the powers start above it
+    for q in EDGE_POWERS:
+        for weights in ("off", "on"):
+            for m in (1, 2):
+                name = "q_sharp_free_g%s%s_%s" % (("%g" % q).replace(".", "p"), "w" if weights == "on" else "", tag(m))
+                chosen.append(Case(name, "P", "5", "sharp", m, "free", "source", frequencies=grid, headings=(0.0,), qtf=1,
+                                   qtf_terms="body", qtf_max_dw=QTF_POTENTIAL_MAX_DW, edge_power=q,
+                                   qtf_edge_weights=weights))
+    # Fixed control surface: C and F of the default at m1 (CS_FIXED_M1) at the finer hulls, where the default C moves in
+    # (margin 4 x the median hull panel size) and refines with the hull, so its field passes cost N_hull x N_C
+    for m in (2, 3):
+        chosen.append(Case("q_sharp_free_fixc_%s" % tag(m), "P", "5", "sharp", m, "free", "source", frequencies=grid,
+                           headings=(0.0,), qtf=1, qtf_terms="body", qtf_max_dw=QTF_POTENTIAL_MAX_DW,
+                           extra_options=CS_FIXED_M1))
+    # Damped free hull (SHARP_DAMPING; the reference's motion "free_damped"): m1 with the default C, m2, m3 with C fixed
+    for m in (1, 2, 3):
+        chosen.append(Case("q_sharp_free_damp_%s" % tag(m), "P", "5", "sharp", m, "free", "source", frequencies=grid,
+                           headings=(0.0,), qtf=1, qtf_terms="body", qtf_max_dw=QTF_POTENTIAL_MAX_DW,
+                           extra_options=CS_FIXED_M1 if m > 1 else None, damping=SHARP_DAMPING))
+    # OC4 semisubmersible (make_mesh.write_oc4), HAMS against Nemoh on the same mesh, mass, CM and mooring. Four separate
+    # waterlines are not star-shaped, so C and F come from files (CSMesh_1.pnl, FSMesh_1.pnl: cs_shape = file), the same C at
+    # both meshes. Surge (about 0.06 rad/s) and pitch (about 0.3) lie well below the grid; heave at about 0.37 to 0.43 rad/s
+    # [derived from the restoring and a heave-plate added mass of 0.7e7 to 1.4e7 kg] may reach its lowest frequencies
+    for motion in ("fixed", "free"):
+        for m in (1, 2):
+            chosen.append(Case("q_oc4_%s_%s" % (motion, tag(m)), "P", "5", "oc4", m, motion, "source", frequencies=grid,
+                               headings=(0.0,), qtf=1, qtf_terms="body", qtf_max_dw=QTF_POTENTIAL_MAX_DW,
+                               extra_options=dict(cs_shape="file")))
+    for motion in ("fixed", "free"):
+        for m in (1, 2):
+            chosen.append(Case("nemoh_oc4_%s_%s" % (motion, tag(m)), "P", "5", "oc4", m, motion, headings=(0.0,),
+                               solver="nemoh", nemoh_range=QTF_POTENTIAL_NEMOH_RANGE, nemoh_contrib=2))
+    # OC4 matched to the WAMIT run of OpenFAST (marin_semi.12d): the same meshes, C and F, with the full-system mass, the
+    # mooring and the hydrostatic restoring of that run (make_mesh.oc4w_matrices), free body only, on the .12d grid up to
+    # 1.90 rad/s (OC4W_FREQUENCIES), every pair (qtf_max_dw = 0). qtf_compare.py --against-wamit compares QTF_Indirect.11d
+    # and QTF_Quadratic.10d with the .12d
+    for m in (1, 2):
+        chosen.append(Case("q_oc4w_free_%s" % tag(m), "P", "5", "oc4w", m, "free", "source", frequencies=OC4W_FREQUENCIES,
+                           headings=(0.0,), qtf=1, qtf_terms="body", extra_options=dict(cs_shape="file", qtf_max_dw=0)))
+    return chosen
+
+
+def qtf_flag(qtf):
+    """The command-line flag of a study selected by cases_of's qtf: " --qtf", " --qtf-potential" or empty."""
+    return " --qtf-potential" if qtf == "potential" else " --qtf" if qtf else ""
+
+
+def study_of(args):
+    """cases_of's qtf from the parsed arguments: "potential" (--qtf-potential), True (--qtf) or False."""
+    return "potential" if getattr(args, "qtf_potential", False) else getattr(args, "qtf", False)
+
+
 def cases_of(control, qtf=False):
-    """The cases selected by --control (the control-surface study) or --qtf (the QTF study); otherwise the first study."""
+    """The cases selected by --control (the control-surface study), --qtf (qtf True, the QTF study) or --qtf-potential
+    (qtf "potential"); otherwise the first study."""
+    if qtf == "potential":
+        return qtf_potential_cases()
     if qtf:
         return qtf_cases()
     return control_cases(control) if control else study_cases()
@@ -329,7 +468,18 @@ def laptop_seconds(case):
         per_frequency *= GMRES_FACTOR
     if case.velocity == "source":
         per_frequency += SOURCE_N2 * n ** 2 + SOURCE_N3 * n ** 3
-    return per_frequency * len(case.frequencies)
+    seconds = per_frequency * len(case.frequencies)
+    if case.qtf_terms == "body":
+        # one radiation-only solve per difference frequency up to qtf_max_dw, taken at the cost of a frequency [inferred]
+        seconds += (TIME_N0 + TIME_N2 * n ** 2 + TIME_N3 * n ** 3) * len(difference_frequencies(case))
+    return seconds
+
+
+def difference_frequencies(case):
+    """The distinct omega_i - omega_j > 0 of a case's grid within its qtf_max_dw (all if None): the frequencies of the
+    radiation-only solves of qtf_terms = body."""
+    top = case.qtf_max_dw if case.qtf_max_dw else float("inf")
+    return sorted({round(b - a, 6) for a in case.frequencies for b in case.frequencies if 0.0 < b - a <= top * (1 + 1e-9)})
 
 
 def nemoh_seconds(case):
@@ -340,11 +490,26 @@ def nemoh_seconds(case):
     return count * problems * (NEMOH_N2 * n ** 2 + NEMOH_N3 * n ** 3 + NEMOH_QTF_N2 * n ** 2)
 
 
+# The field pass of qtf_b2 = control on Snellius at 32 threads: 25 s at 1792 hull panels and 1416 points on C and F
+# (q_sharp_free_fixc_m2), taken proportional to the product [inferred from the Green calls]. One pass per frequency and per
+# difference frequency. Counted for the hulls whose C and F are fixed by files (HULLS cf_points); for the others it is not
+# modelled here
+B2_PASS_SECONDS = 25.0 / (1792 * 1416)
+
+
+def b2_snellius_hours(case):
+    points = HULLS[case.hull].get("cf_points")
+    if case.qtf_terms != "body" or not points:
+        return 0.0
+    passes = len(case.frequencies) + len(difference_frequencies(case))
+    return B2_PASS_SECONDS * panels_of(case) * points[case.multiple] * passes / 3600.0
+
+
 def wall_hours(case):
     """Estimated wall time on Snellius, or on the laptop for a case that runs there."""
     if case.solver == "nemoh":
-        return nemoh_seconds(case) / 3600.0
-    return laptop_seconds(case) / SNELLIUS_SPEEDUP / 3600.0 + control_snellius_hours(case)
+        return nemoh_seconds(case) / 3600.0 * (NEMOH_SNELLIUS_FACTOR if case.where == "snellius" else 1.0)
+    return laptop_seconds(case) / SNELLIUS_SPEEDUP / 3600.0 + control_snellius_hours(case) + b2_snellius_hours(case)
 
 
 def memory_gb(case):
@@ -442,7 +607,12 @@ def write_hams_hull(case, path):
     hydro_path = os.path.join(path, "Hydrostatic.in")
     m = case.multiple
     if case.hull == "sharp":
-        mesh = make_mesh.write_cylinder(mesh_path, hydro_path, **scaled(fixtures.DRIFT_CYL_MESH, ("ntheta", "nz", "nr"), m))
+        params = scaled(fixtures.DRIFT_CYL_MESH, ("ntheta", "nz", "nr"), m)
+        if case.edge_power is not None:
+            params.update(graded=False, edge_power=case.edge_power)
+        if case.damping:
+            params.update(external_damping={j - 1: v for j, v in case.damping.items()})
+        mesh = make_mesh.write_cylinder(mesh_path, hydro_path, **params)
     elif case.hull == "round":
         mesh = make_mesh.write_rounded_cylinder(mesh_path, hydro_path,
                                                 **scaled(fixtures.ROUND_MESH, ("ntheta", "nz", "narc", "nr"), m))
@@ -457,6 +627,16 @@ def write_hams_hull(case, path):
     elif case.hull == "corner_box":
         mesh = make_mesh.write_rounded_box(mesh_path, hydro_path,
                                            **scaled(CORNER_BOX_MESH, ("nx", "ny", "ncorner", "nz", "narc"), m))
+    elif case.hull in ("oc4", "oc4w"):
+        # HullMesh.pnl, Hydrostatic.in (mooring as external restoring), CSMesh_1.pnl and FSMesh_1.pnl, checked; oc4w has the
+        # matrices of the WAMIT run
+        damping = {j - 1: v for j, v in case.damping.items()} if case.damping else None
+        written = make_mesh.write_oc4(path, m, external_damping=damping, model="wamit" if case.hull == "oc4w" else "platform")
+        mesh = written["hull"]
+        points = len(written["control"].panels) + len(written["free"].panels)
+        if points != HULLS[case.hull]["cf_points"][m]:
+            raise ValueError("%s has %d panels on C and F, not the %d of the job table" % (
+                case.name, points, HULLS[case.hull]["cf_points"][m]))
     else:
         raise ValueError("unknown hull " + case.hull)
     if len(mesh.panels) != panels_of(case):
@@ -481,6 +661,13 @@ def write_hams_case(case, root, threads):
         options.update(drift_methods="far near control", cs_velocity=case.control)
     if case.qtf:
         options.update(qtf=case.qtf)
+    if case.qtf_terms:
+        options.update(qtf_terms=case.qtf_terms)
+    if case.qtf_max_dw:
+        options.update(qtf_max_dw=case.qtf_max_dw)
+    if case.qtf_edge_weights:
+        options.update(qtf_edge_weights=case.qtf_edge_weights)
+    options.update(case.extra_options)
     fixtures.write_second_order(os.path.join(path, "SecondOrder.in"), **options)
     return path
 
@@ -500,7 +687,7 @@ def read_matrices(path):
                 current = []
                 matrices.append(current)
             current.append(row)
-    return {"mass": matrices[0], "restoring": matrices[3]}
+    return {"mass": matrices[0], "restoring": matrices[3], "external": matrices[4]}
 
 
 def nemoh_matrix(path, matrix):
@@ -511,7 +698,9 @@ def nemoh_matrix(path, matrix):
 
 def write_nemoh_case(case, root):
     """Write the input of a Nemoh run. The nodes and panels are those of the HAMS case. No lid and no external loads, and the
-    matrices are those given to HAMS, about the same point. A fixed body has a large external stiffness."""
+    matrices are those given to HAMS, about the same point: the external restoring of Hydrostatic.in (the OC4 mooring) is
+    Km.dat of a free body. A fixed body has a large external stiffness instead (HULLS fixed_stiffness, else
+    NEMOH_FIXED_STIFFNESS)."""
     base = os.path.join(root, case.name)
     for folder in ("Mechanics", "Motion", os.path.join("results", "QTF"), os.path.join("results", "sources"), "QTFPreprocOut",
                    "mesh", "hams_hull"):
@@ -520,11 +709,17 @@ def write_nemoh_case(case, root):
     make_mesh.write_nemoh_mesh(os.path.join(base, "hull.dat"), mesh)
     matrices = read_matrices(os.path.join(base, "hams_hull", "Hydrostatic.in"))
     zero = [[0.0] * 6 for _ in range(6)]
-    stiffness = [[NEMOH_FIXED_STIFFNESS if case.motion == "fixed" and i == j else 0.0 for j in range(6)] for i in range(6)]
+    if case.motion == "fixed":
+        fixed = HULLS[case.hull].get("fixed_stiffness", NEMOH_FIXED_STIFFNESS)
+        stiffness = [[fixed if i == j else 0.0 for j in range(6)] for i in range(6)]
+    else:
+        stiffness = matrices["external"]
     nemoh_matrix(os.path.join(base, "Mechanics", "Inertia.dat"), matrices["mass"])
     nemoh_matrix(os.path.join(base, "Mechanics", "Kh.dat"), matrices["restoring"])
     nemoh_matrix(os.path.join(base, "Mechanics", "Km.dat"), stiffness)
     nemoh_matrix(os.path.join(base, "Mechanics", "Badd.dat"), zero)
+    # One range for the first-order and the QTF frequencies: the QTF part needs first-order solutions at every difference
+    # frequency, down to the grid step (the Nemoh user manual asks for first-order coverage of [dw, w_max])
     low, high, count = case.nemoh_range
     modes = ("1 1. 0. 0. 0. 0. 0.", "1 0. 1. 0. 0. 0. 0.", "1 0. 0. 1. 0. 0. 0.",
              "2 1. 0. 0. 0. 0. 0.", "2 0. 1. 0. 0. 0. 0.", "2 0. 0. 1. 0. 0. 0.")
@@ -535,8 +730,9 @@ def write_nemoh_case(case, root):
                                                   "%d %.4f %.4f" % (len(case.headings), case.headings[0], case.headings[-1]),
                                                   "--- Post processing ---", "0 0.1 10.", "0", "0 0. 180.", "0 50 400. 400.",
                                                   "1", "1", "--- QTF ---", "1", "%d %.4f %.4f" % (count, low, high),
-                                                  "%d" % (1 if case.mean_drift == 2 else 0), "1", "NA", "0 0 0", "1", "1", "1",
-                                                  "0", "0", "---"]
+                                                  "%d" % (1 if case.mean_drift == 2 else 0), "%d" % case.nemoh_contrib,
+                                                  "NA", "0 0 0", "1", "1"]
+    lines += ["%d" % flag for flag in NEMOH_QTF_TERMS[case.nemoh_contrib]] + ["---"]
     with open(os.path.join(base, "Nemoh.cal"), "w") as f:
         f.write("\n".join(lines) + "\n")
     with open(os.path.join(base, "input_solver.txt"), "w") as f:
@@ -990,7 +1186,7 @@ def gate_lines(cases, rows):
 def collect(args):
     """Write the table of drift values and errors for each finished case, and against Nemoh. Prints time and memory against the
     estimates, and with --control the lines of the control-surface gates."""
-    cases = {case.name: case for case in cases_of(args.control, args.qtf)}
+    cases = {case.name: case for case in cases_of(args.control, study_of(args))}
     hams_rows, nemoh_rows, first_rows = [], [], []
     print("| Case | Code | Panels | Wall (s) | Estimate (s) | Peak (GB) | Estimate (GB) |")
     print("| :--- | ---: | ---: | ---: | ---: | ---: | ---: |")
@@ -1112,7 +1308,7 @@ def write_slurm(args):
     os.makedirs(out, exist_ok=True)
     script = "%s/pre_postprocessing_python/SecondOrder/drift_convergence.py" % args.repo
     extra = "#SBATCH -A %s\n" % args.account if args.account else ""
-    cases = [case for case in cases_of(args.control, args.qtf) if in_tier(case, args.tier) and case.where == "snellius"]
+    cases = [case for case in cases_of(args.control, study_of(args)) if in_tier(case, args.tier) and case.where == "snellius"]
     head = dict(partition=PARTITION, cpus=CPUS, memory=MEMORY_GB, logs=logs, extra=extra)
 
     src = os.path.join(args.source or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."), "src")
@@ -1144,22 +1340,35 @@ def write_slurm(args):
             f.write("CASE=$(sed -n \"${SLURM_ARRAY_TASK_ID}p\" %s/%s.txt)\n" % (jobs, label))
             f.write("python3 %s run %s --case \"$CASE\" --hams %s/hamsmrel_grn4 --hams-grn8 %s/hamsmrel_grn8 --threads %d%s\n" % (
                 script, root, root, root, CPUS,
-                " --control " + args.control if args.control else " --qtf" if args.qtf else ""))
+                " --control " + args.control if args.control else qtf_flag(study_of(args))))
 
-    # Nemoh is run with one thread per case, as many at a time as there are cases, in one allocation
-    chosen = [case for case in cases if case.solver == "nemoh"]
-    if chosen:
-        with open(os.path.join(out, "nemoh.txt"), "w", newline="\n") as f:
+    # Nemoh is run with one thread per case, as many at a time as there are cases, in one allocation per batch
+    # (nemoh_batches: nemoh.txt, or nemoh_<hull>_m<k>.txt for a hull with batches of its own)
+    for label, chosen in nemoh_batches([case for case in cases if case.solver == "nemoh"]):
+        if len(chosen) > NEMOH_CPUS:
+            raise ValueError("%s has %d Nemoh runs for %d CPUs" % (label, len(chosen), NEMOH_CPUS))
+        with open(os.path.join(out, label + ".txt"), "w", newline="\n") as f:
             f.write("\n".join(case.name for case in chosen) + "\n")
         limit = time_limit(max(wall_hours(case) for case in chosen))
-        with open(os.path.join(out, "nemoh.sbatch"), "w", newline="\n") as f:
-            f.write(SBATCH_HEAD.format(name="drift_nemoh", limit=limit, log="nemoh_%j.log", **head).replace(
-                "export OMP_NUM_THREADS=%d" % CPUS, "export OMP_NUM_THREADS=1"))
+        with open(os.path.join(out, label + ".sbatch"), "w", newline="\n") as f:
+            f.write(SBATCH_HEAD.format(name="drift_" + label, limit=limit, log=label + "_%j.log",
+                                       **dict(head, cpus=NEMOH_CPUS, memory=NEMOH_MEMORY_GB)).replace(
+                "export OMP_NUM_THREADS=%d" % NEMOH_CPUS, "export OMP_NUM_THREADS=1"))
             f.write("# Needs a build of Nemoh on Snellius, kept outside the repository. Set NEMOH_BUILD to its build folder.\n")
             f.write("NEMOH_BUILD=${NEMOH_BUILD:?set NEMOH_BUILD}\n")
-            f.write("xargs -P %d -I{} python3 %s run %s --case {} --hams none --nemoh-build $NEMOH_BUILD --threads 1%s < %s/nemoh.txt\n" % (
-                len(chosen), script, root, " --qtf" if args.qtf else "", jobs))
+            f.write("xargs -P %d -I{} python3 %s run %s --case {} --hams none --nemoh-build $NEMOH_BUILD --threads 1%s < %s/%s.txt\n" % (
+                len(chosen), script, root, qtf_flag(study_of(args)), jobs, label))
     print("Scripts in %s, for %s on the cluster, with logs in %s. Nothing was submitted." % (out, jobs, logs))
+
+
+def nemoh_batches(cases):
+    """[(label, cases)] of the Nemoh allocations: one "nemoh" for the hulls without batches of their own, and one
+    "nemoh_<hull>_m<k>" per multiple of a hull with HULLS nemoh_batches (OC4: m1 and m2 are approved and run apart)."""
+    groups = {}
+    for case in cases:
+        own = HULLS[case.hull].get("nemoh_batches")
+        groups.setdefault("nemoh_%s_%s" % (case.hull, tag(case.multiple)) if own else "nemoh", []).append(case)
+    return sorted(groups.items())
 
 
 def job_table(tier, markdown, control=None, qtf=False):
@@ -1182,8 +1391,12 @@ def job_table(tier, markdown, control=None, qtf=False):
             setting.append("ctrl-" + case.control)
         if case.qtf:
             setting.append("qtf %d" % case.qtf)
+        if case.qtf_terms:
+            setting.append("qtf_terms %s, %d Omega" % (case.qtf_terms, len(difference_frequencies(case))))
+            if case.solver == "hams" and HULLS[case.hull].get("cf_points"):
+                setting.append("C+F %d" % HULLS[case.hull]["cf_points"][case.multiple])
         if case.solver == "nemoh":
-            setting.append("Nemoh")
+            setting.append("Nemoh" + (" DUOK+HASBO" if case.nemoh_contrib == 2 else ""))
         count = case.nemoh_range[2] if case.solver == "nemoh" else len(case.frequencies)
         rows.append((case.name, case.group, case.question, case.hull, case.motion,
                      "-" if case.solver == "nemoh" else case.velocity, ", ".join(setting) or "-",
@@ -1206,11 +1419,11 @@ def job_table(tier, markdown, control=None, qtf=False):
         print("%s: %d runs, %.1f wall h in sum, longest %.2f h, largest memory %.1f GB" % (
             label, len(chosen), hours, longest, max([memory_gb(c) for c in chosen] or [0.0])))
     hams_hours = sum(wall_hours(c) for c in cases if c.solver == "hams")
-    nemoh_list = [c for c in cases if c.solver == "nemoh" and c.where == "snellius"]
-    nemoh_hours = max([wall_hours(c) for c in nemoh_list] or [0.0])
     print("Charged: HAMS %.1f job hours, %.0f CPU-hours, %.0f SBU" % (hams_hours, hams_hours * CHARGED_CPUS, hams_hours * SBU_PER_JOB_HOUR))
-    print("Charged: Nemoh in one allocation %.1f job hours, %.0f CPU-hours, %.0f SBU" % (
-        nemoh_hours, nemoh_hours * CHARGED_CPUS, nemoh_hours * SBU_PER_JOB_HOUR))
+    for label, chosen in nemoh_batches([c for c in cases if c.solver == "nemoh" and c.where == "snellius"]):
+        hours = max(wall_hours(c) for c in chosen)
+        print("Charged: Nemoh allocation %s (%d runs, %d CPUs) %.1f job hours, %.0f CPU-hours, %.0f SBU" % (
+            label, len(chosen), NEMOH_CPUS, hours, hours * NEMOH_CPUS, hours * NEMOH_CPUS * SBU_PER_JOB_HOUR / CHARGED_CPUS))
 
 
 def main():
@@ -1220,12 +1433,14 @@ def main():
 
     control_help = "the control-surface study: all frequencies, or `cheap` with three at the m4 cases of the green route"
     qtf_help = "the QTF study: quadratic QTFs on the Nemoh grid (qtf_cases)"
+    potential_help = "the QTF potential study: QTF_Indirect.11d with qtf_terms = body, and Nemoh DUOK + HASBO (qtf_potential_cases)"
 
     p = sub.add_parser("list")
     p.add_argument("--tier", choices=("full", "small"), default="full")
     p.add_argument("--markdown", action="store_true")
     p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
     p.add_argument("--qtf", action="store_true", help=qtf_help)
+    p.add_argument("--qtf-potential", action="store_true", help=potential_help)
 
     p = sub.add_parser("generate")
     p.add_argument("root")
@@ -1233,6 +1448,7 @@ def main():
     p.add_argument("--group")
     p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
     p.add_argument("--qtf", action="store_true", help=qtf_help)
+    p.add_argument("--qtf-potential", action="store_true", help=potential_help)
 
     for command in ("run", "calibrate"):
         p = sub.add_parser(command)
@@ -1245,6 +1461,7 @@ def main():
             p.add_argument("--case", required=True)
             p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
             p.add_argument("--qtf", action="store_true", help=qtf_help)
+            p.add_argument("--qtf-potential", action="store_true", help=potential_help)
 
     p = sub.add_parser("slurm")
     p.add_argument("root", help="folder of the study on the cluster")
@@ -1255,6 +1472,7 @@ def main():
     p.add_argument("--account", help="Slurm account, by default that of the user")
     p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
     p.add_argument("--qtf", action="store_true", help=qtf_help)
+    p.add_argument("--qtf-potential", action="store_true", help=potential_help)
 
     p = sub.add_parser("collect")
     p.add_argument("root")
@@ -1262,12 +1480,13 @@ def main():
     p.add_argument("--reference", help="results of the first study, for near-field at m4 where <root> does not hold it")
     p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
     p.add_argument("--qtf", action="store_true", help=qtf_help)
+    p.add_argument("--qtf-potential", action="store_true", help=potential_help)
 
     args = parser.parse_args()
     if args.command == "list":
-        job_table(args.tier, args.markdown, args.control, args.qtf)
+        job_table(args.tier, args.markdown, args.control, study_of(args))
     elif args.command == "generate":
-        for case in cases_of(args.control, args.qtf):
+        for case in cases_of(args.control, study_of(args)):
             if (args.case and case.name != args.case) or (args.group and case.group != args.group):
                 continue
             if case.solver == "nemoh":
@@ -1275,7 +1494,7 @@ def main():
             else:
                 write_hams_case(case, args.root, CPUS)
     elif args.command == "run":
-        found = [case for case in cases_of(args.control, getattr(args, "qtf", False)) if case.name == args.case]
+        found = [case for case in cases_of(args.control, study_of(args)) if case.name == args.case]
         if not found:
             raise SystemExit("no case named " + args.case)
         sys.exit(1 if run_case(found[0], args)["code"] else 0)

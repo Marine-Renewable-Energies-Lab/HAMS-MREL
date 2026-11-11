@@ -44,6 +44,25 @@ FIELD_PANELS = (1, 4, 8, 9, 14, 40, 85, 130, 133, 200, 270, 448)
 CONTROL_THREADS = 4
 CONTROL_FREQUENCY = 0.95
 CONTROL_STEPS = (0.005, 0.01, 0.05, 0.1)
+# Main grid of qtf_round_low: differences 0.05 to 0.20 rad/s
+QTF_LOW_FREQUENCIES = (0.40, 0.45, 0.50, 0.55, 0.60)
+# QTF potential part (qtf_terms = body): the pair of qtf_round_body at 0.15 rad/s for IRSP = 1 and the half mesh, and two
+# small rounded hulls 2000 m apart against one alone, at 0.20 rad/s. At 0.80 and 1.00 rad/s (ka 0.33 to 0.51) the wave
+# scattered by the other hull changes .10d by 0.8% at 2000 m; at 1.35 and 1.55 rad/s it was 5.9%, too much for a 2% check
+QTF_BODY_FREQUENCIES = (0.95, 1.10)
+QTF_DISTANT_FREQUENCIES = (0.80, 1.00)
+QTF_DISTANT_SEPARATION = 2000.0
+# B2 by the control surface (qtf_b2 = control) and by the hull on the sharp cylinder of drift_cyl, free, against the exact
+# reference: (0.47, 0.77) is where the hull form is worst (the heave resonance at 0.77 rad/s), Omega = 0.07, 0.23, 0.30
+QTF_SHARP_FREQUENCIES = (0.47, 0.70, 0.77)
+# The same hull with C and F at 6 m panels, at (0.47, 0.70): Omega = 0.23 from a radiation-only solve, from the main grid
+# (0.23 added, qtf_max_dw 0.23 keeps that pair only), and on the half mesh
+QTF_B2C_FREQUENCIES = (0.47, 0.70)
+QTF_B2C_MAIN_FREQUENCIES = (0.23, 0.47, 0.70)
+# Periods (Input_frequency_type 4) whose differences in omega include two 1.1e-6 rad/s apart, 0.7e-6 of the largest omega:
+# the 1e-6 merge of the first difference frequencies put them on one psi, which the check of potential_pair then refused
+# for the pair at the lower frequencies, after all the solves (final review, Important 1)
+QTF_PERIOD_GRID = (4.0, 4.6, 7.002, 9.0738)
 
 
 def real12(value):
@@ -52,16 +71,16 @@ def real12(value):
 
 
 def write_control(path, depth=100.0, frequencies=(1.0,), headings=(0.0,), rotation_centre=(0.0, 0.0, 0.0), refl="1.0D0",
-                  sybo=0, solver=None, field_points=(), body_origins=None, lcs_angle=0.0, irsp=0, threads=1):
+                  sybo=0, solver=None, field_points=(), body_origins=None, lcs_angle=0.0, irsp=0, threads=1, input_type=3):
     """Write ControlFile.in, in the fixed layout read by ReadControlFile. body_origins lists (x, y) per body of a
     multi-body case, which is both the LCS origin and the rotation centre. lcs_angle is the rotation of every body's
-    LCS in radians, which is what ReadBodyMeshMulti expects."""
+    LCS in radians, which is what ReadBodyMeshMulti expects. input_type is Input_frequency_type: 3 omega, 4 period."""
     with open(path, "w") as f:
         f.write("   --------------HAMS Control file---------------\n\n")
         f.write("   Waterdepth  %.1fD0\n\n" % depth)
         f.write("   #Start Definition of Wave Frequencies\n")
         f.write("    0_inf_frequency_limits      %d\n" % sybo)
-        f.write("    Input_frequency_type        3\n    Output_frequency_type       3\n")
+        f.write("    Input_frequency_type        %d\n    Output_frequency_type       3\n" % input_type)
         f.write("    Number_of_frequencies      %d\n" % len(frequencies))
         f.write("  " + " ".join("%.4f" % x for x in frequencies) + "\n")
         f.write("   #End Definition of Wave Frequencies\n\n")
@@ -352,11 +371,24 @@ def main():
                   sybo=1)
     write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="free",
                        write_terms=0, velocity_method="source", qtf=3, qtf_max_dw=0.3)
+    # The radiation potentials of the indirect method (qtf_terms = body): the qtf_round case with the check file, and the same
+    # hull on a low-frequency grid whose differences go down to 0.05 rad/s, with the zero frequency of SYBO = 1 to compare
+    for name, frequencies, options in (("qtf_round_body", DRIFT_CYL_FREQUENCIES, dict(qtf=3, qtf_max_dw=0.3)),
+                                       ("qtf_round_low", QTF_LOW_FREQUENCIES, dict(qtf=1))):
+        target = case_dir(data, name)
+        for file in ("HullMesh.pnl", "Hydrostatic.in"):
+            shutil.copyfile(os.path.join(data, "drift_round", "input", file), os.path.join(target, file))
+        write_control(os.path.join(target, "ControlFile.in"), frequencies=frequencies, headings=DRIFT_CYL_HEADINGS, sybo=1)
+        write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods=both, motion_state="free",
+                           write_terms=1, velocity_method="source", qtf_terms="body", **options, qtf_b2="body",
+                           qtf_edge_weights="off")
     target = case_dir(data, "qtf_two_round")
     for file in ("HullMesh_1.pnl", "HullMesh_2.pnl", "Hydrostatic_1.in", "Hydrostatic_2.in", "ControlFile.in"):
         shutil.copyfile(os.path.join(data, "drift_two_round", "input", file), os.path.join(target, file))
+    # qtf_b2 has no effect on the quadratic part: the log says so
     write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=2, drift_methods=both, motion_state="free",
-                       write_terms=0, velocity_method="source", qtf=3)
+                       write_terms=0, velocity_method="source", qtf=3, qtf_b2="body")
+    write_qtf_body_fixtures(data, both)
 
     # The control-surface method on the hull of drift_cyl: held fixed, and with the limit frequencies and all heading pairs
     for name, control, options in (("control_cyl", dict(), dict(mean_drift=1, drift_methods="far control", write_terms=1,
@@ -371,6 +403,119 @@ def main():
         write_second_order(os.path.join(target, "SecondOrder.in"), **options)
 
     write_control_physics(data)
+
+
+def write_qtf_body_fixtures(data, both):
+    """Fixtures of QTF_Indirect.11d (qtf_terms = body), besides qtf_round_body and qtf_round_low. Kept small: two
+    frequencies where one pair is enough."""
+    body = dict(mean_drift=1, drift_methods=both, motion_state="free", write_terms=1, qtf_terms="body", qtf=1,
+                qtf_b2="body", qtf_edge_weights="off")
+    # The rounded hull of qtf_round_body with irregular frequency removal, as a half mesh, and the whole mesh without
+    # removal as their reference. Velocity by differencing in all three, since the source solve does not take IRSP = 1.
+    for name, irsp, half in (("qtf_round_body_ref", 0, False), ("qtf_round_body_irsp", 1, False),
+                             ("qtf_half_body", 0, True)):
+        target = case_dir(data, name)
+        make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
+                                         half_y=half, **ROUND_MESH)
+        if irsp == 1:
+            make_mesh.write_waterplane(os.path.join(target, "WaterPlaneMesh.pnl"), ROUND_MESH["radius"],
+                                       ROUND_MESH["ntheta"], ROUND_MESH["nr"])
+        write_control(os.path.join(target, "ControlFile.in"), frequencies=QTF_BODY_FREQUENCIES, headings=DRIFT_CYL_HEADINGS,
+                      irsp=irsp)
+        write_second_order(os.path.join(target, "SecondOrder.in"), **body)
+    # Two of the small rounded hulls far apart, with every heading pair, and one alone
+    for name, origins, pairs in (("qtf_two_round_body", [(0.0, 0.0), (0.0, QTF_DISTANT_SEPARATION)], 2),
+                                 ("qtf_isolated_body", None, 1)):
+        target = case_dir(data, name)
+        for b in ((1, 2) if origins else (0,)):
+            suffix = "_%d" % b if b else ""
+            make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh%s.pnl" % suffix),
+                                             os.path.join(target, "Hydrostatic%s.in" % suffix), **TWO_ROUND_MESH)
+        write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=QTF_DISTANT_FREQUENCIES,
+                      headings=DRIFT_CYL_HEADINGS, body_origins=origins)
+        write_second_order(os.path.join(target, "SecondOrder.in"), **dict(body, mean_drift=pairs, velocity_method="source"))
+    # Every second frequency of qtf_round_low: psi is solved at each difference frequency, so the grid spacing must not
+    # change the common pairs
+    target = case_dir(data, "qtf_round_low_spacing")
+    for file in ("HullMesh.pnl", "Hydrostatic.in"):
+        shutil.copyfile(os.path.join(data, "drift_round", "input", file), os.path.join(target, file))
+    write_control(os.path.join(target, "ControlFile.in"), frequencies=QTF_LOW_FREQUENCIES[::2], headings=DRIFT_CYL_HEADINGS)
+    write_second_order(os.path.join(target, "SecondOrder.in"), **dict(body, velocity_method="source"))
+    # The period grid of QTF_PERIOD_GRID on the rounded hull: every pair finds its psi (final review, Important 1)
+    target = case_dir(data, "qtf_period_body")
+    make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
+                                     **ROUND_MESH)
+    write_control(os.path.join(target, "ControlFile.in"), frequencies=QTF_PERIOD_GRID, headings=(0.0,), input_type=4)
+    write_second_order(os.path.join(target, "SecondOrder.in"), **body)
+    write_qtf_sharp_fixtures(data, body)
+
+
+def write_qtf_sharp_fixtures(data, body):
+    """The sharp cylinder of drift_cyl, free, heading 0, with B2 by the control surface and by the hull, for the comparison
+    with the exact reference of truncated_cylinder_reference.py. On CONTROL_THREADS threads: the fields on C and F are
+    evaluated at each frequency and each difference frequency."""
+    # C and F at 3 m panels (default: the median hull panel, 1474 points): B2 within 1% of the default, half the run time.
+    # The control case has the default (qtf_edge_weights = off); qtf_sharp_b2_edges is the same with the weights on
+    control = {key: value for key, value in body.items() if key != "qtf_edge_weights"}
+    for name, base, b2 in (("qtf_sharp_b2_control", control, dict(qtf_b2="control", cs_panel_size=3.0)),
+                           ("qtf_sharp_b2_edges", control, dict(qtf_b2="control", cs_panel_size=3.0,
+                                                                qtf_edge_weights="on")),
+                           ("qtf_sharp_b2_body", body, dict(qtf_b2="body"))):
+        target = case_dir(data, name)
+        copy_inputs(data, "drift_cyl", target, ("HullMesh.pnl", "Hydrostatic.in"))
+        write_control(os.path.join(target, "ControlFile.in"), frequencies=QTF_SHARP_FREQUENCIES, headings=(0.0,),
+                      threads=CONTROL_THREADS)
+        write_second_order(os.path.join(target, "SecondOrder.in"),
+                           **dict(base, velocity_method="source", qtf_max_dw=0.3, **b2))
+    # Routes of qtf_b2 = control: psi of Omega = 0.23 from a radiation-only solve, from the main grid, and on the half mesh,
+    # with the edge weights on (so that the half mesh checks them too)
+    for name, hull, frequencies, max_dw in (("qtf_b2c_rad", "drift_cyl", QTF_B2C_FREQUENCIES, 0.3),
+                                            ("qtf_b2c_main", "drift_cyl", QTF_B2C_MAIN_FREQUENCIES, 0.23),
+                                            ("qtf_b2c_half", "drift_cyl_half", QTF_B2C_FREQUENCIES, 0.3)):
+        target = case_dir(data, name)
+        copy_inputs(data, hull, target, ("HullMesh.pnl", "Hydrostatic.in"))
+        write_control(os.path.join(target, "ControlFile.in"), frequencies=frequencies, headings=(0.0,),
+                      threads=CONTROL_THREADS)
+        write_second_order(os.path.join(target, "SecondOrder.in"),
+                           **dict(control, velocity_method="source", qtf_max_dw=max_dw, qtf_b2="control",
+                                  cs_panel_size=6.0, qtf_edge_weights="on"))
+    write_qtf_default_b2_fixtures(data, control)
+
+
+def write_qtf_default_b2_fixtures(data, control):
+    """The default qtf_b2 = control on the routes the fixtures above pin to qtf_b2 = body, each against its twin (final
+    review, Important 2): two bodies (qtf_two_round_body), IRSP = 1 (qtf_round_body_irsp), and drift_methods = control
+    together with qtf_b2 = control, where B2 takes C and F from the drift (qtf_b2c_rad). On CONTROL_THREADS threads."""
+    twins = (("qtf_two_round_control", "qtf_two_round_body"), ("qtf_irsp_control", "qtf_round_body_irsp"))
+    for name, twin in twins:
+        target = case_dir(data, name)
+        source = os.path.join(data, twin, "input")
+        for file in sorted(os.listdir(source)):
+            if file in ("ControlFile.in", "SecondOrder.in"):
+                continue
+            shutil.copyfile(os.path.join(source, file), os.path.join(target, file))
+        with open(os.path.join(source, "ControlFile.in")) as f:
+            text = f.read()
+        old = "    Number of threads       1\n"
+        assert old in text, twin
+        with open(os.path.join(target, "ControlFile.in"), "w") as f:
+            f.write(text.replace(old, "    Number of threads       %d\n" % CONTROL_THREADS))
+        options = {}
+        with open(os.path.join(source, "SecondOrder.in")) as f:
+            for line in f:
+                if "=" in line and not line.startswith("!"):
+                    key, value = (part.strip() for part in line.split("=", 1))
+                    options[key] = value
+        # The defaults: qtf_b2 = control, qtf_edge_weights = off, C and F at the median hull panel
+        del options["qtf_b2"], options["qtf_edge_weights"]
+        write_second_order(os.path.join(target, "SecondOrder.in"), **options)
+    target = case_dir(data, "qtf_b2c_drift")
+    copy_inputs(data, "drift_cyl", target, ("HullMesh.pnl", "Hydrostatic.in"))
+    write_control(os.path.join(target, "ControlFile.in"), frequencies=QTF_B2C_FREQUENCIES, headings=(0.0,),
+                  threads=CONTROL_THREADS)
+    write_second_order(os.path.join(target, "SecondOrder.in"),
+                       **dict(control, drift_methods="far near control", velocity_method="source", qtf_max_dw=0.3,
+                              qtf_b2="control", cs_panel_size=6.0, qtf_edge_weights="on"))
 
 
 def copy_inputs(data, source, target, files):

@@ -19,6 +19,10 @@ amplitude, the quadratic second-order load is (docs/output_files.md)
 over all i and j, so T-_ij = conj(T-_ji), T+_ij = T+_ji, and T-_ii is the mean drift per unit amplitude squared. The rows
 of the file give conj(T): read_qtf returns the file values; internal() conjugates them back.
 
+With qtf_terms = body (qtf = 1 or 3), QTF_Indirect.11d holds .10d plus the body-forcing part of the second-order potential,
+T_pot, in the same layout (read_qtf reads it; potential_part gives .11d - .10d), and with write_terms >= 1
+QTF_PotentialTerms.txt holds its five terms per pair to 16 digits (read_qtf_terms). The free-surface integral is omitted.
+
 Newman's approximation (Newman 1974) replaces the off-diagonal difference QTF by the mean of the diagonal values,
 T-_ij ~ (T-_ii + T-_jj)/2. It needs only the mean drift, and holds when the QTF varies slowly away from the diagonal.
 
@@ -57,6 +61,38 @@ def read_qtf(path):
             key = (round(float(p[0]), 6), round(float(p[1]), 6), round(float(p[2]), 6), round(float(p[3]), 6), int(p[4]))
             out[key] = complex(float(p[7]), float(p[8]))
     return out
+
+
+POTENTIAL_TERMS = ("FK", "ID", "B1", "B2", "B3")   # the terms of QTF_PotentialTerms.txt, in their order
+
+
+def read_qtf_terms(path):
+    """{(oufr1, oufr2, beta1, beta2, I): [complex] * 5} of QTF_PotentialTerms.txt (qtf_terms = body, write_terms >= 1):
+    the file values of the terms POTENTIAL_TERMS (Froude-Krylov of phi_I2, incident diffraction, B1, B2, B3), scaled and
+    conjugated as QTF_Quadratic.10d, 16 digits. Lines starting with # are the header. The rows are in ascending
+    |omega_1 - omega_2|, not in the order of .11d, so they are matched by key; keys rounded as read_qtf."""
+    out = {}
+    with open(path) as f:
+        for line in f:
+            if line.lstrip().startswith("#"):
+                continue
+            p = line.split()
+            if len(p) != 5 + 2 * len(POTENTIAL_TERMS):
+                continue
+            key = (round(float(p[0]), 6), round(float(p[1]), 6), round(float(p[2]), 6), round(float(p[3]), 6), int(p[4]))
+            out[key] = [complex(float(p[5 + 2 * t]), float(p[6 + 2 * t])) for t in range(len(POTENTIAL_TERMS))]
+    return out
+
+
+def potential_part(quadratic, indirect):
+    """{key: .11d - .10d} for the keys of both read_qtf dicts: the potential part T_pot in the file convention. It is zero on
+    the diagonal and, off it, the sum of the terms of QTF_PotentialTerms.txt to the 7 printed digits of the two files."""
+    return {key: indirect[key] - quadratic[key] for key in indirect if key in quadratic}
+
+
+def terms_sum(terms):
+    """{key: sum of the terms} of a read_qtf_terms dict."""
+    return {key: sum(values) for key, values in terms.items()}
 
 
 def internal(qtf):
@@ -154,8 +190,42 @@ def check_read_round_trip():
     return "ok"
 
 
+def check_potential_files():
+    """read_qtf reads QTF_Indirect.11d (the layout of .10d), read_qtf_terms the 16-digit rows of QTF_PotentialTerms.txt
+    (header lines skipped, five terms), and potential_part gives .11d - .10d, which equals the sum of the terms to the
+    precision of the printed files; terms_sum sums the terms."""
+    keys = [(0.7, 0.95, 0.0, 0.0, 1), (0.95, 0.7, 0.0, 0.0, 5)]
+    quad = {keys[0]: complex(0.25, -1.5), keys[1]: complex(-3.0, 0.125)}
+    terms = {keys[0]: [complex(0.1, 0.2), complex(-0.05, 0.01), complex(1e-3, 0.0), complex(0.0, -2e-3),
+                       complex(1.234567890123456e-4, 0.0)],
+             keys[1]: [complex(-0.3, 0.0), complex(0.0, 0.07), complex(2e-2, -1e-2), complex(0.0, 0.0),
+                       complex(-5e-5, 5e-5)]}
+    row = "%14.6E%14.6E%14.6E%14.6E%6d%14.6E%14.6E%14.6E%14.6E\n"
+    with tempfile.TemporaryDirectory() as d:
+        paths = [os.path.join(d, name) for name in ("QTF_Quadratic.10d", "QTF_Indirect.11d", "QTF_PotentialTerms.txt")]
+        for path, extra in ((paths[0], False), (paths[1], True)):
+            with open(path, "w") as f:
+                for key in keys:
+                    v = quad[key] + (sum(terms[key]) if extra else 0.0)
+                    f.write(row % (key[:4] + (key[4], abs(v), math.degrees(math.atan2(v.imag, v.real)), v.real, v.imag)))
+        with open(paths[2], "w") as f:
+            f.write("# Body-forcing terms ...\n# PER1 PER2 BETA1 BETA2 I, then Re Im of each term\n")
+            for key in keys:
+                f.write("%14.6E%14.6E%14.6E%14.6E%6d" % key + "".join("%24.15E%24.15E" % (t.real, t.imag)
+                                                                      for t in terms[key]) + "\n")
+        part = potential_part(read_qtf(paths[0]), read_qtf(paths[1]))
+        read = read_qtf_terms(paths[2])
+    assert set(read) == set(keys) and all(len(read[k]) == 5 for k in keys)
+    term_err = max(abs(read[k][t] - terms[k][t]) for k in keys for t in range(5))
+    assert term_err <= 1e-15, "terms read back %.1e from their values" % term_err
+    sums = terms_sum(read)
+    sum_err = max(abs(part[k] - sums[k]) / (abs(quad[k]) + abs(sums[k])) for k in keys)
+    assert sum_err <= 1e-6, ".11d - .10d against the sum of the terms %.1e" % sum_err
+    return "terms %.1e, .11d - .10d against their sum %.1e (of |.10d| + |sum|)" % (term_err, sum_err)
+
+
 CHECKS = {"newman_diagonal": check_newman_diagonal, "spectrum_variance": check_spectrum_variance,
-          "read_round_trip": check_read_round_trip}
+          "read_round_trip": check_read_round_trip, "potential_files": check_potential_files}
 
 
 def main(argv=None):
