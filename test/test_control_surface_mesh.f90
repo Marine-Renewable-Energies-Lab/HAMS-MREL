@@ -46,7 +46,8 @@ subroutine collect_control_surface_mesh(testsuite)
     new_unittest("fs_inner_file_two_bodies", test_fs_inner_file_two_bodies), &
     new_unittest("fs_inner_file_in_waterplane_stops", test_fs_inner_file_in_waterplane_stops), &
     new_unittest("fs_two_bodies_generated_stops", test_fs_two_bodies_generated_stops), &
-    new_unittest("fs_radius_cuts_body_stops", test_fs_radius_cuts_body_stops) &
+    new_unittest("fs_radius_cuts_body_stops", test_fs_radius_cuts_body_stops), &
+    new_unittest("fs_inner_needs_omega_max", test_fs_inner_needs_omega_max) &
     ]
 end subroutine collect_control_surface_mesh
 
@@ -806,6 +807,7 @@ subroutine test_fs_inner_area(error)
   character(len=200) :: line
   character(len=:), allocatable :: msg
 
+  call delete_inner_file()
   call make_cylinder(5d0, 3d0, 32, 2, 2, mesh, .true.)
   call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
   call check(error, ok, "geometry")
@@ -842,12 +844,15 @@ subroutine test_fs_inner_outside_waterplane(error)
   logical :: ok
   character(len=:), allocatable :: msg
 
+  call delete_inner_file()
   call make_box_hull(20d0, 10d0, 5d0, 10, 5, 2, mesh)
   call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
   call check(error, ok, "geometry")
   if (allocated(error)) return
-  call build_fs_inner(mesh, geom, opts, -1d0, '.', pts, centre, radius, ok, msg)
+  call build_fs_inner(mesh, geom, opts, -1d0, '.', pts, centre, radius, ok, msg, omega_max=1.5d0)
   call check(error, ok, "built: "//msg)
+  if (allocated(error)) return
+  call check(error, pts%n > 0, "the mesh has points")
   if (allocated(error)) return
   rwl = norm2([10d0, 5d0])
   rexp = rwl + max(0.5d0*rwl, 2d0*maxval(mesh%psize))
@@ -954,13 +959,39 @@ subroutine test_fs_radius_cuts_body_stops(error)
   logical :: ok
   character(len=:), allocatable :: msg
 
+  call delete_inner_file()
   call make_cylinder(5d0, 3d0, 32, 2, 2, mesh, .true.)
   call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
   opts%qtf_fs_radius = 3d0
-  call build_fs_inner(mesh, geom, opts, -1d0, '.', pts, centre, radius, ok, msg)
+  call build_fs_inner(mesh, geom, opts, -1d0, '.', pts, centre, radius, ok, msg, omega_max=1d0)
   call check(error, .not. ok, "R below the waterline radius stops")
   if (allocated(error)) return
   call check(error, index(msg, 'qtf_fs_radius') > 0 .and. index(msg, 'waterline') > 0, "message: "//msg)
 end subroutine test_fs_radius_cuts_body_stops
+
+!> The generated mesh stops without the largest first-order frequency (absent or not positive), in deep and finite water;
+!> with it, the finite-depth wavelength (DISPERSION) gives a mesh too.
+subroutine test_fs_inner_needs_omega_max(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(so_options) :: opts
+  type(cs_points) :: pts
+  real(8) :: centre(2), radius
+  logical :: ok
+  character(len=:), allocatable :: msg
+
+  call delete_inner_file()
+  call make_cylinder(5d0, 3d0, 32, 2, 2, mesh, .true.)
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call build_fs_inner(mesh, geom, opts, -1d0, '.', pts, centre, radius, ok, msg)
+  call check(error, .not. ok .and. index(msg, 'largest first-order frequency') > 0, "absent omega_max stops: "//msg)
+  if (allocated(error)) return
+  call build_fs_inner(mesh, geom, opts, 50d0, '.', pts, centre, radius, ok, msg, omega_max=0d0)
+  call check(error, .not. ok .and. index(msg, 'largest first-order frequency') > 0, "omega_max = 0 stops: "//msg)
+  if (allocated(error)) return
+  call build_fs_inner(mesh, geom, opts, 50d0, '.', pts, centre, radius, ok, msg, omega_max=1.2d0)
+  call check(error, ok .and. pts%n > 0, "finite depth builds: "//msg)
+end subroutine test_fs_inner_needs_omega_max
 
 end module test_control_surface_mesh

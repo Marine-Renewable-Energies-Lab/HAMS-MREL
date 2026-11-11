@@ -30,7 +30,7 @@ MODULE ControlSurfaceMesh
    ! The free-surface patch F is the part of z = 0 between the hull waterline and Gamma_c (Chen 2007, J. Eng. Math.
    ! 59:61-82, section 3.1). Its normal (0, 0, -1) points down, into the fluid domain.
 
-   USE Const_mod, ONLY: G
+   USE Const_mod, ONLY: G_ACC => G
    USE SecondOrderTypes, ONLY: panel_mesh, surface_geom, so_options, cs_points, CS_WALL, CS_LINE, CS_FREE
    USE SurfaceGeometry, ONLY: build_surface_geom, DEFAULT_SHARP_DEG
    IMPLICIT NONE
@@ -790,15 +790,16 @@ CONTAINS
       ! The inner free surface of the QTF free-surface integral: the part of z = 0 between the waterlines and a circle of
       ! radius R about the centre of the waterline bounding box of all bodies. Returned as CS_FREE points, nrm (0, 0, -1),
       ! w the panel area; centre and R are returned too. From FSInnerMesh.pnl in inputdir when that file exists, else
-      ! generated. omega_max (optional) is the largest first-order frequency of the run, for the panel size at the circle.
+      ! generated. omega_max is the largest first-order frequency of the run, for the panel size at the circle; the
+      ! generated path needs it (omega_max > 0), the file path does not.
       ! File (all bodies): nodes in z = 0, no panel centroid inside a waterplane (winding number of the waterline). With
       ! qtf_fs_radius = 0, R is the largest node distance from the centre; else the nodes must lie within 0.1 % of R. Its
       ! points have body = 0. Needed for two or more bodies and for a waterline that is not star-shaped.
       ! Generated (one body, waterline star-shaped about the centre): strips from the waterline to a polygon of np chords
       ! on the circle of radius R, as free_surface_strips builds them to Gamma_c, graded towards the waterline. The panel
       ! size at the circle is at most lambda/10, lambda the wavelength at omega_max and depth h (h < 0: deep water); without
-      ! omega_max it is the median hull panel size. With qtf_fs_rows = 0 the rows are the fewest, at least 2, for which the
-      ! outer row is not thicker than that size.
+      ! omega_max the build stops. The rows are the fewest, at least 2, for which the outer row is not thicker than that
+      ! size; a larger qtf_fs_rows is kept.
       ! R is qtf_fs_radius, or for 0: r_wl + max(0.5 r_wl, 2 x the largest hull panel size), r_wl the largest distance from
       ! the centre to a waterline node. R <= r_wl stops: the circle would cut a body.
       ! ok = .false. with msg for every stop.
@@ -814,7 +815,8 @@ CONTAINS
       REAL(8), INTENT(IN), OPTIONAL :: omega_max
       CHARACTER(LEN=*), PARAMETER :: NAME = 'FSInnerMesh.pnl'
       REAL(8), ALLOCATABLE :: psz(:)
-      REAL(8) :: lo(2), hi(2), rwl, rmin, rgiven, rfile, ps, lam, wvn(1), d, q, frac, dnode
+      REAL(8) :: lo(2), hi(2), rwl, rmin, rgiven, rfile, ps, lam, wvn(1), d, q, frac, dnode, e(2), t
+      INTEGER :: nr0
       INTEGER :: nr, i, m, idx
       LOGICAL :: exists, star_ok
       TYPE(panel_mesh) :: cm, fm
@@ -843,8 +845,11 @@ CONTAINS
                dnode = HYPOT(geom%wl_x2(1, i) - centre(1), geom%wl_x2(2, i) - centre(2))
             END IF
             rwl = MAX(rwl, dnode)
-            rmin = MIN(rmin, dnode)
          END DO
+         ! distance from the centre to the segment itself (its nearest point can lie between the nodes)
+         e = geom%wl_x2(1:2, i) - geom%wl_x1(1:2, i)
+         t = MAX(0D0, MIN(1D0, DOT_PRODUCT(centre - geom%wl_x1(1:2, i), e)/MAX(DOT_PRODUCT(e, e), TINY(1D0))))
+         rmin = MIN(rmin, NORM2(geom%wl_x1(1:2, i) + t*e - centre))
       END DO
       rgiven = opts%qtf_fs_radius
       IF (rgiven > 0D0 .AND. .NOT. rgiven > rwl) THEN
@@ -898,27 +903,29 @@ CONTAINS
             msg = TRIM(line)
             RETURN
          END IF
+         ! No fallback panel size: without the largest frequency the lambda/10 limit at the circle cannot be kept.
+         IF (.NOT. PRESENT(omega_max)) THEN
+            msg = 'the generated inner free-surface mesh needs the largest first-order frequency (omega_max), ' &
+               //'for the panel size lambda/10 at the circle'
+            RETURN
+         END IF
+         IF (.NOT. omega_max > 0D0) THEN
+            msg = 'the generated inner free-surface mesh needs the largest first-order frequency (omega_max > 0), ' &
+               //'for the panel size lambda/10 at the circle'
+            RETURN
+         END IF
          radius = rgiven
          IF (.NOT. radius > 0D0) THEN
             psz = mesh%psize(1:mesh%n)
             radius = rwl + MAX(0.5D0*rwl, 2D0*MAXVAL(psz))
          END IF
-         ps = 0D0
-         IF (PRESENT(omega_max)) THEN
-            IF (omega_max > 0D0) THEN
-               IF (h > 0D0) THEN
-                  CALL DISPERSION(wvn, 1, omega_max, h)
-               ELSE
-                  wvn(1) = omega_max**2/G
-               END IF
-               lam = 2D0*PI/wvn(1)
-               ps = lam/10D0
-            END IF
+         IF (h > 0D0) THEN
+            CALL DISPERSION(wvn, 1, omega_max, h)
+         ELSE
+            wvn(1) = omega_max**2/G_ACC
          END IF
-         IF (.NOT. ps > 0D0) THEN
-            psz = mesh%psize(1:mesh%n)
-            ps = median(psz)
-         END IF
+         lam = 2D0*PI/wvn(1)
+         ps = lam/10D0
          ! Gamma_c of the strips: the polygon on the circle (a wall of one row is all that its waterline needs).
          CALL cylinder_surface(centre, radius, ps, ps, ps, cm)
          CALL add_surface_points(cm, 1, gam, star_ok, msg)
@@ -926,15 +933,18 @@ CONTAINS
             msg = 'inner free surface circle: '//msg
             RETURN
          END IF
-         nr = opts%qtf_fs_rows
-         IF (nr < 1) THEN
-            d = radius - rmin
-            DO nr = 2, 5000
-               q = FS_GRADING**(1D0/REAL(nr - 1, 8))
-               frac = (q**nr - q**(nr - 1))/(q**nr - 1D0)
-               IF (frac*d <= ps) EXIT
-            END DO
-         END IF
+         ! Fewest rows (at least 2) with the outer row not thicker than ps; a larger user value is kept.
+         d = radius - rmin
+         nr0 = 5000
+         DO nr = 2, 5000
+            q = FS_GRADING**(1D0/REAL(nr - 1, 8))
+            frac = (q**nr - q**(nr - 1))/(q**nr - 1D0)
+            IF (frac*d <= ps) THEN
+               nr0 = nr
+               EXIT
+            END IF
+         END DO
+         nr = MAX(opts%qtf_fs_rows, nr0)
          CALL free_surface_strips(mesh, geom, 1, gam, nr, fm, star_ok, msg, follow_vertices=.TRUE.)
          IF (.NOT. star_ok) THEN
             idx = INDEX(msg, 'give FSMesh_')
