@@ -66,6 +66,7 @@ MODULE SecondOrderTypes
       REAL(8) :: qtf_edge_angle = 45D0
       ! The keys were in SecondOrder.in, so that the log can say when they have no effect
       LOGICAL :: qtf_b2_given = .FALSE., qtf_edge_given = .FALSE.
+      INTEGER :: qtf_field = 0           ! 1: QTF_FieldPartial.txt, the partial second-order field at the field points
    END TYPE so_options
 
    TYPE :: panel_mesh

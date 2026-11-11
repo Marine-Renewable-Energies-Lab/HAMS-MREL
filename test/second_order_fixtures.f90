@@ -5,7 +5,7 @@ module second_order_fixtures
   implicit none
   private
 
-  public :: make_cylinder, set_panel, maccamy_fuchs_a, maccamy_fuchs_state, maccamy_fuchs_phi, maccamy_fuchs_drift, &
+  public :: make_cylinder, make_two_bodies, set_panel, maccamy_fuchs_a, maccamy_fuchs_state, maccamy_fuchs_phi, maccamy_fuchs_drift, &
             maccamy_fuchs_waterline, maccamy_fuchs_field
 
 contains
@@ -343,5 +343,29 @@ subroutine maccamy_fuchs_state(mesh, a_rad, h, k, omega, amp, beta, g, rho, s)
     s%grad_p(:, i) = grad_t - s%grad_i(:, i)
   end do
 end subroutine maccamy_fuchs_state
+
+!> Two copies of the single-body mesh m, the second shifted by dx along x and given body index 2.
+subroutine make_two_bodies(m, dx, both)
+  type(panel_mesh), intent(in) :: m
+  real(8), intent(in) :: dx
+  type(panel_mesh), intent(out) :: both
+  integer :: n, nn
+  n = m%n
+  nn = m%nnode
+  both = m
+  both%n = 2 * n; both%nbase = 2 * n; both%nnode = 2 * nn; both%nbody = 2
+  both%xc = reshape([m%xc, m%xc + spread([dx, 0d0, 0d0], 2, n)], [3, 2 * n])
+  both%nrm = reshape([m%nrm, m%nrm], [3, 2 * n])
+  both%nj = reshape([m%nj, m%nj], [6, 2 * n])
+  both%area = [m%area, m%area]
+  both%psize = [m%psize, m%psize]
+  both%xnode = reshape([m%xnode, m%xnode + spread([dx, 0d0, 0d0], 2, nn)], [3, 2 * nn])
+  both%ncn = [m%ncn, m%ncn]
+  both%ncon = reshape([m%ncon, merge(m%ncon + nn, 0, m%ncon > 0)], [4, 2 * n])
+  both%body = [spread(1, 1, n), spread(2, 1, n)]
+  both%base = [m%base, m%base + n]
+  both%image = [m%image, m%image]
+  both%xr = reshape([m%xr(:, 1), m%xr(:, 1) + [dx, 0d0, 0d0]], [3, 2])
+end subroutine make_two_bodies
 
 end module second_order_fixtures

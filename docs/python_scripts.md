@@ -28,6 +28,7 @@ SecondOrder/
 ├── make_drift_fixtures.py
 ├── drift_convergence.py
 ├── truncated_cylinder_reference.py
+├── qtf_field_plots.py
 └── qtf_compare.py
 ```
 
@@ -213,3 +214,17 @@ python qtf_compare.py RESULTS --against-nemoh FOLDER [--hull oc4] [--reading as-
 - `--against-nemoh FOLDER` compares `QTF_Indirect.11d` of each `q_<hull>_<motion>_m<k>` case with Nemoh's `nemoh_<hull>_<motion>_m<k>` run under FOLDER, when there is no exact reference. `--hull` names the hull (default `oc4`). `--reading` sets how Nemoh's value is read: `as-is` (default, the reading that matched the exact reference on the sharp cylinder), its conjugate, or either with the sign changed. The reading is never chosen by agreement with HAMS; the table warns when another reading would agree much better.
 - `--exclude LO HI` leaves out the pairs with a frequency in [LO, HI] rad/s, such as a resonance band, and keeps the scale of all pairs.
 - `--max-dw` limits the difference pairs to ω_j − ω_i ≤ max-dw (default 0.3 rad/s).
+
+## Partial Second-Order Field Maps
+
+**`SecondOrder/qtf_field_plots.py`** maps `QTF_FieldPartial.txt` (format in [Output Files](output_files.md#wamit-format)) and prints grids of field points for `ControlFile.in`. It needs `numpy` and `matplotlib`. The field in the file is partial: it omits the second-order diffracted wave and, for a free body, the wave radiated by its second-order motion. Near the bodies, where the free-surface forcing drives the second-order scattered wave, the omitted part is not small, so the maps say PARTIAL in their title. The complete field is a later phase (see [Partial second-order field](input_files.md#partial-second-order-field-at-the-field-points)).
+
+```
+python -I qtf_field_plots.py plot Output/Wamit_format/QTF_FieldPartial.txt --out maps [--kernel diff|sum|both] [--type pressure|elevation|both]
+python -I qtf_field_plots.py grid --x X0 X1 NX --y Y0 Y1 NY [--z 0] [--exclude XC YC R]...
+python -I qtf_field_plots.py check
+```
+
+- `plot` writes one PNG per kernel, frequency pair, heading pair, type and depth (pressure points are grouped by z), named `field_<diff|sum>_<PER1>_<PER2>_<beta1>_<beta2>_<elevation|pressure_z<z>>.png`, with `m` for a minus sign. Each has two panels over x and y, in the units of the file. The modulus is contoured between the points, or shown as coloured markers when there are fewer than 3 points off one line, two points at the same (x, y), or one value. The phase (degrees, cyclic colour map) is always shown as markers at the points, since a contour would interpolate across the jump from 180 to −180. The number of PNGs grows with the pairs; `--kernel` and `--type` select. The title gives the first two columns as PER1 and PER2, as in the file; they are periods or frequencies as `Output_frequency_type` says.
+- `grid` prints the field-point block: a `Number_of_field_points` line, then one `x y z` line per point of the NX by NY grid, leaving out the points within R of each (XC, YC). Make the discs larger than the bodies, or points on or inside a hull stop the run.
+- `check` writes a synthetic file, reads, plots and grids it, and exits with 1 if one of its 9 checks fails.

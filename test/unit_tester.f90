@@ -30,6 +30,7 @@ program unit_tester
     use test_second_order_incident, only : collect_so_incident
     use test_qtf_potential, only : collect_qtf_potential
     use test_sharp_edge, only : collect_sharp_edge
+    use test_qtf_field, only : collect_qtf_field
 
     implicit none
     integer :: stat, is
@@ -67,7 +68,8 @@ program unit_tester
         new_testsuite("qtf", collect_qtf), &
         new_testsuite("so_incident", collect_so_incident), &
         new_testsuite("qtf_potential", collect_qtf_potential), &
-        new_testsuite("sharp_edge", collect_sharp_edge) &
+        new_testsuite("sharp_edge", collect_sharp_edge), &
+        new_testsuite("qtf_field", collect_qtf_field) &
     ]
 
     stat = 0

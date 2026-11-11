@@ -2,7 +2,7 @@
 module test_second_order_output
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use Const_mod, only : G, RHO
-  use SecondOrderOutput, only : write_drift_row, write_terms_row
+  use SecondOrderOutput, only : write_drift_row, write_terms_row, write_field_row
   implicit none
   private
 
@@ -15,7 +15,8 @@ subroutine collect_second_order_output(testsuite)
   testsuite = [ &
     new_unittest("drift_row_force", drift_row_force), &
     new_unittest("drift_row_moment", drift_row_moment), &
-    new_unittest("terms_row", terms_row) &
+    new_unittest("terms_row", terms_row), &
+    new_unittest("field_row", field_row) &
   ]
 end subroutine collect_second_order_output
 
@@ -67,6 +68,44 @@ subroutine terms_row(error)
   close (unit, status='delete')
   call check(error, abs(b(1) - 3d0) < 1d-5 .and. abs(b(2) + 4d0) < 1d-5, "The force is not conjugated and scaled")
 end subroutine terms_row
+
+!> A field row is conjugated, scaled by L/(rho g) for a pressure and by L for an elevation, with Mod, Pha, Re and Im of the
+!> sum and of its two parts, and K, IPT and TYPE as given.
+subroutine field_row(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: path = "second_order_output_field.tmp"
+  complex(8), parameter :: quad = (3d0, 4d0), pot = (-1d0, 2d0)
+  real(8) :: a(4), b(8)
+  integer :: unit, i(3), pass
+
+  open (newunit=unit, file=path, status='replace', action='readwrite')
+  call write_field_row(unit, 0.5d0, 0.7d0, 10d0, 20d0, 2, 3, .false., quad*RHO*G, pot*RHO*G, 2d0)
+  call write_field_row(unit, 0.5d0, 0.7d0, 10d0, 20d0, 1, 4, .true., quad, pot, 2d0)
+  rewind (unit)
+  do pass = 1, 2
+    read (unit, '(4ES14.6,3I6,8ES14.6)') a, i, b
+    if (pass == 1) then
+      call check(error, all(i == [2, 3, 1]), "K, IPT and TYPE of the pressure row")
+    else
+      call check(error, all(i == [1, 4, 2]), "K, IPT and TYPE of the elevation row")
+    end if
+    if (allocated(error)) exit
+    call check(error, all(abs(a - [0.5d0, 0.7d0, 10d0, 20d0]) < 1d-6), "PER and BETA")
+    if (allocated(error)) exit
+    ! L = 2: the sum is conj(quad+pot) * 2 = (4, -12), the parts (6, -8) and (-2, -4)
+    call check(error, abs(b(1) - sqrt(160d0)) < 1d-5, "Mod")
+    if (allocated(error)) exit
+    call check(error, abs(b(2) - atan2(-12d0, 4d0)*180d0/acos(-1d0)) < 1d-3, "Pha")
+    if (allocated(error)) exit
+    call check(error, abs(b(3) - 4d0) < 1d-5 .and. abs(b(4) + 12d0) < 1d-5, "Re and Im are not the conjugate of the sum")
+    if (allocated(error)) exit
+    call check(error, abs(b(5) - 6d0) < 1d-5 .and. abs(b(6) + 8d0) < 1d-5, "Re_quad and Im_quad")
+    if (allocated(error)) exit
+    call check(error, abs(b(7) + 2d0) < 1d-5 .and. abs(b(8) + 4d0) < 1d-5, "Re_inc and Im_inc")
+    if (allocated(error)) exit
+  end do
+  close (unit, status='delete')
+end subroutine field_row
 
 subroutine write_and_read(path, value, moment, row, index)
   character(len=*), intent(in) :: path
