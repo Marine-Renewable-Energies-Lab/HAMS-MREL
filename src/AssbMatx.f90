@@ -40,6 +40,7 @@ MODULE AssbMatx
 
    PUBLIC :: ASSB_LEFT
    PUBLIC :: ASSB_RBC
+   PUBLIC :: ASSB_RHS_FIELD
    
    PUBLIC :: ASSB_DBC
    PUBLIC :: RADIATION_SOLVER
@@ -179,6 +180,63 @@ CONTAINS
 
        RETURN
       END SUBROUTINE ASSB_RBC
+
+! -------------------------------------------------------------------
+!    Right sides for given normal velocities: r_i = int_S G(x_i, xi) V(xi) dS_xi, the panel integrals of
+!    RBC_RIGHT weighted by V instead of n_k, for NRHS fields at once (the direct second-order solve, QTFDirect).
+!    V(JEL,K,IB) is field K on symmetry image IB of base panel JEL (IB = 1 alone without symmetry), with the normals
+!    of those panels: a general field differs between the images. B(IEL,K,IP) is the right side of block IP, as
+!    BRMAT(IEL,K,IP) of ASSB_RBC; with V(JEL,K,IB) = n_K on image IB the two are equal. The stored Green function of
+!    image IS (field point mirrored) pairs field image IA with source image IB: IS = 1 for IA = IB, 2 otherwise.
+! -------------------------------------------------------------------
+      SUBROUTINE ASSB_RHS_FIELD(V,B,NELEM,NSYS,NRHS)
+      IMPLICIT  NONE
+!
+      INTEGER,INTENT(IN):: NELEM,NSYS,NRHS
+      COMPLEX*16,INTENT(IN):: V(NELEM,NRHS,NSYS)
+      COMPLEX*16,INTENT(OUT):: B(NELEM,NRHS,NSYS)
+
+      INTEGER IEL,JEL,IS,IA,IB,IP
+      REAL*8 DIST
+      COMPLEX*16 DUM(2)
+      COMPLEX*16,ALLOCATABLE:: BTMP(:,:)
+
+      B=CMPLX(0.0D0,0.0D0)
+
+!$OMP PARALLEL NUM_THREADS(NTHREAD) PRIVATE(BTMP)
+      ALLOCATE(BTMP(NRHS,NSYS))
+!$OMP DO PRIVATE(IEL,JEL,IS,IA,IB,IP,DIST,DUM) SCHEDULE(DYNAMIC,16)
+! Row-disjoint writes on the IEL axis, no REDUCTION needed.
+      DO IEL=1, NELEM
+       BTMP=CMPLX(0.0D0,0.0D0)
+       DO JEL=1, NELEM
+        DIST=SQRT((XYZ_P(IEL,1)-XYZ_P(JEL,1))**2+(XYZ_P(IEL,2)-XYZ_P(JEL,2))**2+(XYZ_P(IEL,3)-XYZ_P(JEL,3))**2)
+        DO IS=1, NSYS
+         IF (DIST.LE.50.D0*PNSZ(JEL)) THEN
+          DUM(IS)=RKBN(IEL,JEL,IS,1)+CGRN(IEL,JEL,IS,1)*DS(JEL)
+         ELSE
+          DUM(IS)=CGRN(IEL,JEL,IS,1)*DS(JEL)
+         ENDIF
+        ENDDO
+        DO IA=1, NSYS
+         DO IB=1, NSYS
+          IS=MERGE(1,2,IA.EQ.IB)
+          BTMP(:,IA)=BTMP(:,IA)+DUM(IS)*V(JEL,:,IB)
+         ENDDO
+        ENDDO
+       ENDDO
+       DO IP=1, NSYS
+        DO IA=1, NSYS
+         B(IEL,:,IP)=B(IEL,:,IP)+RXY(IP,IA)*BTMP(:,IA)
+        ENDDO
+       ENDDO
+      ENDDO
+!$OMP END DO
+      DEALLOCATE(BTMP)
+!$OMP END PARALLEL
+
+      RETURN
+      END SUBROUTINE ASSB_RHS_FIELD
       
 ! ------------------------------------------------------------------- 
 !    Calculate the element contribution, assembly the right-hand
