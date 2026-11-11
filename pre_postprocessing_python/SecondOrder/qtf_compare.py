@@ -7,6 +7,8 @@ Usage:
     python qtf_compare.py <results> --potential <qtf_potential.csv> [--nemoh <folder>] [--max-dw 0.3] [--exclude LO HI]
     python qtf_compare.py <results> --against-nemoh <folder> [--hull oc4] [--reading as-is|conj|-1|-conj] [--max-dw 0.3]
                           [--exclude LO HI]
+    python qtf_compare.py <results> --against-wamit <file.12d> [--hull oc4w] [--reading as-is|conj|-1|-conj]
+                          [--max-dw 0.3] [--max-omega 1.90] [--exclude LO HI]
 
 <results> holds the q_* case folders of `drift_convergence.py --qtf` (q_*/output/Wamit_format/QTF_Quadratic.10d, .10s).
 The reference CSV is from `truncated_cylinder_reference.py qtf`: T/(rho g) for omega_i <= omega_j, e^{-i omega t}, both
@@ -31,6 +33,18 @@ compares QTF_Indirect.11d with that total, .11d - .10d with the sum of the terms
 (16 digits, conjugated back) with its reference; the scale of a term is the larger of its own and the potential part's
 largest abs over the pairs, so that a term that is small everywhere is not measured against itself. Nemoh's OUT_QTFM_N.dat
 of a DUOK + HASBO run (body forcing, no free-surface integral) is compared with the reference total, readings as above.
+
+WAMIT (--against-wamit). A WAMIT numeric .12d (difference QTF; one header line, then PER_i PER_j BETA_i BETA_j I Mod Pha Re
+Im, periods in s, nondimensional by rho g L^k with L = 1 m: the layout HAMS writes for .10d and .11d) is read "as written":
+omega = 2 pi / PER (snapped to the HAMS grid, as the periods have 5 digits), and the value taken in the convention of the
+HAMS files (WAMIT's e^{+i omega t}, which HAMS writes by conjugating), so both are conjugated back alike. It holds one half
+of the square (omega_i >= omega_j); the other half is its conjugate. For each q_<hull>_* case, QTF_Indirect.11d (quadratic
++ body forcing) and QTF_Quadratic.10d (quadratic only) are compared with it, |HAMS - WAMIT| / max |WAMIT|, max and median,
+over the pairs of the HAMS file with omega <= max-omega: those off the diagonal, those with 0 < omega_j - omega_i <= max-dw,
+and the diagonal (the mean drift, real) alone. The reading is fixed ("as-is" by default) and never chosen by agreement;
+another reading is only named in a WARNING when it fits much better off the diagonal, as for --against-nemoh. The diagonal
+fixes the sign (a reading "-1" fails there) but not the conjugation (the diagonal is real); the median ratio Re(HAMS) /
+Re(WAMIT) on the diagonal is printed per quantity.
 """
 import argparse
 import csv
@@ -370,6 +384,212 @@ def check_against_nemoh():
             "missing run noted" % (100 * as_is, 100 * wrong, 100 * conj))
 
 
+def read_wamit(path):
+    """{(w1, w2, I): T/(rho g)} in e^{-i omega t}, heading pair (0, 0), from a WAMIT numeric .12d: omega = 2 pi / PER
+    (unrounded; snap_wamit puts it on a grid), and the value as written, conjugated back as read_hams does with a HAMS file."""
+    out = {}
+    if not os.path.exists(path):
+        return out
+    with open(path) as f:
+        for line in f:
+            p = line.split()
+            if len(p) != 9:
+                continue
+            try:
+                vals = [float(x) for x in p]
+            except ValueError:
+                continue
+            if vals[2] != 0.0 or vals[3] != 0.0:
+                continue
+            out[(2.0 * np.pi / vals[0], 2.0 * np.pi / vals[1], int(vals[4]))] = complex(vals[7], -vals[8])
+    return out
+
+
+# A WAMIT omega goes to the nearest omega of the HAMS grid within this (rad/s): the 5 digits of PER leave about 1e-4 at 3 rad/s
+WAMIT_SNAP = 1e-3
+
+
+def snap_wamit(table, grid):
+    """table of read_wamit with each omega replaced by the nearest one of grid (within WAMIT_SNAP); rows with an omega off the
+    grid are dropped. Returns (snapped table, number of grid omega found in the file)."""
+    grid = sorted(set(grid))
+
+    def snapped(w):
+        best = min(grid, key=lambda g: abs(g - w)) if grid else None
+        return best if best is not None and abs(best - w) <= WAMIT_SNAP else None
+    out, found = {}, set()
+    for (w1, w2, index), v in table.items():
+        a, b = snapped(w1), snapped(w2)
+        if a is None or b is None:
+            continue
+        found.update((a, b))
+        out[(a, b, index)] = v
+    return out, len(found)
+
+
+def compare_against_wamit(results, path, max_dw, max_omega=1.90, exclude=None, hull="oc4w", reading="as-is"):
+    """The --against-wamit table: QTF_Indirect.11d and QTF_Quadratic.10d of each q_<hull>_* case against the WAMIT .12d at
+    path; see the module docstring. exclude (lo, hi) as in compare_potential. Returns the rows (case, file, set, [(max,
+    median) or None per quantity], warning or None, [median Re(HAMS) / Re(WAMIT) on the diagonal, or None, per quantity])."""
+    fixed = [r for r in READINGS if r[0] == reading]
+    if not fixed:
+        raise ValueError("unknown WAMIT reading " + str(reading))
+    raw = read_wamit(path)
+    if not raw:
+        print("no WAMIT rows in %s" % path)
+        return []
+    print("HAMS against WAMIT %s, %s: |HAMS - WAMIT| / max |WAMIT| over the pairs of the set, max and median, percent; "
+          "omega <= %.2f rad/s; WAMIT reading %s (as written, conjugated back like the HAMS files)" % (
+              os.path.basename(path), hull, max_omega, reading))
+    if exclude:
+        print("Pairs with omega_i or omega_j in [%.3f, %.3f] rad/s left out; scales from all the pairs of the set"
+              % tuple(exclude))
+    print("%-20s %-5s %-9s %16s %16s %16s   diagonal Re(HAMS) / Re(WAMIT), median" % ("case", "file", "set", "F_x", "F_z",
+                                                                                     "M_y"))
+    rows = []
+    for folder in sorted(glob.glob(os.path.join(results, "q_%s_*" % hull))):
+        case = os.path.basename(folder)
+        files = [(label, read_hams(os.path.join(folder, "output", "Wamit_format", name)))
+                 for label, name in ((".11d", "QTF_Indirect.11d"), (".10d", "QTF_Quadratic.10d"))]
+        files = [(label, table) for label, table in files if table]
+        if not files:
+            print("%-20s no QTF_Indirect.11d or QTF_Quadratic.10d" % case)
+            continue
+        grid = sorted({w for _, table in files for key in table for w in key[:2] if w <= max_omega + 1e-9})
+        wamit, on_grid = snap_wamit(raw, grid)
+        if on_grid < len(grid):
+            print("%-20s only %d of the %d HAMS omega are in the WAMIT file" % (case, on_grid, len(grid)))
+        for label, hams in files:
+            pairs_all = sorted(set((min(w1, w2), max(w1, w2)) for w1, w2, _ in hams if max(w1, w2) <= max_omega + 1e-9))
+            sets = (("all", [p for p in pairs_all if p[0] != p[1]]),
+                    ("dw<=%.2f" % max_dw, [p for p in pairs_all if p[0] != p[1] and p[1] - p[0] <= max_dw + 1e-9]),
+                    ("diagonal", [p for p in pairs_all if p[0] == p[1]]))
+
+            def cells_of(chosen, conjugate, sign):
+                cells = []
+                for _, index in QUANTITIES:
+                    values = nemoh_values(wamit, index, "diff", conjugate, sign)
+                    if not chosen or not all(p in values for p in chosen):
+                        cells.append(None)
+                        continue
+                    scale = max(abs(values[p]) for p in chosen)
+                    kept = [p for p in chosen
+                            if not exclude or not any(exclude[0] - 1e-9 <= w <= exclude[1] + 1e-9 for w in p)]
+                    e = errors_of({p: lookup(hams, p[0], p[1], index, "diff") for p in kept},
+                                  {p: values[p] for p in kept}, scale)
+                    cells.append(e[:2] if e else None)
+                return cells, sum(c[1] if c else np.inf for c in cells)
+            ratios = []
+            for _, index in QUANTITIES:
+                values = nemoh_values(wamit, index, "diff", *fixed[0][1:])
+                r = []
+                for p in sets[2][1]:
+                    h = lookup(hams, p[0], p[1], index, "diff")
+                    if h is not None and p in values and values[p].real != 0.0:
+                        r.append(h.real / values[p].real)
+                ratios.append(statistics.median(r) if r else None)
+            for name, chosen in sets:
+                cells, score = cells_of(chosen, *fixed[0][1:])
+                warning = None
+                if name == "all":
+                    for other_label, conjugate, sign in READINGS:
+                        if other_label == reading:
+                            continue
+                        other = cells_of(chosen, conjugate, sign)[1]
+                        if other < WARN_READING_RATIO * score:
+                            warning = "WARNING: reading %s fits much better (sum of medians %.2f%% against %.2f%%)" % (
+                                other_label, 100 * other, 100 * score)
+                rows.append((case, label, name, cells, warning, ratios))
+                diagonal = "   " + " ".join("%.3f" % r if r is not None else "-" for r in ratios) if name == "diagonal" else ""
+                print("%-20s %-5s %-9s %16s %16s %16s%s%s" % (
+                    case, label, name, *["%7.2f %7.2f" % (100 * c[0], 100 * c[1]) if c else "-" for c in cells], diagonal,
+                    "  " + warning if warning else ""))
+    return rows
+
+
+def _wamit_period(period):
+    """A period as WAMIT writes it: 0.ddddd E+nn, 5 digits."""
+    exponent = int(np.floor(np.log10(period))) + 1
+    mantissa = round(period / 10.0 ** exponent, 5)
+    if mantissa >= 1.0:
+        mantissa, exponent = mantissa / 10.0, exponent + 1
+    return "%.5fE%+03d" % (mantissa, exponent)
+
+
+def check_against_wamit():
+    """compare_against_wamit on a temporary fixture: a HAMS .11d and .10d (conj(T), the whole square; .10d differs from .11d
+    off the diagonal only) and a WAMIT .12d of the .11d (one header line, periods with 5 digits, the half omega_i >= omega_j,
+    modes in WAMIT's order 1 3 5 2 4 6, values written as HAMS writes them, and an omega that HAMS does not have): .11d errors
+    0 under "as-is" in every set, diagonal ratio 1; .10d errors 0 on the diagonal only; a WAMIT file written conjugated gives
+    a warning naming "conj" and errors 0 under reading "conj"; one with the sign flipped fails on the diagonal (ratio -1); a
+    case without files is noted."""
+    import contextlib
+    import io
+    import tempfile
+    grid = (0.25, 0.30, 0.35, 1.85)
+    rng = np.random.default_rng(7)
+    t = {(wi, wj): {index: complex(*rng.normal(size=2)) for index in range(1, 7)} for wi in grid for wj in grid if wi <= wj}
+    pot = {p: {index: (0j if p[0] == p[1] else complex(*rng.normal(size=2))) for index in range(1, 7)} for p in t}
+    for p in t:
+        if p[0] == p[1]:
+            t[p] = {index: complex(v.real, 0.0) for index, v in t[p].items()}
+
+    def value(wi, wj, index, table):
+        return table[(wi, wj)][index] if wi <= wj else table[(wj, wi)][index].conjugate()
+
+    def row(a, b, index, v):
+        v = v.conjugate()   # written as HAMS writes: conj(T)
+        return "%15s%15s%15.5E%15.5E%5d%15.5E%15.5E%15.5E%15.5E\n" % (a, b, 0.0, 0.0, index, abs(v), np.degrees(np.angle(v)),
+                                                                     v.real, v.imag)
+    with tempfile.TemporaryDirectory() as d:
+        folder = os.path.join(d, "results", "q_oc4w_free_m1", "output", "Wamit_format")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "QTF_Indirect.11d"), "w") as f11, \
+                open(os.path.join(folder, "QTF_Quadratic.10d"), "w") as f10:
+            for wi in grid:
+                for wj in grid:
+                    for index in range(1, 7):
+                        total = value(wi, wj, index, t)
+                        f11.write(row("%.6E" % wi, "%.6E" % wj, index, total))
+                        f10.write(row("%.6E" % wi, "%.6E" % wj, index, total - value(wi, wj, index, pot)))
+        os.makedirs(os.path.join(d, "results", "q_oc4w_free_m2"))
+        paths = {}
+        for name, conjugate, sign in (("asis", False, 1.0), ("conj", True, 1.0), ("minus", False, -1.0)):
+            paths[name] = os.path.join(d, "%s.12d" % name)
+            with open(paths[name], "w") as f:
+                f.write(" WAMIT Numeric Output -- Filename  fixture.12d\n")
+                for w1 in grid + (0.40,):
+                    for w2 in grid + (0.40,):
+                        if w1 < w2:
+                            continue
+                        for index in (1, 3, 5, 2, 4, 6):
+                            v = sign * (complex(1.0, 0.0) if 0.40 in (w1, w2) else value(w1, w2, index, t))
+                            f.write(row(_wamit_period(2 * np.pi / w1), _wamit_period(2 * np.pi / w2), index,
+                                        v.conjugate() if conjugate else v))
+        text = io.StringIO()
+        with contextlib.redirect_stdout(text):
+            rows = compare_against_wamit(os.path.join(d, "results"), paths["asis"], 0.3)
+            conj_rows = compare_against_wamit(os.path.join(d, "results"), paths["conj"], 0.3)
+            conj_fixed = compare_against_wamit(os.path.join(d, "results"), paths["conj"], 0.3, reading="conj")
+            minus_rows = compare_against_wamit(os.path.join(d, "results"), paths["minus"], 0.3)
+    found = {(r[1], r[2]): r for r in rows}
+    worst = max(c[0] for key in ((".11d", "all"), (".11d", "dw<=0.30"), (".11d", "diagonal")) for c in found[key][3])
+    ratio = max(abs(r - 1.0) for r in found[(".11d", "diagonal")][5])
+    diag10 = max(c[0] for c in found[(".10d", "diagonal")][3])
+    off10 = min(c[1] for c in found[(".10d", "all")][3])
+    conj_warning = [r[4] for r in conj_rows if r[1] == ".11d" and r[2] == "all"][0]
+    conj_worst = max(c[0] for r in conj_fixed if r[1] == ".11d" for c in r[3])
+    minus = [r for r in minus_rows if r[1] == ".11d" and r[2] == "diagonal"][0]
+    assert worst <= 1e-4 and ratio <= 1e-4 and found[(".11d", "all")][4] is None, "as-is fixture: %s" % (rows,)
+    assert diag10 <= 1e-4 and off10 > 0.1, ".10d fixture: diagonal %g, off the diagonal %g" % (diag10, off10)
+    assert conj_warning and "conj" in conj_warning and conj_worst <= 1e-4, "conjugated fixture: %s" % (conj_rows,)
+    assert min(c[0] for c in minus[3]) > 1.9 and max(abs(r + 1.0) for r in minus[5]) <= 1e-4, "sign fixture: %s" % (minus,)
+    assert "no QTF_Indirect.11d or QTF_Quadratic.10d" in text.getvalue(), "missing case not noted"
+    return (".11d fixture max %.1e %%, diagonal ratio 1 to %.0e, .10d %.0f %% median off the diagonal, conjugated file "
+            "warned and %.1e %% under conj, flipped sign seen on the diagonal, missing case noted"
+            % (100 * worst, ratio, 100 * off10, 100 * conj_worst))
+
+
 def nemoh_values(table, index, kernel, conjugate, sign=1.0):
     """(wi, wj) -> T(wi, wj) under the reading of Nemoh's value v as T(w1, w2) = sign * v, or sign * conj(v)."""
     out = {}
@@ -457,6 +677,7 @@ def main(argv=None):
     if argv is None and sys.argv[1:2] == ["check"]:
         print("compare_potential    %s" % check_compare_potential())
         print("against_nemoh        %s" % check_against_nemoh())
+        print("against_wamit        %s" % check_against_wamit())
         return 0
     parser.add_argument("results")
     parser.add_argument("--reference", help="CSV of truncated_cylinder_reference.py qtf (needed without --potential)")
@@ -470,13 +691,24 @@ def main(argv=None):
     parser.add_argument("--against-nemoh", metavar="FOLDER",
                         help="compare QTF_Indirect.11d of q_<hull>_* with Nemoh's nemoh_<hull>_* under FOLDER (no exact "
                              "reference)")
-    parser.add_argument("--hull", default="oc4", help="with --against-nemoh: the hull of the case names (default oc4)")
+    parser.add_argument("--against-wamit", metavar="FILE",
+                        help="compare QTF_Indirect.11d and QTF_Quadratic.10d of q_<hull>_* with a WAMIT .12d file")
+    parser.add_argument("--hull", help="with --against-nemoh or --against-wamit: the hull of the case names (default oc4, "
+                                       "or oc4w with --against-wamit)")
+    parser.add_argument("--max-omega", type=float, default=1.90,
+                        help="with --against-wamit: the largest omega of the pairs compared (default 1.90 rad/s)")
     parser.add_argument("--reading", choices=[label for label, _, _ in READINGS], default="as-is",
                         help="with --against-nemoh: Nemoh's reading (default as-is, established on the sharp cylinder "
-                             "against the exact reference; never chosen by agreement with HAMS)")
+                             "against the exact reference; never chosen by agreement with HAMS); with --against-wamit: "
+                             "WAMIT's (default as-is, as written)")
     args = parser.parse_args(argv)
+    if args.against_wamit:
+        rows = compare_against_wamit(args.results, args.against_wamit, args.max_dw, args.max_omega, args.exclude,
+                                     args.hull or "oc4w", args.reading)
+        return 0 if rows else 1
     if args.against_nemoh:
-        rows = compare_against_nemoh(args.results, args.against_nemoh, args.max_dw, args.exclude, args.hull, args.reading)
+        rows = compare_against_nemoh(args.results, args.against_nemoh, args.max_dw, args.exclude, args.hull or "oc4",
+                                     args.reading)
         return 0 if rows else 1
     if args.potential:
         return compare_potential(args.results, args.potential, args.nemoh, args.max_dw, args.exclude)

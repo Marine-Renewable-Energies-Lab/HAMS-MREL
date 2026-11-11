@@ -180,6 +180,8 @@ HULLS = {
     # A fixed Nemoh body needs a stiffer hold than NEMOH_FIXED_STIFFNESS: wave moments of order 1e9 N m per metre of amplitude
     "oc4": dict(depth=make_mesh.OC4_DEPTH, panels={1: 1224, 2: 4608}, cf_points={1: 1400 + 750, 2: 1400 + 1384},
                 fixed_stiffness=1.0e15, nemoh_batches=True),
+    # The same meshes with the matrices of the OpenFAST WAMIT run (make_mesh.OC4W_*, write_oc4 model "wamit"): HAMS only
+    "oc4w": dict(depth=make_mesh.OC4_DEPTH, panels={1: 1224, 2: 4608}, cf_points={1: 1400 + 750, 2: 1400 + 1384}),
 }
 # Both radii are for a box 20 x 10 x 5. 1.5 is the bilge radius of the rounded cylinder over its draft, times the draft here
 ROUND_BOX_MESH = dict(lx=20.0, ly=10.0, draft=5.0, corner_radius=2.5, bilge_radius=1.5, nx=16, ny=6, ncorner=4, nz=3, narc=2)
@@ -361,6 +363,11 @@ CS_FIXED_M1 = dict(cs_margin=7.84, cs_bottom_margin=7.84, cs_panel_size=1.96)
 # truncated_cylinder_reference reads it for its motion "free_damped".
 SHARP_DAMPING = {3: 3.8306e5, 5: 1.3416e7}
 
+# Grid of the q_oc4w cases: the omega of the WAMIT .12d of OpenFAST (marin_semi.12d: 0.25 to 3.00 rad/s in steps of 0.05) up
+# to 1.90, below the first irregular frequency of OC4, about 1.98 rad/s (upper columns, J0 zero under a deep lid [derived]):
+# velocity_method = source rejects IRSP = 1, so the grid stops there. 34 frequencies, 33 distinct differences
+OC4W_FREQUENCIES = tuple(round(0.25 + 0.05 * i, 4) for i in range(34))
+
 # Powers of the edge-graded meshes of the QTF potential study (make_mesh.cylinder edge_power)
 EDGE_POWERS = (2.5, 3)
 
@@ -371,7 +378,8 @@ def qtf_potential_cases():
     QTF_POTENTIAL_MAX_DW, heading 0, difference QTF only (qtf = 1); and Nemoh with DUOK + HASBO (body forcing, no free
     surface integral) at m1 and m2, from 0.01 rad/s (QTF_POTENTIAL_NEMOH_RANGE). The exact reference is
     truncated_cylinder_reference.py qtf-potential; qtf_compare.py --potential compares them. The OC4 semisubmersible
-    (q_oc4_*, nemoh_oc4_*) has no exact reference: qtf_compare.py --against-nemoh compares HAMS with Nemoh on it."""
+    (q_oc4_*, nemoh_oc4_*) has no exact reference: qtf_compare.py --against-nemoh compares HAMS with Nemoh on it. q_oc4w_*
+    is OC4 with the matrices of the OpenFAST WAMIT run: qtf_compare.py --against-wamit compares it with that run's .12d."""
     grid = tuple(round(w, 4) for w in nemoh_frequencies(QTF_FREQUENCY_RANGE))
     chosen = []
     for motion in ("fixed", "free"):
@@ -417,6 +425,13 @@ def qtf_potential_cases():
         for m in (1, 2):
             chosen.append(Case("nemoh_oc4_%s_%s" % (motion, tag(m)), "P", "5", "oc4", m, motion, headings=(0.0,),
                                solver="nemoh", nemoh_range=QTF_POTENTIAL_NEMOH_RANGE, nemoh_contrib=2))
+    # OC4 matched to the WAMIT run of OpenFAST (marin_semi.12d): the same meshes, C and F, with the full-system mass, the
+    # mooring and the hydrostatic restoring of that run (make_mesh.oc4w_matrices), free body only, on the .12d grid up to
+    # 1.90 rad/s (OC4W_FREQUENCIES), every pair (qtf_max_dw = 0). qtf_compare.py --against-wamit compares QTF_Indirect.11d
+    # and QTF_Quadratic.10d with the .12d
+    for m in (1, 2):
+        chosen.append(Case("q_oc4w_free_%s" % tag(m), "P", "5", "oc4w", m, "free", "source", frequencies=OC4W_FREQUENCIES,
+                           headings=(0.0,), qtf=1, qtf_terms="body", extra_options=dict(cs_shape="file", qtf_max_dw=0)))
     return chosen
 
 
@@ -612,15 +627,16 @@ def write_hams_hull(case, path):
     elif case.hull == "corner_box":
         mesh = make_mesh.write_rounded_box(mesh_path, hydro_path,
                                            **scaled(CORNER_BOX_MESH, ("nx", "ny", "ncorner", "nz", "narc"), m))
-    elif case.hull == "oc4":
-        # HullMesh.pnl, Hydrostatic.in (mooring as external restoring), CSMesh_1.pnl and FSMesh_1.pnl, checked
+    elif case.hull in ("oc4", "oc4w"):
+        # HullMesh.pnl, Hydrostatic.in (mooring as external restoring), CSMesh_1.pnl and FSMesh_1.pnl, checked; oc4w has the
+        # matrices of the WAMIT run
         damping = {j - 1: v for j, v in case.damping.items()} if case.damping else None
-        written = make_mesh.write_oc4(path, m, external_damping=damping)
+        written = make_mesh.write_oc4(path, m, external_damping=damping, model="wamit" if case.hull == "oc4w" else "platform")
         mesh = written["hull"]
         points = len(written["control"].panels) + len(written["free"].panels)
-        if points != HULLS["oc4"]["cf_points"][m]:
-            raise ValueError("%s has %d panels on C and F, not the %d of the job table" % (case.name, points,
-                                                                                         HULLS["oc4"]["cf_points"][m]))
+        if points != HULLS[case.hull]["cf_points"][m]:
+            raise ValueError("%s has %d panels on C and F, not the %d of the job table" % (
+                case.name, points, HULLS[case.hull]["cf_points"][m]))
     else:
         raise ValueError("unknown hull " + case.hull)
     if len(mesh.panels) != panels_of(case):

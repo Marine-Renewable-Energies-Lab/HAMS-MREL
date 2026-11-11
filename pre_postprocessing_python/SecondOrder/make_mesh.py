@@ -5,7 +5,7 @@ Usage:
     python make_mesh.py cylinder --radius 10 --draft 10 --ntheta 32 --nz 6 --nr 6 --out HullMesh.pnl
     python make_mesh.py box --lx 20 --ly 10 --draft 5 --nx 10 --ny 5 --nz 4 --out HullMesh.pnl
     python make_mesh.py cylinder --radius 10 --draft 10 --ntheta 32 --nz 6 --nr 6 --format nemoh --out hull.dat
-    python make_mesh.py oc4 --multiple 1 [--out-dir folder]
+    python make_mesh.py oc4 --multiple 1 [--model platform|wamit] [--out-dir folder]
 
 The hull has no lid, so the top row of nodes lies on z = 0. --x0 and --y0 shift the body in the horizontal plane. Every
 generated panel normal is checked to point out of the fluid (into the body), computed as HAMS does in CalTransNormals.
@@ -21,7 +21,9 @@ write_rounded_box writes a box with rounded vertical corners and, if wanted, a r
 
 oc4 writes the OC4-DeepCwind semisubmersible (columns only, see OC4_* below): HullMesh.pnl, Hydrostatic.in with the mooring
 as the external restoring, and the control surface C and free surface F as CSMesh_1.pnl and FSMesh_1.pnl for cs_shape = file,
-then prints the checks against the exact columns and the report. Without --out-dir the files go to a temporary folder.
+then prints the checks against the exact columns, the report and the WAMIT mesh of the OpenFAST run. Without --out-dir the
+files go to a temporary folder. --model wamit writes the mass, hydrostatic restoring and mooring of that WAMIT run
+(OC4W_*, the q_oc4w cases) instead of the report's platform; the meshes are the same.
 
 --format nemoh writes the same nodes and panels in the mesh format of Nemoh v3. The vertex order is kept: it gives a right-hand
 normal into the fluid, as Nemoh documents, while HAMS computes the opposite normal from the same order. A triangle has its last
@@ -592,8 +594,10 @@ OC4_I_YAW = 1.226e10
 OC4_REPORT = dict(rho_g_v0=1.3989e8, c33=3.836e6, c44=-3.776e8)   # Eqs. 4-2, 4-3; C44 = C55 without gravity
 # Eq. 5-15, about the origin on the SWL, 0-based (surge, sway, heave, roll, pitch, yaw). The extracted text has the
 # magnitudes of the couplings by their units: 1.08e5 N/rad in rows 1 and 2 (C15, C24), 1.07e5 N m/m in rows 4 and 5 (C42,
-# C51). The signs are [derived]: a fairlead 14 m below the origin gives C15 = C51 < 0 and C24 = C42 = -C15 > 0; see
-# oc4_mooring_signs.
+# C51). The signs are those of the mooring matrix in NREL's WAMIT .frc of the OpenFAST OC4 run, as printed in Al-Ghuwaidi
+# and Pribadi (2025), Benchmark study of NEMOH vs WAMIT for the OC4-DeepCwind semi-submersible FOWT, Zenodo
+# 10.5281/zenodo.16940342, section 3.5.1 (OC4W_MOORING): C15 = -1.080e5, C24 = +1.080e5, C42 = +1.070e5, C51 = -1.070e5.
+# oc4_mooring_signs gives the same signs from the catenaries.
 OC4_MOORING = [[7.08e4, 0.0, 0.0, 0.0, -1.08e5, 0.0],
                [0.0, 7.08e4, 0.0, 1.08e5, 0.0, 0.0],
                [0.0, 0.0, 1.91e4, 0.0, 0.0, 0.0],
@@ -832,9 +836,79 @@ def oc4_matrices(props, rho=RHO, g=G):
     return dict(mass=m, restoring=c, mooring=mooring, zg=zg)
 
 
+# OC4 matched to the public WAMIT run of OpenFAST (r-test glue-codes/openfast/5MW_Baseline/HydroData/marin_semi.*, the .12d
+# of 10-Jan-2014): the inputs of NREL's WAMIT .frc, as printed in Al-Ghuwaidi and Pribadi (2025), Benchmark study of NEMOH vs
+# WAMIT for the OC4-DeepCwind semi-submersible FOWT, Zenodo 10.5281/zenodo.16940342 (CC BY 4.0), section 3.5.1, SI, about
+# the origin on the SWL, at OC4_RHO. The inertia matrix is the full system (platform, tower, turbine). The extracted text
+# runs the six entries of a row together ("1.407x1070 0 0 -1.392x1080" is 1.407e7, 0, 0, 0, -1.392e8, 0); each row read so
+# has six entries and the matrix comes out symmetric, which checks the reading. It is the rigid-body form about the origin
+# with zG = I15 / M = -9.893 m and xG = I26 / M = -0.0103 m: I15 = M zG, I24 = -M zG, I26 = M xG, I35 = -M xG. I45 and I56
+# are as printed (-1.094e-1 and -1.953 kg m^2, negligible).
+OC4W_INERTIA = [[1.407e7, 0.0, 0.0, 0.0, -1.392e8, 0.0],
+                [0.0, 1.407e7, 0.0, 1.392e8, 0.0, -1.448e5],
+                [0.0, 0.0, 1.407e7, 0.0, 1.448e5, 0.0],
+                [0.0, 1.392e8, 0.0, 1.270e10, -1.094e-1, 1.167e7],
+                [-1.392e8, 0.0, 1.448e5, -1.094e-1, 1.269e10, -1.953],
+                [0.0, -1.448e5, 0.0, 1.167e7, -1.953, 1.229e10]]
+# Mooring (external restoring) of the same .frc, as printed: not symmetric in the couplings (1.080e5 against 1.070e5)
+OC4W_MOORING = [[7.084e4, 0.0, 0.0, 0.0, -1.080e5, 0.0],
+                [0.0, 7.084e4, 0.0, 1.080e5, 0.0, 0.0],
+                [0.0, 0.0, 1.910e4, 0.0, 0.0, 0.0],
+                [0.0, 1.070e5, 0.0, 8.730e7, 0.0, 0.0],
+                [-1.070e5, 0.0, 0.0, 0.0, 8.730e7, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 1.170e8]]
+# WAMIT's hydrostatic restoring, marin_semi.hst, over rho g (length 1 m): C33, C35 = C53, C44, C55. It has no gravity term:
+# C44 and C55 are rho g (Syy + V zb) alone (-3.81e8 N m/rad at rho = 1025, about the report's -3.776e8 without gravity), as
+# OpenFAST wants its .hst. The motions of the .12d still had a positive pitch restoring: its mean pitch moment and surge
+# drift peak at the lowest omega, 0.25 rad/s (M_y 40.6, 5.0 at 0.30 with the sign changed, under 3.4 from 0.35 to 0.55), as
+# at a pitch resonance just below the grid; with gravity, C55 + K55 - M g zG = 1.07e9 N m/rad and I55 = 1.269e10 kg m^2
+# put it at 0.22 to 0.24 rad/s for A55 = 1e10 to 7e9 [derived], close to the report's 0.037 Hz (0.232 rad/s). Without the
+# gravity term C55 + K55 < 0 and pitch has no resonance. So the gravity term is added (OC4W_GRAVITY) [inferred from the
+# .12d; the .frc's centre of gravity line is not in the report]
+OC4W_HST = {(2, 2): 380.0615, (2, 4): -1.533109e-2, (4, 2): -1.533109e-2, (3, 3): -37875.50, (4, 4): -37875.27}
+# The WAMIT mesh (6258 panels, with the braces; report Table 1), for the check printout
+OC4W_WAMIT_MESH = dict(vol=13675.84, area=375.29, zb=-13.156)
+# Restoring of the q_oc4w cases: "hst" (WAMIT's .hst: it holds the braces, which our mesh leaves out) or "mesh" (our
+# columns), and whether -M g zG of the system mass is added to C44 and C55
+OC4W_RESTORING = "hst"
+OC4W_GRAVITY = True
+
+
+def oc4w_matrices(props, rho=RHO, g=G, restoring=None, gravity=None):
+    """Mass, hydrostatic restoring and mooring of OC4 matched to the WAMIT run, for the water density rho of the solver:
+    OC4W_INERTIA and OC4W_MOORING scaled by rho / OC4_RHO as in oc4_matrices (motions and loads over rho g unchanged), and
+    the hydrostatic restoring of OC4W_HST times rho g ("hst") or of the mesh ("mesh", the formulas of oc4_matrices without
+    the gravity term); gravity True adds -M g zG to C44 and C55 with the scaled system mass M and zG = I15 / M (the xG of
+    -0.01 m is left out of the restoring: its terms are below 1e-3 of C44)."""
+    restoring = OC4W_RESTORING if restoring is None else restoring
+    gravity = OC4W_GRAVITY if gravity is None else gravity
+    scale = rho / OC4_RHO
+    mass = [[scale * value for value in row] for row in OC4W_INERTIA]
+    zg = OC4W_INERTIA[0][4] / OC4W_INERTIA[0][0]
+    rg = rho * g
+    if restoring == "hst":
+        c = [[0.0] * 6 for _ in range(6)]
+        for (i, j), value in OC4W_HST.items():
+            c[i][j] = rg * value
+    elif restoring == "mesh":
+        c = oc4_matrices(props, rho, g)["restoring"]
+        weight = scale * OC4_MASS * g * OC4_ZG
+        c[3][3] += weight   # remove the -M g zg (platform mass) of oc4_matrices
+        c[4][4] += weight
+    else:
+        raise ValueError("unknown OC4W restoring " + str(restoring))
+    if gravity:
+        c[3][3] -= mass[0][0] * g * zg
+        c[4][4] -= mass[0][0] * g * zg
+    mooring = [[scale * value for value in row] for row in OC4W_MOORING]
+    return dict(mass=mass, restoring=c, mooring=mooring, zg=zg, xg=OC4W_INERTIA[1][5] / OC4W_INERTIA[0][0])
+
+
 def oc4_mooring_signs():
-    """Estimate of the surge-pitch coupling of the mooring, for its sign [derived]. Three catenary lines at 120 degrees, fairleads
-    at z_f = -14 m and radius R_f = 40.868 m (Table 5-1), h = 186 m above the anchors. A surge x1 moves each fairlead
+    """Estimate of the surge-pitch coupling of the mooring, for its sign. The sign is confirmed by NREL's WAMIT .frc of the
+    OpenFAST OC4 run (Al-Ghuwaidi and Pribadi 2025, Zenodo 10.5281/zenodo.16940342, section 3.5.1: C15 = -1.080e5, C51 =
+    -1.070e5, C24 = +1.080e5, C42 = +1.070e5); this estimate is the physical reason for it. Three catenary lines at 120
+    degrees, fairleads at z_f = -14 m and radius R_f = 40.868 m (Table 5-1), h = 186 m above the anchors. A surge x1 moves each fairlead
     along its line by -x1 e_ix; the line's horizontal tension H and vertical pull V change with the horizontal distance X
     to the anchor at the rates H' and V' = (h / L_s) H' (catenary, suspended length L_s). About the origin
     C51 = -dMy/dx1 = -|z_f| k + 1.5 R_f V' with k = C11 = 1.5 H' (the horizontal part: the restoring force acts below the
@@ -1130,18 +1204,25 @@ def check_written_surfaces(folder):
         raise ValueError("CSMesh_1.pnl fails the normal test of HAMS or has no bottom")
 
 
-def write_oc4(folder, multiple=1, external_damping=None, check_clearance=True):
+def write_oc4(folder, multiple=1, external_damping=None, check_clearance=True, model="platform"):
     """Write HullMesh.pnl, Hydrostatic.in (mooring as the external restoring, origin on the SWL as the rotation centre),
     CSMesh_1.pnl and FSMesh_1.pnl of OC4 into folder, after the checks: the hull is closed below z = 0 and consistently
     oriented, its normals point into the body, C has its normals towards the body and a bottom, F tiles the free surface
-    between the waterlines and Gamma_c. Returns a dict with the meshes, the mesh properties and the matrices."""
+    between the waterlines and Gamma_c. model "platform" writes the matrices of oc4_matrices (the platform of the report),
+    "wamit" those of oc4w_matrices (the full system of the WAMIT run); the meshes are the same. Returns a dict with the
+    meshes, the mesh properties and the matrices."""
     hull, polygons, inside = oc4_hull(multiple)
     check_normals_each(hull, inside)
     waterline = open_edges(hull)
     if len(waterline) != sum(len(poly) for poly in polygons):
         raise ValueError("the hull waterline has %d edges, not those of the four columns" % len(waterline))
     props = mesh_properties(hull)
-    matrices = oc4_matrices(props)
+    if model == "platform":
+        matrices = oc4_matrices(props)
+    elif model == "wamit":
+        matrices = oc4w_matrices(props)
+    else:
+        raise ValueError("unknown OC4 model " + str(model))
     control, c_radius, c_count = oc4_control_surface(**OC4_CS)
     c_edges = open_edges(control)
     if len(c_edges) != c_count:
@@ -1173,13 +1254,13 @@ def write_oc4(folder, multiple=1, external_damping=None, check_clearance=True):
                 clearance=clearance)
 
 
-def oc4_check(multiple=1, folder=None):
+def oc4_check(multiple=1, folder=None, model="platform"):
     """Write the OC4 files at a multiple (into a temporary folder by default) and print the checks: panel counts, the mesh
     volume and waterplane against the exact columns and against the report (at the report's rho), and the triangle quality
     of F."""
     import tempfile
     with tempfile.TemporaryDirectory() as scratch:
-        out = write_oc4(folder or scratch, multiple)
+        out = write_oc4(folder or scratch, multiple, model=model)
     props, exact = out["props"], oc4_exact()
     rg = OC4_RHO * G
     c44 = rg * (props["syy"] + props["vol"] * props["zb"])
@@ -1200,6 +1281,17 @@ def oc4_check(multiple=1, folder=None):
             100.0 * (mesh_value / report - 1.0)))
     lines.append("  V %.3f m^3 (exact columns %.3f), zb %.4f m (%.4f), xb %.2e, yb %.2e, waterplane Sx %.3f, Sy %.2e m^3" % (
         props["vol"], exact["vol"], props["zb"], exact["zb"], props["xb"], props["yb"], props["sx"], props["sy"]))
+    wamit = OC4W_WAMIT_MESH
+    lines.append("  against the WAMIT mesh (braces; report Table 1): V %.2f m^3 (%+.2f%%), waterplane %.2f m^2 (%+.2f%%; .hst "
+                 "C33 / rho g %.2f, %+.2f%%), zb %.3f m (%.3f)" % (
+                     wamit["vol"], 100.0 * (props["vol"] / wamit["vol"] - 1.0), wamit["area"],
+                     100.0 * (props["area"] / wamit["area"] - 1.0), OC4W_HST[(2, 2)],
+                     100.0 * (props["area"] / OC4W_HST[(2, 2)] - 1.0), wamit["zb"], props["zb"]))
+    lines.append("  .hst C44, C55 / rho g %.1f, %.1f m^4; mesh rho g (Syy + V zb) / rho g %.1f (%+.2f%%), (Sxx + V zb) %.1f "
+                 "(%+.2f%%)" % (OC4W_HST[(3, 3)], OC4W_HST[(4, 4)], props["syy"] + props["vol"] * props["zb"],
+                                100.0 * ((props["syy"] + props["vol"] * props["zb"]) / OC4W_HST[(3, 3)] - 1.0),
+                                props["sxx"] + props["vol"] * props["zb"],
+                                100.0 * ((props["sxx"] + props["vol"] * props["zb"]) / OC4W_HST[(4, 4)] - 1.0)))
     return "\n".join(lines), out
 
 
@@ -1234,10 +1326,12 @@ def main():
     o = sub_parsers.add_parser("oc4")
     o.add_argument("--multiple", type=int, default=1, help="mesh multiple (1: about 1200 panels, 2: about 4600)")
     o.add_argument("--out-dir", help="folder of the files (default: a temporary folder)")
+    o.add_argument("--model", choices=("platform", "wamit"), default="platform",
+                   help="matrices of the report's platform (default) or of the OpenFAST WAMIT run (OC4W_*)")
 
     args = parser.parse_args()
     if args.shape == "oc4":
-        print(oc4_check(args.multiple, args.out_dir)[0])
+        print(oc4_check(args.multiple, args.out_dir, args.model)[0])
         estimate, horizontal, vertical = oc4_mooring_signs()
         print("  mooring C15 = C51 estimate %.3g N (horizontal part %.3g, vertical part %.3g); OC4_MOORING has %.3g, %.3g"
               % (estimate, -horizontal, vertical, OC4_MOORING[0][4], OC4_MOORING[4][0]))
