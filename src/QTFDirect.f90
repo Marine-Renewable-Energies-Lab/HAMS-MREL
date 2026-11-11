@@ -69,12 +69,32 @@ MODULE QTFDirect
    ! are the full panels; the right side of block ip at base panel i is sum_a RXY(ip, a) r(image a of i), the block form of
    ! ASSB_RBC.
    !
-   ! The Green function is taken at the wave of the solver globals (V, WVN, NK, H): the caller sets them to Omega.
+   ! Stored integrals. In production (direct_rhs_b2, direct_rhs_b2_block with stored, the default) int_p G and
+   ! int_p grad_xi G come from the arrays of the left side at Omega: CGRN, RKBN and DS (CGRN_MULTI_COMB, RKBN_MULTI_COMB
+   ! and DS_MULTI_COMB for several bodies), with the flag rule of CALGREEN (base-to-base distance within 50 panel sizes).
+   ! CALGREEN puts the source panel first, so GRN(2:4) is grad_xi G, and IMAGE_TERM_EXACT treats 1/r1 as
+   ! green_panel_integrals does. Row image a against panel image b is base row against stored image a xor b, with the
+   ! gradient mirrored by M_b, so no value is computed twice and B2 uses the discrete G of the left side and of
+   ! ASSB_RHS_FIELD. The stored values are single precision (GRN_KIND = 4). green_panel_integrals stays for the tests,
+   ! which set no stored arrays; the two agree to the single-precision storage (rhs_b2_stored_matches_direct).
+   ! The near-panel moments and the waterline line integrals are computed as before.
+   !
+   ! Sharp edges. The linear density on the near panels uses a fitted gradient of w = X x u and alpha x u. Next to a sharp
+   ! edge u is singular (rho^p) and the fit of its gradient is not meaningful, which is what the Stokes form avoids. So a
+   ! panel that shares a node with a panel of the same body whose normal differs by more than edge_deg (DEFAULT_EDGE_DEG of
+   ! SharpEdge, or qtf_edge_angle) keeps the one-point rule: cl = 0 there (sharp_edge_panels). build_neighbours already
+   ! leaves out neighbours across such an edge, so the fit elsewhere is over the same face.
+   !
+   ! The Green function is taken at the wave of the solver globals (V, WVN, NK, H): the caller sets them to Omega, and
+   ! with stored integrals CALGREEN (CALGREEN_MULTI) must have been run at Omega.
 
    USE Const_mod, ONLY: RXY
    USE HAMS_mod, ONLY: NTHREAD
    USE WaveDyn_mod, ONLY: H, NK, V, WVN
-   USE PanelMesh_mod, ONLY: ISX, ISY
+   USE PanelMesh_mod, ONLY: ISX, ISY, DS, PNSZ, XYZ_P, DS_MULTI_COMB, PNSZ_MULTI_COMB, XYZ_GLOBAL_MULTI_COMB_P
+   USE Potentials_mod, ONLY: CGRN, RKBN, CGRN_MULTI_COMB, RKBN_MULTI_COMB
+   USE SurfaceGeometry, ONLY: body_sizes, merge_nodes
+   USE SharpEdge, ONLY: DEFAULT_EDGE_DEG
    USE INFG3D_Open, ONLY: INFGREEN3D
    USE FinGreen3D_Open, ONLY: FINGREEN3D
    USE SecondOrderTypes, ONLY: panel_mesh, surface_geom, first_order_state
@@ -87,7 +107,7 @@ MODULE QTFDirect
    PRIVATE
 
    PUBLIC :: direct_rhs_b2, direct_rhs_b2_block, b2_stokes_densities, b2_stokes_at_point
-   PUBLIC :: green_panel_integrals, green_line_integral, rankine_moments
+   PUBLIC :: green_panel_integrals, stored_panel_integrals, green_line_integral, rankine_moments, sharp_edge_panels
 
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
    ! As CALGREEN: a panel closer than this many panel sizes gets panel integrals of 1/r and of its image
@@ -95,28 +115,41 @@ MODULE QTFDirect
 
 CONTAINS
 
-   SUBROUTINE direct_rhs_b2(mesh, geom, s1, s2, wl1, wl2, rhs, is_multi)
+   SUBROUTINE direct_rhs_b2(mesh, geom, s1, s2, wl1, wl2, rhs, is_multi, stored, edge_deg)
       ! The B2 part of the right side for the pair (s1, s2), difference-frequency kernel:
       !   rhs(i, ip) = sum_a RXY(ip, a) r(x of image a of base panel i),  r(x) = -int_S G(x, .) n.[(X.grad)u] dS
       ! in the Stokes form above, with u at the waterline from waterline_velocity, as potential_pair has it.
       !   wl1, wl2   total potential at the waterline segments (nwl), as for potential_pair
       !   rhs        (nbase, nsys), the layout of one column of ASSB_RHS_FIELD
       !   is_multi   optional: the panel integrals read the combined multi-body arrays; default mesh%nbody > 1
+      !   stored     optional: the panel integrals of G from the stored arrays (default .true.), or fresh
+      !              (green_panel_integrals, for tests without stored arrays)
+      !   edge_deg   optional: the sharp-edge angle of sharp_edge_panels; default DEFAULT_EDGE_DEG
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       TYPE(first_order_state), INTENT(IN) :: s1, s2
       COMPLEX(8), INTENT(IN) :: wl1(:), wl2(:)
       COMPLEX(8), INTENT(OUT) :: rhs(:, :)
-      LOGICAL, INTENT(IN), OPTIONAL :: is_multi
+      LOGICAL, INTENT(IN), OPTIONAL :: is_multi, stored
+      REAL(8), INTENT(IN), OPTIONAL :: edge_deg
       COMPLEX(8), ALLOCATABLE :: a(:, :), c(:, :, :), cl(:, :, :, :), e(:, :), r(:, :, :)
+      LOGICAL, ALLOCATABLE :: one_point(:)
+      REAL(8) :: deg
 
+      IF (SIZE(rhs, 1) /= mesh%nbase .OR. SIZE(rhs, 2) /= mesh%nsys) THEN
+         WRITE (*, '(a)') ' direct_rhs_b2: rhs must be (nbase, nsys).'
+         ERROR STOP 1
+      END IF
+      deg = DEFAULT_EDGE_DEG
+      IF (PRESENT(edge_deg)) deg = edge_deg
+      CALL sharp_edge_panels(mesh, deg, one_point)
       ALLOCATE (a(mesh%n, 1), c(3, mesh%n, 1), cl(3, 4, mesh%n, 1), e(geom%nwl, 1), r(mesh%nbase, 1, mesh%nsys))
-      CALL b2_stokes_densities(mesh, geom, s1, s2, wl1, wl2, a(:, 1), c(:, :, 1), e(:, 1), cl(:, :, :, 1))
-      CALL direct_rhs_b2_block(mesh, geom, a, c, e, r, is_multi, cl)
+      CALL b2_stokes_densities(mesh, geom, s1, s2, wl1, wl2, a(:, 1), c(:, :, 1), e(:, 1), cl(:, :, :, 1), one_point)
+      CALL direct_rhs_b2_block(mesh, geom, a, c, e, r, is_multi, cl, stored)
       rhs = r(:, 1, :)
    END SUBROUTINE direct_rhs_b2
 
-   SUBROUTINE b2_stokes_densities(mesh, geom, s1, s2, wl1, wl2, a, c, e, cl)
+   SUBROUTINE b2_stokes_densities(mesh, geom, s1, s2, wl1, wl2, a, c, e, cl, one_point)
       ! The pair data of the Stokes form, so that for any potential psi
       !   int_S psi n.[(X.grad)u] dS = sum_p [ psi_p a_p + (int_p grad psi).c_p ] - sum_w psi_w e_w
       ! with psi_p and int_p grad psi panel integrals and psi_w the line integral over segment w:
@@ -125,12 +158,14 @@ CONTAINS
       !   cl  optional (3, 4, n): the linear parts on each panel, from tangential_fit over the panel neighbours (zero on a
       !       panel without a fit): c(xi) = c_p + cl(:, 1:3, p) (xi - xi_p), from the components of w = X x u crossed
       !       with n_p, and a(xi) = a_p + cl(:, 4, p).(xi - xi_p), from the components of alpha x u dotted with n_p.
+      !   one_point  optional (n), with cl: panels that keep cl = 0, the panels at sharp edges (sharp_edge_panels)
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       TYPE(first_order_state), INTENT(IN) :: s1, s2
       COMPLEX(8), INTENT(IN) :: wl1(:), wl2(:)
       COMPLEX(8), INTENT(OUT) :: a(:), c(:, :), e(:)
       COMPLEX(8), INTENT(OUT), OPTIONAL :: cl(:, :, :)
+      LOGICAL, INTENT(IN), OPTIONAL :: one_point(:)
       COMPLEX(8), ALLOCATABLE :: uw1(:, :), uw2(:, :), w(:, :)
       COMPLEX(8) :: u1(3), u2(3), d1(3), d2(3), rot(3), xu(3), dw1(6), dw2(6), g1, g2
       REAL(8) :: nv(3), x(3), t(3), t1(3), t2(3)
@@ -167,6 +202,10 @@ CONTAINS
          END IF
          DO i = 1, mesh%n
             nv = mesh%nrm(:, i)
+            cl(:, :, i) = (0D0, 0D0)
+            IF (PRESENT(one_point)) THEN
+               IF (one_point(i)) CYCLE
+            END IF
             ok = .TRUE.
             DO m = 1, 6
                CALL tangential_fit(mesh, geom, i, w(:, m), t1, t2, g1, g2, ok)
@@ -219,21 +258,23 @@ CONTAINS
 
    END SUBROUTINE b2_stokes_densities
 
-   SUBROUTINE direct_rhs_b2_block(mesh, geom, a, c, e, rhs, is_multi, cl)
+   SUBROUTINE direct_rhs_b2_block(mesh, geom, a, c, e, rhs, is_multi, cl, stored)
       ! The B2 part of the right side for nrhs pairs at once, from their densities (b2_stokes_densities):
       !   a (n, nrhs), c (3, n, nrhs), e (nwl, nrhs)  ->  rhs (nbase, nrhs, nsys), the layout of ASSB_RHS_FIELD
       ! The panel integrals do not depend on the pair, so one pass over the field points serves all of them.
       !   cl  optional (3, 4, n, nrhs): the linear parts of c and a (b2_stokes_densities); without it they are constant
       !       per panel
+      !   stored  optional: the panel integrals of G from the stored arrays at Omega (default .true.; see the header)
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       COMPLEX(8), INTENT(IN) :: a(:, :), c(:, :, :), e(:, :)
       COMPLEX(8), INTENT(OUT) :: rhs(:, :, :)
       LOGICAL, INTENT(IN), OPTIONAL :: is_multi
       COMPLEX(8), INTENT(IN), OPTIONAL :: cl(:, :, :, :)
+      LOGICAL, INTENT(IN), OPTIONAL :: stored
       COMPLEX(8), ALLOCATABLE :: r(:, :)
       INTEGER :: nb, ns, nrhs, i, ip, im
-      LOGICAL :: multi
+      LOGICAL :: multi, from_store
 
       nb = mesh%nbase
       ns = mesh%nsys
@@ -246,11 +287,17 @@ CONTAINS
       END IF
       multi = mesh%nbody > 1
       IF (PRESENT(is_multi)) multi = is_multi
+      from_store = .TRUE.
+      IF (PRESENT(stored)) from_store = stored
 
       ALLOCATE (r(nrhs, mesh%n))
       !$OMP PARALLEL DO NUM_THREADS(NTHREAD) SCHEDULE(DYNAMIC, 4)
       DO i = 1, mesh%n
-         IF (PRESENT(cl)) THEN
+         IF (from_store .AND. PRESENT(cl)) THEN
+            CALL b2_stokes_at_point(mesh, geom, mesh%xc(:, i), a, c, e, multi, r(:, i), cl, i)
+         ELSE IF (from_store) THEN
+            CALL b2_stokes_at_point(mesh, geom, mesh%xc(:, i), a, c, e, multi, r(:, i), row=i)
+         ELSE IF (PRESENT(cl)) THEN
             CALL b2_stokes_at_point(mesh, geom, mesh%xc(:, i), a, c, e, multi, r(:, i), cl)
          ELSE
             CALL b2_stokes_at_point(mesh, geom, mesh%xc(:, i), a, c, e, multi, r(:, i))
@@ -269,11 +316,13 @@ CONTAINS
       END DO
    END SUBROUTINE direct_rhs_b2_block
 
-   SUBROUTINE b2_stokes_at_point(mesh, geom, x, a, c, e, is_multi, out, cl)
+   SUBROUTINE b2_stokes_at_point(mesh, geom, x, a, c, e, is_multi, out, cl, row)
       ! int_S G(x, .) n.[(X.grad)u] dS for each column of the densities, at the field point x (full coordinates):
       !   out = sum_p [ int_p G a_p + (int_p grad_xi G).c_p ] - sum_w (int_w G dl) e_w
       ! With cl (3, 4, n, ncol), on the near panels also sum_ab cl(a, b, p) int_p d_a(1/r + 1/r1) (xi - xi_p)_b dS and
       ! cl(:, 4, p).int_p (1/r + 1/r1)(xi - xi_p) dS.
+      ! With row (a full panel index, whose centroid x must be), int_p G and int_p grad G come from the stored arrays
+      ! (stored_panel_integrals), otherwise from green_panel_integrals.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       REAL(8), INTENT(IN) :: x(3)
@@ -281,13 +330,18 @@ CONTAINS
       LOGICAL, INTENT(IN) :: is_multi
       COMPLEX(8), INTENT(OUT) :: out(:)
       COMPLEX(8), INTENT(IN), OPTIONAL :: cl(:, :, :, :)
+      INTEGER, INTENT(IN), OPTIONAL :: row
       COMPLEX(8) :: g_int, grad_int(3), g_line
       REAL(8) :: xv(3, 4), m0, g0(3), m1(3, 3), m1i(3, 3), mg(3), mgi(3)
       INTEGER :: p, iw, k, nv
 
       out = (0D0, 0D0)
       DO p = 1, mesh%n
-         CALL green_panel_integrals(mesh, x, p, is_multi, g_int, grad_int)
+         IF (PRESENT(row)) THEN
+            CALL stored_panel_integrals(mesh, row, p, is_multi, g_int, grad_int)
+         ELSE
+            CALL green_panel_integrals(mesh, x, p, is_multi, g_int, grad_int)
+         END IF
          DO k = 1, SIZE(out)
             out(k) = out(k) + g_int*a(p, k) + SUM(grad_int*c(:, p, k))
          END DO
@@ -308,6 +362,97 @@ CONTAINS
          out = out - g_line*e(iw, :)
       END DO
    END SUBROUTINE b2_stokes_at_point
+
+   SUBROUTINE stored_panel_integrals(mesh, row, p, is_multi, g_int, grad_int)
+      ! int_p G and int_p grad_xi G over full panel p at the centroid of full panel row, from the stored arrays at Omega
+      ! (header): base row i, base panel j, stored image a xor b, gradient mirrored by M_b. The flag rule of CALGREEN.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      INTEGER, INTENT(IN) :: row, p
+      LOGICAL, INTENT(IN) :: is_multi
+      COMPLEX(8), INTENT(OUT) :: g_int, grad_int(3)
+      COMPLEX(8) :: grn(4)
+      REAL(8) :: rk(4), f(3), area, dist, psz
+      INTEGER :: i, j, is
+
+      i = mesh%base(row)
+      j = mesh%base(p)
+      is = MERGE(1, 2, mesh%image(row) == mesh%image(p))
+      f = image_signs(mesh%image(p), ISX, ISY)
+      IF (is_multi) THEN
+         grn = CGRN_MULTI_COMB(i, j, is, :)
+         rk = RKBN_MULTI_COMB(i, j, is, :)
+         area = DS_MULTI_COMB(j)
+         psz = PNSZ_MULTI_COMB(j)
+         dist = NORM2(XYZ_GLOBAL_MULTI_COMB_P(i, :) - XYZ_GLOBAL_MULTI_COMB_P(j, :))
+      ELSE
+         grn = CGRN(i, j, is, :)
+         rk = RKBN(i, j, is, :)
+         area = DS(j)
+         psz = PNSZ(j)
+         dist = NORM2(XYZ_P(i, :) - XYZ_P(j, :))
+      END IF
+      IF (dist <= NEAR_PANEL_SIZES*psz) THEN
+         g_int = rk(1) + grn(1)*area
+         grad_int = f*(rk(2:4) + grn(2:4)*area)
+      ELSE
+         g_int = grn(1)*area
+         grad_int = f*grn(2:4)*area
+      END IF
+   END SUBROUTINE stored_panel_integrals
+
+   SUBROUTINE sharp_edge_panels(mesh, edge_deg, mask)
+      ! mask(i) is .true. when panel i shares a node (after merging coincident nodes, so across the symmetry plane too)
+      ! with a panel of the same body whose normal differs by more than edge_deg degrees: the panels at sharp edges,
+      ! convex or concave, where the linear density is not used (header).
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      REAL(8), INTENT(IN) :: edge_deg
+      LOGICAL, ALLOCATABLE, INTENT(OUT) :: mask(:)
+      REAL(8), ALLOCATABLE :: bsize(:)
+      INTEGER, ALLOCATABLE :: rep(:), nstart(:), nlist(:), fill(:)
+      REAL(8) :: cosmin
+      INTEGER :: i, m, k, r, r2, pi_, pj
+
+      ALLOCATE (mask(mesh%n))
+      mask = .FALSE.
+      IF (mesh%n == 0) RETURN
+      cosmin = COS(edge_deg*3.141592653589793D0/180D0)
+      CALL body_sizes(mesh, bsize)
+      CALL merge_nodes(mesh, bsize, rep)
+      ALLOCATE (nstart(mesh%nnode + 1), fill(mesh%nnode))
+      nstart = 0
+      DO i = 1, mesh%n
+         DO m = 1, mesh%ncn(i)
+            k = rep(mesh%ncon(m, i))
+            nstart(k + 1) = nstart(k + 1) + 1
+         END DO
+      END DO
+      nstart(1) = 1
+      DO k = 1, mesh%nnode
+         nstart(k + 1) = nstart(k) + nstart(k + 1)
+      END DO
+      fill = nstart(1:mesh%nnode)
+      ALLOCATE (nlist(nstart(mesh%nnode + 1) - 1))
+      DO i = 1, mesh%n
+         DO m = 1, mesh%ncn(i)
+            k = rep(mesh%ncon(m, i))
+            nlist(fill(k)) = i
+            fill(k) = fill(k) + 1
+         END DO
+      END DO
+      DO k = 1, mesh%nnode
+         DO r = nstart(k), nstart(k + 1) - 1
+            pi_ = nlist(r)
+            DO r2 = r + 1, nstart(k + 1) - 1
+               pj = nlist(r2)
+               IF (mesh%body(pi_) /= mesh%body(pj)) CYCLE
+               IF (DOT_PRODUCT(mesh%nrm(:, pi_), mesh%nrm(:, pj)) < cosmin) THEN
+                  mask(pi_) = .TRUE.
+                  mask(pj) = .TRUE.
+               END IF
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE sharp_edge_panels
 
    SUBROUTINE green_panel_integrals(mesh, x, p, is_multi, g_int, grad_int)
       ! int_p G(x, xi) dS_xi and int_p grad_xi G(x, xi) dS_xi over full panel p (image b of base panel j), x in full

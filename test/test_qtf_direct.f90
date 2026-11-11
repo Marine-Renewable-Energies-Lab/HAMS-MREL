@@ -18,9 +18,13 @@ module test_qtf_direct
   use FirstOrderState, only : image_signs
   use SurfaceVelocity, only : tangential_fit
   use NearFieldDrift, only : pair_product, rigid_displacement, KERNEL_DIFF
-  use QTFDirect, only : direct_rhs_b2, b2_stokes_densities, b2_stokes_at_point, green_panel_integrals, rankine_moments
+  use QTFDirect, only : direct_rhs_b2, b2_stokes_densities, b2_stokes_at_point, green_panel_integrals, rankine_moments, &
+                        sharp_edge_panels
+  use SharpEdge, only : DEFAULT_EDGE_DEG
+  use CalGreenFunc, only : CALGREEN
+  use CalGreenFuncMulti, only : CALGREEN_MULTI
   use second_order_fixtures, only : make_cylinder
-  use test_waterline_field, only : set_wave, load_panels
+  use test_waterline_field, only : set_wave, load_panels, load_multi
   use test_qtf_potential, only : make_sphere, motions, velocity, normal_hessian, make_state, geometry
   implicit none
   private
@@ -42,6 +46,10 @@ module test_qtf_direct
   real(8), parameter :: moment_limit = 1d-10
   ! Half mesh against whole: the same sums in another order, and the Green function at mirrored points
   real(8), parameter :: half_limit = 1d-8
+  ! Stored integrals (CALGREEN, single precision, GRN_KIND = 4) against green_panel_integrals (double), relative to the
+  ! largest entry of the right side. The flag rules differ only for mirrored pairs beyond 50 panel sizes, which these
+  ! small fixtures do not have, so the difference is the single-precision storage (about 6e-8 per value).
+  real(8), parameter :: stored_limit = 1d-5
   ! Sphere of radius 5 at centre depth 20: 128, 512 and 2048 panels
   integer, parameter :: sph_nlat(3) = [8, 16, 32]
 
@@ -55,7 +63,9 @@ contains
       new_unittest("rankine_moments_quadrature", test_rankine_moments), &
       new_unittest("rhs_b2_stokes_vs_direct_smooth", test_b2_smooth), &
       new_unittest("rhs_b2_stokes_vs_direct_off_surface", test_b2_off_surface), &
-      new_unittest("rhs_b2_half_matches_whole", test_b2_half) &
+      new_unittest("rhs_b2_half_matches_whole", test_b2_half), &
+      new_unittest("rhs_b2_stored_matches_direct", test_b2_stored), &
+      new_unittest("rhs_b2_sharp_edge_fallback", test_b2_sharp_edge) &
       ]
   end subroutine collect_qtf_direct
 
@@ -503,7 +513,24 @@ contains
       end if
       do io = 1, 3
         do ih = 1, 4
-          if (io == 3 .and. ih == 1) cycle      ! outside the outline only above the plane
+          if (io == 3 .and. ih == 1) then
+            ! in the plane and outside the outline: the integrand is regular, plain 2D Gauss on the panel's triangles
+            if (ip == 1) then
+              x = xc + offsets(1, io)*in_plane(quad, nq, 1) + offsets(2, io)*in_plane(quad, nq, 2)
+              call rankine_moments(quad, nv, nq, x, xc, m0, g0, m1, mg)
+              call gauss_moments(quad, nv, nq, x, xc, b0, bg, bm, bq)
+            else
+              x = xc + offsets(1, io)*in_plane(tri, nt, 1) + offsets(2, io)*in_plane(tri, nt, 2)
+              call rankine_moments(tri, nv, nt, x, xc, m0, g0, m1, mg)
+              call gauss_moments(tri, nv, nt, x, xc, b0, bg, bm, bq)
+            end if
+            rel = max(abs(m0 - b0)/abs(b0), norm2(g0 - bg)/max(norm2(bg), abs(b0)), &
+                      maxval(abs(m1 - bm))/max(maxval(abs(bm)), abs(b0)), norm2(mg - bq)/max(norm2(bq), abs(b0)))
+            worst = max(worst, rel)
+            if (rel > moment_limit) print '(4x,a,2i3,es10.2)', "rankine_moments: panel, case, relative difference ", &
+              ip, 10*io + ih, rel
+            cycle
+          end if
           if (ip == 1) then
             x = xc + offsets(1, io)*in_plane(quad, nq, 1) + offsets(2, io)*in_plane(quad, nq, 2) + heights(ih)*nq
             call rankine_moments(quad, nv, nq, x, xc, m0, g0, m1, mg)
@@ -553,6 +580,62 @@ contains
     t = t/norm2(t)
     if (m == 2) t = [nrm(2)*t(3) - nrm(3)*t(2), nrm(3)*t(1) - nrm(1)*t(3), nrm(1)*t(2) - nrm(2)*t(1)]
   end function in_plane
+
+  !> The moments of rankine_moments by adaptive Gauss-Legendre quadrature over the triangles (1, k, k+1) of the panel, in
+  !> the collapsed coordinates s in [0, 1], t in [0, 1 - s]: for x away from the panel, where the integrand is regular.
+  subroutine gauss_moments(xv, nv, nrm, x, xc, b0, bg, bm, bq)
+    real(8), intent(in) :: xv(3, 4), nrm(3), x(3), xc(3)
+    integer, intent(in) :: nv
+    real(8), intent(out) :: b0, bg(3), bm(3, 3), bq(3)
+    real(8) :: e1(3), e2(3), pa(3), pb(3), pc(3), jac, ss, tot(9), res(9)
+    integer :: k, a, b
+    e1 = xv(:, 2) - xv(:, 1)
+    e1 = e1/norm2(e1)
+    e2 = [nrm(2)*e1(3) - nrm(3)*e1(2), nrm(3)*e1(1) - nrm(1)*e1(3), nrm(1)*e1(2) - nrm(2)*e1(1)]
+    tot = 0d0
+    do k = 2, nv - 1
+      pa = xv(:, 1)
+      pb = xv(:, k)
+      pc = xv(:, k + 1)
+      jac = norm2([(pb(2) - pa(2))*(pc(3) - pa(3)) - (pb(3) - pa(3))*(pc(2) - pa(2)), &
+                   (pb(3) - pa(3))*(pc(1) - pa(1)) - (pb(1) - pa(1))*(pc(3) - pa(3)), &
+                   (pb(1) - pa(1))*(pc(2) - pa(2)) - (pb(2) - pa(2))*(pc(1) - pa(1))])
+      call adapt(s_fun, 0d0, 1d0, 1d-13, 9, res, 0)
+      tot = tot + res
+    end do
+    b0 = tot(1)
+    bg = tot(2)*e1 + tot(3)*e2
+    bq = tot(8)*e1 + tot(9)*e2
+    do a = 1, 3
+      do b = 1, 3
+        bm(a, b) = (tot(4)*e1(a) + tot(5)*e2(a))*e1(b) + (tot(6)*e1(a) + tot(7)*e2(a))*e2(b)
+      end do
+    end do
+  contains
+    recursive function s_fun(sv) result(v)
+      real(8), intent(in) :: sv
+      real(8) :: v(9)
+      ss = sv
+      call adapt(t_fun, 0d0, 1d0 - sv, 1d-14, 9, v, 0)
+    end function s_fun
+    recursive function t_fun(tv) result(v)
+      real(8), intent(in) :: tv
+      real(8) :: v(9), y(3), d(3), r, ga(2), q(2)
+      y = pa + ss*(pb - pa) + tv*(pc - pa)
+      d = y - x
+      r = norm2(d)
+      ga = -[dot_product(d, e1), dot_product(d, e2)]/r**3
+      q = [dot_product(y - xc, e1), dot_product(y - xc, e2)]
+      v(1) = 1d0/r
+      v(2:3) = ga
+      v(4) = ga(1)*q(1)
+      v(5) = ga(2)*q(1)
+      v(6) = ga(1)*q(2)
+      v(7) = ga(2)*q(2)
+      v(8:9) = q/r
+      v = v*jac
+    end function t_fun
+  end subroutine gauss_moments
 
   !> The moments of rankine_moments by adaptive Gauss-Legendre quadrature: the panel as the triangles from the projected
   !> point X to each edge (signed by the side of X), each in polar coordinates (theta, rho) about X. In the plane of x
@@ -720,7 +803,7 @@ contains
     call make_state(whole, geom_w, w1, b1, -1d0, x1, s1w, wl1w)
     call make_state(whole, geom_w, w2, b2, -1d0, x2, s2w, wl2w)
     allocate(rw(whole%nbase, 1))
-    call direct_rhs_b2(whole, geom_w, s1w, s2w, wl1w, wl2w, rw)
+    call direct_rhs_b2(whole, geom_w, s1w, s2w, wl1w, wl2w, rw, stored=.false.)
     worst = 0d0
     do icase = 1, 2
       call load_panels(full, sx(icase), sy(icase), half)
@@ -731,7 +814,7 @@ contains
       call make_state(half, geom_h, w2, b2, -1d0, x2, s2h, wl2h)
       nb = half%nbase
       allocate(rh(nb, half%nsys), back(half%n))
-      call direct_rhs_b2(half, geom_h, s1h, s2h, wl1h, wl2h, rh)
+      call direct_rhs_b2(half, geom_h, s1h, s2h, wl1h, wl2h, rh, stored=.false.)
       ! The full panel (im, i) of the half mesh: sum_ip RXY(im, ip) rh(i, ip) / nsys, as RADIATION_SOLVER
       do im = 1, half%nsys
         do i = 1, nb
@@ -754,5 +837,109 @@ contains
     call check(error, worst <= half_limit, line)
     ISX = 0; ISY = 0; NSYS = 1
   end subroutine test_b2_half
+
+  !> direct_rhs_b2 from the stored integrals of CALGREEN against green_panel_integrals: the cylinder of the half test,
+  !> whole and half (ISY = 1), depth 10 and deep water, and two cylinders in the multi-body arrays (CALGREEN_MULTI).
+  subroutine test_b2_stored(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: full, mesh
+    type(surface_geom) :: geom
+    type(first_order_state) :: s1, s2
+    complex(8) :: x1(6, 1), x2(6, 1), xm1(6, 2), xm2(6, 2)
+    complex(8), allocatable :: wl1(:), wl2(:), ra(:, :), rb(:, :)
+    real(8) :: worst, d
+    integer :: icase, isy_in, ne
+    real(8), parameter :: depths(2) = [10d0, -1d0]
+    character(len=200) :: line
+
+    call make_cylinder(5d0, 5d0, 16, 4, 3, full, .true.)
+    call motions(x1, x2)
+    worst = 0d0
+    do icase = 1, 6
+      d = depths(1 + mod(icase - 1, 2))
+      isy_in = merge(0, 1, icase <= 2 .or. icase == 5)
+      call set_wave(d)
+      NTHREAD = 4
+      if (icase <= 4) then
+        call load_panels(full, 0, isy_in, mesh)
+        if (allocated(CGRN)) deallocate(CGRN)
+        if (allocated(RKBN)) deallocate(RKBN)
+        allocate(CGRN(NELEM, NELEM, NSYS, 4), RKBN(NELEM, NELEM, NSYS, 4))
+        call CALGREEN
+        call geometry(mesh, geom, error)
+        if (allocated(error)) return
+        call make_state(mesh, geom, w1, b1, d, x1, s1, wl1)
+        call make_state(mesh, geom, w2, b2, d, x2, s2, wl2)
+      else
+        call load_multi(isy_in, mesh)
+        ne = mesh%nbase
+        TNELEM = ne
+        if (allocated(CGRN_MULTI_COMB)) deallocate(CGRN_MULTI_COMB)
+        if (allocated(RKBN_MULTI_COMB)) deallocate(RKBN_MULTI_COMB)
+        allocate(CGRN_MULTI_COMB(ne, ne, NSYS, 4), RKBN_MULTI_COMB(ne, ne, NSYS, 4))
+        call CALGREEN_MULTI
+        call geometry(mesh, geom, error)
+        if (allocated(error)) return
+        xm1(:, 1) = x1(:, 1)
+        xm1(:, 2) = 0.5d0*x2(:, 1)
+        xm2(:, 1) = x2(:, 1)
+        xm2(:, 2) = (0d0, 1d0)*x1(:, 1)
+        call make_state(mesh, geom, w1, b1, d, xm1, s1, wl1)
+        call make_state(mesh, geom, w2, b2, d, xm2, s2, wl2)
+      end if
+      allocate(ra(mesh%nbase, mesh%nsys), rb(mesh%nbase, mesh%nsys))
+      call direct_rhs_b2(mesh, geom, s1, s2, wl1, wl2, ra)
+      call direct_rhs_b2(mesh, geom, s1, s2, wl1, wl2, rb, stored=.false.)
+      worst = max(worst, maxval(abs(ra - rb))/maxval(abs(rb)))
+      deallocate(ra, rb)
+    end do
+    write(line, '(a,es10.2)') "stored against fresh panel integrals, worst difference relative to the largest entry ", worst
+    print '(4x,a)', trim(line)
+    call check(error, worst <= stored_limit, line)
+    ISX = 0; ISY = 0; NSYS = 1
+  end subroutine test_b2_stored
+
+  !> The sharp-cylinder fixture (radius 10, draft 10, 448 panels): the panels at the bottom rim, the bottom row of the wall
+  !> and the outer ring of the bottom (2 x 32), keep the one-point rule (cl = 0); every other panel gets a linear part.
+  subroutine test_b2_sharp_edge(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: full, mesh
+    type(surface_geom) :: geom
+    type(first_order_state) :: s1, s2
+    complex(8) :: x1(6, 1), x2(6, 1)
+    complex(8), allocatable :: wl1(:), wl2(:), a(:), c(:, :), e(:), cl(:, :, :)
+    logical, allocatable :: mask(:)
+    integer :: i, nmask, nlinear, wrong
+    character(len=200) :: line
+
+    call make_cylinder(10d0, 10d0, 32, 8, 6, full, .true.)
+    call set_wave(-1d0)
+    call load_panels(full, 0, 0, mesh)
+    call geometry(mesh, geom, error)
+    if (allocated(error)) return
+    call motions(x1, x2)
+    call make_state(mesh, geom, w1, b1, -1d0, x1, s1, wl1)
+    call make_state(mesh, geom, w2, b2, -1d0, x2, s2, wl2)
+    call sharp_edge_panels(mesh, DEFAULT_EDGE_DEG, mask)
+    allocate(a(mesh%n), c(3, mesh%n), e(geom%nwl), cl(3, 4, mesh%n))
+    call b2_stokes_densities(mesh, geom, s1, s2, wl1, wl2, a, c, e, cl, mask)
+    nmask = count(mask)
+    nlinear = 0
+    wrong = 0
+    do i = 1, mesh%n
+      if (mask(i)) then
+        if (any(cl(:, :, i) /= (0d0, 0d0))) wrong = wrong + 1
+        ! a rim panel has a node on the rim, z = -10 and radius 10
+        if (.not. any(abs(mesh%xnode(3, mesh%ncon(1:mesh%ncn(i), i)) + 10d0) < 1d-9 .and. &
+                      abs(norm2(mesh%xnode(1:2, mesh%ncon(1:mesh%ncn(i), i)), dim=1) - 10d0) < 1d-9)) wrong = wrong + 1
+      else if (any(cl(:, :, i) /= (0d0, 0d0))) then
+        nlinear = nlinear + 1
+      end if
+    end do
+    write(line, '(a,i4,a,i4,a,i4,a,i3)') "panels ", mesh%n, ", at the edge ", nmask, ", with a linear part ", nlinear, &
+      ", wrong ", wrong
+    print '(4x,a)', trim(line)
+    call check(error, nmask == 64 .and. wrong == 0 .and. nlinear == mesh%n - nmask, line)
+  end subroutine test_b2_sharp_edge
 
 end module test_qtf_direct
