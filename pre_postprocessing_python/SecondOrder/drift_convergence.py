@@ -438,8 +438,9 @@ def qtf_potential_cases():
                            headings=(0.0,), qtf=1, qtf_terms="body", extra_options=dict(cs_shape="file", qtf_max_dw=0)))
     # Nemoh (DUOK + HASBO) on the same WAMIT-matched model, so that HAMS, Nemoh and WAMIT meet on one model. Its grid,
     # 0.05 to 1.90 rad/s in steps of 0.05, holds every frequency of OC4W_FREQUENCIES and every difference of them
-    chosen.append(Case("nemoh_oc4w_free_m1", "P", "5", "oc4w", 1, "free", headings=(0.0,), solver="nemoh",
-                       nemoh_range=OC4W_NEMOH_RANGE, nemoh_contrib=2))
+    for m in (1, 2):
+        chosen.append(Case("nemoh_oc4w_free_%s" % tag(m), "P", "5", "oc4w", m, "free", headings=(0.0,), solver="nemoh",
+                           nemoh_range=OC4W_NEMOH_RANGE, nemoh_contrib=2))
     return chosen
 
 
