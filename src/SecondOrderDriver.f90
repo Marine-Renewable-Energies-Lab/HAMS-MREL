@@ -71,6 +71,7 @@ MODULE SecondOrderDriver
    USE ControlSurfaceDrift, ONLY: control_surface_pair, CS_T_LINE, CS_T_PRESSURE, CS_T_HYDROSTATIC
    USE SecondOrderOutput, ONLY: write_drift_row, write_terms_row
    USE QTFDriver, ONLY: qtf_init, qtf_keep, qtf_finish, qtf_stored_mb, qtf_keep_psi, qtf_psi_index, qtf_psi_count, &
+                        qtf_radiation_list, qtf_psi_tolerance, &
                         qtf_radiation_omegas, qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, &
                         qtf_set_edge_weights
    USE QTFPotential, ONLY: b2_control_check
@@ -264,28 +265,39 @@ CONTAINS
       INTEGER, INTENT(IN) :: nqtf
       CHARACTER(LEN=*), INTENT(IN) :: outputdir
       REAL(8) :: omegas(nqtf), mb, mb_cs
+      REAL(8), ALLOCATABLE :: need(:)
+      INTEGER, ALLOCATABLE :: reuse(:)
       INTEGER :: i, first, nneed, nreuse, npairs
 
       first = MERGE(2, 0, SYBO == 1)
       DO i = 1, nqtf
          omegas(i) = InputOmega(WVNB(first + i))
       END DO
-      CALL qtf_init(opts, nqtf, WVHD(1:NBETA), geom%nwl, mesh%n, mesh%nbody, outputdir, omegas_main=omegas)
-      nneed = qtf_psi_count()
-      nreuse = qtf_psi_count(reused=.TRUE.)
+      ! The counts and the size go to the log before qtf_init allocates, so that a run that does not fit has them; qtf_init
+      ! builds the same list
+      CALL qtf_radiation_list(omegas, opts%qtf_max_dw, qtf_psi_tolerance(omegas), need, reuse)
+      nneed = SIZE(need)
+      nreuse = COUNT(reuse > 0)
       WRITE (*, '(a,I0,a,I0,a,I0,a)') ' QTF body forcing: psi at ', nneed, ' difference frequencies, ', nreuse, &
          ' from the main grid and ', nneed - nreuse, ' radiation-only solves (each costs about one radiation solve)'
       npairs = MERGE(NBETA*NBETA, NBETA, opts%mean_drift == 2)
       mb = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs)
       IF (b2_control) THEN
-         CALL qtf_set_control_surface(b2_pts)
          ! The share of C and F is what the points add to the store, so qtf_stored_mb is the one formula
          mb_cs = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs, ncs=b2_pts%n) - mb
          WRITE (*, '(a,F10.1,a,F10.1,a,I0,a)') ' QTF: with psi and the potential part the store takes', mb + mb_cs, &
             ' MB, of which', mb_cs, ' MB for the fields at the ', b2_pts%n, ' points of C and F (qtf_b2 = control)'
-         IF (opts%qtf_edge_weights) CALL b2_edge_weights(opts)
       ELSE
          WRITE (*, '(a,F10.1,a)') ' QTF: with psi and the potential part the store takes', mb, ' MB'
+      END IF
+      CALL qtf_init(opts, nqtf, WVHD(1:NBETA), geom%nwl, mesh%n, mesh%nbody, outputdir, omegas_main=omegas)
+      IF (qtf_psi_count() /= nneed .OR. qtf_psi_count(reused=.TRUE.) /= nreuse) THEN
+         WRITE (*, '(a)') ' QTF: qtf_init found other difference frequencies than the log above.'
+         ERROR STOP 1
+      END IF
+      IF (b2_control) THEN
+         CALL qtf_set_control_surface(b2_pts)
+         IF (opts%qtf_edge_weights) CALL b2_edge_weights(opts)
       END IF
       WRITE (*, '(a)') ' QTF_Indirect.11d: body forcing only, the free-surface integral is omitted.'
       ALLOCATE (psi_main(mesh%n, 6*mesh%nbody))
@@ -775,7 +787,12 @@ CONTAINS
       IF (opts%cs_velocity /= 2 .AND. H >= 0D0 .AND. states(1)%nu*H > LIMES_NUH) THEN
          WRITE (*, '(a,F10.5,a,F8.2,a)') ' '//who//' warning: omega', W1, ', nu*h =', states(1)%nu*H, &
             ' > 50: the finite-depth field values on C may scatter (the Green function series still uses Limes there).'
-         WRITE (*, '(a)') ' Check against drift_methods = far, or use deep water (H < 0) where kh is large.'
+         IF (opts%do_control) THEN
+            WRITE (*, '(a)') ' Check against drift_methods = far, or use deep water (H < 0) where kh is large.'
+         ELSE
+            WRITE (*, '(a)') ' B2 takes the velocity there: check against qtf_b2 = body, or use cs_velocity = source or deep'// &
+               ' water (H < 0) where kh is large.'
+         END IF
       END IF
       CALL SYSTEM_CLOCK(t0, rate)
       IF (opts%cs_velocity == 2) THEN

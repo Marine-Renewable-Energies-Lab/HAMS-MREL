@@ -107,13 +107,14 @@ MODULE QTFPotential
 CONTAINS
 
    SUBROUTINE potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, omega_psi, rho, g, terms, ok, &
-                             phi2_constant, cs, grad_psi_cs, u1_cs, u2_cs, edge_w)
+                             phi2_constant, cs, grad_psi_cs, u1_cs, u2_cs, edge_w, omega_tol)
       ! Body-forcing terms of the difference-frequency potential QTF of the state pair (s1, s2), per unit amplitudes.
       !   wl1, wl2      total potential at the waterline segments (nwl), as for near_field_pair
       !   psi           (n, 6 nbody) radiation potentials at |Omega|, Omega = s1%omega - s2%omega
       !   grad_psi      (3, n, 6 nbody) their gradients (psi_surface_gradient)
       !   psi_wl        (nwl, 6 nbody) psi at the waterline (psi_waterline with the same grad_psi)
-      !   omega_psi     the frequency psi was solved at; must be |Omega| within 1e-6 max(omega_1, omega_2)
+      !   omega_psi     the frequency psi was solved at; must be |Omega| within omega_tol, or without omega_tol within
+      !                 1e-6 max(omega_1, omega_2)
       !   rho           water density
       !   g             gravity of the incident waves, for phi_I2 (SecondOrderIncident)
       !   terms         (6 nbody, NPOT_TERMS), T_pot,k per term
@@ -123,6 +124,8 @@ CONTAINS
       !                 grad psi_k there at |Omega| (3, cs%n, 6 nbody), and the total velocity of s1 and s2 there (3, cs%n).
       !                 B2 then takes the surface piece from b2_body_term and b2_control_term; rot and line are unchanged.
       !   edge_w        optional (n), with cs only: panel weights of the hull term at sharp edges (SharpEdge)
+      !   omega_tol     optional: the tolerance of the omega_psi check. QTFDriver passes the one it merges and looks up the
+      !                 difference frequencies with (qtf_psi_tolerance), so that the check cannot refuse a psi it handed over
       ! Omega = 0 gives zeros. For Omega < 0, psi(-|Omega|) = conj psi(|Omega|) is used (the radiation potential of the
       ! negative frequency), so terms(2, 1) = conj terms(1, 2). Exact equality s1%omega == s2%omega is the diagonal: the
       ! caller passes the same grid value for both.
@@ -137,10 +140,11 @@ CONTAINS
       TYPE(cs_points), INTENT(IN), OPTIONAL :: cs
       COMPLEX(8), INTENT(IN), OPTIONAL :: grad_psi_cs(:, :, :), u1_cs(:, :), u2_cs(:, :)
       REAL(8), INTENT(IN), OPTIONAL :: edge_w(:)
+      REAL(8), INTENT(IN), OPTIONAL :: omega_tol
 
       INTEGER :: nmode
       LOGICAL :: control
-      REAL(8) :: omega
+      REAL(8) :: omega, tol
       CHARACTER(LEN=200) :: msg
 
       terms = (0D0, 0D0)
@@ -175,7 +179,12 @@ CONTAINS
             ERROR STOP 1
          END IF
       END IF
-      IF (ABS(omega_psi - ABS(omega)) > 1D-6*MAX(s1%omega, s2%omega)) THEN
+      IF (PRESENT(omega_tol)) THEN
+         tol = omega_tol
+      ELSE
+         tol = 1D-6*MAX(s1%omega, s2%omega)
+      END IF
+      IF (ABS(omega_psi - ABS(omega)) > tol) THEN
          WRITE (msg, '(a,ES14.6,a,ES14.6,a)') ' potential_pair: psi was solved at omega =', omega_psi, &
             ' rad/s, but the pair needs Omega =', ABS(omega), ' rad/s.'
          CALL refuse()

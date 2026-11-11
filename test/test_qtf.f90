@@ -8,7 +8,7 @@ module test_qtf
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use NearFieldDrift, only : near_field_pair, KERNEL_DIFF, KERNEL_SUM
   use QTFDriver, only : qtf_init, qtf_keep, qtf_pair_load, qtf_finish, qtf_kept, qtf_radiation_list, qtf_radiation_omegas, &
-                        qtf_keep_psi, qtf_nonfinite_psi, qtf_nonfinite_pairs
+                        qtf_keep_psi, qtf_nonfinite_psi, qtf_nonfinite_pairs, qtf_psi_tolerance, qtf_psi_index
   use, intrinsic :: ieee_arithmetic, only : ieee_value, ieee_quiet_nan
   use SecondOrderOutput, only : write_qtf_row
   use second_order_fixtures, only : make_cylinder, maccamy_fuchs_state, maccamy_fuchs_phi
@@ -33,6 +33,8 @@ subroutine collect_qtf(testsuite)
     new_unittest("qtf_row_format", test_row_format), &
     new_unittest("radiation_list_uniform", test_radiation_list_uniform), &
     new_unittest("radiation_list_nonuniform", test_radiation_list_nonuniform), &
+    new_unittest("radiation_list_period_grid", test_radiation_list_period_grid), &
+    new_unittest("potential_part_period_grid", test_potential_part_period_grid), &
     new_unittest("psi_store_order", test_psi_store_order), &
     new_unittest("psi_nonfinite_counted", test_psi_nonfinite_counted), &
     new_unittest("qtf_files", test_files) &
@@ -225,6 +227,116 @@ subroutine test_radiation_list_nonuniform(error)
   if (allocated(error)) return
   call check(error, all(reuse == 0), "a difference is reused")
 end subroutine test_radiation_list_nonuniform
+
+!> The period grid of the final review (T = 4 to 30 s in 0.25 s steps, qtf_max_dw = 0.3): every pair finds a difference
+!> frequency within qtf_psi_tolerance, the tolerance potential_pair is given, and within the 1e-6 max(omega_i, omega_j) of
+!> its default check (the 1e-6 merge of the first version broke this at 52 pairs). Only rounding is merged: the list is
+!> strictly ascending, and no two of its values are within the tolerance.
+subroutine test_radiation_list_period_grid(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: two_pi = 6.283185307179586d0, max_dw = 0.3d0
+  real(8) :: grid(105), tol, dw, best
+  real(8), allocatable :: need(:)
+  integer, allocatable :: reuse(:)
+  integer :: i, j, m, far, pairs
+
+  do i = 1, 105
+    grid(i) = two_pi / (4d0 + 0.25d0 * real(i - 1, 8))
+  end do
+  tol = qtf_psi_tolerance(grid)
+  call check(error, abs(tol - 1d-9 * maxval(grid)) <= 1d-24, "tolerance")
+  if (allocated(error)) return
+  call qtf_radiation_list(grid, max_dw, tol, need, reuse)
+  call check(error, all(need(2:) - need(:size(need) - 1) > tol), "differences within the tolerance kept apart")
+  if (allocated(error)) return
+  far = 0
+  pairs = 0
+  do i = 1, 105
+    do j = 1, 105
+      dw = grid(i) - grid(j)
+      if (dw <= 0d0 .or. dw > max_dw * (1d0 + 1d-9)) cycle
+      pairs = pairs + 1
+      best = huge(1d0)
+      do m = 1, size(need)
+        best = min(best, abs(need(m) - dw))
+      end do
+      if (best > tol .or. best > 1d-6 * grid(i)) far = far + 1
+    end do
+  end do
+  call check(error, pairs > 3000, "pairs of the grid within qtf_max_dw")
+  if (allocated(error)) return
+  call check(error, far, 0, "pairs whose difference frequency is not within the tolerance")
+end subroutine test_radiation_list_period_grid
+
+!> The potential part on the periods 4.0, 4.6, 7.002 and 9.0738 s (the integration fixture qtf_period_body): two of their
+!> differences are 1.1e-6 rad/s apart. The 1e-6 merge of the first version gave both pairs one psi, which potential_pair
+!> then refused with a stop in qtf_finish. Now each Omega has its psi, every pair finds it (qtf_psi_index), and qtf_finish
+!> writes every pair of QTF_Indirect.11d.
+subroutine test_potential_part_period_grid(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: two_pi = 6.283185307179586d0
+  real(8), parameter :: periods(4) = [4.0d0, 4.6d0, 7.002d0, 9.0738d0]
+  type(so_options) :: opts
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: state
+  real(8) :: w(4), k
+  real(8), allocatable :: rad(:)
+  complex(8), allocatable :: wl(:), psi(:,:)
+  logical :: ok
+  character(len=:), allocatable :: msg
+  integer :: i, j, m, kept
+
+  w = two_pi / periods
+  call CreateDirectory(root//"/Wamit_format", ok)
+  call check(error, ok, "could not create the test folder")
+  if (allocated(error)) return
+  call make_cylinder(radius, depth, 48, 10, 3, mesh, .true.)
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call check(error, ok, "build_surface_geom stopped: "//msg)
+  if (allocated(error)) return
+  opts%mean_drift = 1; opts%qtf = 1; opts%qtf_terms = QTF_TERMS_BODY
+  call qtf_init(opts, 4, [0d0], geom%nwl, mesh%n, mesh%nbody, root, omegas_main=w)
+  allocate(wl(geom%nwl), psi(mesh%n, 6))
+  do i = 1, 4
+    k = wave_number(w(i), depth)
+    call maccamy_fuchs_state(mesh, radius, depth, k, w(i), 1d0, 0d0, g, rho, state)
+    state%xi(:, 1) = [(0.3d0, 0.1d0), (-0.2d0, 0.4d0), (0.5d0, -0.1d0), (0.02d0, 0.05d0), (-0.04d0, 0.03d0), &
+                      (0.06d0, -0.02d0)]
+    do j = 1, geom%nwl
+      wl(j) = maccamy_fuchs_phi(geom%wl_xm(:, j), radius, depth, k, w(i), 1d0, 0d0, g)
+    end do
+    call qtf_keep(1, state, wl, w(i))
+  end do
+  ! Every pair finds its Omega
+  do i = 1, 4
+    do j = 1, 4
+      if (i == j) cycle
+      call check(error, qtf_psi_index(abs(w(i) - w(j))) > 0, "a pair has no difference frequency")
+      if (allocated(error)) return
+    end do
+  end do
+  ! psi of every Omega: a made-up value that depends on Omega, from the main grid where it is one, else radiation-only
+  kept = 0
+  do i = 1, 4
+    psi = cmplx(0.3d0 + w(i), -0.1d0, kind=8)
+    call qtf_keep_psi(w(i), psi, ok)
+    if (ok) kept = kept + 1
+  end do
+  rad = qtf_radiation_omegas()
+  do m = 1, size(rad)
+    psi = cmplx(0.3d0 + rad(m), -0.1d0, kind=8)
+    call qtf_keep_psi(rad(m), psi)
+    kept = kept + 1
+  end do
+  call check(error, kept, 6, "difference frequencies: all 6 differences of the grid are distinct")
+  if (allocated(error)) return
+  call qtf_finish(mesh, geom, 1d0)
+  call check(error, qtf_nonfinite_pairs(), 0, "non-finite pairs")
+  if (allocated(error)) return
+  call check(error, count_rows(root//"/Wamit_format/QTF_Indirect.11d"), 16 * 6, "rows of .11d")
+  call remove_files()
+end subroutine test_potential_part_period_grid
 
 !> The psi store takes the differences of the grid only, at the size of the mesh.
 subroutine test_psi_store_order(error)

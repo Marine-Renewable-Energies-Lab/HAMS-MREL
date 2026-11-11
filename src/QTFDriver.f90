@@ -39,6 +39,9 @@ MODULE QTFDriver
    ! With qtf_terms = body the potential part of the difference QTF comes from the indirect method (Molin 1979), which needs
    ! the radiation potentials psi_k at every difference frequency Omega = omega_i - omega_j > 0 of the grid within
    ! qtf_max_dw. qtf_radiation_list gives these Omega, with no interpolation: a non-uniform grid can have N(N-1)/2 of them.
+   ! Two Omega are one only to rounding (qtf_psi_tolerance, 1e-9 of the largest frequency), and the lookup of an Omega
+   ! (qtf_psi_index) and the check of potential_pair use that same tolerance. qtf_init checks before the solves that every
+   ! pair finds its Omega, and refuses a grid with two frequencies equal to within that tolerance but not exactly.
    ! An Omega on the main grid takes psi from the radiation solve of that frequency; the others are solved after the
    ! frequency loop (qtf_radiation_omegas). psi_store keeps psi of every Omega, filled by qtf_keep_psi.
    !
@@ -70,7 +73,7 @@ MODULE QTFDriver
    PRIVATE
 
    PUBLIC :: qtf_init, qtf_keep, qtf_pair_load, qtf_finish, qtf_stored_mb, qtf_kept
-   PUBLIC :: qtf_radiation_list, qtf_radiation_omegas, qtf_keep_psi, qtf_psi_index, qtf_psi_count
+   PUBLIC :: qtf_radiation_list, qtf_radiation_omegas, qtf_keep_psi, qtf_psi_index, qtf_psi_count, qtf_psi_tolerance
    PUBLIC :: qtf_nonfinite_psi, qtf_nonfinite_pairs
    PUBLIC :: qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, qtf_set_edge_weights
 
@@ -84,7 +87,10 @@ MODULE QTFDriver
    ! Radiation potentials at the difference frequencies, for qtf_terms = body
    REAL(8), ALLOCATABLE :: psi_need(:)                   ! (nneed), the Omega, ascending
    INTEGER, ALLOCATABLE :: psi_reuse(:)                  ! (nneed), main-grid index of each Omega, or 0
-   REAL(8) :: psi_tol = 0D0                              ! two Omega closer than this are the same
+   REAL(8) :: psi_tol = 0D0                              ! two Omega closer than this are the same (qtf_psi_tolerance)
+   ! Relative tolerance of the difference frequencies: rounding only. Differences of distinct grid values that are closer
+   ! than this are not merged into one psi (a period grid has many that differ by 1e-6 and more)
+   REAL(8), PARAMETER :: PSI_REL_TOL = 1D-9
    COMPLEX(8), ALLOCATABLE :: psi_store(:, :, :)         ! (n_panels, 6*nbody, nneed)
    LOGICAL, ALLOCATABLE :: psi_kept(:)                   ! (nneed)
    ! Potential part of the difference QTF (qtf_terms = body)
@@ -119,6 +125,20 @@ CONTAINS
 
       active = opts%qtf > 0
       IF (.NOT. active) RETURN
+      body_active = opts%qtf_terms == QTF_TERMS_BODY .AND. (opts%qtf == 1 .OR. opts%qtf == 3)
+      IF (body_active) THEN
+         IF (.NOT. PRESENT(omegas_main)) THEN
+            WRITE (*, '(a)') ' QTF: qtf_init needs the main-grid frequencies for qtf_terms = body.'
+            ERROR STOP 1
+         END IF
+         ! The difference frequencies first, so that a grid they do not fit stops before anything is allocated
+         IF (ALLOCATED(psi_need)) DEALLOCATE (psi_need)
+         IF (ALLOCATED(psi_reuse)) DEALLOCATE (psi_reuse)
+         psi_tol = qtf_psi_tolerance(omegas_main)
+         CALL check_grid(omegas_main)
+         CALL qtf_radiation_list(omegas_main, opts%qtf_max_dw, psi_tol, psi_need, psi_reuse)
+         CALL check_pairs(omegas_main)
+      END IF
       kind_qtf = opts%qtf
       max_dw = opts%qtf_max_dw
       all_headings_pairs = MERGE(1, 0, opts%mean_drift == 2)
@@ -148,32 +168,78 @@ CONTAINS
       store_wl = (0D0, 0D0)
       beta_deg = beta_in_deg
 
-      IF (ALLOCATED(psi_need)) DEALLOCATE (psi_need)
-      IF (ALLOCATED(psi_reuse)) DEALLOCATE (psi_reuse)
+      IF (.NOT. body_active) THEN
+         IF (ALLOCATED(psi_need)) DEALLOCATE (psi_need)
+         IF (ALLOCATED(psi_reuse)) DEALLOCATE (psi_reuse)
+      END IF
       IF (ALLOCATED(psi_store)) DEALLOCATE (psi_store)
       IF (ALLOCATED(psi_kept)) DEALLOCATE (psi_kept)
       IF (ALLOCATED(tpot)) DEALLOCATE (tpot)
       CALL free_control_surface()
       n_bad_psi = 0
       n_bad_pairs = 0
-      body_active = opts%qtf_terms == QTF_TERMS_BODY .AND. (kind_qtf == 1 .OR. kind_qtf == 3)
       pot_terms = body_active .AND. opts%write_terms >= 1
       IF (body_active) THEN
-         IF (.NOT. PRESENT(omegas_main)) THEN
-            WRITE (*, '(a)') ' QTF: qtf_init needs the main-grid frequencies for qtf_terms = body.'
-            ERROR STOP 1
-         END IF
-         psi_tol = 1D-6*MAXVAL(omegas_main)
-         CALL qtf_radiation_list(omegas_main, max_dw, psi_tol, psi_need, psi_reuse)
          ALLOCATE (psi_store(n_panels, 6*nbody, SIZE(psi_need)), psi_kept(SIZE(psi_need)), STAT=st)
-         IF (st /= 0) CALL out_of_memory()
+         IF (st /= 0) CALL out_of_memory(body=.TRUE.)
          psi_store = (0D0, 0D0)
          psi_kept = .FALSE.
          ALLOCATE (tpot(6*nbody, nfreq, nfreq, heading_pairs(nbeta)), STAT=st)
-         IF (st /= 0) CALL out_of_memory()
+         IF (st /= 0) CALL out_of_memory(body=.TRUE.)
          tpot = (0D0, 0D0)
       END IF
+
+   CONTAINS
+
+      SUBROUTINE check_grid(w)
+         ! Two frequencies of the grid that are equal to within psi_tol but not exactly would give an Omega that is neither
+         ! the diagonal nor a difference frequency of psi
+         REAL(8), INTENT(IN) :: w(:)
+         INTEGER :: i, j
+
+         DO i = 1, SIZE(w)
+            DO j = i + 1, SIZE(w)
+               IF (w(i) /= w(j) .AND. ABS(w(i) - w(j)) <= psi_tol) THEN
+                  WRITE (*, '(a,I0,a,I0,a,ES22.14,a,ES22.14,a)') ' QTF: frequencies ', i, ' and ', j, ' of the grid,', &
+                     w(i), ' and', w(j), ' rad/s, are equal to within rounding but not exactly.'
+                  WRITE (*, '(a)') ' Remove the duplicate from the frequency list (qtf_terms = body needs distinct frequencies).'
+                  ERROR STOP 1
+               END IF
+            END DO
+         END DO
+      END SUBROUTINE check_grid
+
+      SUBROUTINE check_pairs(w)
+         ! Every pair of the difference QTF finds its Omega among the difference frequencies within psi_tol, the tolerance
+         ! potential_pair is given: a stop here costs no solve
+         REAL(8), INTENT(IN) :: w(:)
+         REAL(8) :: dw
+         INTEGER :: i, j
+
+         DO i = 1, SIZE(w)
+            DO j = 1, SIZE(w)
+               dw = w(i) - w(j)
+               IF (dw <= 0D0) CYCLE
+               IF (opts%qtf_max_dw > 0D0 .AND. dw > opts%qtf_max_dw*(1D0 + 1D-9)) CYCLE
+               IF (qtf_psi_index(dw) == 0) THEN
+                  WRITE (*, '(a,ES22.14,a,ES14.6,a,ES14.6,a)') ' QTF: Omega =', dw, ' rad/s of the pair', w(i), ',', w(j), &
+                     ' rad/s is not among the difference frequencies of psi.'
+                  WRITE (*, '(a)') ' This is a bug: please report it with the frequency list.'
+                  ERROR STOP 1
+               END IF
+            END DO
+         END DO
+      END SUBROUTINE check_pairs
+
    END SUBROUTINE qtf_init
+
+   REAL(8) PURE FUNCTION qtf_psi_tolerance(omegas_main)
+      ! The tolerance of the difference frequencies of the grid omegas_main (rad/s): qtf_radiation_list puts every Omega
+      ! within it of its psi, and an Omega is found (qtf_psi_index) and accepted (potential_pair) within it. Rounding only
+      REAL(8), INTENT(IN) :: omegas_main(:)
+
+      qtf_psi_tolerance = PSI_REL_TOL*MAXVAL(omegas_main)
+   END FUNCTION qtf_psi_tolerance
 
    SUBROUTINE qtf_set_control_surface(pts)
       ! qtf_b2 = control: keeps the points of C and F and allocates the fields there for the store of qtf_init. Call after
@@ -189,7 +255,7 @@ CONTAINS
       cs = pts
       ALLOCATE (cs_u(3, cs%n, SIZE(store, 1), nbeta), cs_u_kept(SIZE(store, 1), nbeta), &
                 cs_gpsi(3, cs%n, SIZE(psi_store, 2), SIZE(psi_need)), cs_psi_kept(SIZE(psi_need)), STAT=st)
-      IF (st /= 0) CALL out_of_memory()
+      IF (st /= 0) CALL out_of_memory(body=.TRUE.)
       cs_u = (0D0, 0D0)
       cs_gpsi = (0D0, 0D0)
       cs_u_kept = .FALSE.
@@ -266,9 +332,10 @@ CONTAINS
 
    SUBROUTINE qtf_radiation_list(omegas_main, max_dw_in, tol, need, reuse_index)
       ! The distinct difference frequencies Omega = omega_i - omega_j > 0 of the grid omegas_main, ascending, with
-      ! Omega <= max_dw_in (all of them for max_dw_in = 0), as in qtf_finish. Differences closer than tol are one, the
-      ! smallest of them. reuse_index(m) is the main-grid index whose frequency is need(m) within tol, else 0; need(m) is then
-      ! that frequency exactly, so that the radiation solve of the main grid finds it.
+      ! Omega <= max_dw_in (all of them for max_dw_in = 0), as in qtf_finish. Every difference is within tol of its need(m):
+      ! the differences within tol/2 of the smallest of them are one, and reuse_index(m) is the main-grid index whose
+      ! frequency is need(m) within tol/2, else 0; need(m) is then that frequency exactly, so that the radiation solve of the
+      ! main grid finds it. qtf_init passes qtf_psi_tolerance, which merges rounding only.
       REAL(8), INTENT(IN) :: omegas_main(:), max_dw_in, tol
       REAL(8), ALLOCATABLE, INTENT(OUT) :: need(:)
       INTEGER, ALLOCATABLE, INTENT(OUT) :: reuse_index(:)
@@ -293,7 +360,7 @@ CONTAINS
       m = 0
       DO i = 1, nd
          IF (m > 0) THEN
-            IF (d(i) - need(m) <= tol) CYCLE
+            IF (d(i) - need(m) <= 0.5D0*tol) CYCLE
          END IF
          m = m + 1
          need(m) = d(i)
@@ -303,7 +370,7 @@ CONTAINS
       reuse_index = 0
       DO i = 1, m
          DO j = 1, n
-            IF (ABS(omegas_main(j) - need(i)) <= tol) THEN
+            IF (ABS(omegas_main(j) - need(i)) <= 0.5D0*tol) THEN
                reuse_index(i) = j
                need(i) = omegas_main(j)
                EXIT
@@ -378,16 +445,29 @@ CONTAINS
    END FUNCTION qtf_psi_count
 
    INTEGER FUNCTION qtf_psi_index(omega)
-      ! Index of omega among the difference frequencies (within their tolerance), or 0
+      ! Index of the difference frequency nearest to omega, if within psi_tol, or 0. psi_need is ascending: bisection to the
+      ! first need >= omega - psi_tol, then the nearest up to omega + psi_tol
       REAL(8), INTENT(IN) :: omega
-      INTEGER :: m
+      INTEGER :: m, lo, hi, mid
 
       qtf_psi_index = 0
       IF (.NOT. ALLOCATED(psi_need)) RETURN
-      DO m = 1, SIZE(psi_need)
-         IF (ABS(psi_need(m) - omega) <= psi_tol) THEN
+      lo = 1
+      hi = SIZE(psi_need) + 1
+      DO WHILE (lo < hi)
+         mid = (lo + hi)/2
+         IF (psi_need(mid) < omega - psi_tol) THEN
+            lo = mid + 1
+         ELSE
+            hi = mid
+         END IF
+      END DO
+      DO m = lo, SIZE(psi_need)
+         IF (psi_need(m) > omega + psi_tol) EXIT
+         IF (qtf_psi_index == 0) THEN
             qtf_psi_index = m
-            RETURN
+         ELSE IF (ABS(psi_need(m) - omega) < ABS(psi_need(qtf_psi_index) - omega)) THEN
+            qtf_psi_index = m
          END IF
       END DO
    END FUNCTION qtf_psi_index
@@ -661,15 +741,16 @@ CONTAINS
                            CALL potential_pair(mesh, geom, s1, s2, store_wl(:, i, b1), store_wl(:, j, b2), &
                                                psi_store(:, :, m), grad, pwl, psi_need(m), s1%rho, g_wave, terms, &
                                                cs=cs, grad_psi_cs=cs_gpsi(:, :, :, m), u1_cs=cs_u(:, :, i, b1), &
-                                               u2_cs=cs_u(:, :, j, b2), edge_w=edge_w)
+                                               u2_cs=cs_u(:, :, j, b2), edge_w=edge_w, omega_tol=psi_tol)
                         ELSE IF (b2_control) THEN
                            CALL potential_pair(mesh, geom, s1, s2, store_wl(:, i, b1), store_wl(:, j, b2), &
                                                psi_store(:, :, m), grad, pwl, psi_need(m), s1%rho, g_wave, terms, &
                                                cs=cs, grad_psi_cs=cs_gpsi(:, :, :, m), u1_cs=cs_u(:, :, i, b1), &
-                                               u2_cs=cs_u(:, :, j, b2))
+                                               u2_cs=cs_u(:, :, j, b2), omega_tol=psi_tol)
                         ELSE
                            CALL potential_pair(mesh, geom, s1, s2, store_wl(:, i, b1), store_wl(:, j, b2), &
-                                               psi_store(:, :, m), grad, pwl, psi_need(m), s1%rho, g_wave, terms)
+                                               psi_store(:, :, m), grad, pwl, psi_need(m), s1%rho, g_wave, terms, &
+                                               omega_tol=psi_tol)
                         END IF
                      END ASSOCIATE
                      tpot(:, i, j, heading_pair(b1, b2)) = SUM(terms, DIM=2)
@@ -695,9 +776,20 @@ CONTAINS
       IF (unit /= 0) CLOSE (unit)
    END SUBROUTINE potential_part
 
-   SUBROUTINE out_of_memory()
+   SUBROUTINE out_of_memory(body)
+      ! body: the store of qtf_terms = body (psi, T_pot, the fields on C and F), whose size the log gave before
+      LOGICAL, INTENT(IN), OPTIONAL :: body
+
       WRITE (*, '(a)') ' QTF: not enough memory to keep the first-order states of every frequency. Use fewer frequencies,'
       WRITE (*, '(a)') ' headings or panels, or qtf = 0.'
+      IF (PRESENT(body)) THEN
+         IF (body) THEN
+            WRITE (*, '(a)') ' With qtf_terms = body the store also holds psi at every difference frequency (count in the log'
+            WRITE (*, '(a)') ' above): a smaller qtf_max_dw, or a uniform omega grid (whose differences coincide), needs fewer.'
+            WRITE (*, '(a)') ' With qtf_b2 = control the fields on C and F add to it: qtf_b2 = body avoids them, a larger'
+            WRITE (*, '(a)') ' cs_panel_size reduces them.'
+         END IF
+      END IF
       ERROR STOP 1
    END SUBROUTINE out_of_memory
 

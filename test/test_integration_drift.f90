@@ -197,6 +197,16 @@ module test_integration_drift
     real(8), parameter :: b2_main_grid_limit = 1d-12
     ! The half mesh against the whole mesh with qtf_b2 = control and edge weights: 7.0e-8 measured, 2x measured, rounded up
     real(8), parameter :: b2_half_limit = 1.5d-7
+    ! The default qtf_b2 = control against its qtf_b2 = body twin (final review, Important 2). The other four terms come from
+    ! the same first-order solution and psi; the control runs use 4 threads and the twins 1, so they agree to rounding only:
+    ! 9.5e-16 (two bodies) and 5.8e-15 (IRSP = 1) measured, a fixed 1e-12 over max |T_pot| of the rows of forces or of moments
+    real(8), parameter :: b2_twin_other_limit = 1d-12
+    ! B2 by C and F at the default panel size against the hull form, over max |T_pot| of the rows of forces or of moments:
+    ! two bodies 7.5e-2 measured (7.4e-2 and 7.5e-2 for bodies 1 and 2), IRSP = 1 3.1e-2. 1.3x measured, rounded
+    real(8), parameter :: b2_twin_limits(2) = [0.10d0, 0.04d0]
+    ! drift_methods = control together with qtf_b2 = control (B2 takes C and F from the drift, b2_idx not the identity)
+    ! against qtf_b2c_rad: 0 measured (the same .11d to the bit), a fixed 1e-12
+    real(8), parameter :: b2_drift_limit = 1d-12
 
 contains
 
@@ -247,6 +257,7 @@ contains
             new_unittest("run_qtf_body_cases", run_qtf_body_cases), &
             new_unittest("run_qtf_sharp_b2", run_qtf_sharp_b2), &
             new_unittest("run_qtf_b2_routes", run_qtf_b2_routes), &
+            new_unittest("run_qtf_b2_defaults", run_qtf_b2_defaults), &
             new_unittest("run_control_cyl", run_control_cyl), &
             new_unittest("run_control_cyl_sybo", run_control_cyl_sybo), &
             new_unittest("run_control_cases", run_control_cases) &
@@ -343,7 +354,10 @@ contains
             new_unittest("qtf_b2_control_other_terms", qtf_b2_control_other_terms), &
             new_unittest("qtf_b2_control_main_grid", qtf_b2_control_main_grid), &
             new_unittest("qtf_b2_control_half", qtf_b2_control_half), &
-            new_unittest("qtf_b2_control_log", qtf_b2_control_log) &
+            new_unittest("qtf_b2_control_log", qtf_b2_control_log), &
+            new_unittest("qtf_b2_default_twins", qtf_b2_default_twins), &
+            new_unittest("qtf_b2_control_with_drift", qtf_b2_control_with_drift), &
+            new_unittest("qtf_period_grid", qtf_period_grid) &
         ]
     end subroutine collect_tests_drift
 
@@ -592,8 +606,8 @@ contains
     !> The fixtures of the QTF potential part besides qtf_round_body and qtf_round_low, in one setup test
     subroutine run_qtf_body_cases(error)
         type(error_type), allocatable, intent(out) :: error
-        character(len=21), parameter :: cases(6) = [character(len=21) :: "qtf_round_body_ref", "qtf_round_body_irsp", &
-            "qtf_half_body", "qtf_two_round_body", "qtf_isolated_body", "qtf_round_low_spacing"]
+        character(len=21), parameter :: cases(7) = [character(len=21) :: "qtf_round_body_ref", "qtf_round_body_irsp", &
+            "qtf_half_body", "qtf_two_round_body", "qtf_isolated_body", "qtf_round_low_spacing", "qtf_period_body"]
         type(error_type), allocatable :: one
         integer :: c
 
@@ -623,6 +637,28 @@ contains
             end if
         end do
     end subroutine run_qtf_b2_routes
+
+    !> The default qtf_b2 = control with two bodies, with IRSP = 1, and together with drift_methods = control
+    subroutine run_qtf_b2_defaults(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=21), parameter :: cases(2) = [character(len=21) :: "qtf_two_round_control", "qtf_irsp_control"]
+        type(error_type), allocatable :: one
+        integer :: c
+
+        do c = 1, size(cases)
+            call run_case(trim(cases(c)), [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file], one)
+            if (allocated(one)) then
+                print '(4x,a)', trim(cases(c))//": "//one%message
+                if (.not. allocated(error)) call move_alloc(one, error)
+            end if
+        end do
+        call run_case("qtf_b2c_drift", [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file, &
+                                        control_file], one)
+        if (allocated(one)) then
+            print '(4x,a)', "qtf_b2c_drift: "//one%message
+            if (.not. allocated(error)) call move_alloc(one, error)
+        end if
+    end subroutine run_qtf_b2_defaults
 
     !> The sharp cylinder of drift_cyl, free, with B2 by the control surface (qtf_b2 = control) and by the hull
     subroutine run_qtf_sharp_b2(error)
@@ -3505,8 +3541,9 @@ contains
     !> files have the same rows in the same order.
     subroutine qtf_body_diagonal(error)
         type(error_type), allocatable, intent(out) :: error
-        character(len=20), parameter :: cases(4) = [character(len=20) :: "qtf_round_body", "qtf_round_low", &
-                                                    "qtf_two_round_body", "qtf_sharp_b2_control"]
+        character(len=21), parameter :: cases(6) = [character(len=21) :: "qtf_round_body", "qtf_round_low", &
+                                                    "qtf_two_round_body", "qtf_sharp_b2_control", "qtf_two_round_control", &
+                                                    "qtf_period_body"]
         character(len=:), allocatable :: a(:), b(:)
         real(8), allocatable :: d(:,:)
         integer :: c, r, diagonal
@@ -3538,8 +3575,8 @@ contains
     !> each pair with Omega /= 0 and only those
     subroutine qtf_body_sum_of_terms(error)
         type(error_type), allocatable, intent(out) :: error
-        character(len=20), parameter :: cases(3) = [character(len=20) :: "qtf_round_body", "qtf_two_round_body", &
-                                                    "qtf_sharp_b2_control"]
+        character(len=21), parameter :: cases(5) = [character(len=21) :: "qtf_round_body", "qtf_two_round_body", &
+                                                    "qtf_sharp_b2_control", "qtf_two_round_control", "qtf_period_body"]
         real(8), allocatable :: d(:,:), x(:,:), t(:,:)
         real(8) :: worst
         integer :: c, r, q, n
@@ -3580,8 +3617,9 @@ contains
     !> pairs, and T_pot of the terms file the same to its digits
     subroutine qtf_body_hermitian(error)
         type(error_type), allocatable, intent(out) :: error
-        character(len=20), parameter :: cases(4) = [character(len=20) :: "qtf_round_body", "qtf_round_low", &
-                                                    "qtf_two_round_body", "qtf_sharp_b2_control"]
+        character(len=21), parameter :: cases(6) = [character(len=21) :: "qtf_round_body", "qtf_round_low", &
+                                                    "qtf_two_round_body", "qtf_sharp_b2_control", "qtf_two_round_control", &
+                                                    "qtf_period_body"]
         real(8), allocatable :: x(:,:), t(:,:)
         real(8) :: worst, scale
         integer :: c, p, q, partners
@@ -3982,6 +4020,80 @@ contains
         call check(error, count_log_lines(get_running_exe_path()//"qtf_round_body.log", b2_note), 0, &
                    "qtf_b2 note in the log of qtf_round_body")
     end subroutine qtf_b2_control_log
+
+    !> The default qtf_b2 = control with two bodies and with IRSP = 1 against the same case with qtf_b2 = body: .11d is
+    !> finite, the other four terms are the same to rounding, and B2 differs, by no more than the measured gap between C
+    !> and the hull. A wiring error of the multi-body or IRSP route (the body of a point of C, its reference point, the
+    !> per-body dpsi/dn) would show as a B2 far outside the gap.
+    subroutine qtf_b2_default_twins(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=21), parameter :: control(2) = [character(len=21) :: "qtf_two_round_control", "qtf_irsp_control"]
+        character(len=21), parameter :: body(2) = [character(len=21) :: "qtf_two_round_body", "qtf_round_body_irsp"]
+        real(8), allocatable :: tc(:,:), tb(:,:), total(:,:)
+        real(8) :: other, gap, scale
+        integer :: c, p, q, k
+        logical :: b2_differs
+
+        do c = 1, size(control)
+            call check_no_bad_numbers(output_dir(trim(control(c)))//qtf_indirect_file, error)
+            if (allocated(error)) return
+            call read_pot_terms(output_dir(trim(control(c)))//pot_terms_file, tc, error)
+            if (allocated(error)) return
+            call read_pot_terms(output_dir(trim(body(c)))//pot_terms_file, tb, error)
+            if (allocated(error)) return
+            call read_pot_total(output_dir(trim(body(c)))//pot_terms_file, total, error)
+            if (allocated(error)) return
+            call check(error, size(tc, 1) == size(tb, 1) .and. size(tc, 1) > 0, trim(control(c))//": other rows than the twin")
+            if (allocated(error)) return
+            other = 0d0
+            gap = 0d0
+            b2_differs = .false.
+            do p = 1, size(tc, 1)
+                q = matching_row(tc, p, tb)
+                call check(error, q > 0, trim(body(c))//": a row of "//trim(control(c))//" is missing")
+                if (allocated(error)) return
+                scale = kind_scale(total, tb(q,5))
+                do k = 6, 14, 2
+                    if (k == 12) cycle
+                    other = max(other, hypot(tc(p,k) - tb(q,k), tc(p,k+1) - tb(q,k+1))/scale)
+                end do
+                gap = max(gap, hypot(tc(p,12) - tb(q,12), tc(p,13) - tb(q,13))/scale)
+                if (any(tc(p, 12:13) /= tb(q, 12:13))) b2_differs = .true.
+            end do
+            call report("qtf_b2_default_twins "//trim(control(c))//" other terms", other)
+            call report("qtf_b2_default_twins "//trim(control(c))//" B2", gap)
+            call check(error, b2_differs, trim(control(c))//": B2 is that of qtf_b2 = body")
+            if (allocated(error)) return
+            call check_below(error, "qtf_b2_default_twins "//trim(control(c))//" other terms", other, b2_twin_other_limit)
+            if (allocated(error)) return
+            call check_below(error, "qtf_b2_default_twins "//trim(control(c))//" B2", gap, b2_twin_limits(c))
+            if (allocated(error)) return
+        end do
+    end subroutine qtf_b2_default_twins
+
+    !> drift_methods = control together with qtf_b2 = control: B2 takes C and F of the drift without its segments of
+    !> Gamma_c (b2_idx is not the identity), so the terms are those of qtf_b2c_rad, which builds C and F for B2 alone
+    subroutine qtf_b2_control_with_drift(error)
+        type(error_type), allocatable, intent(out) :: error
+        call compare_terms("qtf_b2c_drift", "qtf_b2c_rad", "qtf_b2_control_with_drift", b2_drift_limit, error)
+    end subroutine qtf_b2_control_with_drift
+
+    !> A grid in periods (Input_frequency_type 4) whose differences include two 1.1e-6 rad/s apart: every pair has its psi
+    !> (6 radiation-only solves, none merged), and .11d has every pair, finite
+    subroutine qtf_period_grid(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: x(:,:)
+
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_period_body.log", &
+                                          "psi at 6 difference frequencies, 0 from the main grid and 6 radiation-only"), 1, &
+                   "qtf_period_body: expected psi at the 6 distinct differences")
+        if (allocated(error)) return
+        call read_qtf(output_dir("qtf_period_body")//qtf_indirect_file, x, error)
+        if (allocated(error)) return
+        call check(error, size(x, 1) == 16*6, "qtf_period_body: expected 4 x 4 pairs, 6 rows each in .11d")
+        if (allocated(error)) return
+        call check_no_bad_numbers(output_dir("qtf_period_body")//qtf_indirect_file, error)
+    end subroutine qtf_period_grid
 
     !> Lines of a file that contain text, or -1 if it cannot be opened
     integer function count_log_lines(path, text)
