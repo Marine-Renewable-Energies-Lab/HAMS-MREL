@@ -38,7 +38,7 @@ MODULE SecondOrderIncident
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: incident2, incident2_pair, incident2_phi, incident2_grad
+   PUBLIC :: incident2, incident2_pair, incident2_phi, incident2_grad, free_surface_forcing
 
    TYPE :: incident2
       COMPLEX(8) :: coef = (0D0, 0D0)   ! Q / D, per unit amplitudes
@@ -58,9 +58,9 @@ CONTAINS
       TYPE(incident2), INTENT(OUT) :: inc
       INTEGER, INTENT(IN), OPTIONAL :: kernel
       REAL(8), PARAMETER :: ORIGIN(3) = 0D0
-      COMPLEX(8) :: phi(2), u(3, 2), s(2), q, d
+      COMPLEX(8) :: phi(2), u(3, 2), q, d
       REAL(8) :: omega(2), k(2), beta(2), dd
-      INTEGER :: i, m, kn
+      INTEGER :: i, kn
 
       kn = KERNEL_DIFF
       IF (PRESENT(kernel)) kn = kernel
@@ -86,15 +86,9 @@ CONTAINS
       DO i = 1, 2
          phi(i) = incident_phi(ORIGIN, omega(i), k(i), h, 1D0, beta(i), g)
          CALL incident_grad(ORIGIN, omega(i), k(i), h, 1D0, beta(i), g, u(:, i))
-         ! phi_zz = k^2 phi for a first-order wave, at any depth
-         s(i) = -omega(i)**2*u(3, i) + g*k(i)**2*phi(i)
       END DO
-      q = (0D0, 0D0)
-      DO m = 1, 3
-         q = q + pair_product(kn, u(m, 1), u(m, 1), u(m, 2), u(m, 2))
-      END DO
-      q = (0D0, 1D0)*inc%omega*q &
-          + pair_product(kn, -(0D0, 1D0)*omega(1)*phi(1), s(1), -(0D0, 1D0)*omega(2)*phi(2), s(2))/g
+      ! phi_zz = k^2 phi for a first-order wave, at any depth
+      q = free_surface_forcing(kn, w1, phi(1), u(:, 1), k1**2*phi(1), w2, phi(2), u(:, 2), k2**2*phi(2), g)
       IF (h < 0D0) THEN
          dd = -inc%omega**2 + g*inc%kmag
       ELSE
@@ -103,6 +97,34 @@ CONTAINS
       d = CMPLX(dd, 0D0, KIND=8)
       inc%coef = q/d
    END SUBROUTINE incident2_pair
+
+   PURE COMPLEX(8) FUNCTION free_surface_forcing(kernel, w1, phi1, grad1, phizz1, w2, phi2, grad2, phizz2, g)
+      ! Free-surface forcing Q of the second-order potential on z = 0 for the pair of first-order states 1 and 2:
+      !   -Omega^2 phi + g phi_z = Q,   Q = i Omega sum_m P(d_m a, d_m a, d_m b, d_m b) + (1/g) P(-i w1 a, s_a, -i w2 b, s_b),
+      !   s = -w^2 phi_z + g phi_zz,   Omega = w1 - w2 (KERNEL_DIFF) or w1 + w2 (KERNEL_SUM),
+      ! with P = pair_product. Each state is its potential phi, gradient grad(3) and phi_zz at one point of z = 0
+      ! (k^2 phi for an incident wave). Unit amplitudes, time factor e^{-i w t}.
+      INTEGER, INTENT(IN) :: kernel
+      REAL(8), INTENT(IN) :: w1, w2, g
+      COMPLEX(8), INTENT(IN) :: phi1, grad1(3), phizz1, phi2, grad2(3), phizz2
+      COMPLEX(8) :: s1, s2, q
+      REAL(8) :: om
+      INTEGER :: m
+
+      IF (kernel == KERNEL_SUM) THEN
+         om = w1 + w2
+      ELSE
+         om = w1 - w2
+      END IF
+      s1 = -w1**2*grad1(3) + g*phizz1
+      s2 = -w2**2*grad2(3) + g*phizz2
+      q = (0D0, 0D0)
+      DO m = 1, 3
+         q = q + pair_product(kernel, grad1(m), grad1(m), grad2(m), grad2(m))
+      END DO
+      free_surface_forcing = (0D0, 1D0)*om*q &
+                             + pair_product(kernel, -(0D0, 1D0)*w1*phi1, s1, -(0D0, 1D0)*w2*phi2, s2)/g
+   END FUNCTION free_surface_forcing
 
    PURE COMPLEX(8) FUNCTION incident2_phi(inc, x)
       ! Second-order incident potential of the pair, per unit amplitudes, at x(3).
