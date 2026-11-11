@@ -5,8 +5,9 @@ module test_control_surface_mesh
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use ControlSurfaceMesh, only : cylinder_surface, box_surface, add_surface_points, build_control_surface, &
                                  check_control_surface, write_control_surface, read_control_mesh, &
-                                 free_surface_strips
-  use second_order_fixtures, only : make_cylinder, set_panel
+                                 free_surface_strips, build_fs_inner
+  use QTFField, only : body_winding
+  use second_order_fixtures, only : make_cylinder, make_two_bodies, set_panel
   implicit none
   private
 
@@ -39,7 +40,13 @@ subroutine collect_control_surface_mesh(testsuite)
     new_unittest("with_free_appends_f", test_with_free_appends_f), &
     new_unittest("fs_rows_default", test_fs_rows_default), &
     new_unittest("fs_file_takes_precedence", test_fs_file_takes_precedence), &
-    new_unittest("fs_file_off_free_surface_stops", test_fs_file_off_free_surface_stops) &
+    new_unittest("fs_file_off_free_surface_stops", test_fs_file_off_free_surface_stops), &
+    new_unittest("fs_inner_area", test_fs_inner_area), &
+    new_unittest("fs_inner_outside_waterplane", test_fs_inner_outside_waterplane), &
+    new_unittest("fs_inner_file_two_bodies", test_fs_inner_file_two_bodies), &
+    new_unittest("fs_inner_file_in_waterplane_stops", test_fs_inner_file_in_waterplane_stops), &
+    new_unittest("fs_two_bodies_generated_stops", test_fs_two_bodies_generated_stops), &
+    new_unittest("fs_radius_cuts_body_stops", test_fs_radius_cuts_body_stops) &
     ]
 end subroutine collect_control_surface_mesh
 
@@ -750,5 +757,210 @@ subroutine test_fs_file_off_free_surface_stops(error)
   if (allocated(error)) return
   call check(error, msg == 'FSMesh_1.pnl: F must lie in the free surface z = 0.', "message: "//msg)
 end subroutine test_fs_file_off_free_surface_stops
+
+! ---------------------------------------------------------------------------------------------- inner free surface
+
+!> Writes FSInnerMesh.pnl in the current directory: quadrilaterals x0 x1 y0 y1 (columns of box), nodes in z = zn.
+subroutine write_inner_file(box, zn)
+  real(8), intent(in) :: box(:, :)   ! (4, np): x0, x1, y0, y1
+  real(8), intent(in) :: zn
+  integer :: u, ip, np
+
+  np = size(box, 2)
+  open (newunit=u, file='./FSInnerMesh.pnl', status='replace', action='write')
+  write (u, '(a)') '    --------------Hull Mesh File---------------', ' ', &
+                   '    # Number of Panels, Nodes, X-Symmetry and Y-Symmetry'
+  write (u, '(4i12)') np, 4*np, 0, 0
+  write (u, '(a)') ' ', '    # Start Definition of Node Coordinates'
+  do ip = 1, np
+    write (u, '(i5,3f20.12)') 4*ip - 3, box(1, ip), box(3, ip), zn
+    write (u, '(i5,3f20.12)') 4*ip - 2, box(1, ip), box(4, ip), zn
+    write (u, '(i5,3f20.12)') 4*ip - 1, box(2, ip), box(4, ip), zn
+    write (u, '(i5,3f20.12)') 4*ip, box(2, ip), box(3, ip), zn
+  end do
+  write (u, '(a)') '    # End Definition of Node Coordinates', ' ', '  # Start Definition of Node Relations'
+  do ip = 1, np
+    write (u, '(i5,i9,4i14)') ip, 4, 4*ip - 3, 4*ip - 2, 4*ip - 1, 4*ip
+  end do
+  write (u, '(a)') '    # End Definition of Node Relations', ' ', '    --------------End Hull Mesh File---------------'
+  close (u)
+end subroutine write_inner_file
+
+subroutine delete_inner_file()
+  integer :: u, ios
+  open (newunit=u, file='./FSInnerMesh.pnl', status='old', iostat=ios)
+  if (ios == 0) close (u, status='delete')
+end subroutine delete_inner_file
+
+!> The weights of the generated inner mesh sum to the area of the outer polygon (the circle of radius R as np chords,
+!> np = ceil(2 pi R/ps) with ps = lambda/10) minus the waterplane area, to 1e-10. Deep water, lambda = 2 pi g/Omega^2.
+subroutine test_fs_inner_area(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(so_options) :: opts
+  type(cs_points) :: pts
+  real(8) :: centre(2), radius, lam, om, apoly
+  integer :: np
+  logical :: ok
+  character(len=200) :: line
+  character(len=:), allocatable :: msg
+
+  call make_cylinder(5d0, 3d0, 32, 2, 2, mesh, .true.)
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call check(error, ok, "geometry")
+  if (allocated(error)) return
+  opts%qtf_fs_radius = 15d0
+  lam = 3d0
+  om = sqrt(2d0*pi*9.80665d0/lam)
+  call build_fs_inner(mesh, geom, opts, -1d0, '.', pts, centre, radius, ok, msg, omega_max=om)
+  call check(error, ok, "built: "//msg)
+  if (allocated(error)) return
+  call check(error, abs(radius - 15d0) < 1d-12 .and. norm2(centre) < 1d-9, "R and centre")
+  if (allocated(error)) return
+  call check(error, pts%n > 0 .and. all(pts%kind == CS_FREE) .and. all(pts%body == 1), "points: kind and body")
+  if (allocated(error)) return
+  call check(error, all(pts%nrm(1, :) == 0d0) .and. all(pts%nrm(2, :) == 0d0) .and. all(pts%nrm(3, :) == -1d0), "normals")
+  if (allocated(error)) return
+  np = max(8, ceiling(2d0*pi*15d0/(lam/10d0)))
+  apoly = 0.5d0*np*15d0**2*sin(2d0*pi/np)
+  write (line, '(a,3es24.15,i6,i8)') 'sum, expected, awp, np, n: ', sum(pts%w), apoly - geom%awp(1), geom%awp(1), np, pts%n
+  call check(error, abs(sum(pts%w) - (apoly - geom%awp(1))) < 1d-10*apoly, "weights = polygon area - awp: "//trim(line))
+end subroutine test_fs_inner_area
+
+!> Every point of the generated inner mesh is outside the waterplane (winding number of body_winding, Phase 5b) and inside
+!> R, here for a box hull with the automatic R = r_wl + max(0.5 r_wl, 2 x largest hull panel size).
+subroutine test_fs_inner_outside_waterplane(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(so_options) :: opts
+  type(cs_points) :: pts
+  real(8) :: centre(2), radius, rwl, rexp
+  real(8), allocatable :: wind(:)
+  integer :: i
+  logical :: ok
+  character(len=:), allocatable :: msg
+
+  call make_box_hull(20d0, 10d0, 5d0, 10, 5, 2, mesh)
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call check(error, ok, "geometry")
+  if (allocated(error)) return
+  call build_fs_inner(mesh, geom, opts, -1d0, '.', pts, centre, radius, ok, msg)
+  call check(error, ok, "built: "//msg)
+  if (allocated(error)) return
+  rwl = norm2([10d0, 5d0])
+  rexp = rwl + max(0.5d0*rwl, 2d0*maxval(mesh%psize))
+  call check(error, abs(radius - rexp) < 1d-9, "automatic R")
+  if (allocated(error)) return
+  call check(error, abs(centre(1)) < 1d-9 .and. abs(centre(2)) < 1d-9, "centre")
+  if (allocated(error)) return
+  do i = 1, pts%n
+    call body_winding(mesh, pts%x(:, i), wind)
+    call check(error, wind(1) < 0.5d0, "point outside the waterplane")
+    if (allocated(error)) return
+    call check(error, hypot(pts%x(1, i) - centre(1), pts%x(2, i) - centre(2)) < radius, "point inside R")
+    if (allocated(error)) return
+  end do
+end subroutine test_fs_inner_outside_waterplane
+
+!> Two bodies: FSInnerMesh.pnl is read. Two panels (areas 8 and 8); R = the largest node distance from the centre.
+subroutine test_fs_inner_file_two_bodies(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: m1, mesh
+  type(surface_geom) :: geom
+  type(so_options) :: opts
+  type(cs_points) :: pts
+  real(8) :: centre(2), radius
+  logical :: ok
+  character(len=:), allocatable :: msg
+
+  call make_cylinder(5d0, 3d0, 32, 2, 2, m1, .true.)
+  call make_two_bodies(m1, 30d0, mesh)
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call check(error, ok, "geometry")
+  if (allocated(error)) return
+  call write_inner_file(reshape([13d0, 17d0, 24d0, 26d0, 13d0, 17d0, -26d0, -24d0], [4, 2]), 0d0)
+  call build_fs_inner(mesh, geom, opts, -1d0, '.', pts, centre, radius, ok, msg)
+  call delete_inner_file()
+  call check(error, ok, "built from the file: "//msg)
+  if (allocated(error)) return
+  call check(error, abs(centre(1) - 15d0) < 1d-9 .and. abs(centre(2)) < 1d-9, "centre of both waterplanes")
+  if (allocated(error)) return
+  call check(error, abs(radius - hypot(2d0, 26d0)) < 1d-9, "R = largest node distance")
+  if (allocated(error)) return
+  call check(error, pts%n == 2 .and. all(pts%kind == CS_FREE), "two CS_FREE points")
+  if (allocated(error)) return
+  call check(error, all(abs(pts%w - 8d0) < 1d-9) .and. all(pts%nrm(3, :) == -1d0) .and. all(abs(pts%x(3, :)) < 1d-12), &
+             "weights, normals, z")
+end subroutine test_fs_inner_file_two_bodies
+
+!> A file panel inside a waterplane stops the build.
+subroutine test_fs_inner_file_in_waterplane_stops(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(so_options) :: opts
+  type(cs_points) :: pts
+  real(8) :: centre(2), radius
+  logical :: ok
+  character(len=:), allocatable :: msg
+
+  call make_cylinder(5d0, 3d0, 32, 2, 2, mesh, .true.)
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call write_inner_file(reshape([-1d0, 1d0, -1d0, 1d0, 8d0, 12d0, -2d0, 2d0], [4, 2]), 0d0)
+  call build_fs_inner(mesh, geom, opts, -1d0, '.', pts, centre, radius, ok, msg)
+  call delete_inner_file()
+  call check(error, .not. ok, "a panel in the waterplane stops")
+  if (allocated(error)) return
+  call check(error, index(msg, 'waterplane') > 0, "message: "//msg)
+end subroutine test_fs_inner_file_in_waterplane_stops
+
+!> Two bodies without FSInnerMesh.pnl stop with the message that ends in the file name.
+subroutine test_fs_two_bodies_generated_stops(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: m1, mesh
+  type(surface_geom) :: geom
+  type(so_options) :: opts
+  type(cs_points) :: pts
+  real(8) :: centre(2), radius
+  logical :: ok
+  integer :: n, k
+  character(len=:), allocatable :: msg
+  character(len=*), parameter :: tail = 'two or more bodies need FSInnerMesh.pnl'
+
+  call make_cylinder(5d0, 3d0, 32, 2, 2, m1, .true.)
+  call make_two_bodies(m1, 30d0, mesh)
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call delete_inner_file()
+  call build_fs_inner(mesh, geom, opts, -1d0, '.', pts, centre, radius, ok, msg)
+  call check(error, .not. ok, "two bodies without a file stop")
+  if (allocated(error)) return
+  n = len(msg)
+  k = len(tail)
+  call check(error, n >= k, "message length")
+  if (allocated(error)) return
+  call check(error, msg(n - k + 1:n) == tail, "message ends: "//msg)
+end subroutine test_fs_two_bodies_generated_stops
+
+!> A given R below the waterline radius stops with a message.
+subroutine test_fs_radius_cuts_body_stops(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(so_options) :: opts
+  type(cs_points) :: pts
+  real(8) :: centre(2), radius
+  logical :: ok
+  character(len=:), allocatable :: msg
+
+  call make_cylinder(5d0, 3d0, 32, 2, 2, mesh, .true.)
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  opts%qtf_fs_radius = 3d0
+  call build_fs_inner(mesh, geom, opts, -1d0, '.', pts, centre, radius, ok, msg)
+  call check(error, .not. ok, "R below the waterline radius stops")
+  if (allocated(error)) return
+  call check(error, index(msg, 'qtf_fs_radius') > 0 .and. index(msg, 'waterline') > 0, "message: "//msg)
+end subroutine test_fs_radius_cuts_body_stops
 
 end module test_control_surface_mesh

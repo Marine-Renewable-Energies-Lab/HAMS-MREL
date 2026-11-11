@@ -54,7 +54,7 @@ MODULE QTFField
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: field_pair, build_field_points
+   PUBLIC :: field_pair, build_field_points, body_winding
    PUBLIC :: qfield_init, qfield_keep, qfield_finish, qfield_stored_mb, FIELD_FD_STEP
 
    ! Central-difference step of the first-order gradient at the field points, as a fraction of the size of the nearest hull

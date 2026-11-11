@@ -30,13 +30,14 @@ MODULE ControlSurfaceMesh
    ! The free-surface patch F is the part of z = 0 between the hull waterline and Gamma_c (Chen 2007, J. Eng. Math.
    ! 59:61-82, section 3.1). Its normal (0, 0, -1) points down, into the fluid domain.
 
+   USE Const_mod, ONLY: G
    USE SecondOrderTypes, ONLY: panel_mesh, surface_geom, so_options, cs_points, CS_WALL, CS_LINE, CS_FREE
    USE SurfaceGeometry, ONLY: build_surface_geom, DEFAULT_SHARP_DEG
    IMPLICIT NONE
    PRIVATE
 
    PUBLIC :: cylinder_surface, box_surface, add_surface_points, build_control_surface, check_control_surface, &
-             write_control_surface, read_control_mesh, free_surface_strips
+             write_control_surface, read_control_mesh, free_surface_strips, build_fs_inner
 
    REAL(8), PARAMETER :: PI = 3.141592653589793D0
    REAL(8), PARAMETER :: WL_TOL = 1D-6        ! waterline tolerance for Gamma_c, relative to the size of C
@@ -629,7 +630,7 @@ CONTAINS
       pts%body(n0 + 1:) = b
    END SUBROUTINE add_free_surface
 
-   SUBROUTINE free_surface_strips(mesh, geom, b, pts, nrows, fm, ok, msg)
+   SUBROUTINE free_surface_strips(mesh, geom, b, pts, nrows, fm, ok, msg, follow_vertices)
       ! F of body b as quadrilateral strips in z = 0, from each hull waterline segment of body b out to Gamma_c of
       ! body b (its CS_LINE points in pts), along rays from the centre x_b of the waterplane bounding box (the centre
       ! of C). Each segment is split into columns about as wide as the Gamma_c segments where the strip meets Gamma_c,
@@ -640,6 +641,9 @@ CONTAINS
       ! every segment (they run counter-clockwise, see surface_geom) and turn once in total. Else ok = .false.
       ! Panel normals are (0, 0, -1), by the HAMS rule of add_panel. mesh is not used yet: geom and pts hold all the
       ! geometry the strips need.
+      ! follow_vertices (default .false.) adds a column at every Gamma_c vertex that lies between the two rays of a
+      ! segment (and drops the uniform columns within a quarter column of one), so that the outer edge of F is Gamma_c
+      ! exactly and not with its corners cut: the area of F is then that of Gamma_c minus the waterplane.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       INTEGER, INTENT(IN) :: b, nrows
@@ -647,15 +651,18 @@ CONTAINS
       TYPE(panel_mesh), INTENT(OUT) :: fm
       LOGICAL, INTENT(OUT) :: ok
       CHARACTER(LEN=:), ALLOCATABLE, INTENT(OUT) :: msg
-      REAL(8), ALLOCATABLE :: s1(:,:), s2(:,:), o1(:,:), o2(:,:), sk(:)
+      LOGICAL, INTENT(IN), OPTIONAL :: follow_vertices
+      REAL(8), ALLOCATABLE :: s1(:,:), s2(:,:), o1(:,:), o2(:,:), sk(:), tcol(:,:), tc(:)
       INTEGER, ALLOCATABLE :: seg(:), ncol(:)
       REAL(8) :: lo(2), hi(2), c(2), v1(2), v2(2), turn, dth, lmean, q, xi(2), xo(2)
-      INTEGER :: nr, nw, nl, iw, j, k, p, js, nnode, npan, ip, base
+      INTEGER :: nr, nw, nl, iw, j, k, p, js, nnode, npan, ip, base, n0
       CHARACTER(LEN=200) :: line
-      LOGICAL :: hit1, hit2
+      LOGICAL :: hit1, hit2, follow
 
       ok = .FALSE.
       msg = ''
+      follow = .FALSE.
+      IF (PRESENT(follow_vertices)) follow = follow_vertices
       nr = MAX(1, nrows)
       CALL waterline_box(geom, b, lo, hi, nw)
       IF (nw == 0) THEN
@@ -712,7 +719,14 @@ CONTAINS
             msg = TRIM(line)
             RETURN
          END IF
-         ncol(js) = MAX(1, CEILING(NORM2(o2(:, js) - o1(:, js))/lmean))
+         n0 = MAX(1, CEILING(NORM2(o2(:, js) - o1(:, js))/lmean))
+         CALL strip_columns(c, geom%wl_x1(1:2, seg(js)), geom%wl_x2(1:2, seg(js)), s1, s2, n0, follow, tc, ncol(js))
+      END DO
+      ALLOCATE (tcol(0:MAXVAL(ncol), nw))
+      DO js = 1, nw
+         n0 = MAX(1, CEILING(NORM2(o2(:, js) - o1(:, js))/lmean))
+         CALL strip_columns(c, geom%wl_x1(1:2, seg(js)), geom%wl_x2(1:2, seg(js)), s1, s2, n0, follow, tc, ncol(js))
+         tcol(0:ncol(js), js) = tc
       END DO
 
       ! Radial node fractions sk(0:nr), 0 at the hull and 1 on Gamma_c; thicknesses in the ratio q per row.
@@ -740,8 +754,7 @@ CONTAINS
                xi = geom%wl_x2(1:2, seg(js))
                xo = o2(:, js)
             ELSE
-               xi = geom%wl_x1(1:2, seg(js)) + REAL(j, 8)/REAL(ncol(js), 8)*(geom%wl_x2(1:2, seg(js)) - &
-                                                                              geom%wl_x1(1:2, seg(js)))
+               xi = geom%wl_x1(1:2, seg(js)) + tcol(j, js)*(geom%wl_x2(1:2, seg(js)) - geom%wl_x1(1:2, seg(js)))
                CALL ray_to_line(c, xi, s1, s2, xo, hit1)
                IF (.NOT. hit1) THEN
                   WRITE (line, '(a,i0,a,i0,a)') 'body ', b, ': a ray from the centre through the waterline does not ' &
@@ -772,6 +785,267 @@ CONTAINS
       END FUNCTION node
 
    END SUBROUTINE free_surface_strips
+
+   SUBROUTINE build_fs_inner(mesh, geom, opts, h, inputdir, pts, centre, radius, ok, msg, omega_max)
+      ! The inner free surface of the QTF free-surface integral: the part of z = 0 between the waterlines and a circle of
+      ! radius R about the centre of the waterline bounding box of all bodies. Returned as CS_FREE points, nrm (0, 0, -1),
+      ! w the panel area; centre and R are returned too. From FSInnerMesh.pnl in inputdir when that file exists, else
+      ! generated. omega_max (optional) is the largest first-order frequency of the run, for the panel size at the circle.
+      ! File (all bodies): nodes in z = 0, no panel centroid inside a waterplane (winding number of the waterline). With
+      ! qtf_fs_radius = 0, R is the largest node distance from the centre; else the nodes must lie within 0.1 % of R. Its
+      ! points have body = 0. Needed for two or more bodies and for a waterline that is not star-shaped.
+      ! Generated (one body, waterline star-shaped about the centre): strips from the waterline to a polygon of np chords
+      ! on the circle of radius R, as free_surface_strips builds them to Gamma_c, graded towards the waterline. The panel
+      ! size at the circle is at most lambda/10, lambda the wavelength at omega_max and depth h (h < 0: deep water); without
+      ! omega_max it is the median hull panel size. With qtf_fs_rows = 0 the rows are the fewest, at least 2, for which the
+      ! outer row is not thicker than that size.
+      ! R is qtf_fs_radius, or for 0: r_wl + max(0.5 r_wl, 2 x the largest hull panel size), r_wl the largest distance from
+      ! the centre to a waterline node. R <= r_wl stops: the circle would cut a body.
+      ! ok = .false. with msg for every stop.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(surface_geom), INTENT(IN) :: geom
+      TYPE(so_options), INTENT(IN) :: opts
+      REAL(8), INTENT(IN) :: h
+      CHARACTER(LEN=*), INTENT(IN) :: inputdir
+      TYPE(cs_points), INTENT(OUT) :: pts
+      REAL(8), INTENT(OUT) :: centre(2), radius
+      LOGICAL, INTENT(OUT) :: ok
+      CHARACTER(LEN=:), ALLOCATABLE, INTENT(OUT) :: msg
+      REAL(8), INTENT(IN), OPTIONAL :: omega_max
+      CHARACTER(LEN=*), PARAMETER :: NAME = 'FSInnerMesh.pnl'
+      REAL(8), ALLOCATABLE :: psz(:)
+      REAL(8) :: lo(2), hi(2), rwl, rmin, rgiven, rfile, ps, lam, wvn(1), d, q, frac, dnode
+      INTEGER :: nr, i, m, idx
+      LOGICAL :: exists, star_ok
+      TYPE(panel_mesh) :: cm, fm
+      TYPE(cs_points) :: gam
+      CHARACTER(LEN=400) :: line
+      EXTERNAL DISPERSION
+
+      ok = .FALSE.
+      msg = ''
+      centre = 0D0
+      radius = 0D0
+      IF (geom%nwl == 0) THEN
+         msg = 'the inner free surface needs a waterline, and no body has one'
+         RETURN
+      END IF
+      lo = MIN(MINVAL(geom%wl_x1(1:2, 1:geom%nwl), DIM=2), MINVAL(geom%wl_x2(1:2, 1:geom%nwl), DIM=2))
+      hi = MAX(MAXVAL(geom%wl_x1(1:2, 1:geom%nwl), DIM=2), MAXVAL(geom%wl_x2(1:2, 1:geom%nwl), DIM=2))
+      centre = 0.5D0*(lo + hi)
+      rwl = 0D0
+      rmin = HUGE(1D0)
+      DO i = 1, geom%nwl
+         DO m = 1, 2
+            IF (m == 1) THEN
+               dnode = HYPOT(geom%wl_x1(1, i) - centre(1), geom%wl_x1(2, i) - centre(2))
+            ELSE
+               dnode = HYPOT(geom%wl_x2(1, i) - centre(1), geom%wl_x2(2, i) - centre(2))
+            END IF
+            rwl = MAX(rwl, dnode)
+            rmin = MIN(rmin, dnode)
+         END DO
+      END DO
+      rgiven = opts%qtf_fs_radius
+      IF (rgiven > 0D0 .AND. .NOT. rgiven > rwl) THEN
+         WRITE (line, '(a,f0.4,a,f0.4,a)') 'qtf_fs_radius = ', rgiven, ' m does not exceed the waterline radius ', rwl, &
+            ' m (largest distance from the centre of the waterplanes to a waterline node): the circle would cut a body'
+         msg = TRIM(line)
+         RETURN
+      END IF
+
+      INQUIRE (FILE=TRIM(inputdir)//'/'//NAME, EXIST=exists)
+      IF (exists) THEN
+         CALL read_control_mesh(TRIM(inputdir)//'/'//NAME, fm, ok, msg)
+         IF (.NOT. ok) RETURN
+         ok = .FALSE.
+         IF (MAXVAL(ABS(fm%xnode(3, :))) > WL_TOL*MAX(1D0, MAXVAL(ABS(fm%xnode(1:2, :))))) THEN
+            msg = NAME//': the inner free surface must lie in z = 0.'
+            RETURN
+         END IF
+         rfile = 0D0
+         DO i = 1, fm%nnode
+            rfile = MAX(rfile, HYPOT(fm%xnode(1, i) - centre(1), fm%xnode(2, i) - centre(2)))
+         END DO
+         IF (rgiven > 0D0) THEN
+            IF (ABS(rfile - rgiven) > 1D-3*rgiven) THEN
+               WRITE (line, '(a,f0.4,a,f0.4,a)') NAME//': its largest node distance ', rfile, &
+                  ' m from the centre is not qtf_fs_radius = ', rgiven, ' m'
+               msg = TRIM(line)
+               RETURN
+            END IF
+            radius = rgiven
+         ELSE
+            radius = rfile
+            IF (.NOT. radius > rwl) THEN
+               WRITE (line, '(a,f0.4,a,f0.4,a)') NAME//': its largest node distance ', rfile, &
+                  ' m from the centre does not exceed the waterline radius ', rwl, ' m'
+               msg = TRIM(line)
+               RETURN
+            END IF
+         END IF
+         DO i = 1, fm%n
+            IF (ABS(waterline_winding(geom, fm%xc(1:2, i))) > PI) THEN
+               WRITE (line, '(a,i0,a)') NAME//': panel ', i, ' lies inside a waterplane'
+               msg = TRIM(line)
+               RETURN
+            END IF
+         END DO
+      ELSE
+         IF (mesh%nbody > 1) THEN
+            WRITE (line, '(a,i0,a)') 'the generated inner free surface is for one body, not ', mesh%nbody, &
+               '; two or more bodies need '//NAME
+            msg = TRIM(line)
+            RETURN
+         END IF
+         radius = rgiven
+         IF (.NOT. radius > 0D0) THEN
+            psz = mesh%psize(1:mesh%n)
+            radius = rwl + MAX(0.5D0*rwl, 2D0*MAXVAL(psz))
+         END IF
+         ps = 0D0
+         IF (PRESENT(omega_max)) THEN
+            IF (omega_max > 0D0) THEN
+               IF (h > 0D0) THEN
+                  CALL DISPERSION(wvn, 1, omega_max, h)
+               ELSE
+                  wvn(1) = omega_max**2/G
+               END IF
+               lam = 2D0*PI/wvn(1)
+               ps = lam/10D0
+            END IF
+         END IF
+         IF (.NOT. ps > 0D0) THEN
+            psz = mesh%psize(1:mesh%n)
+            ps = median(psz)
+         END IF
+         ! Gamma_c of the strips: the polygon on the circle (a wall of one row is all that its waterline needs).
+         CALL cylinder_surface(centre, radius, ps, ps, ps, cm)
+         CALL add_surface_points(cm, 1, gam, star_ok, msg)
+         IF (.NOT. star_ok) THEN
+            msg = 'inner free surface circle: '//msg
+            RETURN
+         END IF
+         nr = opts%qtf_fs_rows
+         IF (nr < 1) THEN
+            d = radius - rmin
+            DO nr = 2, 5000
+               q = FS_GRADING**(1D0/REAL(nr - 1, 8))
+               frac = (q**nr - q**(nr - 1))/(q**nr - 1D0)
+               IF (frac*d <= ps) EXIT
+            END DO
+         END IF
+         CALL free_surface_strips(mesh, geom, 1, gam, nr, fm, star_ok, msg, follow_vertices=.TRUE.)
+         IF (.NOT. star_ok) THEN
+            idx = INDEX(msg, 'give FSMesh_')
+            IF (idx > 0) msg = msg(1:idx - 1)//'give '//NAME//'.'
+            RETURN
+         END IF
+      END IF
+
+      CALL grow_points(pts, fm%n)
+      pts%x = fm%xc
+      pts%nrm(1:2, :) = 0D0
+      pts%nrm(3, :) = -1D0
+      pts%w = fm%area
+      pts%psize = fm%psize
+      pts%kind = CS_FREE
+      pts%body = MERGE(0, 1, exists)
+      ok = .TRUE.
+   END SUBROUTINE build_fs_inner
+
+   REAL(8) FUNCTION waterline_winding(geom, p)
+      ! Total angle (radians) that the waterline segments of all bodies subtend at the point p in z = 0: 2 pi inside a
+      ! waterplane (counter-clockwise loops), 0 outside all of them.
+      TYPE(surface_geom), INTENT(IN) :: geom
+      REAL(8), INTENT(IN) :: p(2)
+      REAL(8) :: v1(2), v2(2)
+      INTEGER :: k
+
+      waterline_winding = 0D0
+      DO k = 1, geom%nwl
+         v1 = geom%wl_x1(1:2, k) - p
+         v2 = geom%wl_x2(1:2, k) - p
+         waterline_winding = waterline_winding + ATAN2(v1(1)*v2(2) - v1(2)*v2(1), DOT_PRODUCT(v1, v2))
+      END DO
+   END FUNCTION waterline_winding
+
+   SUBROUTINE strip_columns(c, x1, x2, s1, s2, n0, follow, tc, nc)
+      ! Column positions tc(0:nc) along the waterline segment x1 to x2 (0 at x1, 1 at x2) of one strip: n0 equal columns,
+      ! or with follow the columns of the Gamma_c vertices (end points of s1 to s2) in the angular span of the segment seen
+      ! from c, plus the equal ones that are not within a quarter of 1/n0 of such a vertex.
+      REAL(8), INTENT(IN) :: c(2), x1(2), x2(2), s1(:,:), s2(:,:)
+      INTEGER, INTENT(IN) :: n0
+      LOGICAL, INTENT(IN) :: follow
+      REAL(8), ALLOCATABLE, INTENT(OUT) :: tc(:)
+      INTEGER, INTENT(OUT) :: nc
+      REAL(8), PARAMETER :: TEND = 1D-9
+      REAL(8), ALLOCATABLE :: tv(:), tt(:)
+      REAL(8) :: e(2), w(2), p(2), den, t, sv, u
+      INTEGER :: k, m, nv, i, j
+
+      IF (.NOT. follow) THEN
+         nc = n0
+         tc = [(REAL(j, 8)/REAL(n0, 8), j = 0, n0)]
+         RETURN
+      END IF
+      e = x2 - x1
+      p = x1 - c
+      ALLOCATE (tv(2*SIZE(s1, 2)))
+      nv = 0
+      DO k = 1, 2*SIZE(s1, 2)
+         IF (k <= SIZE(s1, 2)) THEN
+            w = s1(:, k) - c
+         ELSE
+            w = s2(:, k - SIZE(s1, 2)) - c
+         END IF
+         den = w(1)*e(2) - w(2)*e(1)
+         IF (ABS(den) <= 1D-14*NORM2(w)*NORM2(e)) CYCLE
+         t = -(w(1)*p(2) - w(2)*p(1))/den
+         sv = (e(1)*p(2) - e(2)*p(1))/(e(1)*w(2) - e(2)*w(1))
+         IF (sv > 0D0 .AND. t > TEND .AND. t < 1D0 - TEND) THEN
+            nv = nv + 1
+            tv(nv) = t
+         END IF
+      END DO
+      ALLOCATE (tt(nv + n0 + 1))
+      m = 0
+      DO i = 1, nv
+         m = m + 1
+         tt(m) = tv(i)
+      END DO
+      DO j = 1, n0 - 1
+         u = REAL(j, 8)/REAL(n0, 8)
+         IF (nv > 0) THEN
+            IF (MINVAL(ABS(tv(1:nv) - u)) <= 0.25D0/REAL(n0, 8)) CYCLE
+         END IF
+         m = m + 1
+         tt(m) = u
+      END DO
+      ! Sort, and drop repeats (a vertex seen from both of its segments).
+      DO i = 2, m
+         t = tt(i)
+         j = i - 1
+         DO WHILE (j >= 1)
+            IF (tt(j) <= t) EXIT
+            tt(j + 1) = tt(j)
+            j = j - 1
+         END DO
+         tt(j + 1) = t
+      END DO
+      ALLOCATE (tc(0:m + 1))
+      nc = 0
+      tc(0) = 0D0
+      DO i = 1, m
+         IF (tt(i) - tc(nc) > TEND) THEN
+            nc = nc + 1
+            tc(nc) = tt(i)
+         END IF
+      END DO
+      nc = nc + 1
+      tc(nc) = 1D0
+      tc = tc(0:nc)
+   END SUBROUTINE strip_columns
 
    SUBROUTINE ray_to_line(c, p, s1, s2, x, hit)
       ! First crossing x of the ray from c through p with the segments s1(:,k) to s2(:,k), beyond p. hit = .false.
