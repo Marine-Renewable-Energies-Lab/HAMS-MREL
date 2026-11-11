@@ -62,6 +62,9 @@ MODULE SecondOrderTypes
       ! Panel weights of the B2 hull term at sharp edges (SharpEdge), with qtf_b2 = control; edges where the normals differ
       ! by more than qtf_edge_angle degrees. Off by default: on the sharp-cylinder fixture they moved B2 F_x and F_z away
       ! from the exact reference (15.1% to 17.2%, 30.0% to 37.4%) for an M_y gain of 11.9% to 11.1%
+      ! qtf_direct: 1 also solves the second-order boundary-value problem for the diffracted and radiated potential at each
+      ! difference frequency (Phase 7a); needs qtf_terms = body (or full) and qtf = 1 or 3
+      INTEGER :: qtf_direct = 0
       LOGICAL :: qtf_edge_weights = .FALSE.
       REAL(8) :: qtf_edge_angle = 45D0
       ! The keys were in SecondOrder.in, so that the log can say when they have no effect

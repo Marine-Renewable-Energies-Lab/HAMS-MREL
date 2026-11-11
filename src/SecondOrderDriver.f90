@@ -73,7 +73,7 @@ MODULE SecondOrderDriver
    USE SecondOrderOutput, ONLY: write_drift_row, write_terms_row
    USE QTFDriver, ONLY: qtf_init, qtf_keep, qtf_finish, qtf_stored_mb, qtf_keep_psi, qtf_psi_index, qtf_psi_count, &
                         qtf_radiation_list, qtf_psi_tolerance, &
-                        qtf_radiation_omegas, qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, &
+                        qtf_radiation_omegas, qtf_omega_on_grid, qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, &
                         qtf_set_edge_weights
    USE QTFPotential, ONLY: b2_control_check
    USE SharpEdge, ONLY: sharp_edge_weights
@@ -430,9 +430,29 @@ CONTAINS
       ! Call after the radiation-only solve at the difference frequency omega (one of qtf_radiation_omegas()).
       TYPE(so_options), INTENT(IN) :: opts
       REAL(8), INTENT(IN) :: omega
-      COMPLEX(8), ALLOCATABLE :: psi(:, :)
 
       IF (.NOT. body_terms .OR. opts%qtf_terms /= QTF_TERMS_BODY) RETURN
+      ! With qtf_direct = 1 the loop also runs at the difference frequencies on the main grid, whose psi so_after_radiation
+      ! has kept already; the direct solve of Phase 7a runs at every one of them
+      IF (.NOT. qtf_omega_on_grid(omega)) CALL keep_radiation_only_psi(opts, omega)
+      IF (opts%qtf_direct == 1) CALL so_direct_solve(opts, omega)
+   END SUBROUTINE so_after_radiation_only
+
+   SUBROUTINE so_direct_solve(opts, omega)
+      ! The direct solution of the second-order problem at the difference frequency omega (Phase 7a), with the solver
+      ! globals at omega. Task 3 fills this in.
+      TYPE(so_options), INTENT(IN) :: opts
+      REAL(8), INTENT(IN) :: omega
+
+      ! No-op until Task 3
+      IF (opts%qtf_direct /= 1 .OR. omega <= 0D0) RETURN
+   END SUBROUTINE so_direct_solve
+
+   SUBROUTINE keep_radiation_only_psi(opts, omega)
+      TYPE(so_options), INTENT(IN) :: opts
+      REAL(8), INTENT(IN) :: omega
+      COMPLEX(8), ALLOCATABLE :: psi(:, :)
+
       ALLOCATE (psi(mesh%n, 6*mesh%nbody))
       IF (multi_arrays) THEN
          CALL radiation_psi(mesh, omega, MXPOT_MULTI_COMB, psi)
@@ -442,7 +462,7 @@ CONTAINS
       CALL qtf_keep_psi(omega, psi)
       IF (b2_control) CALL keep_cs_psi(opts, omega, psi)
       CALL write_psi_rows(omega, 2, psi)
-   END SUBROUTINE so_after_radiation_only
+   END SUBROUTINE keep_radiation_only_psi
 
    SUBROUTINE keep_cs_psi(opts, omega, psi)
       ! grad psi_k at the points of C and F, into the QTF store (qtf_b2 = control). psi_k is the perturbation potential of a

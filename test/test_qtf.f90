@@ -8,7 +8,7 @@ module test_qtf
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use NearFieldDrift, only : near_field_pair, KERNEL_DIFF, KERNEL_SUM
   use QTFDriver, only : qtf_init, qtf_keep, qtf_pair_load, qtf_finish, qtf_kept, qtf_radiation_list, qtf_radiation_omegas, &
-                        qtf_keep_psi, qtf_nonfinite_psi, qtf_nonfinite_pairs, qtf_psi_tolerance, qtf_psi_index
+                        qtf_direct_omegas, qtf_keep_psi, qtf_nonfinite_psi, qtf_nonfinite_pairs, qtf_psi_tolerance, qtf_psi_index
   use, intrinsic :: ieee_arithmetic, only : ieee_value, ieee_quiet_nan
   use SecondOrderOutput, only : write_qtf_row
   use second_order_fixtures, only : make_cylinder, maccamy_fuchs_state, maccamy_fuchs_phi
@@ -36,6 +36,7 @@ subroutine collect_qtf(testsuite)
     new_unittest("radiation_list_period_grid", test_radiation_list_period_grid), &
     new_unittest("potential_part_period_grid", test_potential_part_period_grid), &
     new_unittest("psi_store_order", test_psi_store_order), &
+    new_unittest("qtf_direct_omegas_all", test_qtf_direct_omegas_all), &
     new_unittest("psi_nonfinite_counted", test_psi_nonfinite_counted), &
     new_unittest("qtf_files", test_files) &
     ]
@@ -337,6 +338,38 @@ subroutine test_potential_part_period_grid(error)
   call check(error, count_rows(root//"/Wamit_format/QTF_Indirect.11d"), 16 * 6, "rows of .11d")
   call remove_files()
 end subroutine test_potential_part_period_grid
+
+!> qtf_direct_omegas gives every difference frequency, those on the main grid too; qtf_radiation_omegas keeps the others.
+subroutine test_qtf_direct_omegas_all(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(so_options) :: opts
+  real(8), allocatable :: w(:)
+  logical :: made
+
+  call CreateDirectory(root//"/Wamit_format", made)
+  call check(error, made, "could not create the test folder")
+  if (allocated(error)) return
+  opts%mean_drift = 1; opts%qtf = 1; opts%qtf_terms = QTF_TERMS_BODY
+  call qtf_init(opts, 3, [0d0], 4, 10, 1, root, omegas_main=[0.5d0, 0.7d0, 1.3d0])
+  w = qtf_direct_omegas()
+  call check(error, size(w), 3, "every difference frequency")
+  if (allocated(error)) return
+  call check(error, maxval(abs(w - [0.2d0, 0.6d0, 0.8d0])) <= 1d-12, "values")
+  if (allocated(error)) return
+  ! The grid 0.2, 0.4, 0.6: its differences 0.2 and 0.4 are on the grid
+  call qtf_init(opts, 3, [0d0], 4, 10, 1, root, omegas_main=[0.2d0, 0.4d0, 0.6d0])
+  w = qtf_direct_omegas()
+  call check(error, size(w), 2, "on-grid differences: both")
+  if (allocated(error)) return
+  call check(error, size(qtf_radiation_omegas()), 0, "radiation-only list is empty on a uniform grid")
+  if (allocated(error)) return
+  ! qtf_max_dw limits both
+  opts%qtf_max_dw = 0.3d0
+  call qtf_init(opts, 3, [0d0], 4, 10, 1, root, omegas_main=[0.2d0, 0.4d0, 0.6d0])
+  w = qtf_direct_omegas()
+  call check(error, size(w), 1, "qtf_max_dw = 0.3")
+  call remove_files()
+end subroutine test_qtf_direct_omegas_all
 
 !> The psi store takes the differences of the grid only, at the size of the mesh.
 subroutine test_psi_store_order(error)

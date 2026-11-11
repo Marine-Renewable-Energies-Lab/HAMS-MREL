@@ -73,7 +73,7 @@ MODULE QTFDriver
    PRIVATE
 
    PUBLIC :: qtf_init, qtf_keep, qtf_pair_load, qtf_finish, qtf_stored_mb, qtf_kept
-   PUBLIC :: qtf_radiation_list, qtf_radiation_omegas, qtf_keep_psi, qtf_psi_index, qtf_psi_count, qtf_psi_tolerance
+   PUBLIC :: qtf_radiation_list, qtf_radiation_omegas, qtf_direct_omegas, qtf_omega_on_grid, qtf_keep_psi, qtf_psi_index, qtf_psi_count, qtf_psi_tolerance
    PUBLIC :: qtf_nonfinite_psi, qtf_nonfinite_pairs
    PUBLIC :: qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, qtf_set_edge_weights
 
@@ -431,6 +431,28 @@ CONTAINS
          ALLOCATE (w(0))
       END IF
    END FUNCTION qtf_radiation_omegas
+
+   FUNCTION qtf_direct_omegas() RESULT(w)
+      ! Every difference frequency Omega > 0 within qtf_max_dw, those on the main grid too: the direct solve of Phase 7a runs
+      ! at each of them. Empty unless qtf_terms = body.
+      REAL(8), ALLOCATABLE :: w(:)
+
+      IF (ALLOCATED(psi_need)) THEN
+         w = psi_need
+      ELSE
+         ALLOCATE (w(0))
+      END IF
+   END FUNCTION qtf_direct_omegas
+
+   LOGICAL FUNCTION qtf_omega_on_grid(omega)
+      ! The difference frequency omega is a main-grid frequency, whose psi the radiation solve of the main grid kept
+      REAL(8), INTENT(IN) :: omega
+      INTEGER :: m
+
+      qtf_omega_on_grid = .FALSE.
+      m = qtf_psi_index(omega)
+      IF (m > 0) qtf_omega_on_grid = psi_reuse(m) > 0
+   END FUNCTION qtf_omega_on_grid
 
    INTEGER FUNCTION qtf_psi_count(reused)
       ! Number of difference frequencies, or with reused = .TRUE. of those on the main grid

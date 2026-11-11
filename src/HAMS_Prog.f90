@@ -91,7 +91,7 @@ program HAMS_MREL
     use SecondOrderTypes
     use SecondOrderInput
     use SecondOrderDriver
-    use QTFDriver, only: qtf_radiation_omegas, qtf_nonfinite_psi, qtf_nonfinite_pairs
+    use QTFDriver, only: qtf_radiation_omegas, qtf_direct_omegas, qtf_nonfinite_psi, qtf_nonfinite_pairs
     use omp_lib
 
     implicit none  
@@ -830,7 +830,8 @@ contains
         ENDIF
     end subroutine SolveRadiationMulti
 
-    ! The radiation problems at the QTF difference frequencies that are not on the main grid (qtf_terms = body), after the
+    ! The radiation problems at the QTF difference frequencies that are not on the main grid (qtf_terms = body; all of them with
+    ! qtf_direct = 1), after the
     ! frequency loop: the potentials only, for so_after_radiation_only. No RFORCE, no output file, and AMAS, BDMP and EXFC
     ! are left as they are. The wave globals (W1, WK, V, ...) are left at the last of these frequencies.
     subroutine RadiationOnlySolves(multi)
@@ -838,7 +839,12 @@ contains
         real(8), allocatable :: omegas(:)
         integer :: m
 
-        omegas = qtf_radiation_omegas()
+        ! With qtf_direct = 1 every difference frequency, those on the main grid too (the direct solve of Phase 7a)
+        if (so_opts%qtf_direct == 1) then
+            omegas = qtf_direct_omegas()
+        else
+            omegas = qtf_radiation_omegas()
+        end if
         do m = 1, size(omegas)
             call SetWaveFromOmega(omegas(m))
             write(*,'(a,F10.5,a,I0,a,I0,a)') ' Radiation only, omega = ', omegas(m), ' rad/s (', m, ' of ', size(omegas), ')'

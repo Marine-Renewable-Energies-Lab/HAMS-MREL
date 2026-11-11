@@ -119,6 +119,15 @@ CONTAINS
          ok = .FALSE.
          msg = 'qtf_terms = body needs the difference QTF (qtf = 1 or 3); sum-frequency body forcing needs the free-surface'// &
                ' integrals (Phase 6).'
+      ELSE IF (opts%qtf_direct < 0 .OR. opts%qtf_direct > 1) THEN
+         ok = .FALSE.
+         msg = 'qtf_direct must be 0 or 1 in SecondOrder.in.'
+      ELSE IF (opts%qtf_direct == 1 .AND. opts%qtf_terms /= QTF_TERMS_BODY) THEN
+         ok = .FALSE.
+         msg = 'qtf_direct = 1 needs qtf_terms = body (or full) in SecondOrder.in.'
+      ELSE IF (opts%qtf_direct == 1 .AND. .NOT. (opts%qtf == 1 .OR. opts%qtf == 3)) THEN
+         ok = .FALSE.
+         msg = 'qtf_direct = 1 needs the difference QTF (qtf = 1 or 3) in SecondOrder.in.'
       END IF
       IF (.NOT. ok) RETURN
 
@@ -209,6 +218,8 @@ CONTAINS
          ! Read always, used with qtf_terms = body only
          CALL choose(value, 'body', 'control', opts%qtf_b2, ios)
          opts%qtf_b2_given = .TRUE.
+      CASE ('qtf_direct')
+         READ(value, *, IOSTAT=ios) opts%qtf_direct
       CASE ('qtf_edge_weights')
          ! Read always, used with qtf_terms = body and qtf_b2 = control only; off by default (SecondOrderTypes)
          IF (value == 'on') THEN
