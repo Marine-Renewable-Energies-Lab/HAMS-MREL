@@ -81,7 +81,7 @@ MODULE QTFDriver
    PUBLIC :: qtf_init, qtf_keep, qtf_pair_load, qtf_finish, qtf_stored_mb, qtf_kept
    PUBLIC :: qtf_radiation_list, qtf_radiation_omegas, qtf_direct_omegas, qtf_omega_on_grid, qtf_keep_psi, qtf_psi_index, qtf_psi_count, qtf_psi_tolerance
    PUBLIC :: qtf_nonfinite_psi, qtf_nonfinite_pairs
-   PUBLIC :: qtf_direct_at_omega, qtf_direct_pairs
+   PUBLIC :: qtf_direct_at_omega, qtf_direct_pairs, qtf_direct_missing
    PUBLIC :: qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, qtf_set_edge_weights
 
    LOGICAL :: active = .FALSE.
@@ -675,6 +675,21 @@ CONTAINS
       END IF
    END SUBROUTINE qtf_direct_at_omega
 
+   REAL(8) FUNCTION qtf_direct_missing()
+      ! The smallest difference frequency of the grid (rad/s) at which the direct solve has not run, or 0 if there is none
+      ! or qtf_direct is off. qtf_finish stops on a non-zero value before it writes QTF_Direct.12d.
+      INTEGER :: m
+
+      qtf_direct_missing = 0D0
+      IF (.NOT. direct_active) RETURN
+      DO m = 1, SIZE(tdir_kept)
+         IF (.NOT. tdir_kept(m)) THEN
+            qtf_direct_missing = psi_need(m)
+            RETURN
+         END IF
+      END DO
+   END FUNCTION qtf_direct_missing
+
    SUBROUTINE qtf_keep(ib, s, phi_wl, oufr)
       ! Keeps the state of heading ib of the current frequency. Heading 1 starts a new frequency, so the driver must call
       ! this for every heading of a frequency, in order, and only for the frequencies of the QTF grid.
@@ -842,15 +857,14 @@ CONTAINS
 
       SUBROUTINE check_direct_kept()
          ! Every difference frequency of the pairs must have been solved by the direct method before .12d is written
-         INTEGER :: m
+         REAL(8) :: missing
 
-         DO m = 1, SIZE(tdir_kept)
-            IF (.NOT. tdir_kept(m)) THEN
-               WRITE (*, '(a,ES14.6,a)') ' QTF direct: qtf_direct = 1, but the direct solve did not run at Omega =', &
-                  psi_need(m), ' rad/s; QTF_Direct.12d would be incomplete.'
-               ERROR STOP 1
-            END IF
-         END DO
+         missing = qtf_direct_missing()
+         IF (missing > 0D0) THEN
+            WRITE (*, '(a,ES14.6,a)') ' QTF direct: qtf_direct = 1, but the direct solve did not run at Omega =', &
+               missing, ' rad/s; QTF_Direct.12d would be incomplete.'
+            ERROR STOP 1
+         END IF
       END SUBROUTINE check_direct_kept
 
       SUBROUTINE write_direct_terms(refl)

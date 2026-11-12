@@ -87,7 +87,18 @@ module test_qtf_direct
   ! the lid T_dir against T_pot is 14.7% there. Without the lid against with, T_dir: 1.75e-3 at the low Omega (limit
   ! irr_regular_limit), 15.1% at the irregular one (at least irr_spike_min).
   real(8), parameter :: irr_indirect_limit = 5d-3, irr_mesh_limit = 5d-2, irr_ratio_limit = 1.2d0
-  real(8), parameter :: irr_regular_limit = 5d-3, irr_spike_min = 7.5d-2
+  real(8), parameter :: irr_regular_limit = 5d-3
+  ! Phase 7a Task 5, the spike over a window: irr_window spans the peak by steps of 0.0025 rad/s, so that one Omega is
+  ! within 0.00125 rad/s of the peak wherever it lies in the window; irr_ends are 0.05 rad/s either side. Measured: with
+  ! the lid T_dir is 1.06e-2 to 1.20e-2 from the straight line through the ends (the curvature over 0.1 rad/s; 1.20e-2
+  ! at 2.195), limit irr_smooth_limit (1.3x measured); without the lid it is 15.1% from the lid result at 2.195, 6.2% at
+  ! 0.0025 rad/s from it and 1.6-1.9% at the window ends, and irr_spike_min is below the value 0.0025 rad/s off the peak
+  real(8), parameter :: irr_window(9) = [2.185d0, 2.1875d0, 2.19d0, 2.1925d0, 2.195d0, 2.1975d0, 2.2d0, 2.2025d0, 2.205d0]
+  real(8), parameter :: irr_ends(2) = [2.145d0, 2.245d0]
+  real(8), parameter :: irr_smooth_limit = 1.6d-2, irr_spike_min = 5d-2
+  ! rhs_b2_lid_rows: the lid rows of the half mesh against the whole mesh, both fresh: 1.05e-8 measured (the hull rows of
+  ! rhs_b2_half_matches_whole have half_limit), 2x measured, rounded up
+  real(8), parameter :: lid_half_limit = 2.1d-8
 
 contains
 
@@ -109,6 +120,7 @@ contains
       new_unittest("direct_matches_indirect_pair", test_direct_vs_indirect), &
       new_unittest("direct_irr_accepted", test_direct_irr_accepted), &
       new_unittest("direct_irr_unit_normal", test_direct_irr_unit_normal), &
+      new_unittest("rhs_b2_lid_rows", test_b2_lid_rows), &
       new_unittest("direct_vs_indirect_irr", test_direct_vs_indirect_irr) &
       ]
   end subroutine collect_qtf_direct
@@ -1533,14 +1545,132 @@ contains
     call check(error, worst <= unit_normal_limit .and. lid_effect > 1d3*unit_normal_limit, line)
   end subroutine test_direct_irr_unit_normal
 
+  !> The lid rows of the B2 right side (direct_rhs_b2_block with nbase + nl rows, IRSP = 1), Phase 7a Task 5: from the
+  !> stored lid integrals (DGRN and PKBN of CALGREEN_IRR, CALGREEN_MULTI_IRR) against fresh ones (green_panel_integrals at
+  !> the lid point), and the half mesh (ISY = 1, its lid points y > 0, the rows expanded by RXY) against the whole mesh, both
+  !> fresh, at the full lid points. One cylinder (the one of the half test, 48 lid points whole) and two cylinders in the
+  !> multi-body arrays (2 x 24 lid points whole), depth 10, the pair of test_b2_stored with the linear densities and the
+  !> sharp-edge mask of the production path. The hull rows are compared stored against fresh too.
+  subroutine test_b2_lid_rows(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: full, mesh
+    type(surface_geom) :: geom
+    type(first_order_state) :: s1, s2
+    complex(8) :: x1(6, 1), x2(6, 1), xm1(6, 2), xm2(6, 2)
+    complex(8), allocatable :: wl1(:), wl2(:), a(:, :), c(:, :, :), e(:, :), cl(:, :, :, :), rs(:, :, :), rf(:, :, :)
+    complex(8), allocatable :: whole_lid(:)
+    real(8), allocatable :: pts(:, :), whole_pts(:, :)
+    logical, allocatable :: mask(:)
+    complex(8) :: v
+    real(8) :: stored_hull, stored_lid, half_lid, lid_size, xl(3)
+    real(8), parameter :: d = 10d0
+    integer :: icase, isy_in, nb, nl, l, im, ip, q
+    logical :: multi
+    character(len=250) :: line
+
+    call make_cylinder(5d0, 5d0, 16, 4, 3, full, .true.)
+    call motions(x1, x2)
+    xm1(:, 1) = x1(:, 1)
+    xm1(:, 2) = 0.5d0*x2(:, 1)
+    xm2(:, 1) = x2(:, 1)
+    xm2(:, 2) = (0d0, 1d0)*x1(:, 1)
+    stored_hull = 0d0
+    stored_lid = 0d0
+    half_lid = 0d0
+    lid_size = huge(1d0)
+    do icase = 1, 4
+      ! 1, 2: one cylinder whole and half; 3, 4: two cylinders whole and half
+      multi = icase >= 3
+      isy_in = merge(1, 0, mod(icase, 2) == 0)
+      call set_wave(d)
+      NTHREAD = 4
+      ISOLV = 1
+      if (allocated(pts)) deallocate(pts)
+      if (multi) then
+        call load_multi(isy_in, mesh)
+        call append_lid(multi_radius, multi_ntheta, multi_nr, 0d0, isy_in, pts)
+        call append_lid(multi_radius, multi_ntheta, multi_nr, multi_spacing, isy_in, pts)
+      else
+        call load_panels(full, 0, isy_in, mesh)
+        call append_lid(5d0, 16, 3, 0d0, isy_in, pts)
+      end if
+      call geometry(mesh, geom, error)
+      if (allocated(error)) exit
+      call set_lid(pts, multi)
+      nb = mesh%nbase
+      nl = size(pts, 2)
+      if (multi) then
+        call make_state(mesh, geom, w1, b1, d, xm1, s1, wl1)
+        call make_state(mesh, geom, w2, b2, d, xm2, s2, wl2)
+      else
+        call make_state(mesh, geom, w1, b1, d, x1, s1, wl1)
+        call make_state(mesh, geom, w2, b2, d, x2, s2, wl2)
+      end if
+      call radiation_at_irr(w1 - w2, multi, nb, nl)
+      call sharp_edge_panels(mesh, DEFAULT_EDGE_DEG, mask)
+      allocate(a(mesh%n, 1), c(3, mesh%n, 1), e(geom%nwl, 1), cl(3, 4, mesh%n, 1), rs(nb + nl, 1, mesh%nsys), &
+               rf(nb + nl, 1, mesh%nsys))
+      call b2_stokes_densities(mesh, geom, s1, s2, wl1, wl2, a(:, 1), c(:, :, 1), e(:, 1), cl(:, :, :, 1), mask)
+      call direct_rhs_b2_block(mesh, geom, a, c, e, rs, multi, cl)
+      call direct_rhs_b2_block(mesh, geom, a, c, e, rf, multi, cl, stored=.false.)
+      stored_hull = max(stored_hull, maxval(abs(rs(1:nb, :, :) - rf(1:nb, :, :)))/maxval(abs(rf(1:nb, :, :))))
+      stored_lid = max(stored_lid, maxval(abs(rs(nb + 1:, :, :) - rf(nb + 1:, :, :)))/maxval(abs(rf(nb + 1:, :, :))))
+      lid_size = min(lid_size, maxval(abs(rf(nb + 1:, :, :)))/maxval(abs(rf(1:nb, :, :))))
+      if (isy_in == 0) then
+        ! The whole mesh: its lid rows are the full lid points
+        whole_pts = pts
+        whole_lid = rf(nb + 1:, 1, 1)
+      else
+        ! The half mesh: full lid point (image im of lid point l) = sum_ip RXY(im, ip) rf(nb + l, ip) / nsys, at the lid
+        ! point mirrored in y for im = 2 (as ASSB_RBC_IRR and RADIATION_SOLVER_IRR expand the blocks)
+        do im = 1, mesh%nsys
+          do l = 1, nl
+            v = (0d0, 0d0)
+            do ip = 1, mesh%nsys
+              v = v + RXY(im, ip)*rf(nb + l, 1, ip)
+            end do
+            v = v/mesh%nsys
+            xl = pts(:, l)
+            if (im == 2) xl(2) = -xl(2)
+            q = minloc(norm2(whole_pts - spread(xl, 2, size(whole_pts, 2)), dim=1), 1)
+            if (norm2(whole_pts(:, q) - xl) > 1d-9) then
+              call check(error, .false., "a lid point of the half mesh is not a lid point of the whole mesh")
+              exit
+            end if
+            half_lid = max(half_lid, abs(v - whole_lid(q))/maxval(abs(whole_lid)))
+          end do
+          if (allocated(error)) exit
+        end do
+      end if
+      write(line, '(a,i0,a,i0,a,i0,a,i0,a,es10.2,a,es10.2)') "case ", icase, ": ", mesh%n, " panels, ", nl, &
+        " lid points, nsys ", mesh%nsys, "; stored against fresh, hull rows ", &
+        maxval(abs(rs(1:nb, :, :) - rf(1:nb, :, :)))/maxval(abs(rf(1:nb, :, :))), ", lid rows ", &
+        maxval(abs(rs(nb + 1:, :, :) - rf(nb + 1:, :, :)))/maxval(abs(rf(nb + 1:, :, :)))
+      print '(4x,a)', trim(line)
+      deallocate(a, c, e, cl, rs, rf)
+      if (allocated(error)) exit
+    end do
+    call clear_lid()
+    ISX = 0; ISY = 0; NSYS = 1
+    if (allocated(error)) return
+    write(line, '(a,es10.2,a,es10.2,a,es10.2,a,es10.2)') "B2 lid rows: stored against fresh ", stored_lid, &
+      " (hull rows ", stored_hull, "); half against whole ", half_lid, "; smallest lid rows over hull rows ", lid_size
+    print '(4x,a)', trim(line)
+    call check(error, stored_lid <= stored_limit .and. stored_hull <= stored_limit .and. half_lid <= lid_half_limit .and. &
+               lid_size > 1d-3, line)
+  end subroutine test_b2_lid_rows
+
   !> Direct against indirect with the lid, through the irregular frequency, on a cylinder with a rounded bilge (radius 5,
   !> draft 5, bilge radius 1.5, 448 panels, depth 50; 192 lid points). Its first irregular frequency is near that of the
   !> sharp cylinder, J0(k a) = 0 for the interior problem with nu = k coth(k d): 2.19 rad/s; the discrete one of this mesh
   !> is irr_omegas(3) (measured, see there). At a low Omega, at a regular one next to the irregular frequency and at it:
   !>   with the lid, T_dir of direct_at_omega equals T_pot of potential_pair with psi of the lid solve to the mesh error,
   !>   and at the irregular frequency that error is the one of its regular neighbour;
-  !>   without the lid, T_dir agrees with the lid result at the low Omega and is far from it at the irregular frequency:
-  !>   the spike that the lid removes. T_pot without the lid is printed as well.
+  !>   without the lid, T_dir agrees with the lid result at the low Omega. T_pot without the lid is printed as well.
+  !> The spike that the lid removes is checked over a window of Omega about the irregular frequency, not at one Omega
+  !> inside a peak 0.002 rad/s wide (Phase 7a Task 5): with the lid, T_dir at every Omega of irr_window is close to the
+  !> straight line through its values at irr_ends, 0.05 rad/s either side; without the lid, T_dir is far from the lid
+  !> result at some Omega of the window. A shift of the discrete irregular frequency within the window changes neither.
   subroutine test_direct_vs_indirect_irr(error)
     type(error_type), allocatable, intent(out) :: error
     type(panel_mesh) :: full, mesh
@@ -1549,9 +1679,9 @@ contains
     complex(8), allocatable :: store_wl(:, :, :)
     real(8), allocatable :: pts(:, :)
     integer, allocatable :: pairs(:, :)
-    complex(8) :: x1(6, 1), x2(6, 1), t(6, 2, 2), tp(6, 2, 2)
-    real(8) :: om, rel(3, 2), spike(3), spike_pot(3)
-    integer :: io, lid, nb, nl
+    complex(8) :: x1(6, 1), x2(6, 1), t(6, 2, 2), tp(6, 2, 2), tend(6, 2, 2), tw(6, 2, 2), line_t(6, 2)
+    real(8) :: om, rel(3, 2), spike(3), spike_pot(3), smooth, spike_window, f, smooth_nolid
+    integer :: io, lid, nb, nl, k
     character(len=300) :: line
 
     call irr_hull(full, mesh, geom, pts, error)
@@ -1583,14 +1713,58 @@ contains
         maxval(abs(t(:, :, 2)))
       print '(4x,a)', trim(line)
     end do
+    ! The window: T_dir with the lid at its two ends, then at each Omega of it with and without the lid
+    do k = 1, 2
+      call direct_only(irr_ends(k), .true., tend(:, :, k))
+    end do
+    smooth = 0d0
+    smooth_nolid = 0d0
+    spike_window = 0d0
+    do k = 1, size(irr_window)
+      om = irr_window(k)
+      call direct_only(om, .false., tw(:, :, 1))
+      call direct_only(om, .true., tw(:, :, 2))
+      f = (om - irr_ends(1))/(irr_ends(2) - irr_ends(1))
+      line_t = (1d0 - f)*tend(:, :, 1) + f*tend(:, :, 2)
+      smooth = max(smooth, maxval(abs(tw(:, :, 2) - line_t))/maxval(abs(tw(:, :, 2))))
+      smooth_nolid = max(smooth_nolid, maxval(abs(tw(:, :, 1) - line_t))/maxval(abs(tw(:, :, 2))))
+      spike_window = max(spike_window, maxval(abs(tw(:, :, 1) - tw(:, :, 2)))/maxval(abs(tw(:, :, 2))))
+      write(line, '(a,f7.4,a,es10.2,a,es10.2,a,es10.2)') "window Omega ", om, ": with the lid from the line ", &
+        maxval(abs(tw(:, :, 2) - line_t))/maxval(abs(tw(:, :, 2))), ", without the lid from the line ", &
+        maxval(abs(tw(:, :, 1) - line_t))/maxval(abs(tw(:, :, 2))), ", without against with ", &
+        maxval(abs(tw(:, :, 1) - tw(:, :, 2)))/maxval(abs(tw(:, :, 2)))
+      print '(4x,a)', trim(line)
+    end do
     call clear_lid()
-    write(line, '(a,3es10.2,a,f6.3,a,es10.2,a,es10.2)') "T_dir against T_pot with the lid ", rel(:, 2), &
-      " (irregular over its neighbour ", rel(3, 2)/rel(2, 2), "); T_dir without the lid against with, low ", spike(1), &
-      ", irregular ", spike(3)
+    write(line, '(a,3es10.2,a,f6.3,a,es10.2)') "T_dir against T_pot with the lid ", rel(:, 2), &
+      " (irregular over its neighbour ", rel(3, 2)/rel(2, 2), "); T_dir without the lid against with, low ", spike(1)
+    print '(4x,a)', trim(line)
+    write(line, '(a,es10.2,a,es10.2,a,es10.2)') "window: with the lid at most ", smooth, &
+      " from the line through the ends (without the lid ", smooth_nolid, "); without the lid against with, largest ", &
+      spike_window
     print '(4x,a)', trim(line)
     call check(error, rel(1, 2) <= irr_indirect_limit .and. maxval(rel(2:3, 2)) <= irr_mesh_limit .and. &
                rel(3, 2) <= irr_ratio_limit*rel(2, 2) .and. spike(1) <= irr_regular_limit .and. &
-               spike(3) >= irr_spike_min, line)
+               smooth <= irr_smooth_limit .and. spike_window >= irr_spike_min, line)
+
+  contains
+
+    !> T_dir of the two pairs at Omega om, with or without the lid
+    subroutine direct_only(om_in, with_lid, td)
+      real(8), intent(in) :: om_in
+      logical, intent(in) :: with_lid
+      complex(8), intent(out) :: td(:, :)
+      call two_state_store(mesh, geom, irr_depth, x1, x2, store, store_wl, pairs, irr_low + om_in, irr_low)
+      if (with_lid) then
+        call set_lid(pts, .false.)
+        call radiation_at_irr(om_in, .false., nb, nl)
+      else
+        call clear_lid()
+        call radiation_at(om_in, .false., nb)
+      end if
+      call direct_at_omega(mesh, geom, om_in, store, store_wl, pairs, td)
+    end subroutine direct_only
+
   end subroutine test_direct_vs_indirect_irr
 
   !> The hull, geometry and lid points of direct_vs_indirect_irr, with the solver globals at depth irr_depth
