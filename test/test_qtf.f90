@@ -445,12 +445,19 @@ function pw_code(i, ib) result(pw)
   integer :: m, n
   pw%mmax = fs_mmax
   pw%nev = fs_nev
-  pw%k0 = 0.01d0 * (10 * i + ib)
+  ! k0 and kev are those that qtf_finish needs for the free-surface integral (Task 8): the wave number of the state for
+  ! a state (i <= size(omegas)), and the same k0 and kev for every mode of a psi (i > 100), so that the outer integral
+  ! accepts the sets; the amplitudes tell the frequencies, headings and modes apart
+  if (i <= size(omegas)) then
+    pw%k0 = wave_number(omegas(i), depth)
+  else
+    pw%k0 = 0.001d0 * i
+  end if
   pw%h = depth
   pw%radius = fs_radius
   pw%centre = fs_centre
   allocate (pw%kev(fs_nev), pw%a(-fs_mmax:fs_mmax, 0:fs_nev))
-  pw%kev = 0.3d0 + 0.001d0 * ib
+  pw%kev = 0.3d0 + 0.001d0 * i
   do n = 0, fs_nev
     do m = -fs_mmax, fs_mmax
       pw%a(m, n) = cmplx(10 * i + ib + 0.1d0 * m, n - 0.01d0 * m, 8)

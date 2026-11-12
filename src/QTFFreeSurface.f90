@@ -52,11 +52,15 @@ MODULE QTFFreeSurface
    PUBLIC :: FS_MODE_TOL, fs_mode_scales, fs_auto_evanescent
    PUBLIC :: FS_SIGN, fs_inner_pair, fs_outer_pair, fs_outer_annulus, fs_outer_tail, fs_outer_ring, fs_outer_rfar
    PUBLIC :: fs_outer_sliver, fs_radius_message, fs_pair_order_message
+   PUBLIC :: fs_pair_terms, fs_coverage_check
 
    ! The mode check: the partial waves must give the samples on the circle to this fraction of their largest value
    REAL(8), PARAMETER :: FS_MODE_TOL = 1D-3
    ! The smallest scale of the mode check, as a fraction of the largest sample over all states (fs_mode_scales)
    REAL(8), PARAMETER :: FS_SCALE_FLOOR = 1D-6
+   ! The coverage check of a mesh from FSInnerMesh.pnl (fs_coverage_check): a warning when it leaves out (or counts twice)
+   ! more than FS_COVER_WARN of the free surface inside R, a stop when it leaves out more than FS_COVER_STOP
+   REAL(8), PARAMETER :: FS_COVER_WARN = 1D-2, FS_COVER_STOP = 1D-1
 
    ! The sign s_FS of T_FS = s_FS (i Omega rho / g) int psi_k Q_D dS: +1, settled by the direct solve of the Task 2
    ! reference (fs_sign_from_bvp: 7e-6 with +1, 1.25 with -1)
@@ -496,6 +500,97 @@ CONTAINS
       msg = TRIM(line)
    END FUNCTION fs_pair_order_message
 
+   SUBROUTINE fs_pair_terms(w1, f1, inc1, pw1, beta1, k1, w2, f2, inc2, pw2, beta2, k2, psi, pw_psi, wts, np, g, rho, &
+                            t_in, t_out, r_far)
+      ! The free-surface terms of T_pot of the pair of states 1 (omega w1, heading beta1 in radians, incident wave number
+      ! k1 = pw1%k0) and 2, as QTFDriver adds them (qtf_terms = full):
+      !   t_in   fs_inner_pair over the inner points: total fields f1, f2, incident fields inc1, inc2 (phi_zz = k^2 phi),
+      !          psi_k there psi(n, 6 nbody), panel areas wts;
+      !   t_out  fs_outer_pair from R to fs_outer_rfar and its tail, plus fs_outer_sliver over the gap between the polygon of
+      !          np chords that a generated inner mesh ends on and the circle (np < 3, a mesh from FSInnerMesh.pnl: none).
+      ! psi and pw_psi are psi_k at |Omega|, Omega = w1 - w2, as the store keeps them. r_far, if present, is the r_far used
+      ! (0 if none).
+      !   Omega = 0 (w1 == w2, the diagonal of the QTF): no free-surface term; zeros, and no outer routine is called
+      !   (fs_outer_rfar and fs_outer_ring stop on Omega = 0).
+      !   w1 < w2: the pair is evaluated as (2, 1), at -Omega > 0 with the same psi, and conjugated, T(1, 2) = conj T(2, 1)
+      !   [derived]: Q_D(2, 1) = conj Q_D(1, 2) (pair_product of KERNEL_DIFF) and psi(-Omega) = conj psi(Omega), as
+      !   potential_pair takes for the hull terms (fs_inner_pair_hermitian checks it on the inner sum). So the outer
+      !   routines only see ordered pairs.
+      REAL(8), INTENT(IN) :: w1, beta1, k1, w2, beta2, k2, wts(:), g, rho
+      TYPE(fs_point_field), INTENT(IN) :: f1(:), inc1(:), f2(:), inc2(:)
+      TYPE(pw_set), INTENT(IN) :: pw1, pw2, pw_psi(:)
+      COMPLEX(8), INTENT(IN) :: psi(:, :)
+      INTEGER, INTENT(IN) :: np
+      COMPLEX(8), INTENT(OUT) :: t_in(:), t_out(:)
+      REAL(8), INTENT(OUT), OPTIONAL :: r_far
+
+      t_in = (0D0, 0D0)
+      t_out = (0D0, 0D0)
+      IF (PRESENT(r_far)) r_far = 0D0
+      IF (w1 == w2) RETURN
+      IF (w1 > w2) THEN
+         CALL ordered(w1, f1, inc1, pw1, beta1, k1, w2, f2, inc2, pw2, beta2, k2)
+      ELSE
+         CALL ordered(w2, f2, inc2, pw2, beta2, k2, w1, f1, inc1, pw1, beta1, k1)
+         t_in = CONJG(t_in)
+         t_out = CONJG(t_out)
+      END IF
+
+   CONTAINS
+
+      SUBROUTINE ordered(wa, fa, ia, pa, ba, ka, wb, fb, ib, pb, bb, kb)
+         ! The terms of the pair (a, b) with wa > wb
+         REAL(8), INTENT(IN) :: wa, ba, ka, wb, bb, kb
+         TYPE(fs_point_field), INTENT(IN) :: fa(:), ia(:), fb(:), ib(:)
+         TYPE(pw_set), INTENT(IN) :: pa, pb
+         COMPLEX(8) :: sl(SIZE(t_out))
+         REAL(8) :: rf
+
+         CALL fs_inner_pair(wa, fa, ia, wb, fb, ib, psi, wts, g, rho, t_in)
+         rf = fs_outer_rfar(pa, ka, pb, kb, pw_psi)
+         CALL fs_outer_pair(wa, pa, ba, ka, wb, pb, bb, kb, pw_psi, wa - wb, g, rho, rf, t_out)
+         IF (np >= 3) THEN
+            CALL fs_outer_sliver(wa, pa, ba, ka, wb, pb, bb, kb, pw_psi, wa - wb, g, rho, np, sl)
+            t_out = t_out + sl
+         END IF
+         IF (PRESENT(r_far)) r_far = rf
+      END SUBROUTINE ordered
+
+   END SUBROUTINE fs_pair_terms
+
+   SUBROUTINE fs_coverage_check(w, radius, awp, miss, msg, stops)
+      ! The coverage of an inner free-surface mesh from FSInnerMesh.pnl (Task 7 review, minor 4). The outer integral starts
+      ! at the circle r = R, and a file mesh gets no sliver (fs_outer_sliver needs the polygon of the generated mesh), so
+      ! the file mesh must reach R. With w the panel areas and awp the waterplane area of all bodies,
+      !   miss = (pi R^2 - awp - sum w) / (pi R^2 - awp),
+      ! the fraction of the free surface inside R that the mesh leaves out (< 0: more area than there is, from overlapping
+      ! panels or panels over a waterplane). |miss| > FS_COVER_WARN: msg is a warning; miss > FS_COVER_STOP: msg is a stop
+      ! message and stops is true (the mesh does not reach R). A mesh that ends on a polygon inscribed in the circle leaves
+      ! out the polygon gap, about (2 pi / n)^2 / 6 of pi R^2 for n chords.
+      REAL(8), INTENT(IN) :: w(:), radius, awp
+      REAL(8), INTENT(OUT) :: miss
+      CHARACTER(LEN=:), ALLOCATABLE, INTENT(OUT) :: msg
+      LOGICAL, INTENT(OUT) :: stops
+      CHARACTER(LEN=400) :: line
+      REAL(8) :: region
+
+      region = PI*radius**2 - awp
+      miss = (region - SUM(w))/region
+      stops = miss > FS_COVER_STOP
+      msg = ''
+      IF (stops) THEN
+         WRITE (line, '(a,F10.3,a,F8.3,a)') 'QTF free surface: FSInnerMesh.pnl does not reach the circle R =', radius, &
+            ' m: it leaves out', 100D0*miss, ' % of the free surface inside R (the circle minus the waterplanes), which no'// &
+            ' part of the integral covers. Extend the mesh to the circle.'
+         msg = TRIM(line)
+      ELSE IF (ABS(miss) > FS_COVER_WARN) THEN
+         WRITE (line, '(a,F8.3,a,F10.3,a)') 'QTF free surface warning: the inner mesh of FSInnerMesh.pnl leaves out', &
+            100D0*miss, ' % of the free surface inside R =', radius, ' m (the circle minus the waterplanes; < 0: it'// &
+            ' counts some twice). The outer integral starts at R: extend the mesh to the circle, without overlaps.'
+         msg = TRIM(line)
+      END IF
+   END SUBROUTINE fs_coverage_check
+
    SUBROUTINE fs_inner_pair(w1, f1, inc1, w2, f2, inc2, psi, wts, g, rho, t_in)
       ! The inner part of T_FS for the pair of states 1 (omega w1) and 2 (omega w2): the sum over the inner points of
       !   t_in(k) = s_FS (i Omega rho / g) sum_i wts(i) psi(i, k) Q_D(x_i),   Omega = w1 - w2,
@@ -586,14 +681,17 @@ CONTAINS
       ! s_FS (i Omega rho / g) int_{r_a < r < r_b} psi_k Q_D r dr dtheta (the arguments of fs_outer_pair), r_a >= R: the
       ! ring integral of fs_outer_ring by Gauss-Legendre of order NGL on intervals of at most 1/8 of the shortest
       ! wavelength of the integrand, 2 pi / (k_1 + k_2 + K), at most 2 / k_n of the fastest evanescent mode still alive (a
-      ! mode is dropped where it has decayed by e^-40), and at most 2 r / (M + 1). OpenMP over the intervals.
+      ! mode is dropped where it has decayed by e^-40), and at most 2 r / (M + 1). OpenMP over the intervals; each interval
+      ! keeps its own sum, and these are added in order after the parallel loop, so that the result does not depend on the
+      ! threads or the schedule (the same bits run to run).
       REAL(8), INTENT(IN) :: w1, beta1, k1, w2, beta2, k2, omega, g, rho, r_a, r_b
       TYPE(pw_set), INTENT(IN) :: pw1, pw2, pw_psi(:)
       COMPLEX(8), INTENT(OUT) :: t(:)
       TYPE(outer_data) :: od
       REAL(8), ALLOCATABLE :: edge(:)
+      COMPLEX(8), ALLOCATABLE :: part(:, :)
       REAL(8) :: xg(NGL), wg(NGL)
-      INTEGER :: ni
+      INTEGER :: ni, i
 
       t = (0D0, 0D0)
       IF (omega == 0D0 .OR. .NOT. r_b > r_a .OR. SIZE(t) == 0) RETURN
@@ -609,39 +707,42 @@ CONTAINS
       END IF
       CALL radial_intervals(od, r_a, r_b, edge, ni)
       CALL gauss_legendre01(NGL, xg, wg)
+      ALLOCATE (part(od%nk, ni))
       !$OMP PARALLEL NUM_THREADS(NTHREAD) DEFAULT(SHARED)
-      CALL annulus_worker(od, edge, ni, xg, wg, t)
+      CALL annulus_worker(od, edge, ni, xg, wg, part)
       !$OMP END PARALLEL
+      DO i = 1, ni
+         t = t + part(:, i)
+      END DO
       t = FS_SIGN*CI*omega*rho/g*t
    END SUBROUTINE fs_outer_annulus
 
-   SUBROUTINE annulus_worker(od, edge, ni, xg, wg, t)
-      ! The share of one thread of fs_outer_annulus (an orphaned OMP DO): its own work arrays, its own partial sum
+   SUBROUTINE annulus_worker(od, edge, ni, xg, wg, part)
+      ! The share of one thread of fs_outer_annulus (an orphaned OMP DO): its own work arrays; part(:, i) the sum over the
+      ! Gauss points of interval i, each interval written by one thread only
       TYPE(outer_data), INTENT(IN) :: od
       REAL(8), INTENT(IN) :: edge(:), xg(:), wg(:)
       INTEGER, INTENT(IN) :: ni
-      COMPLEX(8), INTENT(INOUT) :: t(:)
+      COMPLEX(8), INTENT(INOUT) :: part(:, :)
       TYPE(outer_work) :: wk
-      COMPLEX(8), ALLOCATABLE :: part(:), ring(:)
+      COMPLEX(8), ALLOCATABLE :: ring(:), acc(:)
       REAL(8) :: r, dr
       INTEGER :: i, q
 
       CALL work_alloc(od, wk)
-      ALLOCATE (part(od%nk), ring(od%nk))
-      part = (0D0, 0D0)
+      ALLOCATE (ring(od%nk), acc(od%nk))
       !$OMP DO SCHEDULE(DYNAMIC, 8) PRIVATE(i, q, r, dr)
       DO i = 1, ni
          dr = edge(i + 1) - edge(i)
+         acc = (0D0, 0D0)
          DO q = 1, SIZE(xg)
             r = edge(i) + xg(q)*dr
             CALL ring_real(od, r, ring, wk)
-            part = part + (wg(q)*dr*r)*ring
+            acc = acc + (wg(q)*dr*r)*ring
          END DO
+         part(:, i) = acc
       END DO
       !$OMP END DO
-      !$OMP CRITICAL (fs_outer_sum)
-      t = t + part
-      !$OMP END CRITICAL (fs_outer_sum)
    END SUBROUTINE annulus_worker
 
    SUBROUTINE fs_outer_tail(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, omega, g, rho, r_far, t)

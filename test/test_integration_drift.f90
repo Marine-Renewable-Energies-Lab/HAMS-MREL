@@ -209,6 +209,15 @@ module test_integration_drift
     ! against qtf_b2c_rad: 0 measured (the same .11d to the bit), a fixed 1e-12
     real(8), parameter :: b2_drift_limit = 1d-12
 
+    ! The free-surface integral (qtf_terms = full), over max |FS_inner + FS_outer| of the rows of forces or of moments.
+    ! The half mesh against the whole mesh, IRSP = 1 against IRSP = 0, Omega from the main grid against a radiation-only
+    ! solve: the brief's limits
+    real(8), parameter :: fs_half_limit = 1d-5
+    real(8), parameter :: fs_irsp_limit = 1d-3
+    real(8), parameter :: fs_main_grid_limit = 1d-8
+    ! Body 2 of qtf_fs_two against body 1 mirrored about y = 0 (the layout and every mesh are mirror symmetric)
+    real(8), parameter :: fs_two_mirror_limit = 1d-6
+
 contains
 
     subroutine setup_drift(testsuite)
@@ -260,6 +269,7 @@ contains
             new_unittest("run_qtf_b2_routes", run_qtf_b2_routes), &
             new_unittest("run_qtf_b2_defaults", run_qtf_b2_defaults), &
             new_unittest("run_qtf_field_cases", run_qtf_field_cases), &
+            new_unittest("run_qtf_fs_cases", run_qtf_fs_cases), &
             new_unittest("run_control_cyl", run_control_cyl), &
             new_unittest("run_control_cyl_sybo", run_control_cyl_sybo), &
             new_unittest("run_control_cases", run_control_cases) &
@@ -368,7 +378,13 @@ contains
             new_unittest("qtf_field_converges", qtf_field_converges), &
             new_unittest("qtf_field_inside_stops", qtf_field_inside_stops), &
             new_unittest("qtf_field_no_points_stops", qtf_field_no_points_stops), &
-            new_unittest("qtf_field_off", qtf_field_off) &
+            new_unittest("qtf_field_off", qtf_field_off), &
+            new_unittest("qtf_fs_columns", qtf_fs_columns), &
+            new_unittest("qtf_fs_off_unchanged", qtf_fs_off_unchanged), &
+            new_unittest("fs_half_matches_full", fs_half_matches_full), &
+            new_unittest("fs_irsp_lid", fs_irsp_lid), &
+            new_unittest("fs_main_grid_omega", fs_main_grid_omega), &
+            new_unittest("fs_two_bodies_file", fs_two_bodies_file) &
         ]
     end subroutine collect_tests_drift
 
@@ -3505,17 +3521,31 @@ contains
     ! ---------------------------------------------------------------------------------------------- QTF potential part
 
     !> Rows PER1 PER2 BETA1 BETA2 I, then Re Im of each of the 5 terms (Froude-Krylov, incident diffraction, B1, B2, B3), of
-    !> QTF_PotentialTerms.txt: 15 columns
+    !> QTF_PotentialTerms.txt: 15 columns; with qtf_terms = full also FS_inner and FS_outer: 19 columns. The number of
+    !> columns is that of the first row.
     subroutine read_pot_terms(path, rows, error)
         character(len=*), intent(in) :: path
         real(8), allocatable, intent(out) :: rows(:,:)
         type(error_type), allocatable, intent(out) :: error
         character(len=:), allocatable :: lines(:)
-        integer :: r, n, ios
+        integer :: r, n, ios, ncol, i
+        logical :: blank
 
         call read_lines(path, lines, error)
         if (allocated(error)) return
-        allocate (rows(size(lines), 15))
+        ncol = 0
+        do r = 1, size(lines)
+            if (lines(r)(1:1) == '#') cycle
+            blank = .true.
+            do i = 1, len_trim(lines(r))
+                if (blank .and. lines(r)(i:i) /= ' ') ncol = ncol + 1
+                blank = lines(r)(i:i) == ' '
+            end do
+            exit
+        end do
+        call check(error, ncol == 15 .or. ncol == 19, "Not 15 or 19 columns in "//path)
+        if (allocated(error)) return
+        allocate (rows(size(lines), ncol))
         n = 0
         do r = 1, size(lines)
             if (lines(r)(1:1) == '#') cycle
@@ -3527,12 +3557,14 @@ contains
         rows = rows(1:n,:)
     end subroutine read_pot_terms
 
-    !> T_pot of each row of the terms file: (PER1, PER2, BETA1, BETA2, I, Re, Im), the sum of the 5 terms
+    !> T_pot of each row of the terms file: (PER1, PER2, BETA1, BETA2, I, Re, Im), the sum of the 5 terms (7 with
+    !> qtf_terms = full)
     subroutine read_pot_total(path, rows, error)
         character(len=*), intent(in) :: path
         real(8), allocatable, intent(out) :: rows(:,:)
         type(error_type), allocatable, intent(out) :: error
         real(8), allocatable :: t(:,:)
+        integer :: k
 
         call read_pot_terms(path, t, error)
         if (allocated(error)) return
@@ -3540,6 +3572,10 @@ contains
         rows(:,1:5) = t(:,1:5)
         rows(:,6) = t(:,6) + t(:,8) + t(:,10) + t(:,12) + t(:,14)
         rows(:,7) = t(:,7) + t(:,9) + t(:,11) + t(:,13) + t(:,15)
+        do k = 16, size(t, 2) - 1, 2
+            rows(:,6) = rows(:,6) + t(:,k)
+            rows(:,7) = rows(:,7) + t(:,k + 1)
+        end do
     end subroutine read_pot_total
 
     !> Row q of b with the keys PER1 PER2 BETA1 BETA2 I of row p of a, or 0
@@ -3569,9 +3605,11 @@ contains
     !> files have the same rows in the same order.
     subroutine qtf_body_diagonal(error)
         type(error_type), allocatable, intent(out) :: error
-        character(len=21), parameter :: cases(6) = [character(len=21) :: "qtf_round_body", "qtf_round_low", &
+        ! With qtf_terms = full too: the free-surface terms are zero on the diagonal (Omega = 0 is skipped before any outer
+        ! call), so .11d is .10d there as well
+        character(len=21), parameter :: cases(9) = [character(len=21) :: "qtf_round_body", "qtf_round_low", &
                                                     "qtf_two_round_body", "qtf_sharp_b2_control", "qtf_two_round_control", &
-                                                    "qtf_period_body"]
+                                                    "qtf_period_body", "qtf_fs_round", "qtf_fs_two", "qtf_fs_main"]
         character(len=:), allocatable :: a(:), b(:)
         real(8), allocatable :: d(:,:)
         integer :: c, r, diagonal
@@ -3603,8 +3641,9 @@ contains
     !> each pair with Omega /= 0 and only those
     subroutine qtf_body_sum_of_terms(error)
         type(error_type), allocatable, intent(out) :: error
-        character(len=21), parameter :: cases(5) = [character(len=21) :: "qtf_round_body", "qtf_two_round_body", &
-                                                    "qtf_sharp_b2_control", "qtf_two_round_control", "qtf_period_body"]
+        character(len=21), parameter :: cases(10) = [character(len=21) :: "qtf_round_body", "qtf_two_round_body", &
+                                                    "qtf_sharp_b2_control", "qtf_two_round_control", "qtf_period_body", &
+                                                    "qtf_fs_round", "qtf_fs_two", "qtf_fs_main", "qtf_fs_half", "qtf_fs_irsp"]
         real(8), allocatable :: d(:,:), x(:,:), t(:,:)
         real(8) :: worst
         integer :: c, r, q, n
@@ -3645,9 +3684,9 @@ contains
     !> pairs, and T_pot of the terms file the same to its digits
     subroutine qtf_body_hermitian(error)
         type(error_type), allocatable, intent(out) :: error
-        character(len=21), parameter :: cases(6) = [character(len=21) :: "qtf_round_body", "qtf_round_low", &
+        character(len=21), parameter :: cases(8) = [character(len=21) :: "qtf_round_body", "qtf_round_low", &
                                                     "qtf_two_round_body", "qtf_sharp_b2_control", "qtf_two_round_control", &
-                                                    "qtf_period_body"]
+                                                    "qtf_period_body", "qtf_fs_round", "qtf_fs_two"]
         real(8), allocatable :: x(:,:), t(:,:)
         real(8) :: worst, scale
         integer :: c, p, q, partners
@@ -4495,6 +4534,312 @@ contains
         inquire (file=output_dir("qtf_round")//qtf_diff_file, exist=exists)
         call check(error, exists, "qtf_round did not run: no QTF_Quadratic.10d")
     end subroutine qtf_field_off
+
+
+    ! ---------------------------------------------------------------------------------------------- QTF free surface (6a)
+
+    !> The fixtures of the free-surface integral (qtf_terms = full), in one setup test
+    subroutine run_qtf_fs_cases(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=15), parameter :: cases(7) = [character(len=15) :: "qtf_fs_round", "qtf_fs_body", "qtf_fs_half", &
+                                                    "qtf_fs_main", "qtf_fs_irsp_ref", "qtf_fs_irsp", "qtf_fs_two"]
+        type(error_type), allocatable :: one
+        integer :: c
+
+        do c = 1, size(cases)
+            call run_case(trim(cases(c)), [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file], one)
+            if (allocated(one)) then
+                print '(4x,a)', trim(cases(c))//": "//one%message
+                if (.not. allocated(error)) call move_alloc(one, error)
+            end if
+        end do
+    end subroutine run_qtf_fs_cases
+
+    !> FS_inner + FS_outer of each row of a terms file of qtf_terms = full: (PER1, PER2, BETA1, BETA2, I, Re, Im)
+    subroutine read_fs_total(path, rows, error)
+        character(len=*), intent(in) :: path
+        real(8), allocatable, intent(out) :: rows(:,:)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: t(:,:)
+
+        call read_pot_terms(path, t, error)
+        if (allocated(error)) return
+        call check(error, size(t, 2) == 19, path//": not the 7 terms of qtf_terms = full")
+        if (allocated(error)) return
+        allocate (rows(size(t, 1), 7))
+        rows(:,1:5) = t(:,1:5)
+        rows(:,6) = t(:,16) + t(:,18)
+        rows(:,7) = t(:,17) + t(:,19)
+    end subroutine read_fs_total
+
+    !> The free-surface terms of b against those of a, matched by key, over max |FS| of the rows of forces or of moments of a
+    subroutine fs_against(a_case, b_case, worst, matched, error)
+        character(len=*), intent(in) :: a_case, b_case
+        real(8), intent(out) :: worst
+        integer, intent(out) :: matched
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: a(:,:), b(:,:)
+        integer :: p, q
+
+        call read_fs_total(output_dir(a_case)//pot_terms_file, a, error)
+        if (allocated(error)) return
+        call read_fs_total(output_dir(b_case)//pot_terms_file, b, error)
+        if (allocated(error)) return
+        worst = 0d0
+        matched = 0
+        do p = 1, size(b, 1)
+            q = matching_row(b, p, a)
+            if (q == 0) cycle
+            matched = matched + 1
+            worst = max(worst, hypot(b(p,6) - a(q,6), b(p,7) - a(q,7))/kind_scale(a, a(q,5)))
+        end do
+    end subroutine fs_against
+
+    !> qtf_terms = full: QTF_PotentialTerms.txt has the two more column pairs FS_inner and FS_outer after B3 (19 columns),
+    !> named in the header, both finite and not zero, and .11d - .10d is the sum of the 7 terms to the printed digits; the
+    !> log says that the free-surface integral is added
+    subroutine qtf_fs_columns(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=12), parameter :: cases(2) = [character(len=12) :: "qtf_fs_round", "qtf_fs_two"]
+        character(len=*), parameter :: line = "QTF_Indirect.11d: body forcing and the free-surface integral (qtf_terms = full)."
+        character(len=:), allocatable :: lines(:)
+        real(8), allocatable :: t(:,:), d(:,:), x(:,:)
+        real(8) :: worst, s
+        integer :: c, r, q, header
+
+        do c = 1, size(cases)
+            call read_lines(output_dir(trim(cases(c)))//pot_terms_file, lines, error)
+            if (allocated(error)) return
+            header = 0
+            do r = 1, size(lines)
+                if (lines(r)(1:1) /= '#') exit
+                if (index(lines(r), '6 FS_inner') > 0 .and. index(lines(r), '7 FS_outer') > 0) header = header + 1
+            end do
+            call check(error, header == 1, trim(cases(c))//": the header does not name FS_inner and FS_outer")
+            if (allocated(error)) return
+            call read_pot_terms(output_dir(trim(cases(c)))//pot_terms_file, t, error)
+            if (allocated(error)) return
+            call check(error, size(t, 2) == 19 .and. size(t, 1) > 0, trim(cases(c))//": not 19 columns")
+            if (allocated(error)) return
+            call check_no_bad_numbers(output_dir(trim(cases(c)))//pot_terms_file, error)
+            if (allocated(error)) return
+            call check(error, maxval(abs(t(:,16:17))) > 0d0 .and. maxval(abs(t(:,18:19))) > 0d0, &
+                       trim(cases(c))//": FS_inner or FS_outer is zero")
+            if (allocated(error)) return
+            ! .11d - .10d against the sum of the 7 terms, to the printed digits of the two files
+            call read_qtf(output_dir(trim(cases(c)))//qtf_diff_file, d, error)
+            if (allocated(error)) return
+            call read_qtf(output_dir(trim(cases(c)))//qtf_indirect_file, x, error)
+            if (allocated(error)) return
+            worst = 0d0
+            do r = 1, size(x, 1)
+                if (x(r,1) == x(r,2)) cycle
+                q = matching_row(x, r, t)
+                call check(error, q > 0, trim(cases(c))//": a .11d row has no terms row")
+                if (allocated(error)) return
+                s = sum(t(q,6:18:2))
+                worst = max(worst, abs(x(r,8) - d(r,8) - s)/max(abs(x(r,8)) + abs(d(r,8)), tiny(1d0)))
+                s = sum(t(q,7:19:2))
+                worst = max(worst, abs(x(r,9) - d(r,9) - s)/max(abs(x(r,9)) + abs(d(r,9)), tiny(1d0)))
+            end do
+            call report("qtf_fs_columns "//trim(cases(c)), worst)
+            call check_below(error, "qtf_fs_columns "//trim(cases(c)), worst, pot_printed_limit)
+            if (allocated(error)) return
+            call check(error, count_log_lines(get_running_exe_path()//trim(cases(c))//".log", line), 1, &
+                       "free-surface line in the log of "//trim(cases(c)))
+            if (allocated(error)) return
+        end do
+    end subroutine qtf_fs_columns
+
+    !> Without qtf_terms = full nothing changes: qtf_fs_body (qtf_terms = body) writes the first-order files, the mean drift
+    !> and .10d of qtf_fs_round to the bit, its terms file has the 5 terms and the header of Phase 5, the first 5 terms of
+    !> qtf_fs_round are its terms exactly, and .11d of qtf_fs_round is its .11d plus FS_inner + FS_outer to the printed
+    !> digits. (The Phase 5 fixtures pin the body outputs themselves.)
+    subroutine qtf_fs_off_unchanged(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=40), parameter :: same_files(6) = [character(len=40) :: "Wamit_format/AmssDamp.1", &
+            "Wamit_format/ExcForce.3", "Wamit_format/Motion.4", far_file, near_file, qtf_diff_file]
+        character(len=*), parameter :: body_line = "QTF_Indirect.11d: body forcing only, the free-surface integral is omitted."
+        character(len=:), allocatable :: lines(:)
+        real(8), allocatable :: tb(:,:), tf(:,:), xb(:,:), xf(:,:), fs(:,:)
+        real(8) :: worst
+        integer :: i, p, q
+
+        do i = 1, size(same_files)
+            call check_same_file(output_dir("qtf_fs_body")//trim(same_files(i)), &
+                                 output_dir("qtf_fs_round")//trim(same_files(i)), error)
+            if (allocated(error)) return
+        end do
+        call read_lines(output_dir("qtf_fs_body")//pot_terms_file, lines, error)
+        if (allocated(error)) return
+        call check(error, index(lines(1), "(qtf_terms = body)") > 0 .and. index(lines(3), "the free-surface integral is"// &
+                   " omitted") > 0, "qtf_fs_body: the terms file does not have the header of qtf_terms = body")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_fs_body.log", body_line), 1, &
+                   "free-surface line in the log of qtf_fs_body")
+        if (allocated(error)) return
+        call read_pot_terms(output_dir("qtf_fs_body")//pot_terms_file, tb, error)
+        if (allocated(error)) return
+        call read_pot_terms(output_dir("qtf_fs_round")//pot_terms_file, tf, error)
+        if (allocated(error)) return
+        call check(error, size(tb, 2) == 15 .and. size(tf, 1) == size(tb, 1), "qtf_fs_body: not 15 columns, or other rows")
+        if (allocated(error)) return
+        do p = 1, size(tb, 1)
+            q = matching_row(tb, p, tf)
+            call check(error, q > 0, "qtf_fs_round: a terms row of qtf_fs_body is missing")
+            if (allocated(error)) return
+            call check(error, all(tf(q,6:15) == tb(p,6:15)), "qtf_fs_round: the body terms differ from qtf_fs_body")
+            if (allocated(error)) return
+        end do
+        call read_qtf(output_dir("qtf_fs_body")//qtf_indirect_file, xb, error)
+        if (allocated(error)) return
+        call read_qtf(output_dir("qtf_fs_round")//qtf_indirect_file, xf, error)
+        if (allocated(error)) return
+        call read_fs_total(output_dir("qtf_fs_round")//pot_terms_file, fs, error)
+        if (allocated(error)) return
+        worst = 0d0
+        do p = 1, size(xf, 1)
+            if (xf(p,1) == xf(p,2)) then
+                call check(error, all(xf(p,:) == xb(p,:)), "qtf_fs_round: the diagonal of .11d differs from body")
+                if (allocated(error)) return
+                cycle
+            end if
+            q = matching_row(xf, p, fs)
+            worst = max(worst, abs(xf(p,8) - xb(p,8) - fs(q,6))/(abs(xf(p,8)) + abs(xb(p,8))), &
+                        abs(xf(p,9) - xb(p,9) - fs(q,7))/(abs(xf(p,9)) + abs(xb(p,9))))
+        end do
+        call report("qtf_fs_off_unchanged .11d full - body against FS", worst)
+        call check_below(error, "qtf_fs_off_unchanged", worst, pot_printed_limit)
+    end subroutine qtf_fs_off_unchanged
+
+    !> The half mesh (ISY = 1) against the whole mesh: the inner free surface and the circle cover the whole plane in both
+    !> (the mesh is expanded by its image before build_fs_inner), so FS_inner + FS_outer agree to the solver's rounding;
+    !> the brief's 1e-5 of max |FS| of the rows of forces or of moments
+    subroutine fs_half_matches_full(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst
+        integer :: matched
+
+        call fs_against("qtf_fs_round", "qtf_fs_half", worst, matched, error)
+        if (allocated(error)) return
+        call report("fs_half_matches_full", worst)
+        call check(error, matched == 2*2*6, "qtf_fs_half: expected 2 pairs, 2 headings, 6 rows matched")
+        if (allocated(error)) return
+        call check_below(error, "fs_half_matches_full", worst, fs_half_limit)
+    end subroutine fs_half_matches_full
+
+    !> IRSP = 1 (lid panels in the waterplane) against IRSP = 0: the same inner points (the log line of the inner mesh,
+    !> points, R and centre, is the same: no lid panel enters the inner free surface), and FS_inner + FS_outer within 1e-3 of
+    !> max |FS| at 0.8 and 1.0 rad/s, below the first irregular frequency of the hull (J_0(k a) = 0: about 2.2 rad/s). The
+    !> lid changes the first-order solution at the discretisation level, so the pair runs on a finer mesh of the hull (960
+    !> panels): FS 6.3e-4 measured (3.0e-3 at 220 panels and 9.6e-4 at 512, where the body terms differ by 8.2e-3 and 3.2e-3)
+    subroutine fs_irsp_lid(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=:), allocatable :: a, b
+        real(8) :: worst
+        integer :: matched
+
+        call inner_mesh_line("qtf_fs_irsp_ref", a, error)
+        if (allocated(error)) return
+        call inner_mesh_line("qtf_fs_irsp", b, error)
+        if (allocated(error)) return
+        call check(error, a == b, "qtf_fs_irsp: other inner points than qtf_fs_irsp_ref: "//a//" | "//b)
+        if (allocated(error)) return
+        call fs_against("qtf_fs_irsp_ref", "qtf_fs_irsp", worst, matched, error)
+        if (allocated(error)) return
+        call report("fs_irsp_lid", worst)
+        call check(error, matched == 2*2*6, "qtf_fs_irsp: expected 2 pairs, 2 headings, 6 rows matched")
+        if (allocated(error)) return
+        call check_below(error, "fs_irsp_lid", worst, fs_irsp_limit)
+    end subroutine fs_irsp_lid
+
+    !> The log line of the inner free surface of a case (points, R and centre)
+    subroutine inner_mesh_line(name, text, error)
+        character(len=*), intent(in) :: name
+        character(len=:), allocatable, intent(out) :: text
+        type(error_type), allocatable, intent(out) :: error
+        character(len=:), allocatable :: lines(:)
+        integer :: r
+
+        call read_lines(get_running_exe_path()//name//".log", lines, error)
+        if (allocated(error)) return
+        do r = 1, size(lines)
+            if (index(lines(r), "QTF free surface: ") > 0 .and. index(lines(r), " inner points, circle R =") > 0) then
+                text = trim(lines(r))
+                return
+            end if
+        end do
+        call test_failed(error, name//": no inner free-surface line in the log")
+    end subroutine inner_mesh_line
+
+    !> Omega = 0.2 rad/s with psi from the main grid (qtf_fs_main: 0.2 rad/s on the grid) against psi from a radiation-only
+    !> solve (qtf_fs_round): the same psi data path (qtf_keep_fs_psi), so the same FS terms of the pair (0.8, 1.0), the
+    !> brief's 1e-8 of max |FS|
+    subroutine fs_main_grid_omega(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst
+        integer :: matched
+
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_fs_main.log", &
+                   "QTF body forcing: psi at 1 difference frequencies, 1 from the main grid and 0 radiation-only solves"), 1, &
+                   "qtf_fs_main: psi of Omega = 0.2 is not from the main grid")
+        if (allocated(error)) return
+        call fs_against("qtf_fs_round", "qtf_fs_main", worst, matched, error)
+        if (allocated(error)) return
+        call report("fs_main_grid_omega", worst)
+        call check(error, matched == 2*2*6, "qtf_fs_main: expected the pair (0.8, 1.0) both ways, 2 headings, 6 rows")
+        if (allocated(error)) return
+        call check_below(error, "fs_main_grid_omega", worst, fs_main_grid_limit)
+    end subroutine fs_main_grid_omega
+
+    !> Two hulls at y = +-10 m with FSInnerMesh.pnl, heading 0: the layout, the hull meshes and the inner mesh are their
+    !> own mirror images about y = 0, so body 2 is body 1 mirrored: FS_inner + FS_outer and the whole T_pot of body 2 are
+    !> those of body 1 with the sign of y (index 1, 3, 5 equal; 2, 4, 6 opposite), and the total over the bodies has no F_y,
+    !> M_x, M_z. Finite, and the coverage line of the file mesh is in the log, with no warning.
+    subroutine fs_two_bodies_file(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), parameter :: mirror(6) = [1d0, -1d0, 1d0, -1d0, 1d0, -1d0]
+        real(8), allocatable :: fs(:,:), tp(:,:), key(:,:)
+        real(8) :: worst_fs, worst_tp
+        integer :: p, q, i, n
+
+        call check_no_bad_numbers(output_dir("qtf_fs_two")//qtf_indirect_file, error)
+        if (allocated(error)) return
+        call check_no_bad_numbers(output_dir("qtf_fs_two")//pot_terms_file, error)
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_fs_two.log", "FSInnerMesh.pnl covers"), 1, &
+                   "qtf_fs_two: no coverage line of FSInnerMesh.pnl in the log")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_fs_two.log", "QTF free surface warning"), 0, &
+                   "qtf_fs_two: a free-surface warning in the log")
+        if (allocated(error)) return
+        call read_fs_total(output_dir("qtf_fs_two")//pot_terms_file, fs, error)
+        if (allocated(error)) return
+        call read_pot_total(output_dir("qtf_fs_two")//pot_terms_file, tp, error)
+        if (allocated(error)) return
+        worst_fs = 0d0
+        worst_tp = 0d0
+        n = 0
+        do p = 1, size(fs, 1)
+            if (nint(fs(p,5)) > 6) cycle
+            i = nint(fs(p,5))
+            key = fs(p:p,:)
+            key(1,5) = real(i + 6, 8)
+            q = matching_row(key, 1, fs)
+            call check(error, q > 0, "qtf_fs_two: a row of body 2 is missing")
+            if (allocated(error)) return
+            n = n + 1
+            worst_fs = max(worst_fs, hypot(fs(q,6) - mirror(i)*fs(p,6), fs(q,7) - mirror(i)*fs(p,7))/kind_scale(fs, fs(p,5)))
+            worst_tp = max(worst_tp, hypot(tp(q,6) - mirror(i)*tp(p,6), tp(q,7) - mirror(i)*tp(p,7))/kind_scale(tp, tp(p,5)))
+        end do
+        call report("fs_two_bodies_file FS mirror", worst_fs)
+        call report("fs_two_bodies_file T_pot mirror", worst_tp)
+        call check(error, n == 2*6, "qtf_fs_two: expected 2 pairs and 6 rows of body 1")
+        if (allocated(error)) return
+        call check_below(error, "fs_two_bodies_file FS mirror", worst_fs, fs_two_mirror_limit)
+        if (allocated(error)) return
+        call check_below(error, "fs_two_bodies_file T_pot mirror", worst_tp, fs_two_mirror_limit)
+    end subroutine fs_two_bodies_file
 
     subroutine check_same_file(path_a, path_b, error)
         character(len=*), intent(in) :: path_a, path_b

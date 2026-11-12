@@ -46,12 +46,13 @@ MODULE QTFDriver
    ! frequency loop (qtf_radiation_omegas). psi_store keeps psi of every Omega, filled by qtf_keep_psi.
    !
    ! qtf_finish then writes QTF_Indirect.11d = QTF_Quadratic.10d + T_pot, with T_pot the body-forcing terms of potential_pair
-   ! (QTFPotential); the free-surface integral of the second-order potential is omitted (Phase 6). Same rows, order and
+   ! (QTFPotential), and with qtf_terms = full also the free-surface integral (below). Same rows, order and
    ! scaling as .10d, qtf_max_dw included. On the exact diagonal (equal frequencies, also with two headings) T_pot = 0, so
    ! there .11d is .10d. T_pot is computed Omega by Omega (potential_part), so that grad psi and psi at the waterline are
    ! built once per difference frequency, and kept per pair in tpot until the files are written. With write_terms >= 1 the
-   ! five terms of each pair go to QTF_PotentialTerms.txt as they are computed: its rows are in ascending |Omega|, not in
-   ! the order of .11d, so a reader matches them by their keys PER1 PER2 BETA1 BETA2 I (header in the file).
+   ! five terms of each pair (seven with qtf_terms = full) go to QTF_PotentialTerms.txt as they are computed: its rows are
+   ! in ascending |Omega|, not in the order of .11d, so a reader matches them by their keys PER1 PER2 BETA1 BETA2 I (header
+   ! in the file).
    !
    ! With qtf_b2 = control the surface piece of B2 is moved to the control surface C and the free surface F of each body
    ! (QTFPotential). The driver then hands over the points of C and F (qtf_set_control_surface), the total velocity there of
@@ -66,6 +67,11 @@ MODULE QTFDriver
    ! points (value only) and the partial waves of each psi_k (qtf_keep_fs_psi, indexed like psi_store). Each pw_set holds
    ! (2M + 1)(N_ev + 1) complex coefficients, so the free-surface share is 16 (5 n_fs + n_pw) bytes per frequency and
    ! heading plus 16 x 6 nbody (n_fs + n_pw) bytes per difference frequency (qtf_stored_mb with nfs and npw).
+   ! potential_part then adds the free-surface terms FS_inner and FS_outer of each pair (fs_pair_terms) to T_pot, Omega by
+   ! Omega: the inner panel sum, the outer partial-wave integral and the sliver between the polygon of a generated inner
+   ! mesh and the circle. Omega = 0 (the diagonal) has none. A pair with omega_i < omega_j is evaluated as (j, i) and
+   ! conjugated, so that the outer integral always has omega_1 > omega_2. The pairs run one after the other; the outer
+   ! integral is parallel over its radial intervals (one OpenMP level, the same bits for any number of threads).
    !
    ! A psi with NaN or Inf (a radiation solve that failed) is kept, but counted and logged by qtf_keep_psi, and every pair
    ! whose terms are not finite is counted by potential_part. The files are still written (.10d does not use psi); the main
@@ -73,10 +79,11 @@ MODULE QTFDriver
 
    USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom, cs_points, QTF_TERMS_BODY, &
                                QTF_TERMS_FULL
-   USE QTFFreeSurface, ONLY: fs_point_field
+   USE QTFFreeSurface, ONLY: fs_point_field, fs_pair_terms
+   USE FieldVelocity, ONLY: incident_at
    USE PartialWaves, ONLY: pw_set
    USE NearFieldDrift, ONLY: near_field_pair, KERNEL_DIFF, KERNEL_SUM
-   USE SecondOrderOutput, ONLY: write_qtf_row, write_qtf_terms_row
+   USE SecondOrderOutput, ONLY: write_qtf_row, write_qtf_terms_row, write_qtf_terms_header
    USE QTFPotential, ONLY: potential_pair, psi_surface_gradient, psi_waterline, NPOT_TERMS
    USE FirstOrderState, ONLY: wave_gravity
    USE, INTRINSIC :: IEEE_ARITHMETIC, ONLY: IEEE_IS_FINITE
@@ -124,6 +131,7 @@ MODULE QTFDriver
    REAL(8) :: fs_store_centre(2) = 0D0, fs_store_radius = 0D0   ! the circle r = R of the partial waves
    REAL(8) :: fs_store_depth = 0D0                       ! the water depth h of the partial waves
    INTEGER :: fs_store_mmax = 0, fs_store_nev = 0        ! M and N_ev of every pw_set of the store
+   INTEGER :: fs_store_np = 0                            ! chords of the polygon of a generated inner mesh, 0 for a file mesh
    TYPE(fs_point_field), ALLOCATABLE :: fs_f(:, :, :)    ! (n_fs, nfreq, nbeta), total first-order fields, as store
    TYPE(pw_set), ALLOCATABLE :: fs_pw(:, :)              ! (nfreq, nbeta), partial waves of the scattered potential
    LOGICAL, ALLOCATABLE :: fs_kept(:, :)                 ! (nfreq, nbeta)
@@ -137,13 +145,14 @@ MODULE QTFDriver
 CONTAINS
 
    SUBROUTINE qtf_init(opts, nfreq, beta_in_deg, nwl, n_panels, nbody, outputdir, omegas_main, fs_pts, fs_centre, fs_radius, &
-                       fs_depth, fs_mmax, fs_nev)
+                       fs_depth, fs_mmax, fs_nev, fs_np_circle)
       ! Allocates the whole store for up to nfreq frequencies, the headings beta_in_deg, n_panels panels and nbody bodies,
       ! so that a run that does not fit stops here, before the first-order solves. outputdir holds Wamit_format.
       ! omegas_main (rad/s), the nfreq frequencies of the QTF grid, is needed for qtf_terms = body: the store then also holds
       ! psi at every difference frequency. qtf_terms = full needs as well the inner free-surface points fs_pts, the circle
       ! (fs_centre, fs_radius), the depth fs_depth and the mode counts fs_mmax, fs_nev of the partial waves, for the
-      ! free-surface store.
+      ! free-surface store, and fs_np_circle, the chords of the polygon a generated inner mesh ends on (build_fs_inner; 0 or
+      ! absent for a mesh from FSInnerMesh.pnl, which gets no sliver).
       TYPE(so_options), INTENT(IN) :: opts
       INTEGER, INTENT(IN) :: nfreq, nwl, n_panels, nbody
       REAL(8), INTENT(IN) :: beta_in_deg(:)
@@ -151,7 +160,7 @@ CONTAINS
       REAL(8), INTENT(IN), OPTIONAL :: omegas_main(:)
       TYPE(cs_points), INTENT(IN), OPTIONAL :: fs_pts
       REAL(8), INTENT(IN), OPTIONAL :: fs_centre(2), fs_radius, fs_depth
-      INTEGER, INTENT(IN), OPTIONAL :: fs_mmax, fs_nev
+      INTEGER, INTENT(IN), OPTIONAL :: fs_mmax, fs_nev, fs_np_circle
       INTEGER :: st, i, b
 
       active = opts%qtf > 0
@@ -240,6 +249,8 @@ CONTAINS
          fs_store_depth = fs_depth
          fs_store_mmax = fs_mmax
          fs_store_nev = fs_nev
+         fs_store_np = 0
+         IF (PRESENT(fs_np_circle)) fs_store_np = fs_np_circle
          ALLOCATE (fs_f(fs_pts%n, nfreq, nbeta), fs_pw(nfreq, nbeta), fs_kept(nfreq, nbeta), &
                    fs_psi(fs_pts%n, 6*nbody, SIZE(psi_need)), fs_pw_psi(6*nbody, SIZE(psi_need)), &
                    fs_psi_kept(SIZE(psi_need)), STAT=st)
@@ -882,16 +893,20 @@ CONTAINS
 
    SUBROUTINE potential_part(mesh, geom, refl)
       ! T_pot of every pair of the difference QTF with omega_i /= omega_j within qtf_max_dw, into tpot, Omega by Omega:
-      ! grad psi and psi at the waterline are built once for each difference frequency. With write_terms >= 1 the terms go to
-      ! QTF_PotentialTerms.txt, in that order (ascending |Omega|, not the .11d order). Stops if psi of a needed Omega was not
-      ! stored. Pairs with NaN or Inf terms are written as they are, counted in qtf_nonfinite_pairs() and logged per Omega.
+      ! grad psi and psi at the waterline are built once for each difference frequency. With qtf_terms = full the
+      ! free-surface terms FS_inner and FS_outer (fs_pair) follow the five of potential_pair, and the time of each Omega goes
+      ! to the log. With write_terms >= 1 the terms go to QTF_PotentialTerms.txt, in that order (ascending |Omega|, not the
+      ! .11d order). Stops if psi of a needed Omega, or a free-surface field, was not stored. Pairs with NaN or Inf terms
+      ! are written as they are, counted in qtf_nonfinite_pairs() and logged per Omega.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       REAL(8), INTENT(IN) :: refl
       INTEGER, ALLOCATABLE :: pair_m(:, :)                 ! (nkept, nkept), index of |omega_i - omega_j| in psi_need, or 0
       COMPLEX(8), ALLOCATABLE :: grad(:, :, :), pwl(:, :), terms(:, :)
-      REAL(8) :: dw, g_wave
-      INTEGER :: unit, i, j, m, b1, b2, b, c, k, nmode, nbad
+      TYPE(fs_point_field), ALLOCATABLE :: fs_inc(:, :, :)   ! (n_fs, nkept, nbeta), incident fields at the inner points
+      REAL(8) :: dw, g_wave, rf, rf_max, fs_seconds
+      INTEGER(8) :: t0, t1, rate
+      INTEGER :: unit, i, j, m, b1, b2, b, c, k, nmode, nbad, nterms, npairs_fs
 
       nmode = 6*mesh%nbody
       ALLOCATE (pair_m(nkept, nkept))
@@ -923,6 +938,17 @@ CONTAINS
                   ERROR STOP 1
                END IF
             END IF
+            IF (fs_active) THEN
+               IF (.NOT. fs_psi_kept(m)) THEN
+                  WRITE (*, '(a,ES14.6,a)') ' QTF: psi on the inner free surface at Omega =', psi_need(m), &
+                     ' rad/s was not stored.'
+                  ERROR STOP 1
+               END IF
+               IF (.NOT. (ALL(fs_kept(i, :)) .AND. ALL(fs_kept(j, :)))) THEN
+                  WRITE (*, '(a)') ' QTF: the free-surface fields of a kept frequency were not stored.'
+                  ERROR STOP 1
+               END IF
+            END IF
             pair_m(i, j) = m
          END DO
       END DO
@@ -930,20 +956,23 @@ CONTAINS
       unit = 0
       IF (pot_terms) THEN
          OPEN (NEWUNIT=unit, FILE=outdir//'/Wamit_format/QTF_PotentialTerms.txt', STATUS='REPLACE', ACTION='WRITE')
-         WRITE (unit, '(a)') '# Body-forcing terms of the potential part of QTF_Indirect.11d (qtf_terms = body), scaled'// &
-            ' and conjugated as QTF_Quadratic.10d.'
-         WRITE (unit, '(a)') '# PER1 PER2 BETA1 BETA2 I, then Re Im of each term: 1 Froude-Krylov of phi_I2, 2 incident'// &
-            ' diffraction, 3 B1, 4 B2, 5 B3.'
-         WRITE (unit, '(a)') '# .11d - .10d is their sum; the free-surface integral is omitted. One row per pair with'// &
-            ' omega_i /= omega_j, by ascending |omega_i - omega_j|.'
-         WRITE (unit, '(a)') '# The rows are not in the order of .11d: match them by PER1 PER2 BETA1 BETA2 I.'
+         CALL write_qtf_terms_header(unit, fs_active)
       END IF
-      ALLOCATE (grad(3, mesh%n, nmode), pwl(geom%nwl, nmode), terms(nmode, NPOT_TERMS))
+      nterms = NPOT_TERMS
+      IF (fs_active) THEN
+         nterms = NPOT_TERMS + 2
+         CALL fs_incident_fields()
+      END IF
+      ALLOCATE (grad(3, mesh%n, nmode), pwl(geom%nwl, nmode), terms(nmode, nterms))
+      fs_seconds = 0D0
       DO m = 1, SIZE(psi_need)
          IF (.NOT. ANY(pair_m == m)) CYCLE
          CALL psi_surface_gradient(mesh, geom, psi_store(:, :, m), grad)
          CALL psi_waterline(mesh, geom, psi_store(:, :, m), grad, pwl)
          nbad = 0
+         npairs_fs = 0
+         rf_max = 0D0
+         IF (fs_active) CALL SYSTEM_CLOCK(t0, rate)
          DO b1 = 1, nbeta
             DO b2 = 1, nbeta
                IF (all_headings_pairs == 0 .AND. b1 /= b2) CYCLE
@@ -956,20 +985,27 @@ CONTAINS
                         g_wave = wave_gravity(s1%omega, s1%k, s1%h)
                         IF (b2_control .AND. ALLOCATED(edge_w)) THEN
                            CALL potential_pair(mesh, geom, s1, s2, store_wl(:, i, b1), store_wl(:, j, b2), &
-                                               psi_store(:, :, m), grad, pwl, psi_need(m), s1%rho, g_wave, terms, &
+                                               psi_store(:, :, m), grad, pwl, psi_need(m), s1%rho, g_wave, &
+                                               terms(:, 1:NPOT_TERMS), &
                                                cs=cs, grad_psi_cs=cs_gpsi(:, :, :, m), u1_cs=cs_u(:, :, i, b1), &
                                                u2_cs=cs_u(:, :, j, b2), edge_w=edge_w, omega_tol=psi_tol)
                         ELSE IF (b2_control) THEN
                            CALL potential_pair(mesh, geom, s1, s2, store_wl(:, i, b1), store_wl(:, j, b2), &
-                                               psi_store(:, :, m), grad, pwl, psi_need(m), s1%rho, g_wave, terms, &
+                                               psi_store(:, :, m), grad, pwl, psi_need(m), s1%rho, g_wave, &
+                                               terms(:, 1:NPOT_TERMS), &
                                                cs=cs, grad_psi_cs=cs_gpsi(:, :, :, m), u1_cs=cs_u(:, :, i, b1), &
                                                u2_cs=cs_u(:, :, j, b2), omega_tol=psi_tol)
                         ELSE
                            CALL potential_pair(mesh, geom, s1, s2, store_wl(:, i, b1), store_wl(:, j, b2), &
-                                               psi_store(:, :, m), grad, pwl, psi_need(m), s1%rho, g_wave, terms, &
-                                               omega_tol=psi_tol)
+                                               psi_store(:, :, m), grad, pwl, psi_need(m), s1%rho, g_wave, &
+                                               terms(:, 1:NPOT_TERMS), omega_tol=psi_tol)
                         END IF
                      END ASSOCIATE
+                     IF (fs_active) THEN
+                        CALL fs_pair(i, b1, j, b2, m, terms(:, NPOT_TERMS + 1), terms(:, NPOT_TERMS + 2), rf)
+                        npairs_fs = npairs_fs + 1
+                        rf_max = MAX(rf_max, rf)
+                     END IF
                      tpot(:, i, j, heading_pair(b1, b2)) = SUM(terms, DIM=2)
                      IF (.NOT. ALL(IEEE_IS_FINITE(REAL(terms, 8)) .AND. IEEE_IS_FINITE(AIMAG(terms)))) nbad = nbad + 1
                      IF (unit == 0) CYCLE
@@ -984,6 +1020,12 @@ CONTAINS
                END DO
             END DO
          END DO
+         IF (fs_active) THEN
+            CALL SYSTEM_CLOCK(t1)
+            fs_seconds = fs_seconds + REAL(t1 - t0, 8)/REAL(rate, 8)
+            WRITE (*, '(a,F10.5,a,I0,a,F10.1,a,F10.2,a)') ' QTF free surface integral: Omega', psi_need(m), ' rad/s, ', &
+               npairs_fs, ' pairs, r_far up to', rf_max, ' m,', REAL(t1 - t0, 8)/REAL(rate, 8), ' s'
+         END IF
          IF (nbad > 0) THEN
             n_bad_pairs = n_bad_pairs + nbad
             WRITE (*, '(a,I0,a,ES14.6,a)') ' QTF error: T_pot has NaN or Inf at ', nbad, ' frequency and heading pairs with'// &
@@ -991,6 +1033,44 @@ CONTAINS
          END IF
       END DO
       IF (unit /= 0) CLOSE (unit)
+      IF (fs_active) WRITE (*, '(a,F10.2,a)') ' QTF free surface integral: ', fs_seconds, ' s in all (body terms included)'
+
+   CONTAINS
+
+      SUBROUTINE fs_incident_fields()
+         ! The incident fields of every kept state at the inner points, as fs_inner_fields adds them: phi_I, grad phi_I and
+         ! phi_I,zz = k^2 phi_I (incident_at)
+         TYPE(fs_point_field) :: f
+         INTEGER :: ip, is, ib
+
+         ALLOCATE (fs_inc(fs_store_pts%n, nkept, nbeta))
+         DO ib = 1, nbeta
+            DO is = 1, nkept
+               DO ip = 1, fs_store_pts%n
+                  CALL incident_at(store(is, ib), fs_store_pts%x(:, ip), f%phi, f%grad)
+                  f%phizz = store(is, ib)%k**2*f%phi
+                  fs_inc(ip, is, ib) = f
+               END DO
+            END DO
+         END DO
+      END SUBROUTINE fs_incident_fields
+
+      SUBROUTINE fs_pair(ia, ba, ja, bb, mm, t_in, t_out, r_far)
+         ! FS_inner and FS_outer of the stored pair (frequency ia, heading ba; frequency ja, heading bb) with psi_k of the
+         ! difference frequency mm (fs_pair_terms: Omega = 0 gives none, omega_ia < omega_ja is evaluated as (ja, ia) and
+         ! conjugated), with the gravity of the first-order states
+         INTEGER, INTENT(IN) :: ia, ba, ja, bb, mm
+         COMPLEX(8), INTENT(OUT) :: t_in(:), t_out(:)
+         REAL(8), INTENT(OUT) :: r_far
+
+         ASSOCIATE (s1 => store(ia, ba), s2 => store(ja, bb))
+            CALL fs_pair_terms(s1%omega, fs_f(:, ia, ba), fs_inc(:, ia, ba), fs_pw(ia, ba), s1%beta, s1%k, &
+                               s2%omega, fs_f(:, ja, bb), fs_inc(:, ja, bb), fs_pw(ja, bb), s2%beta, s2%k, &
+                               fs_psi(:, :, mm), fs_pw_psi(:, mm), fs_store_pts%w, fs_store_np, s1%g, s1%rho, t_in, t_out, &
+                               r_far)
+         END ASSOCIATE
+      END SUBROUTINE fs_pair
+
    END SUBROUTINE potential_part
 
    SUBROUTINE out_of_memory(body, fs)

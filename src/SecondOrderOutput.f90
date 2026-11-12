@@ -28,7 +28,7 @@ MODULE SecondOrderOutput
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: write_drift_row, write_terms_row, write_qtf_row, write_qtf_terms_row, write_field_row
+   PUBLIC :: write_drift_row, write_terms_row, write_qtf_row, write_qtf_terms_row, write_qtf_terms_header, write_field_row
 
 CONTAINS
 
@@ -76,6 +76,31 @@ CONTAINS
       WRITE (unit, '(4ES14.6,I6,4ES14.6)') oufr1, oufr2, beta1_deg, beta2_deg, index, ABS(scaled), &
          ATAN2(AIMAG(scaled), REAL(scaled, 8))*RAD_TO_DEG, REAL(scaled, 8), AIMAG(scaled)
    END SUBROUTINE write_qtf_row
+
+   SUBROUTINE write_qtf_terms_header(unit, full)
+      ! The four comment lines of QTF_PotentialTerms.txt: the 5 body-forcing terms (qtf_terms = body), or with full
+      ! (qtf_terms = full) the 7 terms, FS_inner and FS_outer after B3
+      INTEGER, INTENT(IN) :: unit
+      LOGICAL, INTENT(IN) :: full
+
+      IF (full) THEN
+         WRITE (unit, '(a)') '# Terms of the potential part of QTF_Indirect.11d (qtf_terms = full), scaled and conjugated'// &
+            ' as QTF_Quadratic.10d.'
+         WRITE (unit, '(a)') '# PER1 PER2 BETA1 BETA2 I, then Re Im of each term: 1 Froude-Krylov of phi_I2, 2 incident'// &
+            ' diffraction, 3 B1, 4 B2, 5 B3, 6 FS_inner, 7 FS_outer.'
+         WRITE (unit, '(a)') '# .11d - .10d is their sum. FS_inner: the free-surface integral from the waterlines to the'// &
+            ' circle R (inner mesh); FS_outer: beyond the inner mesh (partial waves). One row per pair with omega_i /='// &
+            ' omega_j, by ascending |omega_i - omega_j|.'
+      ELSE
+         WRITE (unit, '(a)') '# Body-forcing terms of the potential part of QTF_Indirect.11d (qtf_terms = body), scaled'// &
+            ' and conjugated as QTF_Quadratic.10d.'
+         WRITE (unit, '(a)') '# PER1 PER2 BETA1 BETA2 I, then Re Im of each term: 1 Froude-Krylov of phi_I2, 2 incident'// &
+            ' diffraction, 3 B1, 4 B2, 5 B3.'
+         WRITE (unit, '(a)') '# .11d - .10d is their sum; the free-surface integral is omitted. One row per pair with'// &
+            ' omega_i /= omega_j, by ascending |omega_i - omega_j|.'
+      END IF
+      WRITE (unit, '(a)') '# The rows are not in the order of .11d: match them by PER1 PER2 BETA1 BETA2 I.'
+   END SUBROUTINE write_qtf_terms_header
 
    SUBROUTINE write_qtf_terms_row(unit, oufr1, oufr2, beta1_deg, beta2_deg, index, values, refl, moment)
       ! Writes one row PER1 PER2 BETA1 BETA2 I, then Re Im of each of values, of QTF_PotentialTerms.txt. The keys are as in

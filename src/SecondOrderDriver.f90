@@ -85,7 +85,7 @@ MODULE SecondOrderDriver
                         qtf_radiation_omegas, qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, &
                         qtf_set_edge_weights, qtf_keep_fs_state, qtf_keep_fs_psi
    USE QTFFreeSurface, ONLY: fs_point_field, fs_inner_fields, fs_inner_steps, fs_sample_phi, fs_circle_modes, fs_mode_warning, &
-                             fs_auto_modes, fs_auto_evanescent, fs_radius_message
+                             fs_auto_modes, fs_auto_evanescent, fs_radius_message, fs_coverage_check
    USE PartialWaves, ONLY: pw_set, pw_sample_points, pw_evanescent_from_wvn, PW_KR_MAX
    USE QTFPotential, ONLY: b2_control_check
    USE SharpEdge, ONLY: sharp_edge_weights
@@ -137,6 +137,7 @@ MODULE SecondOrderDriver
    REAL(8) :: fs_centre(2) = 0D0, fs_radius = 0D0      ! the circle
    REAL(8) :: fs_step = 0D0                            ! offset of the inner points as a fraction of their size (cs_fd_step)
    INTEGER :: fs_mmax = 0, fs_nev = 0                  ! angular modes M and evanescent modes N_ev outside R
+   INTEGER :: fs_np = 0                                ! chords of the polygon of the generated inner mesh, 0 for a file mesh
    REAL(8), ALLOCATABLE :: fs_delta(:)                 ! (fs_pts%n), offsets of fs_inner_fields, smaller next to a waterline
 
 CONTAINS
@@ -356,7 +357,8 @@ CONTAINS
       END IF
       IF (fs_terms) THEN
          CALL qtf_init(opts, nqtf, WVHD(1:NBETA), geom%nwl, mesh%n, mesh%nbody, outputdir, omegas_main=omegas, fs_pts=fs_pts, &
-                       fs_centre=fs_centre, fs_radius=fs_radius, fs_depth=H, fs_mmax=fs_mmax, fs_nev=fs_nev)
+                       fs_centre=fs_centre, fs_radius=fs_radius, fs_depth=H, fs_mmax=fs_mmax, fs_nev=fs_nev, &
+                       fs_np_circle=fs_np)
       ELSE
          CALL qtf_init(opts, nqtf, WVHD(1:NBETA), geom%nwl, mesh%n, mesh%nbody, outputdir, omegas_main=omegas)
       END IF
@@ -369,8 +371,7 @@ CONTAINS
          IF (opts%qtf_edge_weights) CALL b2_edge_weights(opts)
       END IF
       IF (fs_terms) THEN
-         WRITE (*, '(a)') ' QTF_Indirect.11d: body forcing only for now; the free-surface fields are kept (qtf_terms = full),'// &
-            ' their integral is not yet added.'
+         WRITE (*, '(a)') ' QTF_Indirect.11d: body forcing and the free-surface integral (qtf_terms = full).'
       ELSE
          WRITE (*, '(a)') ' QTF_Indirect.11d: body forcing only, the free-surface integral is omitted.'
       END IF
@@ -392,21 +393,30 @@ CONTAINS
       ! partial waves (M = qtf_fs_modes, or ceil(k0_max R) + 10 with k0_max the wave number of the largest frequency;
       ! N_ev = qtf_fs_evanescent, or max(8, ceil(9 h / (pi (R - r_wl)))) with r_wl the largest distance from the centre to
       ! a waterline node, fs_auto_evanescent) and the samples on the circle (pw_sample_points). Stops if the mesh cannot be
-      ! built or the evanescent modes do not fit at R.
+      ! built or the evanescent modes do not fit at R. A mesh from FSInnerMesh.pnl gets the coverage check
+      ! (fs_coverage_check): it must reach the circle, since it has no sliver; its coverage goes to the log.
       TYPE(so_options), INTENT(IN) :: opts
       CHARACTER(LEN=*), INTENT(IN) :: inputdir
       REAL(8), INTENT(IN) :: omegas(:)
       CHARACTER(LEN=:), ALLOCATABLE :: msg
-      REAL(8) :: omega_max, wvn1(1), k0_max, r_wl
-      LOGICAL :: ok
+      REAL(8) :: omega_max, wvn1(1), k0_max, r_wl, miss
+      LOGICAL :: ok, stops
       INTEGER :: nshrunk, nfloor, iw
       EXTERNAL :: DISPERSION
 
       omega_max = MAXVAL(omegas)
-      CALL build_fs_inner(mesh, geom, opts, H, inputdir, fs_pts, fs_centre, fs_radius, ok, msg, omega_max=omega_max)
+      CALL build_fs_inner(mesh, geom, opts, H, inputdir, fs_pts, fs_centre, fs_radius, ok, msg, omega_max=omega_max, &
+                          np_circle=fs_np)
       IF (.NOT. ok) THEN
          WRITE (*, '(a,a)') ' QTF free surface: ', msg
          ERROR STOP 1
+      END IF
+      IF (fs_np == 0) THEN
+         CALL fs_coverage_check(fs_pts%w, fs_radius, SUM(geom%awp), miss, msg, stops)
+         WRITE (*, '(a,F8.3,a,F10.3,a)') ' QTF free surface: FSInnerMesh.pnl covers', 100D0*(1D0 - miss), &
+            ' % of the free surface inside R =', fs_radius, ' m (the circle minus the waterplanes)'
+         IF (LEN(msg) > 0) WRITE (*, '(a,a)') ' ', msg
+         IF (stops) ERROR STOP 1
       END IF
       CALL DISPERSION(wvn1, 1, omega_max, H)
       k0_max = wvn1(1)

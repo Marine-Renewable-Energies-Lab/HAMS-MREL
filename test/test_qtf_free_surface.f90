@@ -8,7 +8,8 @@ module test_qtf_free_surface
   use QTFFreeSurface, only : fs_point_field, fs_forcing_diff, fs_inner_fields, fs_inner_steps, fs_circle_modes, &
                              fs_mode_warning, fs_auto_modes, FS_MODE_TOL, fs_sample_phi, fs_mode_scales, fs_auto_evanescent, &
                              fs_inner_pair, fs_outer_pair, fs_outer_annulus, fs_outer_tail, fs_outer_ring, fs_outer_rfar, &
-                             fs_outer_sliver, fs_radius_message, FS_SIGN, fs_pair_order_message
+                             fs_outer_sliver, fs_radius_message, FS_SIGN, fs_pair_order_message, fs_pair_terms, &
+                             fs_coverage_check
   use HAMS_mod, only : NTHREAD, ISOL, IRSP
   use WaveDyn_mod, only : AMP, BETA, H, NK, TP, V, W1, WK, WVN
   use Body_mod, only : XW
@@ -58,7 +59,12 @@ subroutine collect_qtf_free_surface(testsuite)
     new_unittest("fs_outer_tail", test_outer_tail), &
     new_unittest("fs_outer_pair_order", test_pair_order), &
     new_unittest("fs_inner_quadrature_converges", test_inner_quadrature), &
-    new_unittest("fs_inner_outer_radius", test_inner_outer_radius) &
+    new_unittest("fs_inner_outer_radius", test_inner_outer_radius), &
+    new_unittest("fs_inner_pair_hermitian", test_inner_pair_hermitian), &
+    new_unittest("fs_pair_terms_diagonal", test_pair_terms_diagonal), &
+    new_unittest("fs_pair_terms_order", test_pair_terms_order), &
+    new_unittest("fs_outer_annulus_threads", test_outer_annulus_threads), &
+    new_unittest("fs_coverage_check", test_coverage_check) &
     ]
 end subroutine collect_qtf_free_surface
 
@@ -100,7 +106,7 @@ end function pseudo_field
 
 subroutine test_matches_incident2(error)
   type(error_type), allocatable, intent(out) :: error
-  real(8), parameter :: depth = 100d0, w1 = 0.6d0, w2 = 0.8d0, b1 = 0d0, b2 = 30d0
+  real(8), parameter :: depth = 100d0, om1 = 0.6d0, om2 = 0.8d0, b1 = 0d0, b2 = 30d0
   real(8), parameter :: pts(3, 3) = reshape([0d0, 0d0, 0d0, 4.2d0, -1.7d0, 0d0, -9d0, 6.5d0, 0d0], [3, 3])
   type(incident2) :: inc
   type(fs_point_field) :: f1, f2
@@ -108,24 +114,24 @@ subroutine test_matches_incident2(error)
   real(8) :: k1, k2
   integer :: ip, ia
 
-  k1 = wave_number(w1, depth)
-  k2 = wave_number(w2, depth)
+  k1 = wave_number(om1, depth)
+  k2 = wave_number(om2, depth)
   ! both orders of the pair
   do ia = 1, 2
     if (ia == 1) then
-      call incident2_pair(w1, k1, b1 * deg, w2, k2, b2 * deg, depth, g, inc)
+      call incident2_pair(om1, k1, b1 * deg, om2, k2, b2 * deg, depth, g, inc)
     else
-      call incident2_pair(w2, k2, b2 * deg, w1, k1, b1 * deg, depth, g, inc)
+      call incident2_pair(om2, k2, b2 * deg, om1, k1, b1 * deg, depth, g, inc)
     end if
     do ip = 1, 3
       if (ia == 1) then
-        f1 = wave_field(w1, b1, depth, pts(:, ip))
-        f2 = wave_field(w2, b2, depth, pts(:, ip))
-        q = free_surface_forcing(KERNEL_DIFF, w1, f1%phi, f1%grad, f1%phizz, w2, f2%phi, f2%grad, f2%phizz, g)
+        f1 = wave_field(om1, b1, depth, pts(:, ip))
+        f2 = wave_field(om2, b2, depth, pts(:, ip))
+        q = free_surface_forcing(KERNEL_DIFF, om1, f1%phi, f1%grad, f1%phizz, om2, f2%phi, f2%grad, f2%phizz, g)
       else
-        f1 = wave_field(w2, b2, depth, pts(:, ip))
-        f2 = wave_field(w1, b1, depth, pts(:, ip))
-        q = free_surface_forcing(KERNEL_DIFF, w2, f1%phi, f1%grad, f1%phizz, w1, f2%phi, f2%grad, f2%phizz, g)
+        f1 = wave_field(om2, b2, depth, pts(:, ip))
+        f2 = wave_field(om1, b1, depth, pts(:, ip))
+        q = free_surface_forcing(KERNEL_DIFF, om2, f1%phi, f1%grad, f1%phizz, om1, f2%phi, f2%grad, f2%phizz, g)
       end if
       call incident2_grad(inc, pts(:, ip), gr)
       expected = -inc%omega**2 * incident2_phi(inc, pts(:, ip)) + g * gr(3)
@@ -530,7 +536,7 @@ end subroutine test_inner_steps_floor
 !> fs_inner_pair is the sum s_FS (i Omega rho / g) sum_i w_i psi_k(x_i) Q_D(x_i), Q_D = fs_forcing_diff, with s_FS = +1.
 subroutine test_inner_pair_sum(error)
   type(error_type), allocatable, intent(out) :: error
-  real(8), parameter :: w1 = 0.9d0, w2 = 0.55d0, wts(3) = [0.7d0, 1.9d0, 0.25d0]
+  real(8), parameter :: om1 = 0.9d0, om2 = 0.55d0, wts(3) = [0.7d0, 1.9d0, 0.25d0]
   type(fs_point_field) :: f1(3), i1(3), f2(3), i2(3)
   complex(8) :: psi(3, 2), t(2), ref(2)
   integer :: i, k
@@ -544,12 +550,12 @@ subroutine test_inner_pair_sum(error)
       psi(i, k) = cmplx(cos(0.3d0 * i + k), sin(1.1d0 * i * k), 8)
     end do
   end do
-  call fs_inner_pair(w1, f1, i1, w2, f2, i2, psi, wts, g, rho, t)
+  call fs_inner_pair(om1, f1, i1, om2, f2, i2, psi, wts, g, rho, t)
   ref = (0d0, 0d0)
   do i = 1, 3
-    ref = ref + wts(i) * psi(i, :) * fs_forcing_diff(w1, f1(i), i1(i), w2, f2(i), i2(i), g)
+    ref = ref + wts(i) * psi(i, :) * fs_forcing_diff(om1, f1(i), i1(i), om2, f2(i), i2(i), g)
   end do
-  ref = ref * cmplx(0d0, (w1 - w2) * rho / g, 8)
+  ref = ref * cmplx(0d0, (om1 - om2) * rho / g, 8)
   call check(error, FS_SIGN == 1d0, "s_FS is not +1")
   if (allocated(error)) return
   call check(error, maxval(abs(t - ref)) <= 1d-14 * maxval(abs(ref)), "fs_inner_pair is not the weighted sum")
@@ -561,7 +567,7 @@ end subroutine test_inner_pair_sum
 !> scattered 1 with incident 2. Synthetic partial waves (M = 3, one evanescent mode, h = 20, R = 12, off-origin centre).
 subroutine test_outer_plane_wave_angular(error)
   type(error_type), allocatable, intent(out) :: error
-  real(8), parameter :: w1 = 1d0, w2 = 0.8d0, b1 = 0.3d0, b2 = -0.5d0, krs(2) = [5d0, 50d0]
+  real(8), parameter :: om1 = 1d0, om2 = 0.8d0, b1 = 0.3d0, b2 = -0.5d0, krs(2) = [5d0, 50d0]
   integer, parameter :: nth = 2048
   type(pw_set) :: pw1, pw2, pz1, pz2, psi(2)
   type(fs_point_field) :: fa, fb
@@ -570,7 +576,7 @@ subroutine test_outer_plane_wave_angular(error)
   integer :: part, ik, j, l
   character(len=200) :: info
 
-  call synthetic_set(w1, w2, pw1, pw2, psi)
+  call synthetic_set(om1, om2, pw1, pw2, psi)
   pz1 = pw1
   pz1%a = (0d0, 0d0)
   pz2 = pw2
@@ -581,24 +587,24 @@ subroutine test_outer_plane_wave_angular(error)
       if (part == 1) then
         k = pw1%k0
         r = krs(ik) / k
-        call fs_outer_ring(w1, pz1, b1, k, w2, pw2, b2, 0d0, psi, g, r, ring)
+        call fs_outer_ring(om1, pz1, b1, k, om2, pw2, b2, 0d0, psi, g, r, ring)
       else
         k = pw2%k0
         r = krs(ik) / k
-        call fs_outer_ring(w1, pw1, b1, 0d0, w2, pz2, b2, k, psi, g, r, ring)
+        call fs_outer_ring(om1, pw1, b1, 0d0, om2, pz2, b2, k, psi, g, r, ring)
       end if
       direct = (0d0, 0d0)
       do j = 0, nth - 1
         th = 2d0 * pi * j / nth
         x = [sy_centre(1) + r * cos(th), sy_centre(2) + r * sin(th), 0d0]
         if (part == 1) then
-          fa = incident_point(w1, k, b1, x)
+          fa = incident_point(om1, k, b1, x)
           fb = scattered_point(pw2, x)
         else
           fa = scattered_point(pw1, x)
-          fb = incident_point(w2, k, b2, x)
+          fb = incident_point(om2, k, b2, x)
         end if
-        q = free_surface_forcing(KERNEL_DIFF, w1, fa%phi, fa%grad, fa%phizz, w2, fb%phi, fb%grad, fb%phizz, g)
+        q = free_surface_forcing(KERNEL_DIFF, om1, fa%phi, fa%grad, fa%phizz, om2, fb%phi, fb%grad, fb%phizz, g)
         do l = 1, 2
           call pw_eval_surface(psi(l), x, ps, gr, zz)
           direct(l) = direct(l) + ps * q * (2d0 * pi / nth)
@@ -620,14 +626,14 @@ end subroutine test_outer_plane_wave_angular
 !> (M = 3, one evanescent mode): first with no incident wave (the brief's case), then with both incident waves.
 subroutine test_outer_vs_brute_force(error)
   type(error_type), allocatable, intent(out) :: error
-  real(8), parameter :: w1 = 1d0, w2 = 0.8d0, b1 = 0.3d0, b2 = -0.5d0
+  real(8), parameter :: om1 = 1d0, om2 = 0.8d0, b1 = 0.3d0, b2 = -0.5d0
   type(pw_set) :: pw1, pw2, psi(2)
   complex(8) :: t(2), tb(2)
   real(8) :: kk1, kk2, err(2)
   integer :: ic, nth
   character(len=200) :: info
 
-  call synthetic_set(w1, w2, pw1, pw2, psi)
+  call synthetic_set(om1, om2, pw1, pw2, psi)
   do ic = 1, 2
     if (ic == 1) then
       kk1 = 0d0
@@ -638,8 +644,8 @@ subroutine test_outer_vs_brute_force(error)
       kk2 = pw2%k0
       nth = 256
     end if
-    call fs_outer_annulus(w1, pw1, b1, kk1, w2, pw2, b2, kk2, psi, w1 - w2, g, rho, sy_radius, sy_radius + 200d0, t)
-    call brute_outer(w1, pw1, b1, kk1, w2, pw2, b2, kk2, psi, w1 - w2, sy_radius, sy_radius + 200d0, 1d0, 10, nth, tb)
+    call fs_outer_annulus(om1, pw1, b1, kk1, om2, pw2, b2, kk2, psi, om1 - om2, g, rho, sy_radius, sy_radius + 200d0, t)
+    call brute_outer(om1, pw1, b1, kk1, om2, pw2, b2, kk2, psi, om1 - om2, sy_radius, sy_radius + 200d0, 1d0, 10, nth, tb)
     err(ic) = maxval(abs(t - tb)) / maxval(abs(tb))
     print '(4x,a,i0,a,2es14.6,a,es10.2)', "outer annulus case ", ic, ": |T| ", abs(tb), ", relative error ", err(ic)
   end do
@@ -723,7 +729,7 @@ subroutine test_inner_outer_radius(error)
   real(8), allocatable :: delta(:), kev(:)
   type(pw_set) :: pw1(1), pw2(1), pwp(1)
   complex(8) :: tin(1), tout(1), tsl(1), total(2), nosliver(2), phi, grad(3)
-  real(8) :: centre(2), radius, miss(1), k1, k2, k1max, rf, err, err_ns
+  real(8) :: centre(2), radius, miss(1), k1, k2, k1max, rf, err_ns
   integer :: ir, i, mmax, nev, nshrunk, npc, nthread_saved
   logical :: ok
   character(len=:), allocatable :: msg
@@ -806,7 +812,6 @@ subroutine test_inner_outer_radius(error)
   end do
   NTHREAD = nthread_saved
   if (allocated(error)) return
-  err = errs(1)
   write (info, '(a,3es10.3)') "inner + outer at R = 15 against R = 20, relative (inner mesh of omega 1.1, 2.2, 3.11) ", errs
   call check(error, errs(3) <= 1d-2, trim(info))
 end subroutine test_inner_outer_radius
@@ -866,15 +871,15 @@ subroutine synthetic_pw(omega, mmax, nev, seed, pw)
   end do
 end subroutine synthetic_pw
 
-!> The synthetic fields of the outer tests: states 1 and 2 at w1 and w2, and two psi at Omega = w1 - w2.
-subroutine synthetic_set(w1, w2, pw1, pw2, psi)
-  real(8), intent(in) :: w1, w2
+!> The synthetic fields of the outer tests: states 1 and 2 at om1 and om2, and two psi at Omega = om1 - om2.
+subroutine synthetic_set(om1, om2, pw1, pw2, psi)
+  real(8), intent(in) :: om1, om2
   type(pw_set), intent(out) :: pw1, pw2, psi(2)
 
-  call synthetic_pw(w1, sy_mmax, sy_nev, 1, pw1)
-  call synthetic_pw(w2, sy_mmax, sy_nev, 2, pw2)
-  call synthetic_pw(w1 - w2, sy_mmax, sy_nev, 3, psi(1))
-  call synthetic_pw(w1 - w2, sy_mmax, sy_nev, 4, psi(2))
+  call synthetic_pw(om1, sy_mmax, sy_nev, 1, pw1)
+  call synthetic_pw(om2, sy_mmax, sy_nev, 2, pw2)
+  call synthetic_pw(om1 - om2, sy_mmax, sy_nev, 3, psi(1))
+  call synthetic_pw(om1 - om2, sy_mmax, sy_nev, 4, psi(2))
 end subroutine synthetic_set
 
 !> The incident wave (omega, wave number k, heading beta in radians, depth sy_h, unit amplitude) at x as a point field;
@@ -958,9 +963,9 @@ end subroutine gauss_legendre01
 !> Brute force: the outer integral of s_FS (i Omega rho / g) psi_k Q_D over r_a < r < r_b on a polar grid about sy_centre,
 !> Gauss-Legendre of order nq on panels of about dr in r, the trapezoid rule on nth angles; the fields pointwise
 !> (pw_eval_surface, the exact incident wave), Q_D by fs_forcing_diff.
-subroutine brute_outer(w1, pw1, b1, k1, w2, pw2, b2, k2, psi, omega, r_a, r_b, dr, nq, nth, t)
+subroutine brute_outer(om1, pw1, b1, k1, om2, pw2, b2, k2, psi, omega, r_a, r_b, dr, nq, nth, t)
   ! The circle centre and depth are those of pw1
-  real(8), intent(in) :: w1, b1, k1, w2, b2, k2, omega, r_a, r_b, dr
+  real(8), intent(in) :: om1, b1, k1, om2, b2, k2, omega, r_a, r_b, dr
   type(pw_set), intent(in) :: pw1, pw2, psi(:)
   integer, intent(in) :: nq, nth
   complex(8), intent(out) :: t(size(psi))
@@ -983,11 +988,11 @@ subroutine brute_outer(w1, pw1, b1, k1, w2, pw2, b2, k2, psi, omega, r_a, r_b, d
       do j = 0, nth - 1
         th = 2d0 * pi * j / nth
         x = [pw1%centre(1) + r * cos(th), pw1%centre(2) + r * sin(th), 0d0]
-        i1 = incident_point(w1, k1, b1, x, pw1%h)
-        i2 = incident_point(w2, k2, b2, x, pw1%h)
+        i1 = incident_point(om1, k1, b1, x, pw1%h)
+        i2 = incident_point(om2, k2, b2, x, pw1%h)
         t1 = add_fields(scattered_point(pw1, x, rad1), i1)
         t2 = add_fields(scattered_point(pw2, x, rad2), i2)
-        q = fs_forcing_diff(w1, t1, i1, w2, t2, i2, g)
+        q = fs_forcing_diff(om1, t1, i1, om2, t2, i2, g)
         do k = 1, size(psi)
           call pw_eval_surface(psi(k), x, ps, gr, zz, radp)
           t(k) = t(k) + wq(iq) * len_p * r * (2d0 * pi / nth) * ps * q
@@ -1154,5 +1159,169 @@ subroutine test_inner_quadrature(error)
   write (info, '(a,6es10.3)') "panel sum of a smooth integrand at ps, ps/2, ps/4 (all modes, n < 4) ", e
   call check(error, maxval(e(:, 3)) <= 1d-3 .and. minval(e(:, 1) / e(:, 3)) >= 16d0, trim(info))
 end subroutine test_inner_quadrature
+
+! ---------------------------------------------------------------------------------------------- Task 8 (driver wiring)
+
+!> Pseudo inner fields of the pair tests: n points, states 1 and 2 (total and incident), psi of two modes, weights
+subroutine pseudo_inner(n, f1, i1, f2, i2, psi, wts)
+  integer, intent(in) :: n
+  type(fs_point_field), intent(out) :: f1(n), i1(n), f2(n), i2(n)
+  complex(8), intent(out) :: psi(n, 2)
+  real(8), intent(out) :: wts(n)
+  integer :: i, k
+
+  do i = 1, n
+    f1(i) = pseudo_field(10 * i + 1)
+    i1(i) = pseudo_field(10 * i + 2)
+    f2(i) = pseudo_field(10 * i + 3)
+    i2(i) = pseudo_field(10 * i + 4)
+    wts(i) = 0.5d0 + 0.3d0 * sin(1.7d0 * i)**2
+    do k = 1, 2
+      psi(i, k) = cmplx(cos(0.3d0 * i + k), sin(1.1d0 * i * k), 8)
+    end do
+  end do
+end subroutine pseudo_inner
+
+!> The pair order of the driver [derived]: Q_D(2, 1) = conj Q_D(1, 2) (pair_product of KERNEL_DIFF) and
+!> psi(-Omega) = conj psi(Omega), so the inner sum of the pair (1, 2) at Omega = w1 - w2 < 0, taken directly with conj psi,
+!> is the conjugate of that of the pair (2, 1) at -Omega > 0 with psi: T(1, 2) = conj T(2, 1). fs_pair_terms uses this
+!> to give the outer routines only w1 > w2. To 1e-14 relative.
+subroutine test_inner_pair_hermitian(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om1 = 0.55d0, om2 = 0.9d0
+  type(fs_point_field) :: f1(4), i1(4), f2(4), i2(4)
+  complex(8) :: psi(4, 2), direct(2), swapped(2)
+  real(8) :: wts(4), err
+  character(len=120) :: info
+
+  call pseudo_inner(4, f1, i1, f2, i2, psi, wts)
+  call fs_inner_pair(om1, f1, i1, om2, f2, i2, conjg(psi), wts, g, rho, direct)
+  call fs_inner_pair(om2, f2, i2, om1, f1, i1, psi, wts, g, rho, swapped)
+  err = maxval(abs(direct - conjg(swapped))) / maxval(abs(direct))
+  write (info, '(a,es10.3)') "T(1, 2) with conj psi against conj T(2, 1), relative ", err
+  print '(4x,a)', trim(info)
+  call check(error, err <= 1d-14, trim(info))
+end subroutine test_inner_pair_hermitian
+
+!> Omega = 0 (the diagonal, w1 == w2): fs_pair_terms gives zeros and makes no outer call (fs_outer_rfar and fs_outer_ring
+!> would stop on it), and r_far 0.
+subroutine test_pair_terms_diagonal(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(fs_point_field) :: f1(4), i1(4), f2(4), i2(4)
+  complex(8) :: psi(4, 2), tin(2), tout(2)
+  real(8) :: wts(4), rf
+  type(pw_set) :: pw1, pw2, pwp(2)
+
+  call pseudo_inner(4, f1, i1, f2, i2, psi, wts)
+  call synthetic_set(1d0, 0.8d0, pw1, pw2, pwp)
+  call fs_pair_terms(1d0, f1, i1, pw1, 0.3d0, pw1%k0, 1d0, f1, i1, pw1, 0.3d0, pw1%k0, psi, pwp, wts, 12, g, rho, tin, tout, &
+                     r_far=rf)
+  call check(error, all(tin == (0d0, 0d0)) .and. all(tout == (0d0, 0d0)) .and. rf == 0d0, &
+             "fs_pair_terms is not zero on the diagonal")
+end subroutine test_pair_terms_diagonal
+
+!> fs_pair_terms of an ordered pair (w1 > w2) is fs_inner_pair + (fs_outer_pair to fs_outer_rfar + fs_outer_sliver),
+!> exactly; with the states given the other way round (w1 < w2) it is the conjugate of that (the swap of the driver).
+subroutine test_pair_terms_order(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om1 = 1d0, om2 = 0.8d0, b1 = 0.3d0, b2 = -0.5d0
+  integer, parameter :: npoly = 12
+  type(fs_point_field) :: f1(4), i1(4), f2(4), i2(4)
+  complex(8) :: psi(4, 2), tin(2), tout(2), rin(2), rout(2), sl(2), sin_(2), sout(2)
+  real(8) :: wts(4), rf, rf_ref
+  type(pw_set) :: pw1, pw2, pwp(2)
+
+  call pseudo_inner(4, f1, i1, f2, i2, psi, wts)
+  call synthetic_set(om1, om2, pw1, pw2, pwp)
+  call fs_pair_terms(om1, f1, i1, pw1, b1, pw1%k0, om2, f2, i2, pw2, b2, pw2%k0, psi, pwp, wts, npoly, g, rho, tin, tout, &
+                     r_far=rf)
+  call fs_inner_pair(om1, f1, i1, om2, f2, i2, psi, wts, g, rho, rin)
+  rf_ref = fs_outer_rfar(pw1, pw1%k0, pw2, pw2%k0, pwp)
+  call fs_outer_pair(om1, pw1, b1, pw1%k0, om2, pw2, b2, pw2%k0, pwp, om1 - om2, g, rho, rf_ref, rout)
+  call fs_outer_sliver(om1, pw1, b1, pw1%k0, om2, pw2, b2, pw2%k0, pwp, om1 - om2, g, rho, npoly, sl)
+  rout = rout + sl
+  call check(error, all(tin == rin) .and. all(tout == rout) .and. rf == rf_ref, &
+             "fs_pair_terms of an ordered pair is not inner + outer + sliver")
+  if (allocated(error)) return
+  call fs_pair_terms(om2, f2, i2, pw2, b2, pw2%k0, om1, f1, i1, pw1, b1, pw1%k0, psi, pwp, wts, npoly, g, rho, sin_, sout)
+  call check(error, all(sin_ == conjg(tin)) .and. all(sout == conjg(tout)), &
+             "fs_pair_terms of the pair given as (2, 1) is not the conjugate of (1, 2)")
+end subroutine test_pair_terms_order
+
+!> fs_outer_annulus sums its radial intervals in a fixed order, so the result does not depend on the number of threads or
+!> on the schedule: 1 and 4 threads give the same bits (Task 7 review, minor 3: run-to-run reproducibility).
+subroutine test_outer_annulus_threads(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(pw_set) :: pw1, pw2, pwp(2)
+  complex(8) :: t1(2), t4(2), t4b(2)
+  integer :: nthread_saved
+
+  call synthetic_set(1d0, 0.8d0, pw1, pw2, pwp)
+  nthread_saved = NTHREAD
+  NTHREAD = 1
+  call fs_outer_annulus(1d0, pw1, 0.3d0, pw1%k0, 0.8d0, pw2, -0.5d0, pw2%k0, pwp, 0.2d0, g, rho, sy_radius, &
+                        sy_radius + 300d0, t1)
+  NTHREAD = 4
+  call fs_outer_annulus(1d0, pw1, 0.3d0, pw1%k0, 0.8d0, pw2, -0.5d0, pw2%k0, pwp, 0.2d0, g, rho, sy_radius, &
+                        sy_radius + 300d0, t4)
+  call fs_outer_annulus(1d0, pw1, 0.3d0, pw1%k0, 0.8d0, pw2, -0.5d0, pw2%k0, pwp, 0.2d0, g, rho, sy_radius, &
+                        sy_radius + 300d0, t4b)
+  NTHREAD = nthread_saved
+  print '(4x,a,2es10.2)', "1 against 4 threads, absolute ", abs(t1 - t4)
+  call check(error, all(t1 == t4) .and. all(t4 == t4b), "fs_outer_annulus depends on the threads")
+end subroutine test_outer_annulus_threads
+
+!> The coverage check of a file inner mesh (Task 7 review, minor 4): miss = (pi R^2 - A_wp - sum w) / (pi R^2 - A_wp).
+!> On the generated mesh of the cylinder (R = 20, panels of lambda/10 at 2.2 rad/s: 99 chords) it is the gap between the
+!> polygon of np chords and the circle, to 1e-9, with no message (with 26 chords, at 1.1 rad/s, the gap is 1.3 %: a
+!> file mesh that coarse at the circle would be warned about). With the areas scaled: 3 % short of the free surface inside
+!> R warns, 2 % over it (overlaps) warns, 20 % short stops (the mesh does not reach R).
+subroutine test_coverage_check(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(so_options) :: opts
+  type(first_order_state) :: st(1)
+  type(cs_points) :: pts
+  real(8) :: centre(2), radius, miss, gap, region
+  real(8), allocatable :: w(:)
+  integer :: npc
+  logical :: ok, stops
+  character(len=:), allocatable :: msg
+
+  call cylinder_fixture(mesh, st, error)
+  if (allocated(error)) return
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call check(error, ok, "geometry: "//msg)
+  if (allocated(error)) return
+  opts%qtf_fs_radius = 20d0
+  call build_fs_inner(mesh, geom, opts, fx_depth, 'fs_task8_no_input_dir', pts, centre, radius, ok, msg, &
+                      omega_max=2.2d0, np_circle=npc)
+  call check(error, ok .and. npc >= 8, "inner mesh: "//msg)
+  if (allocated(error)) return
+  region = pi * radius**2 - sum(geom%awp)
+  gap = (pi * radius**2 - 0.5d0 * npc * radius**2 * sin(2d0 * pi / npc)) / region
+  call fs_coverage_check(pts%w, radius, sum(geom%awp), miss, msg, stops)
+  print '(4x,a,i0,a,es12.4,a,es12.4)', "generated mesh, polygon of ", npc, ": miss ", miss, ", polygon gap ", gap
+  call check(error, abs(miss - gap) <= 1d-9 .and. len(msg) == 0 .and. .not. stops, &
+             "the coverage of the generated mesh is not the polygon gap, or it gives a message: "//msg)
+  if (allocated(error)) return
+  ! A mesh that falls 3 % short of the area inside R warns, one that counts 2 % twice warns, one 20 % short stops
+  w = 0.97d0 * pts%w
+  call fs_coverage_check(w, radius, sum(geom%awp), miss, msg, stops)
+  print '(4x,a,es12.4,a,a)', "area x 0.97: miss ", miss, ": ", msg
+  call check(error, miss > 1d-2 .and. index(msg, "warning") > 0 .and. index(msg, "FSInnerMesh.pnl") > 0 .and. .not. stops, &
+             "a mesh short of R does not warn: "//msg)
+  if (allocated(error)) return
+  w = 1.02d0 * pts%w
+  call fs_coverage_check(w, radius, sum(geom%awp), miss, msg, stops)
+  print '(4x,a,es12.4,a,a)', "area x 1.02: miss ", miss, ": ", msg
+  call check(error, miss < -1d-2 .and. index(msg, "warning") > 0 .and. .not. stops, "an overlapping mesh does not warn: "//msg)
+  if (allocated(error)) return
+  w = 0.8d0 * pts%w
+  call fs_coverage_check(w, radius, sum(geom%awp), miss, msg, stops)
+  print '(4x,a,es12.4,a,a)', "area x 0.8: miss ", miss, ": ", msg
+  call check(error, stops .and. index(msg, "does not reach") > 0, "a mesh far short of R does not stop: "//msg)
+end subroutine test_coverage_check
 
 end module test_qtf_free_surface
