@@ -120,6 +120,17 @@ After executing these commands you should see the following output (or similar):
 
 <img width="557" height="280" alt="hams-tests" src="https://github.com/user-attachments/assets/1bb39a74-593d-498b-8a6d-40f20fcc36f9" />
 
+### QTF free-surface terms in the driver (qtf_terms = full)
+
+With `qtf_terms = full`, `potential_part` ([QTFDriver.f90](../src/QTFDriver.f90)) adds two terms to the five of `potential_pair`: FS_inner and FS_outer, from `fs_pair_terms` ([QTFFreeSurface.f90](../src/QTFFreeSurface.f90)). For each pair of stored states:
+
+- FS_inner is `fs_inner_pair`, the panel sum over the inner free-surface mesh. FS_outer is `fs_outer_pair` from R to `fs_outer_rfar` and its tail, plus `fs_outer_sliver` over the gap between the polygon of a generated inner mesh and the circle. A mesh from `FSInnerMesh.pnl` has no sliver; `fs_coverage_check` checks that it covers the free surface inside R to 1% (warning) and 10% (stop).
+- **Omega = 0** (the diagonal) has no free-surface term. `fs_pair_terms` returns zeros before any outer routine is called, since those need Omega > 0.
+- **Pair order.** The outer routines need ω₁ > ω₂. A pair with ω₁ < ω₂ is computed as the pair (2, 1) at −Ω > 0, with the same stored ψ, and conjugated. In the internal e^{−iωt} convention this gives T(1, 2) = conj T(2, 1) [derived]. Under KERNEL_DIFF, Q_D(2, 1) = conj Q_D(1, 2) (pair_product). Also ψ(−Ω) = conj ψ(Ω) and i(−Ω) = conj(iΩ). `potential_pair` uses the same identity for the hull terms. Tests: `fs_inner_pair_hermitian`, `fs_pair_terms_order`, and `qtf_body_hermitian` on the full fixtures.
+- **Gravity.** The free-surface terms take `s%g`, the gravity G of `Const_mod`. This is the g of the solver's free-surface condition and of the ψ solve. The hull Froude-Krylov term of φ_I2 takes `wave_gravity` (g_wave, ruling R8 of Phase 5), as do the incident fields at the inner points (`incident_at`). The two differ by about 0.004% (DISPERSION's g = 9.807 against 9.80665) [derived]. This is a convention, not an error of the method.
+- The pairs run one after another. Only the radial annulus of the outer integral is parallel. Each radial interval keeps its own sum, and the sums are added in order, so the result has the same bits for any number of threads (`fs_outer_annulus_threads`).
+- **Status.** The default generated inner mesh (λ/10 at the largest frequency) is not converged for these terms. The log warns on every run with the generated mesh, and the docs give the measured error ([Input files](input_files.md)). The default is set in a later task.
+
 ### Partial second-order field (QTFField.f90)
 
 `QTFField.f90` writes `QTF_FieldPartial.txt` (`qtf_field = 1`): the second-order pressure and elevation at the field points of `ControlFile.in`, from the quadratic part and the second-order incident potential of `SecondOrderIncident.f90` only. The second-order diffracted potential and, for a free body, the potential radiated by its second-order motion are omitted. Near the bodies, where the free-surface forcing drives the second-order scattered wave, the omitted part is not small ([Partial second-order field](input_files.md#partial-second-order-field-at-the-field-points)). The complete field is a later phase.

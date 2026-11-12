@@ -59,7 +59,7 @@ MODULE QTFFreeSurface
    ! The smallest scale of the mode check, as a fraction of the largest sample over all states (fs_mode_scales)
    REAL(8), PARAMETER :: FS_SCALE_FLOOR = 1D-6
    ! The coverage check of a mesh from FSInnerMesh.pnl (fs_coverage_check): a warning when it leaves out (or counts twice)
-   ! more than FS_COVER_WARN of the free surface inside R, a stop when it leaves out more than FS_COVER_STOP
+   ! more than FS_COVER_WARN of the free surface inside R, a stop above FS_COVER_STOP either way
    REAL(8), PARAMETER :: FS_COVER_WARN = 1D-2, FS_COVER_STOP = 1D-1
 
    ! The sign s_FS of T_FS = s_FS (i Omega rho / g) int psi_k Q_D dS: +1, settled by the direct solve of the Task 2
@@ -564,8 +564,8 @@ CONTAINS
       ! the file mesh must reach R. With w the panel areas and awp the waterplane area of all bodies,
       !   miss = (pi R^2 - awp - sum w) / (pi R^2 - awp),
       ! the fraction of the free surface inside R that the mesh leaves out (< 0: more area than there is, from overlapping
-      ! panels or panels over a waterplane). |miss| > FS_COVER_WARN: msg is a warning; miss > FS_COVER_STOP: msg is a stop
-      ! message and stops is true (the mesh does not reach R). A mesh that ends on a polygon inscribed in the circle leaves
+      ! panels or panels over a waterplane). |miss| > FS_COVER_WARN: msg is a warning; |miss| > FS_COVER_STOP: msg is a
+      ! stop message and stops is true (the mesh does not reach R, or it counts part of the free surface twice). A mesh that ends on a polygon inscribed in the circle leaves
       ! out the polygon gap, about (2 pi / n)^2 / 6 of pi R^2 for n chords.
       REAL(8), INTENT(IN) :: w(:), radius, awp
       REAL(8), INTENT(OUT) :: miss
@@ -576,9 +576,14 @@ CONTAINS
 
       region = PI*radius**2 - awp
       miss = (region - SUM(w))/region
-      stops = miss > FS_COVER_STOP
+      stops = ABS(miss) > FS_COVER_STOP
       msg = ''
-      IF (stops) THEN
+      IF (stops .AND. miss < 0D0) THEN
+         WRITE (line, '(a,F10.3,a,F8.3,a)') 'QTF free surface: FSInnerMesh.pnl has more area than the free surface inside'// &
+            ' R =', radius, ' m, by', -100D0*miss, ' % (overlapping panels, or panels over a waterplane), so part of the'// &
+            ' free surface would be counted twice. Correct the mesh.'
+         msg = TRIM(line)
+      ELSE IF (stops) THEN
          WRITE (line, '(a,F10.3,a,F8.3,a)') 'QTF free surface: FSInnerMesh.pnl does not reach the circle R =', radius, &
             ' m: it leaves out', 100D0*miss, ' % of the free surface inside R (the circle minus the waterplanes), which no'// &
             ' part of the integral covers. Extend the mesh to the circle.'

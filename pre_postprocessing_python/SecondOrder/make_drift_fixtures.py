@@ -592,7 +592,8 @@ def write_qtf_field_fixtures(data, both):
 def write_qtf_fs_fixtures(data, both):
     """Fixtures of the free-surface integral (qtf_terms = full): the small rounded hull with the generated inner mesh, its
     qtf_terms = body twin, its half mesh, the main grid with Omega = 0.2 rad/s on it, IRSP = 1 and its IRSP = 0 reference
-    on a finer mesh of the hull, and two hulls with FSInnerMesh.pnl. Velocity by differencing in all (the source solve does not take IRSP = 1). On CONTROL_THREADS threads."""
+    on a finer mesh of the hull, and two hulls with FSInnerMesh.pnl. Velocity by differencing in all (the source solve
+    does not take IRSP = 1). On CONTROL_THREADS threads."""
     full = dict(mean_drift=1, drift_methods=both, motion_state="free", write_terms=1, qtf_terms="full", qtf=1,
                 qtf_b2="body", qtf_edge_weights="off", qtf_fs_radius=QTF_FS_RADIUS)
     for name, irsp, half, frequencies, options, hull in (

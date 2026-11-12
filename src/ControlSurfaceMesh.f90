@@ -786,7 +786,7 @@ CONTAINS
 
    END SUBROUTINE free_surface_strips
 
-   SUBROUTINE build_fs_inner(mesh, geom, opts, h, inputdir, pts, centre, radius, ok, msg, omega_max, np_circle)
+   SUBROUTINE build_fs_inner(mesh, geom, opts, h, inputdir, pts, centre, radius, ok, msg, omega_max, np_circle, n_rows)
       ! The inner free surface of the QTF free-surface integral: the part of z = 0 between the waterlines and a circle of
       ! radius R about the centre of the waterline bounding box of all bodies. Returned as CS_FREE points, nrm (0, 0, -1),
       ! w the panel area; centre and R are returned too. From FSInnerMesh.pnl in inputdir when that file exists, else
@@ -804,7 +804,7 @@ CONTAINS
       ! the centre to a waterline node. R <= r_wl stops: the circle would cut a body.
       ! ok = .false. with msg for every stop. np_circle, if present, is the number of chords of the polygon that the
       ! generated mesh ends on (inscribed in the circle, vertices at theta = 2 pi (j - 1) / np about the centre), 0 for a mesh
-      ! from the file.
+      ! from the file. n_rows, if present, is the number of radial rows of the generated mesh (0 for a mesh from the file).
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       TYPE(so_options), INTENT(IN) :: opts
@@ -815,7 +815,7 @@ CONTAINS
       LOGICAL, INTENT(OUT) :: ok
       CHARACTER(LEN=:), ALLOCATABLE, INTENT(OUT) :: msg
       REAL(8), INTENT(IN), OPTIONAL :: omega_max
-      INTEGER, INTENT(OUT), OPTIONAL :: np_circle
+      INTEGER, INTENT(OUT), OPTIONAL :: np_circle, n_rows
       CHARACTER(LEN=*), PARAMETER :: NAME = 'FSInnerMesh.pnl'
       REAL(8), ALLOCATABLE :: psz(:)
       REAL(8) :: lo(2), hi(2), rwl, rmin, rgiven, rfile, ps, lam, wvn(1), d, q, frac, dnode, e(2), t
@@ -832,6 +832,7 @@ CONTAINS
       centre = 0D0
       radius = 0D0
       IF (PRESENT(np_circle)) np_circle = 0
+      IF (PRESENT(n_rows)) n_rows = 0
       IF (geom%nwl == 0) THEN
          msg = 'the inner free surface needs a waterline, and no body has one'
          RETURN
@@ -952,6 +953,7 @@ CONTAINS
             END IF
          END DO
          nr = MAX(opts%qtf_fs_rows, nr0)
+         IF (PRESENT(n_rows)) n_rows = nr
          CALL free_surface_strips(mesh, geom, 1, gam, nr, fm, star_ok, msg, follow_vertices=.TRUE.)
          IF (.NOT. star_ok) THEN
             idx = INDEX(msg, 'give FSMesh_')

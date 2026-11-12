@@ -1275,7 +1275,7 @@ end subroutine test_outer_annulus_threads
 !> On the generated mesh of the cylinder (R = 20, panels of lambda/10 at 2.2 rad/s: 99 chords) it is the gap between the
 !> polygon of np chords and the circle, to 1e-9, with no message (with 26 chords, at 1.1 rad/s, the gap is 1.3 %: a
 !> file mesh that coarse at the circle would be warned about). With the areas scaled: 3 % short of the free surface inside
-!> R warns, 2 % over it (overlaps) warns, 20 % short stops (the mesh does not reach R).
+!> R warns, 2 % over it (overlaps) warns, 20 % short stops (the mesh does not reach R), 20 % over it stops as well.
 subroutine test_coverage_check(error)
   type(error_type), allocatable, intent(out) :: error
   type(panel_mesh) :: mesh
@@ -1322,6 +1322,11 @@ subroutine test_coverage_check(error)
   call fs_coverage_check(w, radius, sum(geom%awp), miss, msg, stops)
   print '(4x,a,es12.4,a,a)', "area x 0.8: miss ", miss, ": ", msg
   call check(error, stops .and. index(msg, "does not reach") > 0, "a mesh far short of R does not stop: "//msg)
+  if (allocated(error)) return
+  w = 1.2d0 * pts%w
+  call fs_coverage_check(w, radius, sum(geom%awp), miss, msg, stops)
+  print '(4x,a,es12.4,a,a)', "area x 1.2: miss ", miss, ": ", msg
+  call check(error, stops .and. index(msg, "more area") > 0, "a mesh that counts 20 % twice does not stop: "//msg)
 end subroutine test_coverage_check
 
 end module test_qtf_free_surface

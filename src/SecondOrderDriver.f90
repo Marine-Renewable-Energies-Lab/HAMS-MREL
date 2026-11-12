@@ -401,15 +401,27 @@ CONTAINS
       CHARACTER(LEN=:), ALLOCATABLE :: msg
       REAL(8) :: omega_max, wvn1(1), k0_max, r_wl, miss
       LOGICAL :: ok, stops
-      INTEGER :: nshrunk, nfloor, iw
+      INTEGER :: nshrunk, nfloor, iw, nrows
+      ! The generated inner mesh with fewer radial rows than this is coarse for the free-surface terms (warning below)
+      INTEGER, PARAMETER :: FS_FEW_ROWS = 4
       EXTERNAL :: DISPERSION
 
       omega_max = MAXVAL(omegas)
       CALL build_fs_inner(mesh, geom, opts, H, inputdir, fs_pts, fs_centre, fs_radius, ok, msg, omega_max=omega_max, &
-                          np_circle=fs_np)
+                          np_circle=fs_np, n_rows=nrows)
       IF (.NOT. ok) THEN
          WRITE (*, '(a,a)') ' QTF free surface: ', msg
          ERROR STOP 1
+      END IF
+      IF (fs_np > 0) THEN
+         ! The generated mesh (panels of lambda/10 at omega_max) is not converged for the free-surface terms: on the
+         ! smoke case (qtf_round_body with full) they were 55-180 % off a lambda/30 mesh (Task 8 report). Its panel
+         ! size is set in a later task; until then, say so in the log, with the radial rows
+         WRITE (*, '(a,I0,a)') ' QTF free surface warning: the generated inner mesh (panels of lambda/10 at the largest'// &
+            ' frequency, ', nrows, ' radial rows) is not converged for the free-surface terms of QTF_Indirect.11d; on a'// &
+            ' test case they were 55-180 % off a mesh of lambda/30.'
+         IF (nrows < FS_FEW_ROWS) WRITE (*, '(a,I0,a)') ' QTF free surface warning: only ', nrows, &
+            ' radial rows between the waterline and R: raise qtf_fs_rows (at least 4), or give FSInnerMesh.pnl.'
       END IF
       IF (fs_np == 0) THEN
          CALL fs_coverage_check(fs_pts%w, fs_radius, SUM(geom%awp), miss, msg, stops)

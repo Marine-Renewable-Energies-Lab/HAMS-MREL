@@ -4602,6 +4602,8 @@ contains
         type(error_type), allocatable, intent(out) :: error
         character(len=12), parameter :: cases(2) = [character(len=12) :: "qtf_fs_round", "qtf_fs_two"]
         character(len=*), parameter :: line = "QTF_Indirect.11d: body forcing and the free-surface integral (qtf_terms = full)."
+        character(len=*), parameter :: not_converged = "is not converged for the free-surface terms"
+        character(len=*), parameter :: few_rows = "radial rows between the waterline and R: raise qtf_fs_rows"
         character(len=:), allocatable :: lines(:)
         real(8), allocatable :: t(:,:), d(:,:), x(:,:)
         real(8) :: worst, s
@@ -4649,6 +4651,16 @@ contains
                        "free-surface line in the log of "//trim(cases(c)))
             if (allocated(error)) return
         end do
+        ! The generated inner mesh is not converged for the free-surface terms (Task 8 review, Important 1): the log says
+        ! so for the generated mesh of qtf_fs_round, with the few-rows warning, and not for the file mesh of qtf_fs_two
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_fs_round.log", not_converged), 1, &
+                   "qtf_fs_round: no warning that the generated inner mesh is not converged")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_fs_round.log", few_rows), 1, &
+                   "qtf_fs_round: no warning about the few radial rows")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_fs_two.log", not_converged), 0, &
+                   "qtf_fs_two: the generated-mesh warning with FSInnerMesh.pnl")
     end subroutine qtf_fs_columns
 
     !> Without qtf_terms = full nothing changes: qtf_fs_body (qtf_terms = body) writes the first-order files, the mean drift
@@ -4705,8 +4717,10 @@ contains
                 cycle
             end if
             q = matching_row(xf, p, fs)
-            worst = max(worst, abs(xf(p,8) - xb(p,8) - fs(q,6))/(abs(xf(p,8)) + abs(xb(p,8))), &
-                        abs(xf(p,9) - xb(p,9) - fs(q,7))/(abs(xf(p,9)) + abs(xb(p,9))))
+            call check(error, q > 0, "qtf_fs_round: a .11d row has no terms row")
+            if (allocated(error)) return
+            worst = max(worst, abs(xf(p,8) - xb(p,8) - fs(q,6))/max(abs(xf(p,8)) + abs(xb(p,8)), tiny(1d0)), &
+                        abs(xf(p,9) - xb(p,9) - fs(q,7))/max(abs(xf(p,9)) + abs(xb(p,9)), tiny(1d0)))
         end do
         call report("qtf_fs_off_unchanged .11d full - body against FS", worst)
         call check_below(error, "qtf_fs_off_unchanged", worst, pot_printed_limit)
@@ -4794,13 +4808,14 @@ contains
 
     !> Two hulls at y = +-10 m with FSInnerMesh.pnl, heading 0: the layout, the hull meshes and the inner mesh are their
     !> own mirror images about y = 0, so body 2 is body 1 mirrored: FS_inner + FS_outer and the whole T_pot of body 2 are
-    !> those of body 1 with the sign of y (index 1, 3, 5 equal; 2, 4, 6 opposite), and the total over the bodies has no F_y,
-    !> M_x, M_z. Finite, and the coverage line of the file mesh is in the log, with no warning.
+    !> those of body 1 with the sign of y (index 1, 3, 5 equal; 2, 4, 6 opposite), so the total force over the bodies has
+    !> no F_y (checked; the moments are about each body's own XR, so their sum is not the system moment and is not
+    !> checked). Finite, and the coverage line of the file mesh is in the log, with no warning.
     subroutine fs_two_bodies_file(error)
         type(error_type), allocatable, intent(out) :: error
         real(8), parameter :: mirror(6) = [1d0, -1d0, 1d0, -1d0, 1d0, -1d0]
         real(8), allocatable :: fs(:,:), tp(:,:), key(:,:)
-        real(8) :: worst_fs, worst_tp
+        real(8) :: worst_fs, worst_tp, worst_fy
         integer :: p, q, i, n
 
         call check_no_bad_numbers(output_dir("qtf_fs_two")//qtf_indirect_file, error)
@@ -4819,6 +4834,7 @@ contains
         if (allocated(error)) return
         worst_fs = 0d0
         worst_tp = 0d0
+        worst_fy = 0d0
         n = 0
         do p = 1, size(fs, 1)
             if (nint(fs(p,5)) > 6) cycle
@@ -4832,6 +4848,15 @@ contains
             worst_fs = max(worst_fs, hypot(fs(q,6) - mirror(i)*fs(p,6), fs(q,7) - mirror(i)*fs(p,7))/kind_scale(fs, fs(p,5)))
             worst_tp = max(worst_tp, hypot(tp(q,6) - mirror(i)*tp(p,6), tp(q,7) - mirror(i)*tp(p,7))/kind_scale(tp, tp(p,5)))
         end do
+        ! F_y of FS summed over the bodies, over the force scale (implied by the mirror check, asserted on its own)
+        do p = 1, size(fs, 1)
+            if (nint(fs(p,5)) /= 2) cycle
+            key = fs(p:p,:)
+            key(1,5) = 8d0
+            q = matching_row(key, 1, fs)
+            worst_fy = max(worst_fy, hypot(fs(p,6) + fs(q,6), fs(p,7) + fs(q,7))/kind_scale(fs, 1d0))
+        end do
+        call report("fs_two_bodies_file FS F_y over the bodies", worst_fy)
         call report("fs_two_bodies_file FS mirror", worst_fs)
         call report("fs_two_bodies_file T_pot mirror", worst_tp)
         call check(error, n == 2*6, "qtf_fs_two: expected 2 pairs and 6 rows of body 1")
@@ -4839,6 +4864,8 @@ contains
         call check_below(error, "fs_two_bodies_file FS mirror", worst_fs, fs_two_mirror_limit)
         if (allocated(error)) return
         call check_below(error, "fs_two_bodies_file T_pot mirror", worst_tp, fs_two_mirror_limit)
+        if (allocated(error)) return
+        call check_below(error, "fs_two_bodies_file FS F_y over the bodies", worst_fy, fs_two_mirror_limit)
     end subroutine fs_two_bodies_file
 
     subroutine check_same_file(path_a, path_b, error)
