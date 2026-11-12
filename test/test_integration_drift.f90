@@ -79,6 +79,8 @@ module test_integration_drift
     character(len=*), parameter :: qtf_indirect_file = "Wamit_format/QTF_Indirect.11d"
     character(len=*), parameter :: qtf_field_file = "Wamit_format/QTF_FieldPartial.txt"
     character(len=*), parameter :: pot_terms_file = "Wamit_format/QTF_PotentialTerms.txt"
+    character(len=*), parameter :: qtf_direct_file = "Wamit_format/QTF_Direct.12d"
+    character(len=*), parameter :: direct_terms_file = "Wamit_format/QTF_DirectTerms.txt"
     character(len=*), parameter :: terms_file = "Wamit_format/MeanDriftTerms.txt"
     character(len=*), parameter :: control_file = "Wamit_format/MeanDriftControlSurface.7"
     character(len=*), parameter :: offset_cases(4) = [character(len=17) :: "drift_field_0p005", "drift_field_0p01", &
@@ -353,6 +355,7 @@ contains
             new_unittest("qtf_body_absent", qtf_body_absent), &
             new_unittest("qtf_body_log", qtf_body_log), &
             new_unittest("direct_irr_runs", direct_irr_runs), &
+            new_unittest("qtf_direct_file_layout", qtf_direct_file_layout), &
             new_unittest("qtf_b2_control_sharp", qtf_b2_control_sharp), &
             new_unittest("qtf_b2_control_other_terms", qtf_b2_control_other_terms), &
             new_unittest("qtf_b2_control_main_grid", qtf_b2_control_main_grid), &
@@ -618,8 +621,9 @@ contains
     !> The fixtures of the QTF potential part besides qtf_round_body and qtf_round_low, in one setup test
     subroutine run_qtf_body_cases(error)
         type(error_type), allocatable, intent(out) :: error
-        character(len=21), parameter :: cases(7) = [character(len=21) :: "qtf_round_body_ref", "qtf_round_body_irsp", &
-            "qtf_half_body", "qtf_two_round_body", "qtf_isolated_body", "qtf_round_low_spacing", "qtf_period_body"]
+        character(len=21), parameter :: cases(8) = [character(len=21) :: "qtf_round_body_ref", "qtf_round_body_irsp", &
+            "qtf_half_body", "qtf_two_round_body", "qtf_isolated_body", "qtf_round_low_spacing", "qtf_period_body", &
+            "qtf_direct_irsp"]
         type(error_type), allocatable :: one
         integer :: c
 
@@ -3855,21 +3859,90 @@ contains
                    "free-surface line in the log of qtf_round")
     end subroutine qtf_body_log
 
-    !> qtf_direct = 1 with irregular frequency removal (IRSP = 1, Phase 7a Task 3b) on the inputs of qtf_round_body_irsp:
-    !> the run is accepted and completes (a NaN or Inf in T_dir would end it with exit code 1), solves the direct problem
+    !> qtf_direct = 1 with irregular frequency removal (IRSP = 1, Phase 7a Task 3b) on the inputs of qtf_round_body_irsp
+    !> (run in run_qtf_body_cases): the run is accepted and completes (a NaN or Inf in T_dir would end it with exit
+    !> code 1), solves the direct problem
     !> at its one difference frequency, and writes QTF_Indirect.11d as the run without the direct method does. T_dir
-    !> itself is checked against T_pot in the unit test direct_vs_indirect_irr; QTF_Direct.12d comes with Task 4.
+    !> itself is checked against T_pot in the unit test direct_vs_indirect_irr; QTF_Direct.12d in qtf_direct_file_layout.
     subroutine direct_irr_runs(error)
         type(error_type), allocatable, intent(out) :: error
 
-        call run_case("qtf_direct_irsp", [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file], error)
-        if (allocated(error)) return
         call check(error, count_log_lines(get_running_exe_path()//"qtf_direct_irsp.log", "QTF direct: omega"), 1, &
                    "direct-solve lines in the log of qtf_direct_irsp")
         if (allocated(error)) return
         call check_same_file(output_dir("qtf_round_body_irsp")//qtf_indirect_file, &
                              output_dir("qtf_direct_irsp")//qtf_indirect_file, error)
     end subroutine direct_irr_runs
+
+    !> QTF_Direct.12d and QTF_DirectTerms.txt of the qtf_direct_irsp run of run_qtf_body_cases:
+    !> .12d has the rows of .11d (and of .10d), in the
+    !> same order; on the diagonal (equal frequencies) it is .10d, text for text; off the diagonal .12d - .10d is the sum
+    !> of the two parts of QTF_DirectTerms.txt (the part from phi_I2 and the part from phi_D), to the printed digits; the
+    !> terms file has one row per off-diagonal row of .12d, with 9 columns (keys, I, Re Im of each part).
+    subroutine qtf_direct_file_layout(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=:), allocatable :: a(:), b(:), lines(:)
+        real(8), allocatable :: d10(:,:), d12(:,:)
+        real(8) :: t(9), diff(2), tol, worst
+        integer :: r, q, ios, nterms, noff, found
+        logical :: exists
+
+        inquire (file=output_dir("qtf_direct_irsp")//qtf_direct_file, exist=exists)
+        call check(error, exists, "qtf_direct_irsp wrote no QTF_Direct.12d")
+        if (allocated(error)) return
+        call read_lines(output_dir("qtf_direct_irsp")//qtf_diff_file, a, error)
+        if (allocated(error)) return
+        call read_lines(output_dir("qtf_direct_irsp")//qtf_direct_file, b, error)
+        if (allocated(error)) return
+        call read_qtf(output_dir("qtf_direct_irsp")//qtf_diff_file, d10, error)
+        if (allocated(error)) return
+        call read_qtf(output_dir("qtf_direct_irsp")//qtf_direct_file, d12, error)
+        if (allocated(error)) return
+        call check(error, size(a) == size(b) .and. size(a) > 0, ".12d and .10d have different numbers of rows")
+        if (allocated(error)) return
+        call read_lines(output_dir("qtf_direct_irsp")//direct_terms_file, lines, error)
+        if (allocated(error)) return
+        noff = 0
+        do r = 1, size(a)
+            call check(error, a(r)(1:62) == b(r)(1:62), ".12d row of other keys than .10d: "//trim(b(r)))
+            if (allocated(error)) return
+            if (d10(r,1) == d10(r,2)) then
+                call check(error, a(r) == b(r), ".12d differs from .10d on the diagonal: "//trim(b(r)))
+                if (allocated(error)) return
+            else
+                noff = noff + 1
+            end if
+        end do
+        call check(error, noff > 0 .and. noff < size(a), "no diagonal or no off-diagonal rows")
+        if (allocated(error)) return
+        nterms = 0
+        do r = 1, size(lines)
+            if (lines(r)(1:1) == '#') cycle
+            nterms = nterms + 1
+        end do
+        call check(error, nterms == noff, "QTF_DirectTerms.txt does not have one row per off-diagonal row of .12d")
+        if (allocated(error)) return
+        worst = 0d0
+        do r = 1, size(lines)
+            if (lines(r)(1:1) == '#') cycle
+            read (lines(r), *, iostat=ios) t
+            call check(error, ios == 0, "Bad row in QTF_DirectTerms.txt: "//trim(lines(r)))
+            if (allocated(error)) return
+            found = 0
+            do q = 1, size(a)
+                if (.not. (same(d12(q,1), t(1)) .and. same(d12(q,2), t(2)) .and. d12(q,3) == t(3) .and. d12(q,4) == t(4) &
+                           .and. nint(d12(q,5)) == nint(t(5)))) cycle
+                found = found + 1
+                diff = d12(q,8:9) - d10(q,8:9) - [t(6) + t(8), t(7) + t(9)]
+                tol = 1d-6*(hypot(d12(q,8), d12(q,9)) + hypot(d10(q,8), d10(q,9))) + 1d-12
+                worst = max(worst, hypot(diff(1), diff(2))/tol)
+            end do
+            call check(error, found == 1, "a row of QTF_DirectTerms.txt has no single .12d row")
+            if (allocated(error)) return
+        end do
+        call report("qtf_direct_file_layout .12d - .10d against the terms (in units of the printed-digit bound)", worst)
+        call check(error, worst <= 1d0, ".12d - .10d is not the sum of the terms of QTF_DirectTerms.txt")
+    end subroutine qtf_direct_file_layout
 
     !> B2 of the sharp free cylinder against the exact reference (truncated_cylinder_reference.py qtf-potential, free, 0.01
     !> rad/s grid, N 64000, gap basis (20, 4, 4), converged to 2e-5 in B2), in e^{-i omega t} per rho g, for the pairs

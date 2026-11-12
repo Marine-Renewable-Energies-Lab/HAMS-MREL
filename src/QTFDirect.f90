@@ -165,10 +165,24 @@ CONTAINS
       REAL(8), INTENT(IN) :: edge_deg
       INTEGER, INTENT(OUT), OPTIONAL :: nmask
 
+      ! With IRSP = 1 the lid rows of the right side need lid points. A single body has its count here; several bodies get
+      ! theirs after the set-up, so direct_at_omega makes the same check for them.
+      IF (mesh%nbody == 1) CALL check_lid(.FALSE.)
       IF (ALLOCATED(edge_mask)) DEALLOCATE (edge_mask)
       CALL sharp_edge_panels(mesh, edge_deg, edge_mask)
       IF (PRESENT(nmask)) nmask = COUNT(edge_mask)
    END SUBROUTINE direct_setup
+
+   SUBROUTINE check_lid(is_multi)
+      ! Stops with a message if IRSP = 1 and there are no lid points: the solve would run without the removal
+      LOGICAL, INTENT(IN) :: is_multi
+
+      IF (IRSP == 1 .AND. direct_lid_points(is_multi) == 0) THEN
+         WRITE (*, '(a)') ' QTF direct: If_remove_irr_freq = 1, but the mesh has no lid points (WaterPlaneMesh.pnl is'// &
+            ' empty or has no panels). Add the lid panels, or set If_remove_irr_freq = 0.'
+         ERROR STOP 1
+      END IF
+   END SUBROUTINE check_lid
 
    FUNCTION direct_edge_mask() RESULT(mask)
       ! The mask of direct_setup (empty before it)
@@ -326,7 +340,7 @@ CONTAINS
       END DO
    END SUBROUTINE direct_solve
 
-   SUBROUTINE direct_at_omega(mesh, geom, omega, store, store_wl, pairs, tdir, is_multi, omega_tol, phi2_constant, seconds)
+   SUBROUTINE direct_at_omega(mesh, geom, omega, store, store_wl, pairs, tdir, is_multi, omega_tol, phi2_constant, seconds, parts)
       ! The direct load T_dir of every pair of the difference frequency omega (> 0), per unit amplitudes (header):
       !   store, store_wl  the first-order states (nfreq, nbeta) and their waterline potentials (nwl, nfreq, nbeta), as
       !                    QTFDriver keeps them
@@ -334,6 +348,8 @@ CONTAINS
       !                    |omega_1 - omega_2| = omega within omega_tol (default 1e-6 max(omega_1, omega_2))
       !   tdir             (6 nbody, npair), T_dir,k of each pair, e^{-i omega t}, as the sum of the terms of potential_pair
       !   phi2_constant    optional test hook, as potential_pair: phi_I2 replaced by this constant (dphi_I2/dn = 0)
+      !   parts            optional (6 nbody, npair, 2): the part of tdir from phi_I2 (:, :, 1) and from phi_D (:, :, 2);
+      !                    their sum is tdir
       !   seconds          optional (3): wall time of the pair forcing with ASSB_RHS_FIELD_IRR, of the B2 part (the
       !                    densities of b2_stokes_densities and direct_rhs_b2_block) and of the factorisation, solve and
       !                    load, for the log
@@ -353,6 +369,7 @@ CONTAINS
       REAL(8), INTENT(IN), OPTIONAL :: omega_tol
       COMPLEX(8), INTENT(IN), OPTIONAL :: phi2_constant
       REAL(8), INTENT(OUT), OPTIONAL :: seconds(3)
+      COMPLEX(8), INTENT(OUT), OPTIONAL :: parts(:, :, :)
       COMPLEX(8), ALLOCATABLE :: vf(:, :, :), rf(:, :, :), r2(:, :, :), a(:, :), c(:, :, :), cl(:, :, :, :), e(:, :), &
                                  phi(:, :), p2(:, :)
       REAL(8), ALLOCATABLE :: dws(:)
@@ -386,11 +403,19 @@ CONTAINS
       END IF
       multi = mesh%nbody > 1
       IF (PRESENT(is_multi)) multi = is_multi
+      CALL check_lid(multi)
       nl = direct_lid_points(multi)
       nt = nb + nl
       tdir = (0D0, 0D0)
       sec = 0D0
       IF (PRESENT(seconds)) seconds = 0D0
+      IF (PRESENT(parts)) THEN
+         IF (SIZE(parts, 1) /= nmode .OR. SIZE(parts, 2) /= npair .OR. SIZE(parts, 3) /= 2) THEN
+            WRITE (*, '(a)') ' direct_at_omega: parts must be (6 nbody, npair, 2).'
+            ERROR STOP 1
+         END IF
+         parts = (0D0, 0D0)
+      END IF
       IF (npair == 0) RETURN
 
       CALL SYSTEM_CLOCK(c0, rate)
@@ -508,17 +533,27 @@ CONTAINS
       END SUBROUTINE pair_densities
 
       SUBROUTINE pair_load(p, col)
-         ! T_dir,k = i Omega rho int_S (phi_I2 + phi_D) n_k dS over the panels of the body of mode k
+         ! T_dir,k = i Omega rho int_S (phi_I2 + phi_D) n_k dS over the panels of the body of mode k; with parts, the
+         ! two integrals are kept apart
          INTEGER, INTENT(IN) :: p, col
+         COMPLEX(8) :: t2(6*mesh%nbody), td(6*mesh%nbody), fac
          INTEGER :: f, b, j
 
+         t2 = (0D0, 0D0)
+         td = (0D0, 0D0)
          DO f = 1, n
             b = mesh%body(f)
             DO j = 1, 6
-               tdir(6*(b - 1) + j, p) = tdir(6*(b - 1) + j, p) + (p2(f, col) + phi(f, col))*mesh%nj(j, f)*mesh%area(f)
+               t2(6*(b - 1) + j) = t2(6*(b - 1) + j) + p2(f, col)*mesh%nj(j, f)*mesh%area(f)
+               td(6*(b - 1) + j) = td(6*(b - 1) + j) + phi(f, col)*mesh%nj(j, f)*mesh%area(f)
             END DO
          END DO
-         tdir(:, p) = CI*dws(col)*store(pairs(1, p), pairs(2, p))%rho*tdir(:, p)
+         fac = CI*dws(col)*store(pairs(1, p), pairs(2, p))%rho
+         tdir(:, p) = fac*(t2 + td)
+         IF (PRESENT(parts)) THEN
+            parts(:, p, 1) = fac*t2
+            parts(:, p, 2) = fac*td
+         END IF
       END SUBROUTINE pair_load
 
    END SUBROUTINE direct_at_omega

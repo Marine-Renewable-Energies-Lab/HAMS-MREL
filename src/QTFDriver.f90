@@ -109,6 +109,9 @@ MODULE QTFDriver
    LOGICAL :: direct_active = .FALSE.
    COMPLEX(8), ALLOCATABLE :: tdir(:, :, :, :)           ! (6*nbody, nfreq, nfreq, heading pairs), e^{-i omega t}
    LOGICAL, ALLOCATABLE :: tdir_kept(:)                  ! (nneed), the direct solve has run at psi_need(m)
+   ! With write_terms >= 1 (direct_terms), the two parts of tdir, for QTF_DirectTerms.txt: from phi_I2 and from phi_D
+   COMPLEX(8), ALLOCATABLE :: tdir_i2(:, :, :, :), tdir_d(:, :, :, :)   ! as tdir
+   LOGICAL :: direct_terms = .FALSE.                     ! QTF_DirectTerms.txt is written
    ! qtf_b2 = control: points of C and F of every body, and the fields there
    LOGICAL :: b2_control = .FALSE.
    TYPE(cs_points) :: cs
@@ -189,6 +192,7 @@ CONTAINS
       IF (ALLOCATED(tpot)) DEALLOCATE (tpot)
       IF (ALLOCATED(tdir)) DEALLOCATE (tdir)
       IF (ALLOCATED(tdir_kept)) DEALLOCATE (tdir_kept)
+      IF (ALLOCATED(tdir_i2)) DEALLOCATE (tdir_i2, tdir_d)
       CALL free_control_surface()
       n_bad_psi = 0
       n_bad_pairs = 0
@@ -208,6 +212,14 @@ CONTAINS
          IF (st /= 0) CALL out_of_memory(body=.TRUE.)
          tdir = (0D0, 0D0)
          tdir_kept = .FALSE.
+      END IF
+      direct_terms = direct_active .AND. opts%write_terms >= 1
+      IF (direct_terms) THEN
+         ALLOCATE (tdir_i2(6*nbody, nfreq, nfreq, heading_pairs(nbeta)), tdir_d(6*nbody, nfreq, nfreq, heading_pairs(nbeta)), &
+                   STAT=st)
+         IF (st /= 0) CALL out_of_memory(body=.TRUE.)
+         tdir_i2 = (0D0, 0D0)
+         tdir_d = (0D0, 0D0)
       END IF
 
    CONTAINS
@@ -623,8 +635,8 @@ CONTAINS
       REAL(8), INTENT(OUT), OPTIONAL :: seconds(3)
       REAL(8) :: sec(3)
       INTEGER, ALLOCATABLE :: pairs(:, :)
-      COMPLEX(8), ALLOCATABLE :: t(:, :)
-      INTEGER :: m, p, nbad
+      COMPLEX(8), ALLOCATABLE :: t(:, :), parts(:, :, :)
+      INTEGER :: m, p, nbad, h
 
       IF (PRESENT(npair)) npair = 0
       IF (PRESENT(seconds)) seconds = 0D0
@@ -641,12 +653,18 @@ CONTAINS
       END IF
       CALL qtf_direct_pairs(omega, pairs)
       ALLOCATE (t(6*mesh%nbody, SIZE(pairs, 2)))
-      CALL direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, omega_tol=psi_tol, seconds=sec)
+      ALLOCATE (parts(6*mesh%nbody, SIZE(pairs, 2), 2))
+      CALL direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, omega_tol=psi_tol, seconds=sec, parts=parts)
       IF (PRESENT(npair)) npair = SIZE(pairs, 2)
       IF (PRESENT(seconds)) seconds = sec
       nbad = 0
       DO p = 1, SIZE(pairs, 2)
-         tdir(:, pairs(1, p), pairs(3, p), heading_pair(pairs(2, p), pairs(4, p))) = t(:, p)
+         h = heading_pair(pairs(2, p), pairs(4, p))
+         tdir(:, pairs(1, p), pairs(3, p), h) = t(:, p)
+         IF (direct_terms) THEN
+            tdir_i2(:, pairs(1, p), pairs(3, p), h) = parts(:, p, 1)
+            tdir_d(:, pairs(1, p), pairs(3, p), h) = parts(:, p, 2)
+         END IF
          IF (.NOT. ALL(IEEE_IS_FINITE(REAL(t(:, p), 8)) .AND. IEEE_IS_FINITE(AIMAG(t(:, p))))) nbad = nbad + 1
       END DO
       tdir_kept(m) = .TRUE.
@@ -743,6 +761,10 @@ CONTAINS
 
       IF (.NOT. active) RETURN
       IF (body_active) CALL potential_part(mesh, geom, refl)
+      IF (direct_active) THEN
+         CALL check_direct_kept()
+         IF (direct_terms) CALL write_direct_terms(refl)
+      END IF
       IF (kind_qtf == 1 .OR. kind_qtf == 3) CALL write_file('/Wamit_format/QTF_Quadratic.10d', KERNEL_DIFF)
       IF (kind_qtf == 2 .OR. kind_qtf == 3) CALL write_file('/Wamit_format/QTF_Quadratic.10s', KERNEL_SUM)
       WRITE (*, '(a,I0,a,I0,a)') ' QTF quadratic part: ', nkept, ' frequencies and ', nbeta, ' headings'
@@ -750,24 +772,31 @@ CONTAINS
       IF (ALLOCATED(psi_store)) DEALLOCATE (psi_store, psi_kept, psi_need, psi_reuse)
       IF (ALLOCATED(tpot)) DEALLOCATE (tpot)
       IF (ALLOCATED(tdir)) DEALLOCATE (tdir, tdir_kept)
+      IF (ALLOCATED(tdir_i2)) DEALLOCATE (tdir_i2, tdir_d)
       CALL free_control_surface()
       active = .FALSE.
       body_active = .FALSE.
       direct_active = .FALSE.
+      direct_terms = .FALSE.
 
    CONTAINS
 
       SUBROUTINE write_file(name, kernel)
-         ! With qtf_terms = body, the difference kernel also writes QTF_Indirect.11d, row for row with .10d
+         ! With qtf_terms = body, the difference kernel also writes QTF_Indirect.11d, row for row with .10d, and with
+         ! qtf_direct = 1 QTF_Direct.12d, the same with T_dir in place of T_pot
          CHARACTER(LEN=*), INTENT(IN) :: name
          INTEGER, INTENT(IN) :: kernel
-         COMPLEX(8) :: total(6, mesh%nbody), value
-         INTEGER :: unit, unit_indirect, b1, b2, i, j, b, c
+         COMPLEX(8) :: total(6, mesh%nbody)
+         INTEGER :: unit, unit_indirect, unit_direct, b1, b2, i, j, b, c
 
          OPEN (NEWUNIT=unit, FILE=outdir//name, STATUS='REPLACE', ACTION='WRITE')
          unit_indirect = 0
          IF (kernel == KERNEL_DIFF .AND. body_active) THEN
             OPEN (NEWUNIT=unit_indirect, FILE=outdir//'/Wamit_format/QTF_Indirect.11d', STATUS='REPLACE', ACTION='WRITE')
+         END IF
+         unit_direct = 0
+         IF (kernel == KERNEL_DIFF .AND. direct_active) THEN
+            OPEN (NEWUNIT=unit_direct, FILE=outdir//'/Wamit_format/QTF_Direct.12d', STATUS='REPLACE', ACTION='WRITE')
          END IF
          DO b1 = 1, nbeta
             DO b2 = 1, nbeta
@@ -782,14 +811,10 @@ CONTAINS
                         DO c = 1, 6
                            CALL write_qtf_row(unit, store_oufr(i), store_oufr(j), beta_deg(b1), beta_deg(b2), &
                                               6*(b - 1) + c, total(c, b), refl, c > 3)
-                           IF (unit_indirect == 0) CYCLE
-                           ! On the diagonal T_pot = 0 and .11d is .10d to the bit (adding a zero could flip a -0)
-                           value = total(c, b)
-                           IF (store(i, b1)%omega /= store(j, b2)%omega) THEN
-                              value = value + tpot(6*(b - 1) + c, i, j, heading_pair(b1, b2))
-                           END IF
-                           CALL write_qtf_row(unit_indirect, store_oufr(i), store_oufr(j), beta_deg(b1), beta_deg(b2), &
-                                              6*(b - 1) + c, value, refl, c > 3)
+                           ! On the diagonal T_pot = T_dir = 0 and .11d, .12d are .10d to the bit (adding a zero could
+                           ! flip a -0)
+                           IF (unit_indirect /= 0) CALL write_sum(unit_indirect, tpot, total(c, b), i, j, b1, b2, 6*(b - 1) + c, c > 3)
+                           IF (unit_direct /= 0) CALL write_sum(unit_direct, tdir, total(c, b), i, j, b1, b2, 6*(b - 1) + c, c > 3)
                         END DO
                      END DO
                   END DO
@@ -798,7 +823,71 @@ CONTAINS
          END DO
          CLOSE (unit)
          IF (unit_indirect /= 0) CLOSE (unit_indirect)
+         IF (unit_direct /= 0) CLOSE (unit_direct)
+
       END SUBROUTINE write_file
+
+      SUBROUTINE write_sum(u, tpart, base, i, j, b1, b2, k, moment)
+         ! One row of .11d or .12d into unit u: the row base of .10d plus the potential part tpart of the same pair and mode
+         ! k, which is left out on the diagonal (zero there; adding it could flip a -0)
+         INTEGER, INTENT(IN) :: u, i, j, b1, b2, k
+         COMPLEX(8), INTENT(IN) :: tpart(:, :, :, :), base
+         LOGICAL, INTENT(IN) :: moment
+         COMPLEX(8) :: value
+
+         value = base
+         IF (store(i, b1)%omega /= store(j, b2)%omega) value = value + tpart(k, i, j, heading_pair(b1, b2))
+         CALL write_qtf_row(u, store_oufr(i), store_oufr(j), beta_deg(b1), beta_deg(b2), k, value, refl, moment)
+      END SUBROUTINE write_sum
+
+      SUBROUTINE check_direct_kept()
+         ! Every difference frequency of the pairs must have been solved by the direct method before .12d is written
+         INTEGER :: m
+
+         DO m = 1, SIZE(tdir_kept)
+            IF (.NOT. tdir_kept(m)) THEN
+               WRITE (*, '(a,ES14.6,a)') ' QTF direct: qtf_direct = 1, but the direct solve did not run at Omega =', &
+                  psi_need(m), ' rad/s; QTF_Direct.12d would be incomplete.'
+               ERROR STOP 1
+            END IF
+         END DO
+      END SUBROUTINE check_direct_kept
+
+      SUBROUTINE write_direct_terms(refl)
+         ! QTF_DirectTerms.txt: for every pair with omega_i /= omega_j, by ascending |Omega| as QTF_PotentialTerms.txt, the
+         ! parts of T_dir from phi_I2 and from phi_D, scaled and conjugated as .10d
+         REAL(8), INTENT(IN) :: refl
+         INTEGER :: unit, m, b1, b2, i, j, b, c, k
+
+         OPEN (NEWUNIT=unit, FILE=outdir//'/Wamit_format/QTF_DirectTerms.txt', STATUS='REPLACE', ACTION='WRITE')
+         WRITE (unit, '(a)') '# Parts of the direct load of QTF_Direct.12d (qtf_direct = 1), scaled and conjugated as'// &
+            ' QTF_Quadratic.10d.'
+         WRITE (unit, '(a)') '# PER1 PER2 BETA1 BETA2 I, then Re Im of each part: 1 the second-order incident potential'// &
+            ' phi_I2, 2 the second-order diffracted and radiated potential phi_D.'
+         WRITE (unit, '(a)') '# .12d - .10d is their sum. One row per pair with omega_i /= omega_j, by ascending'// &
+            ' |omega_i - omega_j|.'
+         WRITE (unit, '(a)') '# The rows are not in the order of .12d: match them by PER1 PER2 BETA1 BETA2 I.'
+         DO m = 1, SIZE(psi_need)
+            DO b1 = 1, nbeta
+               DO b2 = 1, nbeta
+                  IF (all_headings_pairs == 0 .AND. b1 /= b2) CYCLE
+                  DO i = 1, nkept
+                     DO j = 1, nkept
+                        IF (difference_pair_index(i, j) /= m) CYCLE
+                        DO b = 1, mesh%nbody
+                           DO c = 1, 6
+                              k = 6*(b - 1) + c
+                              CALL write_qtf_terms_row(unit, store_oufr(i), store_oufr(j), beta_deg(b1), beta_deg(b2), k, &
+                                 [tdir_i2(k, i, j, heading_pair(b1, b2)), tdir_d(k, i, j, heading_pair(b1, b2))], refl, c > 3)
+                           END DO
+                        END DO
+                     END DO
+                  END DO
+               END DO
+            END DO
+         END DO
+         CLOSE (unit)
+      END SUBROUTINE write_direct_terms
 
    END SUBROUTINE qtf_finish
 
