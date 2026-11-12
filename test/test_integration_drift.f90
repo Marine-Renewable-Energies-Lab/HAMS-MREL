@@ -352,6 +352,7 @@ contains
             new_unittest("qtf_body_spacing", qtf_body_spacing), &
             new_unittest("qtf_body_absent", qtf_body_absent), &
             new_unittest("qtf_body_log", qtf_body_log), &
+            new_unittest("direct_irr_runs", direct_irr_runs), &
             new_unittest("qtf_b2_control_sharp", qtf_b2_control_sharp), &
             new_unittest("qtf_b2_control_other_terms", qtf_b2_control_other_terms), &
             new_unittest("qtf_b2_control_main_grid", qtf_b2_control_main_grid), &
@@ -3853,6 +3854,22 @@ contains
         call check(error, count_log_lines(get_running_exe_path()//"qtf_round.log", line), 0, &
                    "free-surface line in the log of qtf_round")
     end subroutine qtf_body_log
+
+    !> qtf_direct = 1 with irregular frequency removal (IRSP = 1, Phase 7a Task 3b) on the inputs of qtf_round_body_irsp:
+    !> the run is accepted and completes (a NaN or Inf in T_dir would end it with exit code 1), solves the direct problem
+    !> at its one difference frequency, and writes QTF_Indirect.11d as the run without the direct method does. T_dir
+    !> itself is checked against T_pot in the unit test direct_vs_indirect_irr; QTF_Direct.12d comes with Task 4.
+    subroutine direct_irr_runs(error)
+        type(error_type), allocatable, intent(out) :: error
+
+        call run_case("qtf_direct_irsp", [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file], error)
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_direct_irsp.log", "QTF direct: omega"), 1, &
+                   "direct-solve lines in the log of qtf_direct_irsp")
+        if (allocated(error)) return
+        call check_same_file(output_dir("qtf_round_body_irsp")//qtf_indirect_file, &
+                             output_dir("qtf_direct_irsp")//qtf_indirect_file, error)
+    end subroutine direct_irr_runs
 
     !> B2 of the sharp free cylinder against the exact reference (truncated_cylinder_reference.py qtf-potential, free, 0.01
     !> rad/s grid, N 64000, gap basis (20, 4, 4), converged to 2e-5 in B2), in e^{-i omega t} per rho g, for the pairs

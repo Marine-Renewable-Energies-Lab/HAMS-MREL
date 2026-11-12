@@ -41,6 +41,7 @@ MODULE AssbMatx
    PUBLIC :: ASSB_LEFT
    PUBLIC :: ASSB_RBC
    PUBLIC :: ASSB_RHS_FIELD
+   PUBLIC :: ASSB_RHS_FIELD_IRR
    
    PUBLIC :: ASSB_DBC
    PUBLIC :: RADIATION_SOLVER
@@ -196,8 +197,28 @@ CONTAINS
       COMPLEX*16,INTENT(IN):: V(NELEM,NRHS,NSYS)
       COMPLEX*16,INTENT(OUT):: B(NELEM,NRHS,NSYS)
 
-      INTEGER IEL,JEL,IS,IA,IB,IP
-      REAL*8 DIST
+      CALL ASSB_RHS_FIELD_IRR(V,B,NELEM,0,NSYS,NRHS)
+
+      RETURN
+      END SUBROUTINE ASSB_RHS_FIELD
+
+! -------------------------------------------------------------------
+!    As ASSB_RHS_FIELD, with NLID more rows at the lid points of irregular frequency removal (IRSP = 1), as
+!    ASSB_RBC_IRR builds its rows NELEM+1 to NELEM+NLID for n_k: r_l = int_S G(x_l, xi) V(xi) dS_xi, from
+!    the stored lid integrals DGRN and PKBN and the flag rule of ASSB_RBC_IRR (lid point to panel centroid within 50
+!    panel sizes). B(1:NELEM,K,IP) are the rows of ASSB_RHS_FIELD; NLID = 0 gives ASSB_RHS_FIELD.
+! -------------------------------------------------------------------
+      SUBROUTINE ASSB_RHS_FIELD_IRR(V,B,NELEM,NLID,NSYS,NRHS)
+      USE Inerfs_mod, ONLY: iXYZ_P
+      USE Potentials_mod, ONLY: DGRN, PKBN
+      IMPLICIT  NONE
+!
+      INTEGER,INTENT(IN):: NELEM,NLID,NSYS,NRHS
+      COMPLEX*16,INTENT(IN):: V(NELEM,NRHS,NSYS)
+      COMPLEX*16,INTENT(OUT):: B(NELEM+NLID,NRHS,NSYS)
+
+      INTEGER IEL,JEL,IS,IA,IB,IP,L
+      REAL*8 DIST,XF(3)
       COMPLEX*16 DUM(2)
       COMPLEX*16,ALLOCATABLE:: BTMP(:,:),VT(:,:,:)
 
@@ -212,17 +233,31 @@ CONTAINS
 
 !$OMP PARALLEL NUM_THREADS(NTHREAD) PRIVATE(BTMP)
       ALLOCATE(BTMP(NRHS,NSYS))
-!$OMP DO PRIVATE(IEL,JEL,IS,IA,IB,IP,DIST,DUM) SCHEDULE(DYNAMIC,16)
+!$OMP DO PRIVATE(IEL,JEL,IS,IA,IB,IP,L,DIST,XF,DUM) SCHEDULE(DYNAMIC,16)
 ! Row-disjoint writes on the IEL axis, no REDUCTION needed.
-      DO IEL=1, NELEM
+      DO IEL=1, NELEM+NLID
+       L=IEL-NELEM
+       IF (L.LE.0) THEN
+        XF(:)=XYZ_P(IEL,:)
+       ELSE
+        XF(:)=iXYZ_P(L,:)
+       ENDIF
        BTMP=CMPLX(0.0D0,0.0D0)
        DO JEL=1, NELEM
-        DIST=SQRT((XYZ_P(IEL,1)-XYZ_P(JEL,1))**2+(XYZ_P(IEL,2)-XYZ_P(JEL,2))**2+(XYZ_P(IEL,3)-XYZ_P(JEL,3))**2)
+        DIST=SQRT((XF(1)-XYZ_P(JEL,1))**2+(XF(2)-XYZ_P(JEL,2))**2+(XF(3)-XYZ_P(JEL,3))**2)
         DO IS=1, NSYS
-         IF (DIST.LE.50.D0*PNSZ(JEL)) THEN
-          DUM(IS)=RKBN(IEL,JEL,IS,1)+CGRN(IEL,JEL,IS,1)*DS(JEL)
+         IF (L.LE.0) THEN
+          IF (DIST.LE.50.D0*PNSZ(JEL)) THEN
+           DUM(IS)=RKBN(IEL,JEL,IS,1)+CGRN(IEL,JEL,IS,1)*DS(JEL)
+          ELSE
+           DUM(IS)=CGRN(IEL,JEL,IS,1)*DS(JEL)
+          ENDIF
          ELSE
-          DUM(IS)=CGRN(IEL,JEL,IS,1)*DS(JEL)
+          IF (DIST.LE.50.D0*PNSZ(JEL)) THEN
+           DUM(IS)=PKBN(L,JEL,IS,1)+DGRN(L,JEL,IS,1)*DS(JEL)
+          ELSE
+           DUM(IS)=DGRN(L,JEL,IS,1)*DS(JEL)
+          ENDIF
          ENDIF
         ENDDO
         DO IA=1, NSYS
@@ -244,7 +279,7 @@ CONTAINS
       DEALLOCATE(VT)
 
       RETURN
-      END SUBROUTINE ASSB_RHS_FIELD
+      END SUBROUTINE ASSB_RHS_FIELD_IRR
       
 ! ------------------------------------------------------------------- 
 !    Calculate the element contribution, assembly the right-hand

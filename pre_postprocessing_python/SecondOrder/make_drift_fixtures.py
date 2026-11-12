@@ -442,6 +442,11 @@ def write_qtf_body_fixtures(data, both):
         write_control(os.path.join(target, "ControlFile.in"), frequencies=QTF_BODY_FREQUENCIES, headings=DRIFT_CYL_HEADINGS,
                       irsp=irsp)
         write_second_order(os.path.join(target, "SecondOrder.in"), **body)
+    # The direct method (qtf_direct = 1) on the inputs of qtf_round_body_irsp: the lid rows of the direct right side
+    target = case_dir(data, "qtf_direct_irsp")
+    copy_inputs(data, "qtf_round_body_irsp", target, ("HullMesh.pnl", "Hydrostatic.in", "WaterPlaneMesh.pnl",
+                                                      "ControlFile.in"))
+    write_second_order(os.path.join(target, "SecondOrder.in"), **dict(body, qtf_direct=1))
     # Two of the small rounded hulls far apart, with every heading pair, and one alone
     for name, origins, pairs in (("qtf_two_round_body", [(0.0, 0.0), (0.0, QTF_DISTANT_SEPARATION)], 2),
                                  ("qtf_isolated_body", None, 1)):

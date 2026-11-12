@@ -41,6 +41,7 @@ MODULE AssbMatxMulti
    PUBLIC :: ASSB_LEFT_MULTI
    PUBLIC :: ASSB_RBC_MULTI
    PUBLIC :: ASSB_RHS_FIELD_MULTI
+   PUBLIC :: ASSB_RHS_FIELD_MULTI_IRR
    
    PUBLIC :: ASSB_DBC_MULTI
    PUBLIC :: RADIATION_SOLVER_MULTI
@@ -197,8 +198,28 @@ CONTAINS
       COMPLEX*16,INTENT(IN):: V(NELEM,NRHS,NSYS)
       COMPLEX*16,INTENT(OUT):: B(NELEM,NRHS,NSYS)
 
-      INTEGER IEL,JEL,IS,IA,IB,IP
-      REAL*8 DIST
+      CALL ASSB_RHS_FIELD_MULTI_IRR(V,B,NELEM,0,NSYS,NRHS)
+
+      RETURN
+      END SUBROUTINE ASSB_RHS_FIELD_MULTI
+
+! -------------------------------------------------------------------
+!    As ASSB_RHS_FIELD_MULTI, with NLID more rows at the lid points of irregular frequency removal (IRSP = 1), as
+!    ASSB_RBC_IRR_MULTI builds its rows NELEM+1 to NELEM+NLID for n_k: r_l = int_S G(x_l, xi) V(xi) dS_xi, from
+!    the stored lid integrals DGRN_MULTI_COMB and PKBN_MULTI_COMB and the flag rule of ASSB_RBC_IRR (lid point to panel centroid within 50
+!    panel sizes). B(1:NELEM,K,IP) are the rows of ASSB_RHS_FIELD_MULTI; NLID = 0 gives ASSB_RHS_FIELD_MULTI.
+! -------------------------------------------------------------------
+      SUBROUTINE ASSB_RHS_FIELD_MULTI_IRR(V,B,NELEM,NLID,NSYS,NRHS)
+      USE PanelMesh_mod, ONLY: iXYZ_GLOBAL_MULTI_COMB_P
+      USE Potentials_mod, ONLY: DGRN_MULTI_COMB, PKBN_MULTI_COMB
+      IMPLICIT  NONE
+!
+      INTEGER,INTENT(IN):: NELEM,NLID,NSYS,NRHS
+      COMPLEX*16,INTENT(IN):: V(NELEM,NRHS,NSYS)
+      COMPLEX*16,INTENT(OUT):: B(NELEM+NLID,NRHS,NSYS)
+
+      INTEGER IEL,JEL,IS,IA,IB,IP,L
+      REAL*8 DIST,XF(3)
       COMPLEX*16 DUM(2)
       COMPLEX*16,ALLOCATABLE:: BTMP(:,:),VT(:,:,:)
 
@@ -213,17 +234,31 @@ CONTAINS
 
 !$OMP PARALLEL NUM_THREADS(NTHREAD) PRIVATE(BTMP)
       ALLOCATE(BTMP(NRHS,NSYS))
-!$OMP DO PRIVATE(IEL,JEL,IS,IA,IB,IP,DIST,DUM) SCHEDULE(DYNAMIC,16)
+!$OMP DO PRIVATE(IEL,JEL,IS,IA,IB,IP,L,DIST,XF,DUM) SCHEDULE(DYNAMIC,16)
 ! Row-disjoint writes on the IEL axis, no REDUCTION needed.
-      DO IEL=1, NELEM
+      DO IEL=1, NELEM+NLID
+       L=IEL-NELEM
+       IF (L.LE.0) THEN
+        XF(:)=XYZ_GLOBAL_MULTI_COMB_P(IEL,:)
+       ELSE
+        XF(:)=iXYZ_GLOBAL_MULTI_COMB_P(L,:)
+       ENDIF
        BTMP=CMPLX(0.0D0,0.0D0)
        DO JEL=1, NELEM
-        DIST=SQRT((XYZ_GLOBAL_MULTI_COMB_P(IEL,1)-XYZ_GLOBAL_MULTI_COMB_P(JEL,1))**2+(XYZ_GLOBAL_MULTI_COMB_P(IEL,2)-XYZ_GLOBAL_MULTI_COMB_P(JEL,2))**2+(XYZ_GLOBAL_MULTI_COMB_P(IEL,3)-XYZ_GLOBAL_MULTI_COMB_P(JEL,3))**2)
+        DIST=SQRT((XF(1)-XYZ_GLOBAL_MULTI_COMB_P(JEL,1))**2+(XF(2)-XYZ_GLOBAL_MULTI_COMB_P(JEL,2))**2+(XF(3)-XYZ_GLOBAL_MULTI_COMB_P(JEL,3))**2)
         DO IS=1, NSYS
-         IF (DIST.LE.50.D0*PNSZ_MULTI_COMB(JEL)) THEN
-          DUM(IS)=RKBN_MULTI_COMB(IEL,JEL,IS,1)+CGRN_MULTI_COMB(IEL,JEL,IS,1)*DS_MULTI_COMB(JEL)
+         IF (L.LE.0) THEN
+          IF (DIST.LE.50.D0*PNSZ_MULTI_COMB(JEL)) THEN
+           DUM(IS)=RKBN_MULTI_COMB(IEL,JEL,IS,1)+CGRN_MULTI_COMB(IEL,JEL,IS,1)*DS_MULTI_COMB(JEL)
+          ELSE
+           DUM(IS)=CGRN_MULTI_COMB(IEL,JEL,IS,1)*DS_MULTI_COMB(JEL)
+          ENDIF
          ELSE
-          DUM(IS)=CGRN_MULTI_COMB(IEL,JEL,IS,1)*DS_MULTI_COMB(JEL)
+          IF (DIST.LE.50.D0*PNSZ_MULTI_COMB(JEL)) THEN
+           DUM(IS)=PKBN_MULTI_COMB(L,JEL,IS,1)+DGRN_MULTI_COMB(L,JEL,IS,1)*DS_MULTI_COMB(JEL)
+          ELSE
+           DUM(IS)=DGRN_MULTI_COMB(L,JEL,IS,1)*DS_MULTI_COMB(JEL)
+          ENDIF
          ENDIF
         ENDDO
         DO IA=1, NSYS
@@ -245,7 +280,7 @@ CONTAINS
       DEALLOCATE(VT)
 
       RETURN
-      END SUBROUTINE ASSB_RHS_FIELD_MULTI
+      END SUBROUTINE ASSB_RHS_FIELD_MULTI_IRR
       
 ! ------------------------------------------------------------------- 
 !    Calculate the element contribution, assembly the right-hand

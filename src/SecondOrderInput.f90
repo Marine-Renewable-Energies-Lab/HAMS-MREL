@@ -337,9 +337,6 @@ CONTAINS
          msg = 'cs_fs_rows must not be negative in SecondOrder.in.'
       ELSE IF (opts%qtf > 0 .AND. .NOT. opts%do_near) THEN
          msg = 'qtf needs drift_methods to include near.'
-      ELSE IF (opts%qtf_direct == 1 .AND. irsp == 1) THEN
-         ! The lid rows of the least-squares system would need the right side at the lid points as well (QTFDirect)
-         msg = 'qtf_direct = 1 cannot be used with irregular frequency removal (IRSP=1) in ControlFile.in.'
       ELSE
          ok = .TRUE.
       END IF

@@ -5,16 +5,23 @@
 !> (see unit_tester.f90).
 module test_qtf_direct
   use testdrive, only : new_unittest, unittest_type, error_type, check
-  use HAMS_mod, only : NTHREAD, ISOLV
+  use HAMS_mod, only : NTHREAD, ISOLV, IRSP
   use WaveDyn_mod, only : VWAVE => V
   use PanelMesh_mod, only : ISX, ISY, NSYS, NELEM, DS, PNSZ, XYZ_P, DXYZ_P, DS_MULTI_COMB, PNSZ_MULTI_COMB, &
-                            XYZ_GLOBAL_MULTI_COMB_P, DXYZ_MULTI_COMB, IPIV, IPIV_MULTI_COMB
-  use Inerfs_mod, only : TNELEM
-  use Potentials_mod, only : CGRN, RKBN, CGRN_MULTI_COMB, RKBN_MULTI_COMB, MXPOT, MXPOT_MULTI_COMB
-  use LinearMatrix_mod, only : AMAT, BRMAT, AMAT_MULTI, BRMAT_MULTI
+                            XYZ_GLOBAL_MULTI_COMB_P, DXYZ_MULTI_COMB, IPIV, IPIV_MULTI_COMB, NELEM_TOTAL, &
+                            iNELEM_TOTAL, iXYZ_GLOBAL_MULTI_COMB_P, iDXYZ_MULTI_COMB
+  use Inerfs_mod, only : TNELEM, iNELEM, iXYZ_P, iDXYZ_P
+  use Potentials_mod, only : CGRN, RKBN, CGRN_MULTI_COMB, RKBN_MULTI_COMB, MXPOT, MXPOT_MULTI_COMB, DGRN, PKBN, &
+                             DGRN_MULTI_COMB, PKBN_MULTI_COMB
+  use LinearMatrix_mod, only : AMAT, BRMAT, AMAT_MULTI, BRMAT_MULTI, CMAT, DRMAT, CMAT_MULTI, DRMAT_MULTI
   use Const_mod, only : RXY
-  use AssbMatx, only : ASSB_RBC, ASSB_RHS_FIELD, ASSB_LEFT, RADIATION_SOLVER
-  use AssbMatxMulti, only : ASSB_RBC_MULTI, ASSB_RHS_FIELD_MULTI, ASSB_LEFT_MULTI, RADIATION_SOLVER_MULTI
+  use AssbMatx, only : ASSB_RBC, ASSB_RHS_FIELD, ASSB_RHS_FIELD_IRR, ASSB_LEFT, RADIATION_SOLVER
+  use AssbMatxMulti, only : ASSB_RBC_MULTI, ASSB_RHS_FIELD_MULTI, ASSB_RHS_FIELD_MULTI_IRR, ASSB_LEFT_MULTI, &
+                            RADIATION_SOLVER_MULTI
+  use AssbMatx_irr, only : ASSB_LEFT_IRR, ASSB_RBC_IRR, RADIATION_SOLVER_IRR
+  use AssbMatx_irrMulti, only : ASSB_LEFT_IRR_MULTI, ASSB_RBC_IRR_MULTI
+  use SecondOrderTypes, only : so_options, QTF_TERMS_BODY
+  use SecondOrderInput, only : validate_second_order
   use ImplementSubs, only : SetWaveFromOmega
   use SecondOrderTypes, only : panel_mesh, surface_geom, first_order_state
   use FirstOrderState, only : image_signs, radiation_psi, wave_gravity
@@ -23,11 +30,11 @@ module test_qtf_direct
   use NearFieldDrift, only : pair_product, rigid_displacement, KERNEL_DIFF
   use QTFDirect, only : direct_rhs_b2, b2_stokes_densities, b2_stokes_at_point, green_panel_integrals, rankine_moments, &
                         sharp_edge_panels, direct_rhs_b2_block, direct_setup, direct_edge_mask, direct_factor, &
-                        direct_solve, direct_at_omega
+                        direct_solve, direct_at_omega, direct_lid_points
   use SharpEdge, only : DEFAULT_EDGE_DEG
-  use CalGreenFunc, only : CALGREEN
-  use CalGreenFuncMulti, only : CALGREEN_MULTI
-  use second_order_fixtures, only : make_cylinder
+  use CalGreenFunc, only : CALGREEN, CALGREEN_IRR
+  use CalGreenFuncMulti, only : CALGREEN_MULTI, CALGREEN_MULTI_IRR
+  use second_order_fixtures, only : make_cylinder, set_panel
   use test_waterline_field, only : set_wave, load_panels, load_multi
   use test_qtf_potential, only : make_sphere, motions, velocity, normal_hessian, make_state, geometry
   implicit none
@@ -65,6 +72,22 @@ module test_qtf_direct
   real(8), parameter :: guard_limit = 1d-8
   ! T_dir against T_pot of the indirect method (512-panel sphere): the mesh error, 9.5e-4 measured
   real(8), parameter :: indirect_limit = 3d-3
+  ! Phase 7a Task 3b, irregular frequency removal. The cylinder of load_multi (test_waterline_field), for its lids
+  real(8), parameter :: multi_radius = 5d0, multi_spacing = 30d0
+  integer, parameter :: multi_ntheta = 12, multi_nr = 2
+  ! direct_vs_indirect_irr: the rounded cylinder of radius 5 and draft 5 at depth 50 (448 panels, 192 lid points). Its
+  ! discrete first irregular frequency, irr_omegas(3), is where the lid changes T_dir most: a scan from 1.90 to 2.70 rad/s
+  ! by 0.02 and from 2.188 to 2.212 by 0.001 gave a peak of 15.2% at 2.195 (half width about 0.002 rad/s) on a background
+  ! of 1-1.5%. irr_omegas(1) is a low Omega, irr_omegas(2) a regular one next to the irregular frequency. State 2 is at
+  ! irr_low rad/s, state 1 at irr_low + Omega.
+  real(8), parameter :: irr_depth = 50d0, irr_low = 0.6d0, irr_omegas(3) = [1.0d0, 2.25d0, 2.195d0]
+  ! With the lid, T_dir against T_pot at the low Omega: the mesh error, 2.07e-3 measured (2.35e-3 without the lid). At
+  ! 2.25 and 2.195 rad/s the mesh error is 3.1% and 3.0% (state 1 at 2.8 rad/s, 8 panels per wavelength on the side):
+  ! with the lid the irregular frequency adds nothing to it (ratio 0.98 measured, limit irr_ratio_limit), while without
+  ! the lid T_dir against T_pot is 14.7% there. Without the lid against with, T_dir: 1.75e-3 at the low Omega (limit
+  ! irr_regular_limit), 15.1% at the irregular one (at least irr_spike_min).
+  real(8), parameter :: irr_indirect_limit = 5d-3, irr_mesh_limit = 5d-2, irr_ratio_limit = 1.2d0
+  real(8), parameter :: irr_regular_limit = 5d-3, irr_spike_min = 7.5d-2
 
 contains
 
@@ -83,7 +106,10 @@ contains
       new_unittest("direct_zero_forcing", test_direct_zero_forcing), &
       new_unittest("direct_unit_normal_is_radiation", test_direct_unit_normal), &
       new_unittest("direct_edge_guard_production", test_direct_edge_guard), &
-      new_unittest("direct_matches_indirect_pair", test_direct_vs_indirect) &
+      new_unittest("direct_matches_indirect_pair", test_direct_vs_indirect), &
+      new_unittest("direct_irr_accepted", test_direct_irr_accepted), &
+      new_unittest("direct_irr_unit_normal", test_direct_irr_unit_normal), &
+      new_unittest("direct_vs_indirect_irr", test_direct_vs_indirect_irr) &
       ]
   end subroutine collect_qtf_direct
 
@@ -1001,7 +1027,7 @@ contains
   end subroutine radiation_at
 
   !> The QTF store of two states (frequency 1 and 2, one heading) and the pairs (1, 2) and (2, 1), Omega = +-(w1 - w2).
-  subroutine two_state_store(mesh, geom, depth, x1, x2, store, store_wl, pairs)
+  subroutine two_state_store(mesh, geom, depth, x1, x2, store, store_wl, pairs, wa, wb)
     type(panel_mesh), intent(in) :: mesh
     type(surface_geom), intent(in) :: geom
     real(8), intent(in) :: depth
@@ -1009,10 +1035,16 @@ contains
     type(first_order_state), allocatable, intent(out) :: store(:, :)
     complex(8), allocatable, intent(out) :: store_wl(:, :, :)
     integer, allocatable, intent(out) :: pairs(:, :)
+    real(8), intent(in), optional :: wa, wb   ! the two frequencies, w1 and w2 by default
     complex(8), allocatable :: wl1(:), wl2(:)
+    real(8) :: fa, fb
+    fa = w1
+    fb = w2
+    if (present(wa)) fa = wa
+    if (present(wb)) fb = wb
     allocate(store(2, 1), store_wl(geom%nwl, 2, 1))
-    call make_state(mesh, geom, w1, b1, depth, x1, store(1, 1), wl1)
-    call make_state(mesh, geom, w2, b2, depth, x2, store(2, 1), wl2)
+    call make_state(mesh, geom, fa, b1, depth, x1, store(1, 1), wl1)
+    call make_state(mesh, geom, fb, b2, depth, x2, store(2, 1), wl2)
     store_wl(:, 1, 1) = wl1
     store_wl(:, 2, 1) = wl2
     pairs = reshape([1, 1, 2, 1, 2, 1, 1, 1], [4, 2])
@@ -1114,7 +1146,8 @@ contains
   !> With b = n_k the solution of direct_solve (right side by ASSB_RHS_FIELD, the factored AMAT at Omega) is psi_k of the
   !> radiation solve at Omega (RADIATION_SOLVER, radiation_psi): the same matrix and the same right side, so to rounding.
   !> The cylinder of the half test, whole at depth 10, half (ISY = 1) in deep water, two cylinders in the multi-body arrays
-  !> at depth 10, and whole with ISOLV = 2 (AMAT unfactored by ASSB_LEFT, factored by direct_factor).
+  !> at depth 10, whole with ISOLV = 2 (AMAT unfactored by ASSB_LEFT, factored by direct_factor), and the two cylinders
+  !> as half meshes (ISY = 1), whose images direct_solve expands with RXY_MULTI.
   subroutine test_direct_unit_normal(error)
     type(error_type), allocatable, intent(out) :: error
     type(panel_mesh) :: full, mesh
@@ -1127,14 +1160,14 @@ contains
 
     call make_cylinder(5d0, 5d0, 16, 4, 3, full, .true.)
     worst = 0d0
-    do icase = 1, 4
+    do icase = 1, 5
       d = merge(-1d0, 10d0, icase == 2)
-      multi = icase == 3
+      multi = icase == 3 .or. icase == 5
       call set_wave(d)
       NTHREAD = 4
       ISOLV = 1
       if (multi) then
-        call load_multi(0, mesh)
+        call load_multi(merge(1, 0, icase == 5), mesh)
       else
         call load_panels(full, 0, merge(1, 0, icase == 2), mesh)
       end if
@@ -1287,5 +1320,398 @@ contains
     print '(4x,a)', trim(line)
     call check(error, rel <= indirect_limit, line)
   end subroutine test_direct_vs_indirect
+
+  ! ------------------------------------------------------------------------------------- irregular frequency removal
+
+  !> Lid points of irregular frequency removal on the waterplane of a cylinder of make_cylinder (radius, ntheta, nr), centred
+  !> at (x0, 0): the centroids of its bottom panels at z = 0, on the side the symmetry plane keeps (isy_in = 1: y > 0),
+  !> appended to pts (3, n). The IRR routines of HAMS take the lid as field points only (iXYZ_P; iDXYZ_P is read, not used).
+  subroutine append_lid(radius, ntheta, nr, x0, isy_in, pts)
+    real(8), intent(in) :: radius, x0
+    integer, intent(in) :: ntheta, nr, isy_in
+    real(8), allocatable, intent(inout) :: pts(:, :)
+    type(panel_mesh) :: c
+    real(8), allocatable :: tmp(:, :)
+    integer :: p, n
+    if (.not. allocated(pts)) allocate(pts(3, 0))
+    call make_cylinder(radius, 1d0, ntheta, 1, nr, c, .true.)
+    do p = 1, c%n
+      if (abs(c%nrm(3, p)) < 0.99d0) cycle
+      if (isy_in == 1 .and. c%xc(2, p) <= 0d0) cycle
+      n = size(pts, 2)
+      allocate(tmp(3, n + 1))
+      tmp(:, 1:n) = pts
+      tmp(:, n + 1) = [c%xc(1, p) + x0, c%xc(2, p), 0d0]
+      call move_alloc(tmp, pts)
+    end do
+  end subroutine append_lid
+
+  !> IRSP = 1 with the lid points pts (3, nl): in the single-body arrays (iNELEM, iXYZ_P) or the combined multi-body ones
+  subroutine set_lid(pts, multi)
+    real(8), intent(in) :: pts(:, :)
+    logical, intent(in) :: multi
+    integer :: nl
+    nl = size(pts, 2)
+    IRSP = 1
+    if (multi) then
+      if (.not. allocated(iNELEM_TOTAL)) allocate(iNELEM_TOTAL)
+      iNELEM_TOTAL = nl
+      if (allocated(iXYZ_GLOBAL_MULTI_COMB_P)) deallocate(iXYZ_GLOBAL_MULTI_COMB_P)
+      if (allocated(iDXYZ_MULTI_COMB)) deallocate(iDXYZ_MULTI_COMB)
+      allocate(iXYZ_GLOBAL_MULTI_COMB_P(nl, 3), iDXYZ_MULTI_COMB(nl, 6))
+      iXYZ_GLOBAL_MULTI_COMB_P = transpose(pts)
+      iDXYZ_MULTI_COMB = 0d0
+    else
+      iNELEM = nl
+      if (allocated(iXYZ_P)) deallocate(iXYZ_P)
+      if (allocated(iDXYZ_P)) deallocate(iDXYZ_P)
+      allocate(iXYZ_P(nl, 3), iDXYZ_P(nl, 6))
+      iXYZ_P = transpose(pts)
+      iDXYZ_P = 0d0
+    end if
+  end subroutine set_lid
+
+  !> Back to IRSP = 0 after a test with a lid
+  subroutine clear_lid()
+    IRSP = 0
+    iNELEM = 0
+    if (allocated(iNELEM_TOTAL)) iNELEM_TOTAL = 0
+  end subroutine clear_lid
+
+  !> As radiation_at with IRSP = 1 and the nl lid points of set_lid, as SolveRadiation and SolveRadiationMulti run it:
+  !> CALGREEN_IRR, ASSB_LEFT_IRR (AMAT with the lid rows, CMAT = AMAT^T AMAT, factored when ISOLV = 1), ASSB_RBC_IRR and
+  !> RADIATION_SOLVER_IRR, or their multi-body forms (RADIATION_SOLVER_MULTI on CMAT_MULTI, as HAMS_Prog).
+  subroutine radiation_at_irr(omega, multi, ne, nl)
+    real(8), intent(in) :: omega
+    logical, intent(in) :: multi
+    integer, intent(in) :: ne, nl
+    call SetWaveFromOmega(omega)
+    TNELEM = ne + nl
+    if (.not. multi) then
+      if (allocated(CGRN)) deallocate(CGRN)
+      if (allocated(RKBN)) deallocate(RKBN)
+      if (allocated(DGRN)) deallocate(DGRN)
+      if (allocated(PKBN)) deallocate(PKBN)
+      if (allocated(AMAT)) deallocate(AMAT)
+      if (allocated(BRMAT)) deallocate(BRMAT)
+      if (allocated(CMAT)) deallocate(CMAT)
+      if (allocated(DRMAT)) deallocate(DRMAT)
+      if (allocated(IPIV)) deallocate(IPIV)
+      allocate(CGRN(ne, ne, NSYS, 4), RKBN(ne, ne, NSYS, 4), DGRN(nl, ne, NSYS, 4), PKBN(nl, ne, NSYS, 4), &
+               AMAT(TNELEM, TNELEM, NSYS), BRMAT(TNELEM, 6, NSYS), CMAT(ne, ne, NSYS), DRMAT(ne, 6, NSYS), IPIV(ne, NSYS))
+      call CALGREEN_IRR
+      call ASSB_LEFT_IRR(AMAT, CMAT, IPIV, ne, TNELEM, NSYS)
+      call ASSB_RBC_IRR(BRMAT, DRMAT, AMAT, ne, TNELEM, NSYS)
+      call RADIATION_SOLVER_IRR(CMAT, DRMAT, IPIV, MXPOT, ne, NSYS)
+    else
+      if (.not. allocated(NELEM_TOTAL)) allocate(NELEM_TOTAL)
+      NELEM_TOTAL = ne
+      if (allocated(CGRN_MULTI_COMB)) deallocate(CGRN_MULTI_COMB)
+      if (allocated(RKBN_MULTI_COMB)) deallocate(RKBN_MULTI_COMB)
+      if (allocated(DGRN_MULTI_COMB)) deallocate(DGRN_MULTI_COMB)
+      if (allocated(PKBN_MULTI_COMB)) deallocate(PKBN_MULTI_COMB)
+      if (allocated(AMAT_MULTI)) deallocate(AMAT_MULTI)
+      if (allocated(BRMAT_MULTI)) deallocate(BRMAT_MULTI)
+      if (allocated(CMAT_MULTI)) deallocate(CMAT_MULTI)
+      if (allocated(DRMAT_MULTI)) deallocate(DRMAT_MULTI)
+      if (allocated(IPIV_MULTI_COMB)) deallocate(IPIV_MULTI_COMB)
+      allocate(CGRN_MULTI_COMB(ne, ne, NSYS, 4), RKBN_MULTI_COMB(ne, ne, NSYS, 4), DGRN_MULTI_COMB(nl, ne, NSYS, 4), &
+               PKBN_MULTI_COMB(nl, ne, NSYS, 4), AMAT_MULTI(TNELEM, TNELEM, NSYS), BRMAT_MULTI(TNELEM, 12, NSYS), &
+               CMAT_MULTI(ne, ne, NSYS), DRMAT_MULTI(ne, 12, NSYS), IPIV_MULTI_COMB(ne, NSYS))
+      call CALGREEN_MULTI_IRR
+      call ASSB_LEFT_IRR_MULTI(AMAT_MULTI, CMAT_MULTI, IPIV_MULTI_COMB, ne, nl, TNELEM, NSYS)
+      BRMAT_MULTI = (0d0, 0d0)
+      DRMAT_MULTI = (0d0, 0d0)
+      call ASSB_RBC_IRR_MULTI(BRMAT_MULTI(:, 1:6, :), DRMAT_MULTI(:, 1:6, :), AMAT_MULTI, ne, nl, TNELEM, NSYS, 1, ne/2)
+      call ASSB_RBC_IRR_MULTI(BRMAT_MULTI(:, 7:12, :), DRMAT_MULTI(:, 7:12, :), AMAT_MULTI, ne, nl, TNELEM, NSYS, &
+                              ne/2 + 1, ne)
+      call RADIATION_SOLVER_MULTI(CMAT_MULTI, DRMAT_MULTI, IPIV_MULTI_COMB, MXPOT_MULTI_COMB, ne, NSYS)
+    end if
+  end subroutine radiation_at_irr
+
+  !> qtf_direct = 1 with irregular frequency removal (IRSP = 1) passes the input check (Task 3 refused it), and so does
+  !> qtf_direct = 1 without it
+  subroutine test_direct_irr_accepted(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(so_options) :: opts
+    logical :: ok
+    character(len=200) :: msg
+    integer :: irsp_in
+
+    opts%active = .true.; opts%mean_drift = 1; opts%do_far = .true.; opts%do_near = .true.
+    opts%qtf = 1; opts%qtf_terms = QTF_TERMS_BODY; opts%qtf_direct = 1
+    do irsp_in = 0, 1
+      call validate_second_order(opts, 1, -1d0, 1, irsp_in, .false., ok, msg)
+      call check(error, ok, "qtf_direct = 1 refused with IRSP = "//achar(48 + irsp_in)//": "//trim(msg))
+      if (allocated(error)) return
+    end do
+  end subroutine test_direct_irr_accepted
+
+  !> With IRSP = 1 and b = n_k, the direct solve with the lid rows (ASSB_RHS_FIELD_IRR, the least-squares combination
+  !> AMAT^T r and the factored CMAT) is psi_k of the radiation solve with the lid at Omega (RADIATION_SOLVER_IRR): the same
+  !> matrix and the same right side, so to rounding. The cylinder of direct_unit_normal_is_radiation with its bottom
+  !> panels lifted to z = 0 as the lid: whole at depth 10, half (ISY = 1) in deep water, whole with ISOLV = 2 (CMAT
+  !> unfactored by ASSB_LEFT_IRR, factored by direct_factor), and two cylinders with their lids in the multi-body arrays,
+  !> whole and as half meshes. In case 1 psi_k of the solve without the lid is printed too: the lid rows change psi_k.
+  subroutine test_direct_irr_unit_normal(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: full, mesh
+    complex(8), allocatable :: vf(:, :, :), rf(:, :, :), phi(:, :), psi(:, :)
+    real(8), allocatable :: pts(:, :)
+    real(8) :: worst, w, d, lid_effect
+    real(8), parameter :: om = 0.4d0
+    integer :: icase, nb, nl, isy_in, b
+    logical :: multi
+    character(len=200) :: line
+
+    call make_cylinder(5d0, 5d0, 16, 4, 3, full, .true.)
+    worst = 0d0
+    lid_effect = 0d0
+    do icase = 1, 5
+      d = merge(-1d0, 10d0, icase == 2)
+      multi = icase >= 4
+      isy_in = merge(1, 0, icase == 2 .or. icase == 5)
+      call set_wave(d)
+      NTHREAD = 4
+      ISOLV = 1
+      if (allocated(pts)) deallocate(pts)
+      if (multi) then
+        call load_multi(isy_in, mesh)
+        do b = 1, 2
+          call append_lid(multi_radius, multi_ntheta, multi_nr, multi_spacing*(b - 1), isy_in, pts)
+        end do
+      else
+        call load_panels(full, 0, isy_in, mesh)
+        call append_lid(5d0, 16, 3, 0d0, isy_in, pts)
+      end if
+      call set_lid(pts, multi)
+      nb = mesh%nbase
+      nl = size(pts, 2)
+      call radiation_at_irr(om, multi, nb, nl)
+      allocate(psi(mesh%n, 6*mesh%nbody), phi(mesh%n, 6*mesh%nbody), rf(nb + nl, 6*mesh%nbody, mesh%nsys))
+      if (multi) then
+        call radiation_psi(mesh, om, MXPOT_MULTI_COMB, psi)
+      else
+        call radiation_psi(mesh, om, MXPOT, psi)
+      end if
+      if (icase == 3) then
+        ISOLV = 2
+        call ASSB_LEFT_IRR(AMAT, CMAT, IPIV, nb, TNELEM, NSYS)
+        call direct_factor(mesh)
+      end if
+      call unit_normal_fields(mesh, vf)
+      if (multi) then
+        call ASSB_RHS_FIELD_MULTI_IRR(vf, rf, nb, nl, mesh%nsys, 6*mesh%nbody)
+      else
+        call ASSB_RHS_FIELD_IRR(vf, rf, nb, nl, mesh%nsys, 6*mesh%nbody)
+      end if
+      call check(error, direct_lid_points(multi) == nl, "direct_lid_points is not the number of lid points")
+      if (allocated(error)) then
+        call clear_lid()
+        return
+      end if
+      call direct_solve(mesh, rf, phi, multi)
+      w = maxval(abs(phi - psi))/maxval(abs(psi))
+      write(line, '(a,i0,a,i0,a,i0,a,i0,a,es10.2)') "case ", icase, ": ", mesh%n, " panels, ", nl, " lid points, nsys ", &
+        mesh%nsys, ", |phi - psi_k| relative ", w
+      print '(4x,a)', trim(line)
+      worst = max(worst, w)
+      if (icase == 1) then
+        call clear_lid()
+        call radiation_at(om, .false., nb)
+        call radiation_psi(mesh, om, MXPOT, phi)
+        lid_effect = maxval(abs(phi - psi))/maxval(abs(psi))
+      end if
+      deallocate(psi, phi, rf, vf)
+    end do
+    ISOLV = 1
+    call clear_lid()
+    ISX = 0; ISY = 0; NSYS = 1
+    write(line, '(a,es10.2,a,es10.2)') "IRSP = 1, b = n_k against psi_k, worst relative difference ", worst, &
+      "; psi_k with and without the lid differ by ", lid_effect
+    print '(4x,a)', trim(line)
+    call check(error, worst <= unit_normal_limit .and. lid_effect > 1d3*unit_normal_limit, line)
+  end subroutine test_direct_irr_unit_normal
+
+  !> Direct against indirect with the lid, through the irregular frequency, on a cylinder with a rounded bilge (radius 5,
+  !> draft 5, bilge radius 1.5, 448 panels, depth 50; 192 lid points). Its first irregular frequency is near that of the
+  !> sharp cylinder, J0(k a) = 0 for the interior problem with nu = k coth(k d): 2.19 rad/s; the discrete one of this mesh
+  !> is irr_omegas(3) (measured, see there). At a low Omega, at a regular one next to the irregular frequency and at it:
+  !>   with the lid, T_dir of direct_at_omega equals T_pot of potential_pair with psi of the lid solve to the mesh error,
+  !>   and at the irregular frequency that error is the one of its regular neighbour;
+  !>   without the lid, T_dir agrees with the lid result at the low Omega and is far from it at the irregular frequency:
+  !>   the spike that the lid removes. T_pot without the lid is printed as well.
+  subroutine test_direct_vs_indirect_irr(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: full, mesh
+    type(surface_geom) :: geom
+    type(first_order_state), allocatable :: store(:, :)
+    complex(8), allocatable :: store_wl(:, :, :)
+    real(8), allocatable :: pts(:, :)
+    integer, allocatable :: pairs(:, :)
+    complex(8) :: x1(6, 1), x2(6, 1), t(6, 2, 2), tp(6, 2, 2)
+    real(8) :: om, rel(3, 2), spike(3), spike_pot(3)
+    integer :: io, lid, nb, nl
+    character(len=300) :: line
+
+    call irr_hull(full, mesh, geom, pts, error)
+    if (allocated(error)) return
+    nb = mesh%nbase
+    nl = size(pts, 2)
+    call motions(x1, x2)
+    call direct_setup(mesh, DEFAULT_EDGE_DEG)
+    do io = 1, 3
+      om = irr_omegas(io)
+      call two_state_store(mesh, geom, irr_depth, x1, x2, store, store_wl, pairs, irr_low + om, irr_low)
+      do lid = 1, 2
+        ! lid = 1 without the lid, 2 with it
+        if (lid == 1) then
+          call clear_lid()
+          call radiation_at(om, .false., nb)
+        else
+          call set_lid(pts, .false.)
+          call radiation_at_irr(om, .false., nb, nl)
+        end if
+        call both_methods(mesh, geom, om, store, store_wl, pairs, t(:, :, lid), tp(:, :, lid))
+        rel(io, lid) = maxval(abs(t(:, :, lid) - tp(:, :, lid)))/maxval(abs(tp(:, :, lid)))
+      end do
+      spike(io) = maxval(abs(t(:, :, 1) - t(:, :, 2)))/maxval(abs(t(:, :, 2)))
+      spike_pot(io) = maxval(abs(tp(:, :, 1) - tp(:, :, 2)))/maxval(abs(tp(:, :, 2)))
+      write(line, '(a,f7.4,a,es10.2,a,es10.2,a,es10.2,a,es10.2,a,es10.2)') "Omega ", om, &
+        ": T_dir against T_pot with the lid ", rel(io, 2), ", without ", rel(io, 1), &
+        "; without the lid against with: T_dir ", spike(io), ", T_pot ", spike_pot(io), "; max |T_dir| ", &
+        maxval(abs(t(:, :, 2)))
+      print '(4x,a)', trim(line)
+    end do
+    call clear_lid()
+    write(line, '(a,3es10.2,a,f6.3,a,es10.2,a,es10.2)') "T_dir against T_pot with the lid ", rel(:, 2), &
+      " (irregular over its neighbour ", rel(3, 2)/rel(2, 2), "); T_dir without the lid against with, low ", spike(1), &
+      ", irregular ", spike(3)
+    print '(4x,a)', trim(line)
+    call check(error, rel(1, 2) <= irr_indirect_limit .and. maxval(rel(2:3, 2)) <= irr_mesh_limit .and. &
+               rel(3, 2) <= irr_ratio_limit*rel(2, 2) .and. spike(1) <= irr_regular_limit .and. &
+               spike(3) >= irr_spike_min, line)
+  end subroutine test_direct_vs_indirect_irr
+
+  !> The hull, geometry and lid points of direct_vs_indirect_irr, with the solver globals at depth irr_depth
+  subroutine irr_hull(full, mesh, geom, pts, error)
+    type(panel_mesh), intent(out) :: full, mesh
+    type(surface_geom), intent(out) :: geom
+    real(8), allocatable, intent(out) :: pts(:, :)
+    type(error_type), allocatable, intent(out) :: error
+    call make_rounded_cylinder(5d0, 5d0, 1.5d0, 32, 6, 4, 4, full)
+    call set_wave(irr_depth)
+    NTHREAD = 4
+    ISOLV = 1
+    call load_panels(full, 0, 0, mesh)
+    call geometry(mesh, geom, error)
+    if (allocated(error)) return
+    call append_lid(5d0, 32, 6, 0d0, 0, pts)
+  end subroutine irr_hull
+
+  !> T_dir (direct_at_omega) and T_pot (potential_pair, the sum of its terms, psi of the radiation solve just run at om)
+  !> of the two pairs of two_state_store
+  subroutine both_methods(mesh, geom, om, store, store_wl, pairs, t, tp)
+    type(panel_mesh), intent(in) :: mesh
+    type(surface_geom), intent(in) :: geom
+    real(8), intent(in) :: om
+    type(first_order_state), intent(in) :: store(:, :)
+    complex(8), intent(in) :: store_wl(:, :, :)
+    integer, intent(in) :: pairs(:, :)
+    complex(8), intent(out) :: t(:, :), tp(:, :)
+    complex(8), allocatable :: psi(:, :), gpsi(:, :, :), pwl(:, :)
+    complex(8) :: terms(6, NPOT_TERMS)
+    integer :: p
+    allocate(psi(mesh%n, 6), gpsi(3, mesh%n, 6), pwl(geom%nwl, 6))
+    call direct_at_omega(mesh, geom, om, store, store_wl, pairs, t)
+    call radiation_psi(mesh, om, MXPOT, psi)
+    call psi_surface_gradient(mesh, geom, psi, gpsi)
+    call psi_waterline(mesh, geom, psi, gpsi, pwl)
+    do p = 1, 2
+      associate (s1 => store(pairs(1, p), 1), s2 => store(pairs(3, p), 1))
+        call potential_pair(mesh, geom, s1, s2, store_wl(:, pairs(1, p), 1), store_wl(:, pairs(3, p), 1), psi, gpsi, &
+                            pwl, om, s1%rho, wave_gravity(s1%omega, s1%k, s1%h), terms)
+      end associate
+      tp(:, p) = sum(terms, dim=2)
+    end do
+  end subroutine both_methods
+
+
+  !> A vertical cylinder with a rounded bilge (no edge), about the z axis, waterline at z = 0, normals into the body, as
+  !> make_cylinder: the profile from (radius, 0) down the side (nz rows) to z = -(draft - bilge), a quarter circle of
+  !> radius bilge (narc rows) to (radius - bilge, -draft), and the flat bottom (nr rings, triangles at the axis), revolved
+  !> with ntheta panels per ring.
+  subroutine make_rounded_cylinder(radius, draft, bilge, ntheta, nz, narc, nr, mesh)
+    real(8), intent(in) :: radius, draft, bilge
+    integer, intent(in) :: ntheta, nz, narc, nr
+    type(panel_mesh), intent(out) :: mesh
+    real(8), parameter :: pi = 3.141592653589793d0
+    real(8), allocatable :: pr(:), pz(:)
+    real(8) :: th, ang, v(3, 4), d1(3), d2(3), nv(3), inside(3)
+    integer :: nk, k, it, itn, ip, nnode, npan, m, i
+
+    nk = nz + narc + nr
+    allocate(pr(0:nk), pz(0:nk))
+    do k = 0, nz
+      pr(k) = radius
+      pz(k) = -(draft - bilge)*real(k, 8)/real(nz, 8)
+    end do
+    do k = 1, narc
+      ang = 0.5d0*pi*real(k, 8)/real(narc, 8)
+      pr(nz + k) = radius - bilge + bilge*cos(ang)
+      pz(nz + k) = -(draft - bilge) - bilge*sin(ang)
+    end do
+    do k = 1, nr
+      pr(nz + narc + k) = (radius - bilge)*real(nr - k, 8)/real(nr, 8)
+      pz(nz + narc + k) = -draft
+    end do
+    nnode = ntheta*nk + 1
+    npan = ntheta*nk
+    mesh%n = npan; mesh%nbase = npan; mesh%nnode = nnode; mesh%nbody = 1; mesh%nsys = 1
+    allocate(mesh%xc(3, npan), mesh%nrm(3, npan), mesh%area(npan), mesh%psize(npan), mesh%nj(6, npan))
+    allocate(mesh%xnode(3, nnode), mesh%ncn(npan), mesh%ncon(4, npan), mesh%body(npan), mesh%base(npan), mesh%image(npan))
+    allocate(mesh%xr(3, 1))
+    mesh%xr = 0d0
+    mesh%body = 1
+    mesh%image = 1
+    mesh%base = [(i, i = 1, npan)]
+    mesh%ncon = 0
+    do k = 0, nk - 1
+      do it = 1, ntheta
+        th = 2d0*pi*real(it - 1, 8)/real(ntheta, 8)
+        mesh%xnode(:, k*ntheta + it) = [pr(k)*cos(th), pr(k)*sin(th), pz(k)]
+      end do
+    end do
+    mesh%xnode(:, nnode) = [0d0, 0d0, -draft]
+    inside = [0d0, 0d0, -0.5d0*draft]
+    ip = 0
+    do k = 1, nk
+      do it = 1, ntheta
+        itn = mod(it, ntheta) + 1
+        ip = ip + 1
+        if (k < nk) then
+          mesh%ncn(ip) = 4
+          mesh%ncon(1:4, ip) = [(k - 1)*ntheta + it, k*ntheta + it, k*ntheta + itn, (k - 1)*ntheta + itn]
+        else
+          mesh%ncn(ip) = 3
+          mesh%ncon(1:3, ip) = [nnode, (k - 1)*ntheta + itn, (k - 1)*ntheta + it]
+        end if
+        do m = 1, mesh%ncn(ip)
+          v(:, m) = mesh%xnode(:, mesh%ncon(m, ip))
+        end do
+        if (mesh%ncn(ip) == 4) then
+          d1 = v(:, 3) - v(:, 1)
+          d2 = v(:, 4) - v(:, 2)
+        else
+          d1 = v(:, 2) - v(:, 1)
+          d2 = v(:, 3) - v(:, 1)
+        end if
+        nv = [d1(2)*d2(3) - d1(3)*d2(2), d1(3)*d2(1) - d1(1)*d2(3), d1(1)*d2(2) - d1(2)*d2(1)]
+        nv = nv/norm2(nv)
+        if (sum(nv*(inside - sum(v(:, 1:mesh%ncn(ip)), dim=2)/mesh%ncn(ip))) < 0d0) nv = -nv
+        call set_panel(mesh, ip, nv)
+      end do
+    end do
+  end subroutine make_rounded_cylinder
 
 end module test_qtf_direct

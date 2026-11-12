@@ -451,8 +451,9 @@ CONTAINS
       ! The direct solution of the second-order problem at the difference frequency omega (Phase 7a): T_dir of every pair
       ! with that Omega into the QTF store (qtf_direct_at_omega). RadiationOnlySolves calls so_after_radiation_only right
       ! after SetWaveFromOmega(omega) and the radiation solve there (CALGREEN and ASSB_LEFT, or their multi-body forms),
-      ! and nothing in between changes CGRN, RKBN, DS or AMAT, so the stored Green integrals and the matrix are those of
-      ! omega. W1 is checked here and in direct_at_omega.
+      ! and nothing in between changes CGRN, RKBN, DS or AMAT (nor DGRN, PKBN and CMAT with IRSP = 1), so the stored Green
+      ! integrals and the matrix are those of omega. direct_at_omega checks W1. The log gives the time of the pair forcing
+      ! with its field integral, of the B2 part (densities and right side) and of the factorisation, solve and load.
       TYPE(so_options), INTENT(IN) :: opts
       REAL(8), INTENT(IN) :: omega
       INTEGER(8) :: t0, t1, rate
@@ -460,10 +461,6 @@ CONTAINS
       INTEGER :: npair
 
       IF (opts%qtf_direct /= 1 .OR. .NOT. (omega > 0D0)) RETURN
-      IF (ABS(W1 - omega) > 1D-12*omega) THEN
-         WRITE (*, '(a,ES14.6,a)') ' QTF direct: omega =', omega, ' rad/s, but the solver is at another frequency.'
-         ERROR STOP 1
-      END IF
       CALL SYSTEM_CLOCK(t0, rate)
       CALL qtf_direct_at_omega(mesh, geom, omega, npair, sec)
       CALL SYSTEM_CLOCK(t1)

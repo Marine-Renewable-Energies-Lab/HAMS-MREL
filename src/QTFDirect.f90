@@ -101,17 +101,30 @@ MODULE QTFDirect
    ! that T_dir equals T_pot of potential_pair (qtf_b2 = body) by Green's theorem, to the mesh error. A pair with Omega < 0
    ! is treated as potential_pair treats it: its phi_D solves the problem at -|Omega|, whose matrix and Green function are
    ! the conjugates of those at |Omega|, so phi_D = conj(A^-1 r[conj b]), with r[.] the right side at |Omega|.
-   ! The free-surface forcing of phi_D is not included (Phase 7b). IRSP = 1 is refused (validate_second_order).
+   ! The free-surface forcing of phi_D is not included (Phase 7b).
+   !
+   ! Irregular frequency removal (IRSP = 1, Phase 7a Task 3b). HAMS adds rows at the lid points x_l on the interior
+   ! waterplane, where the same integral equation holds with 0 in place of 2 pi phi (ASSB_LEFT_IRR, ASSB_RBC_IRR): the
+   ! system A x = r has nbase + nlid rows and nbase unknowns, and is solved in the least-squares form of HAMS,
+   ! (A^T A) x = A^T r, with CMAT = A^T A factored by ASSB_LEFT_IRR (ISOLV = 1) and A^T r formed as ASSB_RBC_IRR forms
+   ! DRMAT (plain transpose, no conjugate). The direct right side follows the same construction with b in place of n_k:
+   !    r_l = int_S G(x_l, xi) b(xi) dS_xi
+   ! the field integral from the lid points, with the stored lid integrals DGRN and PKBN (ASSB_RHS_FIELD_IRR), and the
+   ! B2 part by the same Stokes form with G(x_l, .), which is smooth on S since x_l is off the hull: the stored lid
+   ! integrals in place of CGRN and RKBN, and the near-panel linear density and the waterline line integral as on the
+   ! hull rows. AMAT keeps the full system; it is not factored with the lid. The Omega < 0 rule above holds unchanged,
+   ! since A^T uses no conjugate: conj((A^T A)^-1 A^T r[conj b]) solves the problem at -|Omega|.
 
-   USE Const_mod, ONLY: RXY
-   USE HAMS_mod, ONLY: NTHREAD, ISOLV
+   USE Const_mod, ONLY: RXY, RXY_MULTI
+   USE HAMS_mod, ONLY: NTHREAD, ISOLV, IRSP
    USE WaveDyn_mod, ONLY: H, NK, V, WVN, W1
    USE PanelMesh_mod, ONLY: ISX, ISY, DS, PNSZ, XYZ_P, DS_MULTI_COMB, PNSZ_MULTI_COMB, XYZ_GLOBAL_MULTI_COMB_P, IPIV, &
-                            IPIV_MULTI_COMB
-   USE LinearMatrix_mod, ONLY: AMAT, AMAT_MULTI
-   USE Potentials_mod, ONLY: CGRN, RKBN, CGRN_MULTI_COMB, RKBN_MULTI_COMB
-   USE AssbMatx, ONLY: ASSB_RHS_FIELD
-   USE AssbMatxMulti, ONLY: ASSB_RHS_FIELD_MULTI
+                            IPIV_MULTI_COMB, iNELEM_TOTAL, iXYZ_GLOBAL_MULTI_COMB_P
+   USE Inerfs_mod, ONLY: iNELEM, iXYZ_P
+   USE LinearMatrix_mod, ONLY: AMAT, AMAT_MULTI, CMAT, CMAT_MULTI
+   USE Potentials_mod, ONLY: CGRN, RKBN, CGRN_MULTI_COMB, RKBN_MULTI_COMB, DGRN, PKBN, DGRN_MULTI_COMB, PKBN_MULTI_COMB
+   USE AssbMatx, ONLY: ASSB_RHS_FIELD_IRR
+   USE AssbMatxMulti, ONLY: ASSB_RHS_FIELD_MULTI_IRR
    USE SurfaceGeometry, ONLY: body_sizes, merge_nodes
    USE SharpEdge, ONLY: DEFAULT_EDGE_DEG
    USE INFG3D_Open, ONLY: INFGREEN3D
@@ -128,7 +141,7 @@ MODULE QTFDirect
 
    PUBLIC :: direct_rhs_b2, direct_rhs_b2_block, b2_stokes_densities, b2_stokes_at_point
    PUBLIC :: green_panel_integrals, stored_panel_integrals, green_line_integral, rankine_moments, sharp_edge_panels
-   PUBLIC :: direct_setup, direct_edge_mask, direct_factor, direct_solve, direct_at_omega
+   PUBLIC :: direct_setup, direct_edge_mask, direct_factor, direct_solve, direct_at_omega, direct_lid_points
 
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
    ! As CALGREEN: a panel closer than this many panel sizes gets panel integrals of 1/r and of its image
@@ -138,6 +151,10 @@ MODULE QTFDirect
    REAL(8), PARAMETER :: DIRECT_BLOCK_BYTES = 256D6
    ! The sharp-edge mask of the run (direct_setup): panels that keep the one-point rule in the B2 right side
    LOGICAL, ALLOCATABLE :: edge_mask(:)
+   ! With ISOLV /= 1, the state of the matrix that direct_factor factored last: W1 and the last diagonal entry of the
+   ! factors (direct_factor). A second factorisation of the same factors would give a wrong phi_D with no error.
+   REAL(8) :: factored_omega = -1D0
+   COMPLEX(8) :: factored_entry = (0D0, 0D0)
 
 CONTAINS
 
@@ -164,61 +181,146 @@ CONTAINS
       END IF
    END FUNCTION direct_edge_mask
 
+   INTEGER FUNCTION direct_lid_points(is_multi)
+      ! The number of lid points of irregular frequency removal: iNELEM (iNELEM_TOTAL for several bodies) with IRSP = 1,
+      ! else 0. The right sides of direct_solve have this many rows after the nbase hull rows.
+      LOGICAL, INTENT(IN) :: is_multi
+
+      direct_lid_points = 0
+      IF (IRSP /= 1) RETURN
+      IF (is_multi) THEN
+         IF (ALLOCATED(iNELEM_TOTAL)) direct_lid_points = iNELEM_TOTAL
+      ELSE
+         direct_lid_points = iNELEM
+      END IF
+   END FUNCTION direct_lid_points
+
    SUBROUTINE direct_factor(mesh, is_multi)
-      ! With ISOLV /= 1, the LU factors of AMAT (AMAT_MULTI) in place, with the pivots in IPIV (IPIV_MULTI_COMB). With
-      ! ISOLV = 1 ASSB_LEFT has factored it already, and nothing is done. Once per Omega, after the radiation solve there.
+      ! With ISOLV /= 1, the LU factors in place of the matrix of the direct solve, with the pivots in IPIV
+      ! (IPIV_MULTI_COMB): AMAT (AMAT_MULTI), or with the lid (IRSP = 1) the least-squares matrix CMAT (CMAT_MULTI). With
+      ! ISOLV = 1 ASSB_LEFT (ASSB_LEFT_IRR) has factored it already, and nothing is done. Once per Omega, after the
+      ! radiation solve there. Stops if the matrix is the one it factored last (same W1 and the same last diagonal entry
+      ! as its factors left it): its factors would be factored again. Stops on a failed or singular factorisation.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       LOGICAL, INTENT(IN), OPTIONAL :: is_multi
       INTEGER :: ip, nb, info
-      LOGICAL :: multi
+      LOGICAL :: multi, lid
 
       IF (ISOLV == 1) RETURN
       multi = mesh%nbody > 1
       IF (PRESENT(is_multi)) multi = is_multi
+      lid = direct_lid_points(multi) > 0
       nb = mesh%nbase
+      IF (ABS(W1 - factored_omega) <= 1D-12*W1) THEN
+         IF (last_entry() == factored_entry) THEN
+            WRITE (*, '(a,ES14.6,a)') ' QTF direct: the matrix at Omega =', W1, &
+               ' rad/s is factored already; direct_factor must run once per radiation solve.'
+            ERROR STOP 1
+         END IF
+      END IF
       DO ip = 1, mesh%nsys
-         IF (multi) THEN
+         IF (multi .AND. lid) THEN
+            CALL ZGETRF(nb, nb, CMAT_MULTI(:, :, ip), nb, IPIV_MULTI_COMB(:, ip), info)
+         ELSE IF (multi) THEN
             CALL ZGETRF(nb, nb, AMAT_MULTI(:, :, ip), nb, IPIV_MULTI_COMB(:, ip), info)
+         ELSE IF (lid) THEN
+            CALL ZGETRF(nb, nb, CMAT(:, :, ip), nb, IPIV(:, ip), info)
          ELSE
             CALL ZGETRF(nb, nb, AMAT(:, :, ip), nb, IPIV(:, ip), info)
          END IF
-         IF (info /= 0) WRITE (*, '(a,I0,a,I0)') ' QTF direct: the factorisation of block ', ip, ' failed, INFO = ', info
+         IF (info /= 0) THEN
+            WRITE (*, '(a,I0,a,ES14.6,a,I0,a)') ' QTF direct: the factorisation of block ', ip, ' at Omega =', W1, &
+               ' rad/s failed, ZGETRF INFO = ', info, MERGE(' (singular matrix) ', ' (illegal argument)', info > 0)
+            ERROR STOP 1
+         END IF
       END DO
+      factored_omega = W1
+      factored_entry = last_entry()
+
+   CONTAINS
+
+      COMPLEX(8) FUNCTION last_entry()
+         ! The last diagonal entry of the last block of the matrix that is factored
+         INTEGER :: ns
+         ns = mesh%nsys
+         IF (multi .AND. lid) THEN
+            last_entry = CMAT_MULTI(nb, nb, ns)
+         ELSE IF (multi) THEN
+            last_entry = AMAT_MULTI(nb, nb, ns)
+         ELSE IF (lid) THEN
+            last_entry = CMAT(nb, nb, ns)
+         ELSE
+            last_entry = AMAT(nb, nb, ns)
+         END IF
+      END FUNCTION last_entry
+
    END SUBROUTINE direct_factor
 
    SUBROUTINE direct_solve(mesh, rhs, phi, is_multi)
-      ! phi_D for nrhs right sides at once, with the LU factors of AMAT (AMAT_MULTI) at Omega:
-      !   rhs  (nbase, nrhs, nsys), the block layout of ASSB_RHS_FIELD; overwritten by the solution of each block
+      ! phi_D for nrhs right sides at once, with the LU factors at Omega:
+      !   rhs  (nbase + nlid, nrhs, nsys), the block layout of ASSB_RHS_FIELD_IRR, nlid = direct_lid_points (0 without the
+      !        lid); overwritten: rows 1 to nbase hold the solution of each block
       !   phi  (n, nrhs), phi_D on the full panels: image a of base panel i is sum_ip RXY(a, ip) x(i, :, ip)/nsys, as
-      !        RADIATION_SOLVER builds MXPOT and radiation_psi expands it
+      !        RADIATION_SOLVER builds MXPOT and radiation_psi expands it (RXY_MULTI for several bodies)
+      ! Without the lid, ZGETRS on the factors of AMAT (AMAT_MULTI). With the lid, the least-squares form of HAMS: A^T r with
+      ! A = AMAT (AMAT_MULTI) of nbase + nlid rows, as ASSB_RBC_IRR forms DRMAT, then ZGETRS on the factors of CMAT
+      ! (CMAT_MULTI). Stops if ZGETRS reports an error.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       COMPLEX(8), INTENT(INOUT) :: rhs(:, :, :)
       COMPLEX(8), INTENT(OUT) :: phi(:, :)
       LOGICAL, INTENT(IN), OPTIONAL :: is_multi
-      INTEGER :: ip, nb, nrhs, info, f, im
+      COMPLEX(8), ALLOCATABLE :: d(:, :)
+      INTEGER :: ip, nb, nt, nrhs, info, f, im
       LOGICAL :: multi
 
-      nb = mesh%nbase
-      nrhs = SIZE(rhs, 2)
-      IF (SIZE(rhs, 1) /= nb .OR. SIZE(rhs, 3) /= mesh%nsys .OR. SIZE(phi, 1) /= mesh%n .OR. SIZE(phi, 2) /= nrhs) THEN
-         WRITE (*, '(a)') ' direct_solve: rhs or phi does not have the size of the mesh.'
-         ERROR STOP 1
-      END IF
       multi = mesh%nbody > 1
       IF (PRESENT(is_multi)) multi = is_multi
+      nb = mesh%nbase
+      nt = nb + direct_lid_points(multi)
+      nrhs = SIZE(rhs, 2)
+      IF (SIZE(rhs, 1) /= nt .OR. SIZE(rhs, 3) /= mesh%nsys .OR. SIZE(phi, 1) /= mesh%n .OR. SIZE(phi, 2) /= nrhs) THEN
+         WRITE (*, '(a)') ' direct_solve: rhs or phi does not have the size of the mesh (and the lid).'
+         ERROR STOP 1
+      END IF
       IF (nrhs == 0) RETURN
+      IF (nt > nb) THEN
+         IF ((multi .AND. SIZE(AMAT_MULTI, 1) /= nt) .OR. (.NOT. multi .AND. SIZE(AMAT, 1) /= nt)) THEN
+            WRITE (*, '(a)') ' direct_solve: AMAT does not have the hull and lid rows of the right side.'
+            ERROR STOP 1
+         END IF
+         ALLOCATE (d(nb, nrhs))
+      END IF
       DO ip = 1, mesh%nsys
-         IF (multi) THEN
+         IF (nt > nb) THEN
+            ! d = A^T r over the hull and lid rows (the first nb columns of AMAT), as DRMAT of ASSB_RBC_IRR
+            IF (multi) THEN
+               CALL ZGEMM('T', 'N', nb, nrhs, nt, (1D0, 0D0), AMAT_MULTI(:, :, ip), nt, rhs(:, :, ip), nt, (0D0, 0D0), d, nb)
+               CALL ZGETRS('No transpose', nb, nrhs, CMAT_MULTI(:, :, ip), nb, IPIV_MULTI_COMB(:, ip), d, nb, info)
+            ELSE
+               CALL ZGEMM('T', 'N', nb, nrhs, nt, (1D0, 0D0), AMAT(:, :, ip), nt, rhs(:, :, ip), nt, (0D0, 0D0), d, nb)
+               CALL ZGETRS('No transpose', nb, nrhs, CMAT(:, :, ip), nb, IPIV(:, ip), d, nb, info)
+            END IF
+            rhs(1:nb, :, ip) = d
+         ELSE IF (multi) THEN
             CALL ZGETRS('No transpose', nb, nrhs, AMAT_MULTI(:, :, ip), nb, IPIV_MULTI_COMB(:, ip), rhs(:, :, ip), nb, info)
          ELSE
             CALL ZGETRS('No transpose', nb, nrhs, AMAT(:, :, ip), nb, IPIV(:, ip), rhs(:, :, ip), nb, info)
+         END IF
+         IF (info /= 0) THEN
+            WRITE (*, '(a,I0,a,ES14.6,a,I0)') ' QTF direct: the solve of block ', ip, ' at Omega =', W1, &
+               ' rad/s failed, ZGETRS INFO = ', info
+            ERROR STOP 1
          END IF
       END DO
       DO f = 1, mesh%n
          im = mesh%image(f)
          phi(f, :) = (0D0, 0D0)
          DO ip = 1, mesh%nsys
-            phi(f, :) = phi(f, :) + RXY(im, ip)*rhs(mesh%base(f), :, ip)
+            IF (multi) THEN
+               phi(f, :) = phi(f, :) + RXY_MULTI(im, ip)*rhs(mesh%base(f), :, ip)
+            ELSE
+               phi(f, :) = phi(f, :) + RXY(im, ip)*rhs(mesh%base(f), :, ip)
+            END IF
          END DO
          phi(f, :) = phi(f, :)/mesh%nsys
       END DO
@@ -232,11 +334,14 @@ CONTAINS
       !                    |omega_1 - omega_2| = omega within omega_tol (default 1e-6 max(omega_1, omega_2))
       !   tdir             (6 nbody, npair), T_dir,k of each pair, e^{-i omega t}, as the sum of the terms of potential_pair
       !   phi2_constant    optional test hook, as potential_pair: phi_I2 replaced by this constant (dphi_I2/dn = 0)
-      !   seconds          optional (3): wall time of the pair forcing with ASSB_RHS_FIELD, of the B2 right side
-      !                    (direct_rhs_b2_block) and of the factorisation, solve and load, for the log
+      !   seconds          optional (3): wall time of the pair forcing with ASSB_RHS_FIELD_IRR, of the B2 part (the
+      !                    densities of b2_stokes_densities and direct_rhs_b2_block) and of the factorisation, solve and
+      !                    load, for the log
       ! The solver globals must be at omega, with CALGREEN (CALGREEN_MULTI) and ASSB_LEFT (ASSB_LEFT_MULTI) run there, as
       ! RadiationOnlySolves leaves them after the radiation solve at omega; W1 is checked. direct_setup must have been
-      ! called for this mesh. AMAT is factored in place when ISOLV /= 1 (direct_factor).
+      ! called for this mesh. With IRSP = 1 the right sides have the lid rows too (header), and the radiation solve must
+      ! have been the one with the lid (CALGREEN_IRR, ASSB_LEFT_IRR). The matrix is factored in place when ISOLV /= 1
+      ! (direct_factor), so call this once per radiation solve.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       REAL(8), INTENT(IN) :: omega
@@ -251,7 +356,7 @@ CONTAINS
       COMPLEX(8), ALLOCATABLE :: vf(:, :, :), rf(:, :, :), r2(:, :, :), a(:, :), c(:, :, :), cl(:, :, :, :), e(:, :), &
                                  phi(:, :), p2(:, :)
       REAL(8), ALLOCATABLE :: dws(:)
-      INTEGER :: npair, nb, ns, n, nmode, first, last, nc, col, ncol_max
+      INTEGER :: npair, nb, nt, nl, ns, n, nmode, first, last, nc, col, ncol_max
       INTEGER(8) :: c0, c1, rate
       REAL(8) :: sec(3)
       LOGICAL :: multi
@@ -281,6 +386,8 @@ CONTAINS
       END IF
       multi = mesh%nbody > 1
       IF (PRESENT(is_multi)) multi = is_multi
+      nl = direct_lid_points(multi)
+      nt = nb + nl
       tdir = (0D0, 0D0)
       sec = 0D0
       IF (PRESENT(seconds)) seconds = 0D0
@@ -294,19 +401,22 @@ CONTAINS
       DO first = 1, npair, ncol_max
          last = MIN(npair, first + ncol_max - 1)
          nc = last - first + 1
-         ALLOCATE (vf(nb, nc, ns), rf(nb, nc, ns), r2(nb, nc, ns), a(n, nc), c(3, n, nc), cl(3, 4, n, nc), &
+         ALLOCATE (vf(nb, nc, ns), rf(nt, nc, ns), r2(nt, nc, ns), a(n, nc), c(3, n, nc), cl(3, 4, n, nc), &
                    e(geom%nwl, nc), phi(n, nc), p2(n, nc), dws(nc))
          CALL SYSTEM_CLOCK(c0)
          DO col = 1, nc
             CALL pair_forcing(first + col - 1, col)
          END DO
          IF (multi) THEN
-            CALL ASSB_RHS_FIELD_MULTI(vf, rf, nb, ns, nc)
+            CALL ASSB_RHS_FIELD_MULTI_IRR(vf, rf, nb, nl, ns, nc)
          ELSE
-            CALL ASSB_RHS_FIELD(vf, rf, nb, ns, nc)
+            CALL ASSB_RHS_FIELD_IRR(vf, rf, nb, nl, ns, nc)
          END IF
          CALL SYSTEM_CLOCK(c1)
          sec(1) = sec(1) + REAL(c1 - c0, 8)/REAL(rate, 8)
+         DO col = 1, nc
+            CALL pair_densities(first + col - 1, col)
+         END DO
          CALL direct_rhs_b2_block(mesh, geom, a, c, e, r2, multi, cl)
          CALL SYSTEM_CLOCK(c0)
          sec(2) = sec(2) + REAL(c0 - c1, 8)/REAL(rate, 8)
@@ -325,8 +435,8 @@ CONTAINS
    CONTAINS
 
       SUBROUTINE pair_forcing(p, col)
-         ! Column col of the block for pair p: the panel field b - B2 (vf), the B2 densities and phi_I2 at the panels
-         ! (p2). The forcing is conjugated for Omega < 0 (header); p2 is not.
+         ! Column col of the block for pair p: the panel field b - B2 (vf) and phi_I2 at the panels (p2). The forcing is
+         ! conjugated for Omega < 0 (header); p2 is not.
          INTEGER, INTENT(IN) :: p, col
          TYPE(incident2) :: inc
          COMPLEX(8) :: gr2(3), dn2, d1(3), d2(3), v1(3), v2(3), q1(3), q2(3), hx(3), b1v, b3v, zero3(3), field
@@ -376,18 +486,26 @@ CONTAINS
                IF (dw < 0D0) field = CONJG(field)
                vf(mesh%base(f), col, mesh%image(f)) = field
             END DO
-            ! B2 densities with the sharp-edge mask of the run (direct_setup)
+         END ASSOCIATE
+      END SUBROUTINE pair_forcing
+
+      SUBROUTINE pair_densities(p, col)
+         ! Column col of the B2 densities for pair p, with the sharp-edge mask of the run (direct_setup), conjugated for
+         ! Omega < 0 as the forcing
+         INTEGER, INTENT(IN) :: p, col
+
+         ASSOCIATE (s1 => store(pairs(1, p), pairs(2, p)), s2 => store(pairs(3, p), pairs(4, p)))
             CALL b2_stokes_densities(mesh, geom, s1, s2, store_wl(:, pairs(1, p), pairs(2, p)), &
                                      store_wl(:, pairs(3, p), pairs(4, p)), a(:, col), c(:, :, col), e(:, col), &
                                      cl(:, :, :, col), edge_mask)
-            IF (dw < 0D0) THEN
+            IF (dws(col) < 0D0) THEN
                a(:, col) = CONJG(a(:, col))
                c(:, :, col) = CONJG(c(:, :, col))
                e(:, col) = CONJG(e(:, col))
                cl(:, :, :, col) = CONJG(cl(:, :, :, col))
             END IF
          END ASSOCIATE
-      END SUBROUTINE pair_forcing
+      END SUBROUTINE pair_densities
 
       SUBROUTINE pair_load(p, col)
          ! T_dir,k = i Omega rho int_S (phi_I2 + phi_D) n_k dS over the panels of the body of mode k
@@ -411,7 +529,7 @@ CONTAINS
       !   rhs(i, ip) = sum_a RXY(ip, a) r(x of image a of base panel i),  r(x) = -int_S G(x, .) n.[(X.grad)u] dS
       ! in the Stokes form above, with u at the waterline from waterline_velocity, as potential_pair has it.
       !   wl1, wl2   total potential at the waterline segments (nwl), as for potential_pair
-      !   rhs        (nbase, nsys), the layout of one column of ASSB_RHS_FIELD
+      !   rhs        (nbase, nsys), the layout of one column of ASSB_RHS_FIELD (hull rows only)
       !   is_multi   optional: the panel integrals read the combined multi-body arrays; default mesh%nbody > 1
       !   stored     optional: the panel integrals of G from the stored arrays (default .true.), or fresh
       !              (green_panel_integrals, for tests without stored arrays)
@@ -551,8 +669,11 @@ CONTAINS
 
    SUBROUTINE direct_rhs_b2_block(mesh, geom, a, c, e, rhs, is_multi, cl, stored)
       ! The B2 part of the right side for nrhs pairs at once, from their densities (b2_stokes_densities):
-      !   a (n, nrhs), c (3, n, nrhs), e (nwl, nrhs)  ->  rhs (nbase, nrhs, nsys), the layout of ASSB_RHS_FIELD
-      ! The panel integrals do not depend on the pair, so one pass over the field points serves all of them.
+      !   a (n, nrhs), c (3, n, nrhs), e (nwl, nrhs)  ->  rhs (nbase + nl, nrhs, nsys), the layout of ASSB_RHS_FIELD_IRR,
+      !   with nl = 0 (hull rows only) or nl = direct_lid_points (the lid rows too, IRSP = 1)
+      ! The panel integrals do not depend on the pair, so one pass over the field points serves all of them. The field
+      ! points are the full panels, then the full lid points: image a of base lid point l is row n + (a - 1) nl + l, at
+      ! M_a x_l, with the stored lid integrals (stored_lid_integrals) or fresh ones (green_panel_integrals at that point).
       !   cl  optional (3, 4, n, nrhs): the linear parts of c and a (b2_stokes_densities); without it they are constant
       !       per panel
       !   stored  optional: the panel integrals of G from the stored arrays at Omega (default .true.; see the header)
@@ -564,56 +685,102 @@ CONTAINS
       COMPLEX(8), INTENT(IN), OPTIONAL :: cl(:, :, :, :)
       LOGICAL, INTENT(IN), OPTIONAL :: stored
       COMPLEX(8), ALLOCATABLE :: r(:, :)
-      INTEGER :: nb, ns, nrhs, i, ip, im
+      REAL(8) :: x(3), rs
+      INTEGER :: nb, ns, nrhs, nl, i, ip, im, row
       LOGICAL :: multi, from_store
 
       nb = mesh%nbase
       ns = mesh%nsys
       nrhs = SIZE(a, 2)
-      IF (SIZE(a, 1) /= mesh%n .OR. SIZE(c, 1) /= 3 .OR. SIZE(c, 2) /= mesh%n .OR. SIZE(c, 3) /= nrhs .OR. &
-          SIZE(e, 1) /= geom%nwl .OR. SIZE(e, 2) /= nrhs .OR. SIZE(rhs, 1) /= nb .OR. SIZE(rhs, 2) /= nrhs .OR. &
-          SIZE(rhs, 3) /= ns) THEN
-         WRITE (*, '(a)') ' direct_rhs_b2_block: a, c, e or rhs does not have the size of the mesh.'
-         ERROR STOP 1
-      END IF
       multi = mesh%nbody > 1
       IF (PRESENT(is_multi)) multi = is_multi
+      nl = SIZE(rhs, 1) - nb
+      IF (SIZE(a, 1) /= mesh%n .OR. SIZE(c, 1) /= 3 .OR. SIZE(c, 2) /= mesh%n .OR. SIZE(c, 3) /= nrhs .OR. &
+          SIZE(e, 1) /= geom%nwl .OR. SIZE(e, 2) /= nrhs .OR. SIZE(rhs, 2) /= nrhs .OR. SIZE(rhs, 3) /= ns .OR. &
+          (nl /= 0 .AND. nl /= direct_lid_points(multi))) THEN
+         WRITE (*, '(a)') ' direct_rhs_b2_block: a, c, e or rhs does not have the size of the mesh (and the lid).'
+         ERROR STOP 1
+      END IF
       from_store = .TRUE.
       IF (PRESENT(stored)) from_store = stored
 
-      ALLOCATE (r(nrhs, mesh%n))
-      !$OMP PARALLEL DO NUM_THREADS(NTHREAD) SCHEDULE(DYNAMIC, 4)
-      DO i = 1, mesh%n
-         IF (from_store .AND. PRESENT(cl)) THEN
-            CALL b2_stokes_at_point(mesh, geom, mesh%xc(:, i), a, c, e, multi, r(:, i), cl, i)
-         ELSE IF (from_store) THEN
-            CALL b2_stokes_at_point(mesh, geom, mesh%xc(:, i), a, c, e, multi, r(:, i), row=i)
-         ELSE IF (PRESENT(cl)) THEN
-            CALL b2_stokes_at_point(mesh, geom, mesh%xc(:, i), a, c, e, multi, r(:, i), cl)
+      ALLOCATE (r(nrhs, mesh%n + ns*nl))
+      !$OMP PARALLEL DO NUM_THREADS(NTHREAD) SCHEDULE(DYNAMIC, 4) PRIVATE(x, row)
+      DO i = 1, mesh%n + ns*nl
+         IF (i <= mesh%n) THEN
+            x = mesh%xc(:, i)
          ELSE
-            CALL b2_stokes_at_point(mesh, geom, mesh%xc(:, i), a, c, e, multi, r(:, i))
+            row = i - mesh%n
+            x = lid_point(row)
+         END IF
+         IF (i > mesh%n .AND. from_store) THEN
+            IF (PRESENT(cl)) THEN
+               CALL b2_stokes_at_point(mesh, geom, x, a, c, e, multi, r(:, i), cl, lid_row=row)
+            ELSE
+               CALL b2_stokes_at_point(mesh, geom, x, a, c, e, multi, r(:, i), lid_row=row)
+            END IF
+         ELSE IF (from_store .AND. PRESENT(cl)) THEN
+            CALL b2_stokes_at_point(mesh, geom, x, a, c, e, multi, r(:, i), cl, i)
+         ELSE IF (from_store) THEN
+            CALL b2_stokes_at_point(mesh, geom, x, a, c, e, multi, r(:, i), row=i)
+         ELSE IF (PRESENT(cl)) THEN
+            CALL b2_stokes_at_point(mesh, geom, x, a, c, e, multi, r(:, i), cl)
+         ELSE
+            CALL b2_stokes_at_point(mesh, geom, x, a, c, e, multi, r(:, i))
          END IF
       END DO
       !$OMP END PARALLEL DO
 
-      ! r is -int G n.[(X.grad)u] dS at the full panels; the block form as ASSB_RBC
+      ! r is -int G n.[(X.grad)u] dS at the full panels and lid points; the block form as ASSB_RBC (ASSB_RBC_IRR)
       DO ip = 1, ns
-         DO i = 1, nb
+         DO i = 1, nb + nl
             rhs(i, :, ip) = (0D0, 0D0)
             DO im = 1, ns
-               rhs(i, :, ip) = rhs(i, :, ip) - RXY(ip, im)*r(:, (im - 1)*nb + i)
+               rs = RXY(ip, im)
+               IF (multi) rs = RXY_MULTI(ip, im)
+               IF (i <= nb) THEN
+                  rhs(i, :, ip) = rhs(i, :, ip) - rs*r(:, (im - 1)*nb + i)
+               ELSE
+                  rhs(i, :, ip) = rhs(i, :, ip) - rs*r(:, mesh%n + (im - 1)*nl + i - nb)
+               END IF
             END DO
          END DO
       END DO
+
+   CONTAINS
+
+      FUNCTION lid_point(lrow) RESULT(xl)
+         ! Full lid row lrow = (a - 1) nl + l: base lid point l mirrored by image a
+         INTEGER, INTENT(IN) :: lrow
+         REAL(8) :: xl(3)
+         INTEGER :: l, ia
+
+         ia = (lrow - 1)/nl + 1
+         l = lrow - (ia - 1)*nl
+         IF (multi) THEN
+            xl = iXYZ_GLOBAL_MULTI_COMB_P(l, :)
+         ELSE
+            xl = iXYZ_P(l, :)
+         END IF
+         IF (ia == 2) THEN
+            IF (ISX == 1 .AND. ISY == 0) THEN
+               xl(1) = -xl(1)
+            ELSE
+               xl(2) = -xl(2)
+            END IF
+         END IF
+      END FUNCTION lid_point
+
    END SUBROUTINE direct_rhs_b2_block
 
-   SUBROUTINE b2_stokes_at_point(mesh, geom, x, a, c, e, is_multi, out, cl, row)
+   SUBROUTINE b2_stokes_at_point(mesh, geom, x, a, c, e, is_multi, out, cl, row, lid_row)
       ! int_S G(x, .) n.[(X.grad)u] dS for each column of the densities, at the field point x (full coordinates):
       !   out = sum_p [ int_p G a_p + (int_p grad_xi G).c_p ] - sum_w (int_w G dl) e_w
       ! With cl (3, 4, n, ncol), on the near panels also sum_ab cl(a, b, p) int_p d_a(1/r + 1/r1) (xi - xi_p)_b dS and
       ! cl(:, 4, p).int_p (1/r + 1/r1)(xi - xi_p) dS.
       ! With row (a full panel index, whose centroid x must be), int_p G and int_p grad G come from the stored arrays
-      ! (stored_panel_integrals), otherwise from green_panel_integrals.
+      ! (stored_panel_integrals); with lid_row (a full lid row of direct_rhs_b2_block, whose point x must be) from the
+      ! stored lid integrals (stored_lid_integrals); otherwise from green_panel_integrals.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       REAL(8), INTENT(IN) :: x(3)
@@ -621,20 +788,23 @@ CONTAINS
       LOGICAL, INTENT(IN) :: is_multi
       COMPLEX(8), INTENT(OUT) :: out(:)
       COMPLEX(8), INTENT(IN), OPTIONAL :: cl(:, :, :, :)
-      INTEGER, INTENT(IN), OPTIONAL :: row
+      INTEGER, INTENT(IN), OPTIONAL :: row, lid_row
       COMPLEX(8) :: g_int, grad_int(3), g_line, acc
       REAL(8) :: xv(3, 4), m0, g0(3), m1(3, 3), m1i(3, 3), mg(3), mgi(3), xim(3)
       INTEGER :: p, iw, k, nv, m, ia, ib
-      ! The loops below are written out: under /heap-arrays0 an array temporary (an array constructor, a vector
-      ! subscript, SUM of an array expression) is a heap allocation, and the threads of direct_rhs_b2_block then wait
-      ! on each other in the allocator. With this routine, rankine_moments and stored_panel_integrals written so, the B2
-      ! right side on 480 panels went from 0.9 s at both 1 and 4 threads to 0.68 s and 0.34 s (Phase 7a Task 3)
+      ! The per-panel loop below has no array temporaries: under /heap-arrays0 an array temporary (an array
+      ! constructor, a vector subscript, SUM of an array expression) is a heap allocation, and the threads of
+      ! direct_rhs_b2_block then wait on each other in the allocator. With this loop, rankine_moments and
+      ! stored_panel_integrals written so, the B2 right side on 480 panels went from 0.9 s at both 1 and 4 threads to
+      ! 0.68 s and 0.34 s (Phase 7a Task 3). Outside it, xim (once per point) is an array constructor.
 
       xim = [x(1), x(2), -x(3)]
       out = (0D0, 0D0)
       DO p = 1, mesh%n
          IF (PRESENT(row)) THEN
             CALL stored_panel_integrals(mesh, row, p, is_multi, g_int, grad_int)
+         ELSE IF (PRESENT(lid_row)) THEN
+            CALL stored_lid_integrals(mesh, lid_row, p, is_multi, g_int, grad_int)
          ELSE
             CALL green_panel_integrals(mesh, x, p, is_multi, g_int, grad_int)
          END IF
@@ -681,7 +851,8 @@ CONTAINS
       COMPLEX(8) :: grn(4)
       REAL(8) :: rk(4), f(3), area, dist2, psz
       INTEGER :: i, j, is, k
-      ! Scalar code, no array temporaries (see b2_stokes_at_point): this runs n^2 times per Omega
+      ! Written out, with no array expressions (see b2_stokes_at_point): this runs in its per-panel loop, n^2 times per
+      ! Omega
 
       i = mesh%base(row)
       j = mesh%base(p)
@@ -719,12 +890,81 @@ CONTAINS
       END IF
       IF (SQRT(dist2) <= NEAR_PANEL_SIZES*psz) THEN
          g_int = rk(1) + grn(1)*area
-         grad_int = f*(rk(2:4) + grn(2:4)*area)
+         DO k = 1, 3
+            grad_int(k) = f(k)*(rk(k + 1) + grn(k + 1)*area)
+         END DO
       ELSE
          g_int = grn(1)*area
-         grad_int = f*grn(2:4)*area
+         DO k = 1, 3
+            grad_int(k) = f(k)*grn(k + 1)*area
+         END DO
       END IF
    END SUBROUTINE stored_panel_integrals
+
+   SUBROUTINE stored_lid_integrals(mesh, lid_row, p, is_multi, g_int, grad_int)
+      ! As stored_panel_integrals at the full lid point lid_row = (a - 1) nl + l (image a of base lid point l), from the
+      ! stored lid integrals of CALGREEN_IRR (DGRN, PKBN; the MULTI_COMB forms for several bodies): stored image a xor b
+      ! for full panel p (image b of base panel j), gradient mirrored by M_b, and the flag rule of ASSB_RBC_IRR (base lid
+      ! point to base panel centroid within 50 panel sizes), so that the B2 part uses the discrete G of the lid rows.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      INTEGER, INTENT(IN) :: lid_row, p
+      LOGICAL, INTENT(IN) :: is_multi
+      COMPLEX(8), INTENT(OUT) :: g_int, grad_int(3)
+      COMPLEX(8) :: grn(4)
+      REAL(8) :: rk(4), f(3), area, dist2, psz
+      INTEGER :: l, ia, nl, j, is, k
+
+      IF (is_multi) THEN
+         nl = SIZE(DGRN_MULTI_COMB, 1)
+      ELSE
+         nl = SIZE(DGRN, 1)
+      END IF
+      ia = (lid_row - 1)/nl + 1
+      l = lid_row - (ia - 1)*nl
+      j = mesh%base(p)
+      is = MERGE(1, 2, ia == mesh%image(p))
+      f = 1D0
+      IF (mesh%image(p) == 2) THEN
+         IF (ISX == 1 .AND. ISY == 0) THEN
+            f(1) = -1D0
+         ELSE
+            f(2) = -1D0
+         END IF
+      END IF
+      dist2 = 0D0
+      IF (is_multi) THEN
+         DO k = 1, 4
+            grn(k) = DGRN_MULTI_COMB(l, j, is, k)
+            rk(k) = PKBN_MULTI_COMB(l, j, is, k)
+         END DO
+         area = DS_MULTI_COMB(j)
+         psz = PNSZ_MULTI_COMB(j)
+         DO k = 1, 3
+            dist2 = dist2 + (iXYZ_GLOBAL_MULTI_COMB_P(l, k) - XYZ_GLOBAL_MULTI_COMB_P(j, k))**2
+         END DO
+      ELSE
+         DO k = 1, 4
+            grn(k) = DGRN(l, j, is, k)
+            rk(k) = PKBN(l, j, is, k)
+         END DO
+         area = DS(j)
+         psz = PNSZ(j)
+         DO k = 1, 3
+            dist2 = dist2 + (iXYZ_P(l, k) - XYZ_P(j, k))**2
+         END DO
+      END IF
+      IF (SQRT(dist2) <= NEAR_PANEL_SIZES*psz) THEN
+         g_int = rk(1) + grn(1)*area
+         DO k = 1, 3
+            grad_int(k) = f(k)*(rk(k + 1) + grn(k + 1)*area)
+         END DO
+      ELSE
+         g_int = grn(1)*area
+         DO k = 1, 3
+            grad_int(k) = f(k)*grn(k + 1)*area
+         END DO
+      END IF
+   END SUBROUTINE stored_lid_integrals
 
    SUBROUTINE sharp_edge_panels(mesh, edge_deg, mask)
       ! mask(i) is .true. when panel i shares a node (after merging coincident nodes, so across the symmetry plane too)

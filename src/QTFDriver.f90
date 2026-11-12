@@ -570,7 +570,6 @@ CONTAINS
       REAL(8), INTENT(IN) :: omega
       INTEGER, ALLOCATABLE, INTENT(OUT) :: pairs(:, :)
       INTEGER, ALLOCATABLE :: tmp(:, :)
-      REAL(8) :: dw
       INTEGER :: m, i, j, b1, b2, np
 
       ALLOCATE (pairs(4, 0))
@@ -584,11 +583,7 @@ CONTAINS
             IF (all_headings_pairs == 0 .AND. b1 /= b2) CYCLE
             DO i = 1, nkept
                DO j = 1, nkept
-                  ! Heading 1 stands for all, as in potential_part
-                  dw = store(i, 1)%omega - store(j, 1)%omega
-                  IF (dw == 0D0) CYCLE
-                  IF (max_dw > 0D0 .AND. ABS(dw) > max_dw*(1D0 + 1D-9)) CYCLE
-                  IF (qtf_psi_index(ABS(dw)) /= m) CYCLE
+                  IF (difference_pair_index(i, j) /= m) CYCLE
                   np = np + 1
                   tmp(:, np) = [i, b1, j, b2]
                END DO
@@ -597,6 +592,23 @@ CONTAINS
       END DO
       pairs = tmp(:, 1:np)
    END SUBROUTINE qtf_direct_pairs
+
+   INTEGER FUNCTION difference_pair_index(i, j)
+      ! The pair rule of the difference QTF, shared by potential_part (T_pot) and qtf_direct_pairs (T_dir) so that both
+      ! cover the same pairs: 0 when kept frequencies i and j are not a pair (omega_i = omega_j, or |omega_i - omega_j|
+      ! beyond qtf_max_dw), else the index of |omega_i - omega_j| in psi_need (qtf_psi_index), or -1 if it is not there.
+      ! Heading 1 stands for all: qtf_keep stores every heading of a frequency from the same solve, so store(i, b)%omega
+      ! is the same for every b (the grid is shared by construction).
+      INTEGER, INTENT(IN) :: i, j
+      REAL(8) :: dw
+
+      difference_pair_index = 0
+      dw = store(i, 1)%omega - store(j, 1)%omega
+      IF (dw == 0D0) RETURN
+      IF (max_dw > 0D0 .AND. ABS(dw) > max_dw*(1D0 + 1D-9)) RETURN
+      difference_pair_index = qtf_psi_index(ABS(dw))
+      IF (difference_pair_index == 0) difference_pair_index = -1
+   END FUNCTION difference_pair_index
 
    SUBROUTINE qtf_direct_at_omega(mesh, geom, omega, npair, seconds)
       ! The direct method at the difference frequency omega (qtf_direct = 1): T_dir of every pair with that Omega
@@ -800,7 +812,7 @@ CONTAINS
       REAL(8), INTENT(IN) :: refl
       INTEGER, ALLOCATABLE :: pair_m(:, :)                 ! (nkept, nkept), index of |omega_i - omega_j| in psi_need, or 0
       COMPLEX(8), ALLOCATABLE :: grad(:, :, :), pwl(:, :), terms(:, :)
-      REAL(8) :: dw, g_wave
+      REAL(8) :: g_wave
       INTEGER :: unit, i, j, m, b1, b2, b, c, k, nmode, nbad
 
       nmode = 6*mesh%nbody
@@ -808,14 +820,11 @@ CONTAINS
       pair_m = 0
       DO i = 1, nkept
          DO j = 1, nkept
-            ! Heading 1 stands for all: qtf_keep stores every heading of a frequency from the same solve, so
-            ! store(i, b)%omega is the same for every b (the grid is shared by construction)
-            dw = store(i, 1)%omega - store(j, 1)%omega
-            IF (dw == 0D0) CYCLE
-            IF (max_dw > 0D0 .AND. ABS(dw) > max_dw*(1D0 + 1D-9)) CYCLE
-            m = qtf_psi_index(ABS(dw))
-            IF (m == 0) THEN
-               WRITE (*, '(a,ES14.6,a)') ' QTF: Omega =', ABS(dw), ' rad/s is not among the difference frequencies of psi.'
+            m = difference_pair_index(i, j)
+            IF (m == 0) CYCLE
+            IF (m < 0) THEN
+               WRITE (*, '(a,ES14.6,a)') ' QTF: Omega =', ABS(store(i, 1)%omega - store(j, 1)%omega), &
+                  ' rad/s is not among the difference frequencies of psi.'
                ERROR STOP 1
             END IF
             IF (.NOT. psi_kept(m)) THEN
