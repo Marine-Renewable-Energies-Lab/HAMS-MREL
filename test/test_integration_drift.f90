@@ -217,8 +217,13 @@ module test_integration_drift
     ! up to two digits; these are mesh errors, not accuracy claims.
     ! qtf_direct_round (480 panels): 3.97e-2 measured, M_y at (0.70, 0.95), where B1 and B2 (7.4 and 7.1) cancel to a T_pot
     ! of 4.9; 1.6e-3 at (0.95, 1.10). It is the bottom of the hull: the same hull with 8 bottom rings instead of 4 (608
-    ! panels) gives 1.27e-2, and at twice the resolution everywhere (1920 panels) 8.1e-3. 1.3x measured, above the plan's 1%
-    real(8), parameter :: direct_round_limit = 5.2d-2
+    ! panels) gives 1.27e-2, and at twice the resolution everywhere (1920 panels) 8.1e-3. 1.3x measured, above the plan's 1%.
+    ! The rows of forces alone: 1.88e-2 (at (0.70, 0.95)); all rows at (0.95, 1.10): 1.61e-3. 1.3x measured each
+    real(8), parameter :: direct_round_limit = 5.2d-2, direct_round_force_limit = 2.5d-2, direct_round_quiet_limit = 2.1d-3
+    real(8), parameter :: direct_round_quiet_pair(2) = [0.95d0, 1.10d0]
+    ! The sharp cylinder at m2 (1792 panels), besides the fall from m1 (2.11e-1 and 3.26e-1): forces 7.82e-2, all rows at
+    ! the pairs other than (0.47, 0.77) 5.13e-2. 1.3x measured
+    real(8), parameter :: direct_sharp_force_limit = 1.1d-1, direct_sharp_other_limit = 6.7d-2
     ! qtf_direct_full (480 panels, velocity by differencing, Omega = 0.15): 6.95e-3 measured; the GMRES run 6.94e-3. 1.3x
     real(8), parameter :: direct_body_limit = 9.1d-3
     ! The half mesh against the whole mesh: 2.57e-6 measured (T_pot 5.9e-7, pot_half_limit), 2x measured, rounded up
@@ -226,8 +231,10 @@ module test_integration_drift
     ! qtf_direct_two (two hulls of 220 panels, 30 m apart): forces 1.21e-2, moments 0.229 (M_y at (0.80, 1.00), where
     ! max |T_pot| of the moments is 0.24). One such hull alone gives the same: 1.23e-2 and 0.574 of its own smaller
     ! moments (5.6e-2 against 5.4e-2 per rho g), and 7.2e-2 with 6 bottom rings instead of 3: the bottom of the coarse
-    ! hull, not the multi-body matrices. 1.3x measured
-    real(8), parameter :: direct_two_limit = 0.30d0, direct_two_force_limit = 1.6d-2
+    ! hull, not the multi-body matrices. Forces: 1.3x measured. Moments: the largest |T_dir - T_pot| of the moments of the
+    ! two bodies over that of the same hull alone (qtf_direct_one), absolute: 0.979 measured (5.45e-2 over 5.57e-2). 1.3,
+    ! so that a coupling error of the moments of 30% of the hull's own mesh error fails
+    real(8), parameter :: direct_two_ratio_limit = 1.3d0, direct_two_force_limit = 1.6d-2
     ! qtf_direct_irsp (IRSP = 1): 6.41e-3 measured. 1.3x measured
     real(8), parameter :: direct_irsp_limit = 8.4d-3
     ! ISOLV = 2 against 1: T_dir changes by 2.68e-4 where T_pot changes by 2.51e-4 (the GMRES first-order solution). The
@@ -678,8 +685,8 @@ contains
     !> at m2 (1792 panels) in its own, which runs beside it
     subroutine run_qtf_direct_cases(error)
         type(error_type), allocatable, intent(out) :: error
-        character(len=19), parameter :: cases(6) = [character(len=19) :: "qtf_direct_round", "qtf_direct_gmres", &
-            "qtf_direct_full", "qtf_direct_half", "qtf_direct_two", "qtf_direct_sharp_m1"]
+        character(len=19), parameter :: cases(7) = [character(len=19) :: "qtf_direct_round", "qtf_direct_gmres", &
+            "qtf_direct_full", "qtf_direct_half", "qtf_direct_two", "qtf_direct_one", "qtf_direct_sharp_m1"]
         type(error_type), allocatable :: one
         integer :: c
 
@@ -4155,12 +4162,23 @@ contains
     !> the indirect method alone)
     subroutine direct_vs_indirect_round(error)
         type(error_type), allocatable, intent(out) :: error
-        real(8) :: worst
+        real(8), allocatable :: tp(:,:), e(:)
+        real(8) :: worst, forces, quiet
 
         call direct_against_indirect("qtf_direct_round", worst, error)
         if (allocated(error)) return
+        call direct_row_errors("qtf_direct_round", tp, e, error)
+        if (allocated(error)) return
+        forces = maxval(e, mask=is_force_row(tp))
+        quiet = maxval(e, mask=rows_at_pair(tp, direct_round_quiet_pair))
         call report("direct_vs_indirect_round", worst)
+        call report("direct_vs_indirect_round forces", forces)
+        call report("direct_vs_indirect_round all rows at (0.95, 1.10)", quiet)
         call check_below(error, "direct_vs_indirect_round", worst, direct_round_limit)
+        if (allocated(error)) return
+        call check_below(error, "direct_vs_indirect_round forces", forces, direct_round_force_limit)
+        if (allocated(error)) return
+        call check_below(error, "direct_vs_indirect_round all rows at (0.95, 1.10)", quiet, direct_round_quiet_limit)
         if (allocated(error)) return
         call check_same_file(output_dir("qtf_round_body")//qtf_indirect_file, &
                              output_dir("qtf_direct_round")//qtf_indirect_file, error)
@@ -4173,35 +4191,27 @@ contains
     !> (0.47, 0.77), next to the heave resonance, the moments are printed only: there the hull-form B2 of T_pot misses the
     !> exact M_y by 95% at m1 and 74% at m2 (exact B2 of qtf_b2_control_sharp), T_dir moves towards T_pot with the exact
     !> B2 faster than T_pot does (68.4 to 38.7 against 75.7 to 58.8, per rho g), and so their difference grew, 0.455 to
-    !> 0.545 (measured). Each value is over max |T_pot| of the rows of forces or of moments of its run.
+    !> 0.545 (measured). Each value is over max |T_pot| of the rows of forces or of moments of its run. At m2 the forces and
+    !> the other pairs are also capped (direct_sharp_force_limit, direct_sharp_other_limit).
     subroutine direct_vs_indirect_sharp(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=19), parameter :: cases(2) = [character(len=19) :: "qtf_direct_sharp_m1", "qtf_direct_sharp_m2"]
         real(8), parameter :: resonance_pair(2) = [0.47d0, 0.77d0]
-        real(8), allocatable :: td(:,:), tp(:,:)
-        real(8) :: forces(2), others(2), pair_moments(2), e
-        integer :: c, p, q
-        logical :: at_pair
+        real(8), allocatable :: tp(:,:), e(:)
+        logical, allocatable :: at_pair(:), is_force(:)
+        real(8) :: forces(2), others(2), pair_moments(2), worst
+        integer :: c
 
         do c = 1, 2
-            call direct_against_indirect(trim(cases(c)), e, error)
+            call direct_against_indirect(trim(cases(c)), worst, error)
             if (allocated(error)) return
-            call read_direct_total(output_dir(trim(cases(c)))//direct_terms_file, td, error)
+            call direct_row_errors(trim(cases(c)), tp, e, error)
             if (allocated(error)) return
-            call read_pot_total(output_dir(trim(cases(c)))//pot_terms_file, tp, error)
-            if (allocated(error)) return
-            forces(c) = 0d0
-            others(c) = 0d0
-            pair_moments(c) = 0d0
-            do p = 1, size(tp, 1)
-                q = matching_row(tp, p, td)
-                e = hypot(td(q,6) - tp(p,6), td(q,7) - tp(p,7))/kind_scale(tp, tp(p,5))
-                at_pair = (same(tp(p,1), resonance_pair(1)) .and. same(tp(p,2), resonance_pair(2))) .or. &
-                          (same(tp(p,1), resonance_pair(2)) .and. same(tp(p,2), resonance_pair(1)))
-                if (mod(nint(tp(p,5)) - 1, 6) < 3) forces(c) = max(forces(c), e)
-                if (.not. at_pair) others(c) = max(others(c), e)
-                if (at_pair .and. mod(nint(tp(p,5)) - 1, 6) >= 3) pair_moments(c) = max(pair_moments(c), e)
-            end do
+            is_force = is_force_row(tp)
+            at_pair = rows_at_pair(tp, resonance_pair)
+            forces(c) = maxval(e, mask=is_force)
+            others(c) = maxval(e, mask=.not. at_pair)
+            pair_moments(c) = maxval(e, mask=at_pair .and. .not. is_force)
             call report("direct_vs_indirect_sharp "//trim(cases(c))//" forces", forces(c))
             call report("direct_vs_indirect_sharp "//trim(cases(c))//" pairs other than (0.47, 0.77)", others(c))
             call report("direct_vs_indirect_sharp "//trim(cases(c))//" moments at (0.47, 0.77), printed only", pair_moments(c))
@@ -4210,7 +4220,54 @@ contains
         if (allocated(error)) return
         call check(error, others(2) < others(1), &
                    "direct_vs_indirect_sharp: the pairs other than (0.47, 0.77) do not fall from m1 to m2")
+        if (allocated(error)) return
+        call check_below(error, "direct_vs_indirect_sharp m2 forces", forces(2), direct_sharp_force_limit)
+        if (allocated(error)) return
+        call check_below(error, "direct_vs_indirect_sharp m2 pairs other than (0.47, 0.77)", others(2), &
+                         direct_sharp_other_limit)
     end subroutine direct_vs_indirect_sharp
+
+    !> |T_dir - T_pot| over max |T_pot| of the rows of forces or of moments (kind_scale), for each row of T_pot (tp) of the
+    !> run name, with the row of T_dir matched by its keys
+    subroutine direct_row_errors(name, tp, e, error)
+        character(len=*), intent(in) :: name
+        real(8), allocatable, intent(out) :: tp(:,:), e(:)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: td(:,:)
+        integer :: p, q
+
+        call read_direct_total(output_dir(name)//direct_terms_file, td, error)
+        if (allocated(error)) return
+        call read_pot_total(output_dir(name)//pot_terms_file, tp, error)
+        if (allocated(error)) return
+        allocate (e(size(tp, 1)))
+        do p = 1, size(tp, 1)
+            q = matching_row(tp, p, td)
+            call check(error, q > 0, name//": a row of T_pot has no row of T_dir")
+            if (allocated(error)) return
+            e(p) = hypot(td(q,6) - tp(p,6), td(q,7) - tp(p,7))/kind_scale(tp, tp(p,5))
+        end do
+    end subroutine direct_row_errors
+
+    !> The rows of t (column 5, I) that are forces of a body
+    function is_force_row(t) result(f)
+        real(8), intent(in) :: t(:,:)
+        logical, allocatable :: f(:)
+        f = mod(nint(t(:,5)) - 1, 6) < 3
+    end function is_force_row
+
+    !> The rows of t at the frequency pair, in either order
+    function rows_at_pair(t, pair) result(at)
+        real(8), intent(in) :: t(:,:), pair(2)
+        logical, allocatable :: at(:)
+        integer :: p
+
+        allocate (at(size(t, 1)))
+        do p = 1, size(t, 1)
+            at(p) = (same(t(p,1), pair(1)) .and. same(t(p,2), pair(2))) .or. &
+                    (same(t(p,1), pair(2)) .and. same(t(p,2), pair(1)))
+        end do
+    end function rows_at_pair
 
     !> The half mesh (ISY = 1) against the whole mesh, T_dir: the same discrete problem by images. And T_dir against T_pot
     !> on the whole mesh (velocity by differencing, Omega = 0.15 rad/s)
@@ -4235,10 +4292,14 @@ contains
     end subroutine direct_half_matches_full
 
     !> Two small rounded hulls 30 m apart (the multi-body matrices, every heading pair): T_dir against T_pot of the same run,
-    !> over the rows of forces and over all rows. The mode mapping of the two bodies is checked in qtf_direct_file_layout.
+    !> over the rows of forces, and the moments against the same hull alone (qtf_direct_one, direct_two_ratio_limit). The
+    !> mode mapping of the two bodies is checked in qtf_direct_file_layout.
     subroutine direct_two_bodies(error)
         type(error_type), allocatable, intent(out) :: error
-        real(8) :: worst, forces
+        character(len=14), parameter :: cases(2) = [character(len=14) :: "qtf_direct_two", "qtf_direct_one"]
+        real(8), allocatable :: tp(:,:), e(:)
+        real(8) :: worst, forces, moments(2), ratio
+        integer :: c
 
         call direct_against_indirect("qtf_direct_two", worst, error, forces)
         if (allocated(error)) return
@@ -4246,7 +4307,20 @@ contains
         call report("direct_two_bodies forces and moments", worst)
         call check_below(error, "direct_two_bodies forces", forces, direct_two_force_limit)
         if (allocated(error)) return
-        call check_below(error, "direct_two_bodies forces and moments", worst, direct_two_limit)
+        ! The largest |T_dir - T_pot| of the moments, absolute, of the two bodies and of the same hull alone
+        do c = 1, 2
+            call direct_against_indirect(trim(cases(c)), worst, error)
+            if (allocated(error)) return
+            call direct_row_errors(trim(cases(c)), tp, e, error)
+            if (allocated(error)) return
+            moments(c) = maxval(e, mask=.not. is_force_row(tp))*kind_scale(tp, 4d0)
+            call report("direct_two_bodies "//trim(cases(c))//" largest moment difference", moments(c))
+        end do
+        call check(error, moments(2) > 0d0, "direct_two_bodies: the hull alone has no moment difference")
+        if (allocated(error)) return
+        ratio = moments(1)/moments(2)
+        call report("direct_two_bodies moments, two bodies over the hull alone", ratio)
+        call check_below(error, "direct_two_bodies moments, two bodies over the hull alone", ratio, direct_two_ratio_limit)
     end subroutine direct_two_bodies
 
     !> The diagonal (omega_i = omega_j, Omega = 0) has no direct solve: on every direct fixture .12d is .10d there, text for

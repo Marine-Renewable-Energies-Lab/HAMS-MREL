@@ -505,6 +505,13 @@ def write_qtf_direct_fixtures(data, body):
     write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=QTF_DISTANT_FREQUENCIES,
                   headings=DRIFT_CYL_HEADINGS, body_origins=[(0.0, 0.0), (0.0, QTF_DIRECT_SEPARATION)])
     write_second_order(os.path.join(target, "SecondOrder.in"), **dict(direct, mean_drift=2, velocity_method="source"))
+    # One such hull alone, with the same inputs: its mesh error of the moments is the scale of that of qtf_direct_two
+    target = case_dir(data, "qtf_direct_one")
+    make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
+                                     **TWO_ROUND_MESH)
+    write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=QTF_DISTANT_FREQUENCIES,
+                  headings=DRIFT_CYL_HEADINGS)
+    write_second_order(os.path.join(target, "SecondOrder.in"), **dict(direct, mean_drift=2, velocity_method="source"))
     # The sharp cylinder of qtf_sharp_b2_body (m1, the mesh of drift_cyl) and the same at half the panel size (m2)
     for name, mesh in (("qtf_direct_sharp_m1", DRIFT_CYL_MESH), ("qtf_direct_sharp_m2", QTF_DIRECT_SHARP_M2)):
         target = case_dir(data, name)

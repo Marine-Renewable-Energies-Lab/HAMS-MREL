@@ -677,11 +677,13 @@ CONTAINS
 
    REAL(8) FUNCTION qtf_direct_missing()
       ! The smallest difference frequency of the grid (rad/s) at which the direct solve has not run, or 0 if there is none
-      ! or qtf_direct is off. qtf_finish stops on a non-zero value before it writes QTF_Direct.12d.
+      ! or qtf_direct is off (or qtf_init has not set up its store). qtf_finish stops on a non-zero value before it writes
+      ! QTF_Direct.12d.
       INTEGER :: m
 
       qtf_direct_missing = 0D0
       IF (.NOT. direct_active) RETURN
+      IF (.NOT. ALLOCATED(tdir_kept)) RETURN
       DO m = 1, SIZE(tdir_kept)
          IF (.NOT. tdir_kept(m)) THEN
             qtf_direct_missing = psi_need(m)
