@@ -7,6 +7,7 @@ Usage:
     python qtf_compare.py <results> --potential <qtf_potential.csv> [--nemoh <folder>] [--max-dw 0.3] [--exclude LO HI]
     python qtf_compare.py <results> --against-nemoh <folder> [--hull oc4] [--reading as-is|conj|-1|-conj] [--max-dw 0.3]
                           [--exclude LO HI]
+    python qtf_compare.py <results> --direct [<qtf_potential.csv>] [--max-dw 0.3] [--exclude LO HI] [--by-omega]
     python qtf_compare.py <results> --against-wamit <file.12d> [--hull oc4w] [--reading as-is|conj|-1|-conj]
                           [--max-dw 0.3] [--max-omega 1.90] [--exclude LO HI]
 
@@ -34,6 +35,14 @@ compares QTF_Indirect.11d with that total, .11d - .10d with the sum of the terms
 largest abs over the pairs, so that a term that is small everywhere is not measured against itself. Nemoh's OUT_QTFM_N.dat
 of a DUOK + HASBO run (body forcing, no free-surface integral) is compared with the reference total, readings as above.
 
+Direct method (--direct). For each q_*direct* case (`drift_convergence.py --qtf-potential`, qtf_direct = 1), T_dir
+(QTF_Direct.12d - .10d) against T_pot (QTF_Indirect.11d - .10d) of the same run: |T_dir - T_pot| / max |T_pot| over the
+rows of forces or of moments (all modes, bodies and heading pairs), max and median, the measure of the integration tests.
+They are read from QTF_DirectTerms.txt and QTF_PotentialTerms.txt (16 digits) where the run wrote them, otherwise from the
+printed files. --by-omega adds the largest error at each difference frequency (an irregular frequency of the Omega problem
+shows there as a spike). Given the qtf-potential CSV, the q_sharp_*direct* cases also get .12d and .11d against the exact
+total and .12d - .10d and .11d - .10d against the exact potential part, as --potential, heading 0.
+
 WAMIT (--against-wamit). A WAMIT numeric .12d (difference QTF; one header line, then PER_i PER_j BETA_i BETA_j I Mod Pha Re
 Im, periods in s, nondimensional by rho g L^k with L = 1 m: the layout HAMS writes for .10d and .11d) is read "as written":
 omega = 2 pi / PER (snapped to the HAMS grid, as the periods have 5 digits), and the value taken in the convention of the
@@ -54,6 +63,8 @@ import statistics
 import sys
 
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # run with python -I: the sibling modules
 
 import qtf_tools
 
@@ -261,6 +272,126 @@ def compare_potential(results, path, nemoh, max_dw, exclude=None):
             print("%-24s %-6s %16s %16s %16s%s" % (name, best[1], *best[2],
                                                     "  WARNING: no reading within 50%" if best[3] > 0.5 else ""))
     return 0
+
+
+def read_part_sums(path, parts):
+    """{(oufr1, oufr2, beta1, beta2, I): sum of the parts} of a terms file with `parts` complex columns after the five keys
+    (QTF_PotentialTerms.txt 5, QTF_DirectTerms.txt 2), in the file convention, keys rounded as qtf_tools.read_qtf; {} if
+    the file is missing."""
+    out = {}
+    if not os.path.exists(path):
+        return out
+    with open(path) as f:
+        for line in f:
+            if line.lstrip().startswith("#"):
+                continue
+            p = line.split()
+            if len(p) != 5 + 2 * parts:
+                continue
+            key = (round(float(p[0]), 6), round(float(p[1]), 6), round(float(p[2]), 6), round(float(p[3]), 6), int(p[4]))
+            out[key] = sum(complex(float(p[5 + 2 * t]), float(p[6 + 2 * t])) for t in range(parts))
+    return out
+
+
+def _is_force(key):
+    return (key[4] - 1) % 6 < 3
+
+
+def direct_against_indirect(t_dir, t_pot, kept=None):
+    """(forces, moments): (max, median) of |T_dir - T_pot| over max |T_pot| of the rows of that kind (forces: I - 1 mod 6
+    < 3), over the keys of t_pot (all modes, bodies and heading pairs) for which kept(key) is true; None for a kind without
+    rows. The measure of the integration tests (direct_against_indirect of test_integration_drift.f90)."""
+    out = []
+    for force in (True, False):
+        keys = [k for k in t_pot if _is_force(k) == force]
+        missing = [k for k in keys if k not in t_dir]
+        if missing:
+            raise ValueError("T_dir has no row for %d rows of T_pot, e.g. %s" % (len(missing), missing[0]))
+        scale = max([abs(t_pot[k]) for k in keys] or [0.0])
+        errs = [abs(t_dir[k] - t_pot[k]) / scale for k in keys if kept is None or kept(k)] if scale > 0.0 else []
+        out.append((max(errs), statistics.median(errs)) if errs else None)
+    return tuple(out)
+
+
+def compare_direct(results, path, max_dw, exclude=None, by_omega=False):
+    """The --direct tables; see the module docstring. path: CSV of truncated_cylinder_reference.py qtf-potential, or None.
+    Returns the rows (case, (forces, moments) of T_dir against T_pot)."""
+    ref = read_potential_reference(path, max_dw) if path else {}
+    print("Direct method (QTF_Direct.12d, qtf_direct = 1) against the indirect one (QTF_Indirect.11d) of the same run: "
+          "|T_dir - T_pot| / max |T_pot| over the rows of forces or of moments, all modes and heading pairs, max and median, "
+          "percent; omega_j - omega_i <= %.2f rad/s" % max_dw)
+    if exclude:
+        print("Pairs with omega_i or omega_j in [%.3f, %.3f] rad/s left out; scales from all the pairs" % tuple(exclude))
+
+    def kept(p):
+        return not exclude or not any(exclude[0] - 1e-9 <= w <= exclude[1] + 1e-9 for w in p)
+    print("%-26s %-6s %18s %18s" % ("case", "from", "forces", "moments"))
+    rows, sharp = [], []
+    for case in sorted(os.path.basename(p) for p in glob.glob(os.path.join(results, "q_*direct*"))):
+        folder = os.path.join(results, case, "output", "Wamit_format")
+        # The terms files carry 16 digits; without them (write_terms = 0) the printed .12d - .10d and .11d - .10d
+        t_dir = read_part_sums(os.path.join(folder, "QTF_DirectTerms.txt"), 2)
+        t_pot = read_part_sums(os.path.join(folder, "QTF_PotentialTerms.txt"), len(POTENTIAL_TERMS))
+        source = "terms"
+        if not t_dir or not t_pot:
+            files = [os.path.join(folder, name) for name in ("QTF_Quadratic.10d", "QTF_Direct.12d", "QTF_Indirect.11d")]
+            if not all(os.path.exists(f) for f in files):
+                print("%-26s no QTF_Direct.12d, QTF_Indirect.11d and QTF_Quadratic.10d" % case)
+                continue
+            quadratic = qtf_tools.read_qtf(files[0])
+            t_dir = qtf_tools.potential_part(quadratic, qtf_tools.read_qtf(files[1]))
+            t_pot = qtf_tools.potential_part(quadratic, qtf_tools.read_qtf(files[2]))
+            source = "files"
+        t_pot = {k: v for k, v in t_pot.items() if k[0] != k[1] and abs(k[1] - k[0]) <= max_dw + 1e-9}
+        if not t_pot:
+            print("%-26s no pairs within %.2f rad/s" % (case, max_dw))
+            continue
+        cells = direct_against_indirect(t_dir, t_pot, lambda k: kept(k[:2]))
+        rows.append((case, cells))
+        print("%-26s %-6s %18s %18s" % (case, source,
+                                        *["%7.2f %7.2f" % (100 * c[0], 100 * c[1]) if c else "-" for c in cells]))
+        if by_omega:
+            # The largest error at each difference frequency, over the scales of all the pairs: a spike at an irregular
+            # frequency of the Omega problem shows here
+            scales = [max([abs(v) for k, v in t_pot.items() if _is_force(k) == force] or [0.0]) for force in (True, False)]
+            for omega in sorted({round(abs(k[1] - k[0]), 6) for k in t_pot}):
+                at = [k for k in t_pot if abs(round(abs(k[1] - k[0]), 6) - omega) < 1e-9 and kept(k[:2])]
+                worst = [max([abs(t_dir[k] - t_pot[k]) for k in at if _is_force(k) == force] or [0.0]) / scales[i]
+                         if scales[i] > 0.0 else 0.0 for i, force in enumerate((True, False))]
+                print("    Omega %8.4f  %4d rows  forces %7.2f  moments %7.2f" % (omega, len(at), 100 * worst[0],
+                                                                                  100 * worst[1]))
+        if case.startswith("q_sharp_"):
+            sharp.append((case, folder))
+    if not ref:
+        return rows
+    print("\nAgainst the exact sharp cylinder (heading 0): |HAMS - exact| / max |exact| over the pairs, max and median, "
+          "percent; .12d and .11d against the exact total, dir (.12d - .10d) and pot (.11d - .10d) against the exact "
+          "potential part")
+    print("%-26s %-5s %18s %18s %18s" % ("case", "what", "F_x", "F_z", "M_y"))
+    for case, folder in sharp:
+        motion = "fixed" if "_fixed_" in case else "free_damped" if "_damp_" in case else "free"
+        if motion not in ref:
+            print("%-26s no reference for the %s body in %s" % (case, motion, path))
+            continue
+        direct = read_hams(os.path.join(folder, "QTF_Direct.12d"))
+        indirect = read_hams(os.path.join(folder, "QTF_Indirect.11d"))
+        quadratic = read_hams(os.path.join(folder, "QTF_Quadratic.10d"))
+
+        def of(table):
+            return lambda wi, wj, index: lookup(table, wi, wj, index, "diff")
+        sources = [(".12d", of(direct), "total"), (".11d", of(indirect), "total")]
+        if quadratic:
+            sources += [("dir", _difference(of(direct), of(quadratic)), "pot"),
+                        ("pot", _difference(of(indirect), of(quadratic)), "pot")]
+        for label, source, key in sources:
+            cells = []
+            for q, index in QUANTITIES:
+                exact = {p: v[q] for p, v in ref[motion][key].items()}
+                scale = max(abs(v) for v in exact.values())
+                exact = {p: v for p, v in exact.items() if kept(p)}
+                cells.append(_potential_cell({p: source(p[0], p[1], index) for p in exact}, exact, scale))
+            print("%-26s %-5s %18s %18s %18s" % (case, label, *cells))
+    return rows
 
 
 READINGS = (("as-is", False, 1.0), ("conj", True, 1.0), ("-1", False, -1.0), ("-conj", True, -1.0))
@@ -672,12 +803,103 @@ def check_compare_potential():
     return "exact fixture max %.1e %%, swapped ID/B2 seen, fixed case noted" % max(numbers)
 
 
+def check_compare_direct():
+    """compare_direct on a temporary fixture: a reference CSV (free body, quadratic part and five terms, two frequencies) and
+    three cases. q_sharp_direct_free_m1 has T_dir = 1.01 T_pot in its terms files and its .12d: the direct-indirect error is
+    1% at the largest |T_pot| (to the 16 digits of the terms files), .11d against the exact total is 0 and .12d is not.
+    q_sharp_direct_free_m2 has T_dir = -T_pot: 200%. q_round_direct_free_m1 has no terms files, two heading pairs and
+    .12d = .11d: read from the printed files, 0 to their 7 digits. --by-omega prints one line per difference frequency."""
+    import contextlib
+    import io
+    import tempfile
+    pairs = ((0.7, 0.7), (0.7, 0.95), (0.95, 0.95))
+    rng = np.random.default_rng(5)
+    quad = {p: {q: complex(*rng.normal(size=2)) for q, _ in QUANTITIES} for p in pairs}
+    terms = {p: {q: [complex(*rng.normal(size=2)) if p[0] != p[1] else 0j for _ in POTENTIAL_TERMS]
+                 for q, _ in QUANTITIES} for p in pairs}
+
+    def internal(wi, wj, q, what):
+        if (wi, wj) in quad:
+            return what(wi, wj, q)
+        return what(wj, wi, q).conjugate()
+    with tempfile.TemporaryDirectory() as d:
+        ref_path = os.path.join(d, "ref.csv")
+        cols = ["motion", "omega_i", "omega_j", "kernel"] + ["%s_%s" % (q, part) for q, _ in QUANTITIES for part in ("re", "im")]
+        cols += ["%s_%s_%s" % (q, t, part) for q, _ in QUANTITIES for t in POTENTIAL_TERMS for part in ("re", "im")]
+        with open(ref_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(cols)
+            for wi, wj in pairs:
+                row = ["free", wi, wj, "diff"]
+                for q, _ in QUANTITIES:
+                    row += [quad[wi, wj][q].real, quad[wi, wj][q].imag]
+                for q, _ in QUANTITIES:
+                    for t in range(len(POTENTIAL_TERMS)):
+                        row += [terms[wi, wj][q][t].real, terms[wi, wj][q][t].imag]
+                w.writerow(row)
+        for case, factor, headings, with_terms in (("q_sharp_direct_free_m1", 1.01, (0.0,), True),
+                                                   ("q_sharp_direct_free_m2", -1.0, (0.0,), True),
+                                                   ("q_round_direct_free_m1", 1.0, (0.0, 30.0), False)):
+            folder = os.path.join(d, "results", case, "output", "Wamit_format")
+            os.makedirs(folder)
+            names = ["QTF_Quadratic.10d", "QTF_Indirect.11d", "QTF_Direct.12d"]
+            if with_terms:
+                names += ["QTF_PotentialTerms.txt", "QTF_DirectTerms.txt"]
+            files = {name: open(os.path.join(folder, name), "w") for name in names}
+            for wi in (0.7, 0.95):
+                for wj in (0.7, 0.95):
+                    for beta in headings:
+                        for q, index in QUANTITIES:
+                            a = internal(wi, wj, q, lambda x, y, z: quad[x, y][z])
+                            tt = [internal(wi, wj, q, lambda x, y, z, t=t: terms[x, y][z][t]) for t in range(5)]
+                            if beta:   # another heading pair: other values, the same structure
+                                a, tt = 2.0 * a, [0.5 * v for v in tt]
+                            pot = sum(tt)
+                            for name, v in (("QTF_Quadratic.10d", a), ("QTF_Indirect.11d", a + pot),
+                                            ("QTF_Direct.12d", a + factor * pot)):
+                                v = v.conjugate()
+                                files[name].write("%14.6E%14.6E%14.6E%14.6E%6d%14.6E%14.6E%14.6E%14.6E\n" % (
+                                    wi, wj, beta, beta, index, abs(v), 0.0, v.real, v.imag))
+                            if with_terms and wi != wj:
+                                key = "%14.6E%14.6E%14.6E%14.6E%6d" % (wi, wj, beta, beta, index)
+                                files["QTF_PotentialTerms.txt"].write(key + "".join(
+                                    "%24.15E%24.15E" % (v.real, -v.imag) for v in tt) + "\n")
+                                parts = (factor * tt[0], factor * (pot - tt[0]))
+                                files["QTF_DirectTerms.txt"].write(key + "".join(
+                                    "%24.15E%24.15E" % (v.real, -v.imag) for v in parts) + "\n")
+            for f in files.values():
+                f.close()
+        text = io.StringIO()
+        with contextlib.redirect_stdout(text):
+            rows = dict(compare_direct(os.path.join(d, "results"), ref_path, 0.3, by_omega=True))
+    lines = text.getvalue().splitlines()
+    one, flipped, round_ = rows["q_sharp_direct_free_m1"], rows["q_sharp_direct_free_m2"], rows["q_round_direct_free_m1"]
+    assert all(abs(c[0] - 0.01) < 1e-12 for c in one), "T_dir = 1.01 T_pot: %s" % (one,)
+    assert all(abs(c[0] - 2.0) < 1e-12 for c in flipped), "T_dir = -T_pot: %s" % (flipped,)
+    assert all(c[0] < 1e-5 for c in round_), "T_dir = T_pot, printed files: %s" % (round_,)
+    assert any(l.startswith("q_round_direct_free_m1") and " files " in l for l in lines), "round case not from the files"
+    assert sum(1 for l in lines if l.strip().startswith("Omega")) == 3, "one --by-omega line per case and Omega"
+
+    def cells(case, what):
+        found = [l for l in lines if l.startswith(case + " ") and l.split()[1] == what]
+        assert len(found) == 1, "no %s row of %s" % (what, case)
+        return [float(x) for x in found[0].split()[2:]]
+    assert max(cells("q_sharp_direct_free_m1", ".11d")) <= 1e-4, "the .11d of the fixture is the exact total"
+    assert max(cells("q_sharp_direct_free_m1", "pot")) <= 1e-4, "the .11d - .10d of the fixture is the exact potential part"
+    assert max(cells("q_sharp_direct_free_m1", "dir")[0::2]) > 0.5, "1% of T_pot off the exact potential part"
+    assert not any(l.startswith("q_round_direct") for l in lines[lines.index(next(l for l in lines if "exact sharp" in l)):]), \
+        "the rounded hull has no exact reference"
+    return "1.01 T_pot gives %.4f%%, -T_pot %.1f%%, printed files %.1e%%, exact rows of the sharp cases only" % (
+        100 * one[0][0], 100 * flipped[0][0], 100 * max(c[0] for c in round_))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     if argv is None and sys.argv[1:2] == ["check"]:
         print("compare_potential    %s" % check_compare_potential())
         print("against_nemoh        %s" % check_against_nemoh())
         print("against_wamit        %s" % check_against_wamit())
+        print("compare_direct       %s" % check_compare_direct())
         return 0
     parser.add_argument("results")
     parser.add_argument("--reference", help="CSV of truncated_cylinder_reference.py qtf (needed without --potential)")
@@ -691,6 +913,11 @@ def main(argv=None):
     parser.add_argument("--against-nemoh", metavar="FOLDER",
                         help="compare QTF_Indirect.11d of q_<hull>_* with Nemoh's nemoh_<hull>_* under FOLDER (no exact "
                              "reference)")
+    parser.add_argument("--direct", nargs="?", const="", metavar="CSV",
+                        help="compare QTF_Direct.12d of the q_*direct* cases with QTF_Indirect.11d of the same run, and, "
+                             "given the CSV of truncated_cylinder_reference.py qtf-potential, both with the exact reference")
+    parser.add_argument("--by-omega", action="store_true",
+                        help="with --direct: also the largest direct-indirect error at each difference frequency")
     parser.add_argument("--against-wamit", metavar="FILE",
                         help="compare QTF_Indirect.11d and QTF_Quadratic.10d of q_<hull>_* with a WAMIT .12d file")
     parser.add_argument("--hull", help="with --against-nemoh or --against-wamit: the hull of the case names (default oc4, "
@@ -702,6 +929,9 @@ def main(argv=None):
                              "against the exact reference; never chosen by agreement with HAMS); with --against-wamit: "
                              "WAMIT's (default as-is, as written)")
     args = parser.parse_args(argv)
+    if args.direct is not None:
+        rows = compare_direct(args.results, args.direct or None, args.max_dw, args.exclude, args.by_omega)
+        return 0 if rows else 1
     if args.against_wamit:
         rows = compare_against_wamit(args.results, args.against_wamit, args.max_dw, args.max_omega, args.exclude,
                                      args.hull or "oc4w", args.reading)

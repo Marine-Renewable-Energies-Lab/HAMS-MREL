@@ -373,6 +373,22 @@ OC4W_FREQUENCIES = tuple(round(0.25 + 0.05 * i, 4) for i in range(34))
 # Powers of the edge-graded meshes of the QTF potential study (make_mesh.cylinder edge_power)
 EDGE_POWERS = (2.5, 3)
 
+# The direct method (Phase 7a): QTF_Direct.12d beside QTF_Indirect.11d. qtf_b2 = body, so that .11d has the B2 of the
+# direct method (the hull form by Stokes) and .12d - .11d is the difference of the methods only; .12d does not depend on
+# qtf_b2. No control surface is built, so C and F need no fixing at m2 and m3. The edge weights are off, as in the
+# fixtures of the method
+DIRECT_OPTIONS = dict(qtf_b2="body", qtf_edge_weights="off", qtf_direct=1)
+# The rounded hull of the fixture qtf_direct_round (qtf_round_body: 0.70, 0.95, 1.10 rad/s, headings 0 and 30): 4.0% at
+# 480 panels, 1.27e-2 with 8 bottom rings, 8.1e-3 at 1920 panels (Task 5 scratch runs); m2 and m3 show the plan's 1%
+DIRECT_ROUND_FREQUENCIES = (0.70, 0.95, 1.10)
+# IRSP = 1 across the first irregular frequency of the sharp hull, 1.548 rad/s (IRREGULAR_FREQUENCIES): the pairs of 0.20
+# with 1.700 to 1.800 rad/s by 0.005 have Omega = 1.500 to 1.600 by 0.005, so the direct solve at Omega crosses it (the
+# discrete irregular frequency of a mesh lies near, not at, 1.548; Task 5 found a spike of 15% without the lid, 6% at
+# 0.0025 from it, on another hull). The first-order frequencies lie between the first two irregular frequencies, 1.548 and
+# 1.939; the pairs among them add Omega = 0.005 to 0.100. 22 frequencies, 41 Omega. Velocity by differencing:
+# velocity_method = source rejects IRSP = 1
+DIRECT_IRSP_FREQUENCIES = (0.20,) + tuple(round(1.70 + 0.005 * i, 4) for i in range(21))
+
 
 def qtf_potential_cases():
     """The cases of the QTF potential study (--qtf-potential): the sharp hull of qtf_cases, fixed and free, source velocity,
@@ -381,7 +397,9 @@ def qtf_potential_cases():
     surface integral) at m1 and m2, from 0.01 rad/s (QTF_POTENTIAL_NEMOH_RANGE). The exact reference is
     truncated_cylinder_reference.py qtf-potential; qtf_compare.py --potential compares them. The OC4 semisubmersible
     (q_oc4_*, nemoh_oc4_*) has no exact reference: qtf_compare.py --against-nemoh compares HAMS with Nemoh on it. q_oc4w_*
-    is OC4 with the matrices of the OpenFAST WAMIT run: qtf_compare.py --against-wamit compares it with that run's .12d."""
+    is OC4 with the matrices of the OpenFAST WAMIT run: qtf_compare.py --against-wamit compares it with that run's .12d.
+    q_*_direct_* (group D) add QTF_Direct.12d (qtf_direct = 1, DIRECT_OPTIONS): qtf_compare.py --direct compares it with
+    QTF_Indirect.11d of the same run and with the exact reference."""
     grid = tuple(round(w, 4) for w in nemoh_frequencies(QTF_FREQUENCY_RANGE))
     chosen = []
     for motion in ("fixed", "free"):
@@ -434,6 +452,20 @@ def qtf_potential_cases():
     for m in (1, 2):
         chosen.append(Case("q_oc4w_free_%s" % tag(m), "P", "5", "oc4w", m, "free", "source", frequencies=OC4W_FREQUENCIES,
                            headings=(0.0,), qtf=1, qtf_terms="body", extra_options=dict(cs_shape="file", qtf_max_dw=0)))
+    # The direct method (DIRECT_OPTIONS): the free sharp hull of q_sharp_free_src_m* at m1 to m3 (qtf_compare.py --direct
+    # with the exact reference), the rounded hull of qtf_direct_round at m1 to m3, and IRSP = 1 across an irregular
+    # frequency of Omega (DIRECT_IRSP_FREQUENCIES, every pair, qtf_compare.py --direct --by-omega)
+    for m in (1, 2, 3):
+        chosen.append(Case("q_sharp_direct_free_%s" % tag(m), "D", "7a", "sharp", m, "free", "source", frequencies=grid,
+                           headings=(0.0,), qtf=1, qtf_terms="body", qtf_max_dw=QTF_POTENTIAL_MAX_DW,
+                           extra_options=DIRECT_OPTIONS))
+    for m in (1, 2, 3):
+        chosen.append(Case("q_round_direct_free_%s" % tag(m), "D", "7a", "round", m, "free", "source",
+                           frequencies=DIRECT_ROUND_FREQUENCIES, headings=(0.0, 30.0), qtf=1, qtf_terms="body",
+                           qtf_max_dw=QTF_POTENTIAL_MAX_DW, extra_options=DIRECT_OPTIONS))
+    chosen.append(Case("q_sharp_direct_irsp_m1", "D", "7a", "sharp", 1, "free", "differencing",
+                       frequencies=DIRECT_IRSP_FREQUENCIES, headings=(0.0,), irsp=1, qtf=1, qtf_terms="body",
+                       extra_options=dict(DIRECT_OPTIONS, qtf_max_dw=0)))
     return chosen
 
 
@@ -474,7 +506,25 @@ def laptop_seconds(case):
     if case.qtf_terms == "body":
         # one radiation-only solve per difference frequency up to qtf_max_dw, taken at the cost of a frequency [inferred]
         seconds += (TIME_N0 + TIME_N2 * n ** 2 + TIME_N3 * n ** 3) * len(difference_frequencies(case))
+    if case.extra_options.get("qtf_direct") == 1:
+        seconds += DIRECT_PAIR_N2 * n ** 2 * direct_pairs(case)
     return seconds
+
+
+# The direct solve (qtf_direct = 1) after the radiation-only solve of each Omega, which it shares: laptop, 8 threads,
+# q_sharp_direct_free_m1 (448 panels, 30 Omega, 5130 pairs): 36.8 s in all (B2 right side 32.9 s, forcing 3.3 s, solve
+# 0.4 s), of a 746 s run. Taken as N^2 per pair: the right side sums stored panel integrals over the panels for each field
+# point and pair, and two pairs at 448 and 1792 panels (qtf_direct_sharp_m1, _m2, 4 threads) took 0.37-0.87 s and
+# 6.3-7.6 s per Omega, 16 times for 4 times the panels
+DIRECT_PAIR_N2 = 36.8 / (5130 * 448 ** 2)
+
+
+def direct_pairs(case):
+    """Pairs of the direct solve: (omega_i, omega_j) with omega_i /= omega_j within qtf_max_dw (all if None or 0), both
+    orders, per heading (heading pairs of mean_drift = 1)."""
+    top = case.qtf_max_dw or case.extra_options.get("qtf_max_dw") or float("inf")
+    count = sum(1 for a in case.frequencies for b in case.frequencies if 0.0 < abs(b - a) <= top * (1 + 1e-9))
+    return count * len(case.headings)
 
 
 def difference_frequencies(case):
