@@ -151,7 +151,7 @@ class Case:
         self.control = control   # None, "green" or "source": the cs_velocity of drift_methods = control
         self.qtf = qtf           # qtf of SecondOrder.in: 0 off, 3 both quadratic QTFs
         self.nemoh_range = nemoh_range or NEMOH_FREQUENCY_RANGE   # (low, high, count) of a Nemoh run
-        self.qtf_terms = qtf_terms     # qtf_terms of SecondOrder.in: None (not written, quadratic) or "body"
+        self.qtf_terms = qtf_terms     # qtf_terms of SecondOrder.in: None (not written, quadratic), "body" or "full"
         self.qtf_max_dw = qtf_max_dw   # qtf_max_dw of SecondOrder.in, or None (not written)
         self.nemoh_contrib = nemoh_contrib   # Nemoh's QTF terms: 1 DUOK, 2 DUOK + HASBO (NEMOH_QTF_TERMS)
         self.edge_power = edge_power   # sharp hull only: power-law rows toward the bilge (make_mesh.cylinder), None for cosine
@@ -434,6 +434,49 @@ def qtf_potential_cases():
     for m in (1, 2):
         chosen.append(Case("q_oc4w_free_%s" % tag(m), "P", "5", "oc4w", m, "free", "source", frequencies=OC4W_FREQUENCIES,
                            headings=(0.0,), qtf=1, qtf_terms="body", extra_options=dict(cs_shape="file", qtf_max_dw=0)))
+    chosen += qtf_full_cases(grid)
+    return chosen
+
+
+# Phase 6a, qtf_terms = full (QTF_Indirect.11d with the free-surface integral; QTF_PotentialTerms.txt with FS_inner and
+# FS_outer). Default inner mesh: generated, panels lambda/10 at the largest frequency (lambda 31.4 m at 1.40 rad/s, depth
+# 100 m, so 3.14 m at the circle), radial rows the fewest for which the outer row is not thicker than that, at least 2, and R =
+# r_wl + max(0.5 r_wl, 2 x the largest hull panel size) = 15 m at m1 (r_wl = 10 m): 3 rows across the 5 m, the outer one 2.86 m
+# thick (build_fs_inner, ControlSurfaceMesh.f90; grading 4 from the outer to the inner row).
+# The convergence study of the inner mesh (fsA, fsB, fsC at m1, the default R) has one key to turn, qtf_fs_rows, the radial rows
+# (a larger value is kept). The angles of the generated mesh are not a key: the chords of the polygon on the circle are lambda/10
+# at the largest frequency (30 of them at R = 15 m), and the columns follow the hull waterline segments and those chord vertices
+# (strip_columns), so the angular refinement of the hull mesh is not reachable here. A mesh of FSInnerMesh.pnl would do it, but
+# no case writes one. So B and C refine the radial rows only, and the cases with the radial rows or the angles alone
+# (fsR, fsT) are not defined: fsR would be fsC, and fsT cannot be set.
+#   fsA  default: qtf_fs_rows 0 (3 rows at R = 15 m), outer row 2.86 m (lambda/11)
+#   fsB  qtf_fs_rows 6, outer row 1.49 m (lambda/21), the smallest count for lambda/20
+#   fsC  qtf_fs_rows 9, outer row 1.01 m (lambda/31), the smallest count for lambda/30
+# (outer row = (q^n - q^(n-1))/(q^n - 1) (R - r_wl), q = 4^(1/(n-1)), the rule of build_fs_inner.)
+FS_ROWS_STUDY = (("fsA", 0), ("fsB", 6), ("fsC", 9))
+# Radius study at m1: the default rows of each R, so the rows grow with R - r_wl (R = 15 m: 3 rows, 20 m: 6, 30 m: 12; R = 15 m is the default of m1, so R15 repeats the default case)
+FS_RADII = (15.0, 20.0, 30.0)
+
+
+def qtf_full_cases(grid):
+    """The cases of qtf_terms = full on the sharp hull (Phase 6a), difference QTF on QTF_FREQUENCY_RANGE, qtf_max_dw
+    QTF_POTENTIAL_MAX_DW, source velocity: q_sharp_full_{fixed,free}_m{1,2,3} (the fixed control surface CS_FIXED_M1 at m2
+    and m3, as q_sharp_free_fixc_*), the inner-mesh study q_sharp_full_free_fs{A,B,C}_m1 (FS_ROWS_STUDY) and the radius study
+    q_sharp_full_free_R{15,20,30}_m1. qtf_compare.py --potential compares them with the exact reference of
+    truncated_cylinder_reference.py qtf-potential --free-surface (R 20 m there; the free surface integral does not depend on
+    the split). The cost estimate is that of qtf_terms = body: the free-surface passes (fields at the inner points, per
+    frequency pair and per difference frequency) are not modelled, and not measured yet."""
+    def case(name, motion, m, **extra):
+        return Case(name, "P", "6", "sharp", m, motion, "source", frequencies=grid, headings=(0.0,), qtf=1, qtf_terms="full",
+                    qtf_max_dw=QTF_POTENTIAL_MAX_DW, extra_options=extra or None)
+    chosen = []
+    for motion in ("fixed", "free"):
+        for m in (1, 2, 3):
+            chosen.append(case("q_sharp_full_%s_%s" % (motion, tag(m)), motion, m, **(CS_FIXED_M1 if m > 1 else {})))
+    for label, rows in FS_ROWS_STUDY:
+        chosen.append(case("q_sharp_full_free_%s_m1" % label, "free", 1, **dict(qtf_fs_rows=rows) if rows else {}))
+    for radius in FS_RADII:
+        chosen.append(case("q_sharp_full_free_R%d_m1" % radius, "free", 1, qtf_fs_radius=radius))
     return chosen
 
 
@@ -471,7 +514,7 @@ def laptop_seconds(case):
     if case.velocity == "source":
         per_frequency += SOURCE_N2 * n ** 2 + SOURCE_N3 * n ** 3
     seconds = per_frequency * len(case.frequencies)
-    if case.qtf_terms == "body":
+    if case.qtf_terms in ("body", "full"):
         # one radiation-only solve per difference frequency up to qtf_max_dw, taken at the cost of a frequency [inferred]
         seconds += (TIME_N0 + TIME_N2 * n ** 2 + TIME_N3 * n ** 3) * len(difference_frequencies(case))
     return seconds
@@ -501,7 +544,7 @@ B2_PASS_SECONDS = 25.0 / (1792 * 1416)
 
 def b2_snellius_hours(case):
     points = HULLS[case.hull].get("cf_points")
-    if case.qtf_terms != "body" or not points:
+    if case.qtf_terms not in ("body", "full") or not points:
         return 0.0
     passes = len(case.frequencies) + len(difference_frequencies(case))
     return B2_PASS_SECONDS * panels_of(case) * points[case.multiple] * passes / 3600.0
@@ -1395,6 +1438,7 @@ def job_table(tier, markdown, control=None, qtf=False):
             setting.append("qtf %d" % case.qtf)
         if case.qtf_terms:
             setting.append("qtf_terms %s, %d Omega" % (case.qtf_terms, len(difference_frequencies(case))))
+            setting += ["%s %s" % item for item in sorted(case.extra_options.items()) if item[0].startswith("qtf_fs_")]
             if case.solver == "hams" and HULLS[case.hull].get("cf_points"):
                 setting.append("C+F %d" % HULLS[case.hull]["cf_points"][case.multiple])
         if case.solver == "nemoh":

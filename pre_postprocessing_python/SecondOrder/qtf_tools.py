@@ -64,12 +64,14 @@ def read_qtf(path):
 
 
 POTENTIAL_TERMS = ("FK", "ID", "B1", "B2", "B3")   # the terms of QTF_PotentialTerms.txt, in their order
+FS_TERMS = ("FS_inner", "FS_outer")   # two more, after B3, with qtf_terms = full
 
 
 def read_qtf_terms(path):
     """{(oufr1, oufr2, beta1, beta2, I): [complex] * 5} of QTF_PotentialTerms.txt (qtf_terms = body, write_terms >= 1):
     the file values of the terms POTENTIAL_TERMS (Froude-Krylov of phi_I2, incident diffraction, B1, B2, B3), scaled and
-    conjugated as QTF_Quadratic.10d, 16 digits. Lines starting with # are the header. The rows are in ascending
+    conjugated as QTF_Quadratic.10d, 16 digits. With qtf_terms = full the file has FS_TERMS (inner and outer free-surface
+    integral) after B3, and the lists have 7 values. Lines starting with # are the header. The rows are in ascending
     |omega_1 - omega_2|, not in the order of .11d, so they are matched by key; keys rounded as read_qtf."""
     out = {}
     with open(path) as f:
@@ -77,10 +79,10 @@ def read_qtf_terms(path):
             if line.lstrip().startswith("#"):
                 continue
             p = line.split()
-            if len(p) != 5 + 2 * len(POTENTIAL_TERMS):
+            if len(p) not in (5 + 2 * len(POTENTIAL_TERMS), 5 + 2 * (len(POTENTIAL_TERMS) + len(FS_TERMS))):
                 continue
             key = (round(float(p[0]), 6), round(float(p[1]), 6), round(float(p[2]), 6), round(float(p[3]), 6), int(p[4]))
-            out[key] = [complex(float(p[5 + 2 * t]), float(p[6 + 2 * t])) for t in range(len(POTENTIAL_TERMS))]
+            out[key] = [complex(float(p[5 + 2 * t]), float(p[6 + 2 * t])) for t in range((len(p) - 5) // 2)]
     return out
 
 
