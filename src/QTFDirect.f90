@@ -165,9 +165,10 @@ CONTAINS
       REAL(8), INTENT(IN) :: edge_deg
       INTEGER, INTENT(OUT), OPTIONAL :: nmask
 
-      ! With IRSP = 1 the lid rows of the right side need lid points. A single body has its count here; several bodies get
-      ! theirs after the set-up, so direct_at_omega makes the same check for them.
-      IF (mesh%nbody == 1) CALL check_lid(.FALSE.)
+      ! With IRSP = 1 the lid rows of the right side need lid points: stop before the first-order solves if there are none.
+      ! The counts are known here: iNELEM, and iNELEM_TOTAL for several bodies (HAMS_Prog sums it while it reads the
+      ! meshes, before so_setup_multi). direct_at_omega checks again, for callers without the set-up.
+      CALL check_lid(mesh%nbody > 1)
       IF (ALLOCATED(edge_mask)) DEALLOCATE (edge_mask)
       CALL sharp_edge_panels(mesh, edge_deg, edge_mask)
       IF (PRESENT(nmask)) nmask = COUNT(edge_mask)
