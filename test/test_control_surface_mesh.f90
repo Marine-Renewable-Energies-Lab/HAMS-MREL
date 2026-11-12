@@ -43,6 +43,8 @@ subroutine collect_control_surface_mesh(testsuite)
     new_unittest("fs_file_off_free_surface_stops", test_fs_file_off_free_surface_stops), &
     new_unittest("fs_inner_area", test_fs_inner_area), &
     new_unittest("fs_inner_outside_waterplane", test_fs_inner_outside_waterplane), &
+    new_unittest("fs_inner_panel_key", test_fs_inner_panel_key), &
+    new_unittest("fs_inner_panel_too_large_stops", test_fs_inner_panel_too_large_stops), &
     new_unittest("fs_inner_file_two_bodies", test_fs_inner_file_two_bodies), &
     new_unittest("fs_inner_file_in_waterplane_stops", test_fs_inner_file_in_waterplane_stops), &
     new_unittest("fs_two_bodies_generated_stops", test_fs_two_bodies_generated_stops), &
@@ -829,6 +831,70 @@ subroutine test_fs_inner_area(error)
   write (line, '(a,3es24.15,i6,i8)') 'sum, expected, awp, np, n: ', sum(pts%w), apoly - geom%awp(1), geom%awp(1), np, pts%n
   call check(error, abs(sum(pts%w) - (apoly - geom%awp(1))) < 1d-10*apoly, "weights = polygon area - awp: "//trim(line))
 end subroutine test_fs_inner_area
+
+!> qtf_fs_panel sets the panel size of the generated inner mesh: 0 gives the lambda/10 mesh (its chords np = ceil(2 pi R/ps)
+!> with ps = lambda/10; the code path is the old one), a set size gives the chords np = ceil(2 pi R/ps) (weights sum to the polygon area minus
+!> the waterplane) and more panels for a smaller size.
+subroutine test_fs_inner_panel_key(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(so_options) :: opts
+  type(cs_points) :: p0, p1, p2
+  real(8) :: centre(2), radius, lam, om, apoly
+  integer :: np, np0, np2, nr0, nr2
+  logical :: ok
+  character(len=:), allocatable :: msg
+
+  call delete_inner_file()
+  call make_cylinder(5d0, 3d0, 32, 2, 2, mesh, .true.)
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call check(error, ok, "geometry")
+  if (allocated(error)) return
+  opts%qtf_fs_radius = 15d0
+  lam = 3d0
+  om = sqrt(2d0*pi*9.80665d0/lam)
+  call build_fs_inner(mesh, geom, opts, -1d0, '.', p0, centre, radius, ok, msg, omega_max=om, np_circle=np0, n_rows=nr0)
+  call check(error, ok, "default: "//msg)
+  if (allocated(error)) return
+  call check(error, np0 == max(8, ceiling(2d0*pi*15d0/(lam/10d0))), "0: the chords of the lambda/10 mesh")
+  if (allocated(error)) return
+  opts%qtf_fs_panel = 0d0
+  call build_fs_inner(mesh, geom, opts, -1d0, '.', p1, centre, radius, ok, msg, omega_max=om)
+  call check(error, ok .and. p1%n == p0%n .and. all(p1%x == p0%x) .and. all(p1%w == p0%w), "0 twice: the same mesh")
+  if (allocated(error)) return
+  opts%qtf_fs_panel = lam/20d0
+  call build_fs_inner(mesh, geom, opts, -1d0, '.', p2, centre, radius, ok, msg, omega_max=om, np_circle=np2, n_rows=nr2)
+  call check(error, ok, "lambda/20: "//msg)
+  if (allocated(error)) return
+  np = max(8, ceiling(2d0*pi*15d0/(lam/20d0)))
+  call check(error, np2 == np .and. np2 > np0 .and. nr2 >= nr0 .and. p2%n > p0%n, "chords and panels grow with a smaller size")
+  if (allocated(error)) return
+  apoly = 0.5d0*np*15d0**2*sin(2d0*pi/np)
+  call check(error, abs(sum(p2%w) - (apoly - geom%awp(1))) < 1d-10*apoly, "weights = polygon area - awp")
+end subroutine test_fs_inner_panel_key
+
+!> A panel size not below R - r_wl stops with a message that names qtf_fs_panel.
+subroutine test_fs_inner_panel_too_large_stops(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(so_options) :: opts
+  type(cs_points) :: pts
+  real(8) :: centre(2), radius
+  logical :: ok
+  character(len=:), allocatable :: msg
+
+  call delete_inner_file()
+  call make_cylinder(5d0, 3d0, 32, 2, 2, mesh, .true.)
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  opts%qtf_fs_radius = 15d0
+  opts%qtf_fs_panel = 10d0       ! R - r_wl = 10 m
+  call build_fs_inner(mesh, geom, opts, -1d0, '.', pts, centre, radius, ok, msg, omega_max=1.5d0)
+  call check(error, .not. ok, "a panel size equal to R - r_wl stops")
+  if (allocated(error)) return
+  call check(error, index(msg, 'qtf_fs_panel') > 0 .and. index(msg, 'R - r_wl') > 0, "message: "//msg)
+end subroutine test_fs_inner_panel_too_large_stops
 
 !> Every point of the generated inner mesh is outside the waterplane (winding number of body_winding, Phase 5b) and inside
 !> R, here for a box hull with the automatic R = r_wl + max(0.5 r_wl, 2 x largest hull panel size).

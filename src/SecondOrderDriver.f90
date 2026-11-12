@@ -198,7 +198,7 @@ CONTAINS
             ' the difference QTF and qtf_b2 = control only.'
       END IF
       IF (opts%qtf_fs_given .AND. .NOT. (opts%qtf_terms == QTF_TERMS_FULL .AND. (opts%qtf == 1 .OR. opts%qtf == 3))) THEN
-         WRITE (*, '(a)') ' QTF note: qtf_fs_radius, qtf_fs_rows, qtf_fs_modes and qtf_fs_evanescent are ignored; they apply'// &
+         WRITE (*, '(a)') ' QTF note: qtf_fs_radius, qtf_fs_rows, qtf_fs_panel, qtf_fs_modes and qtf_fs_evanescent are ignored; they apply'// &
             ' with qtf_terms = full and the difference QTF only.'
       END IF
       ALLOCATE (states(MERGE(NBETA, 1, keep_all_headings(opts))))
@@ -417,9 +417,9 @@ CONTAINS
          ! The generated mesh (panels of lambda/10 at omega_max) is not converged for the free-surface terms: on the
          ! smoke case (qtf_round_body with full) they were 55-180 % off a lambda/30 mesh (Task 8 report). Its panel
          ! size is set in a later task; until then, say so in the log, with the radial rows
-         WRITE (*, '(a,I0,a)') ' QTF free surface warning: the generated inner mesh (panels of lambda/10 at the largest'// &
-            ' frequency, ', nrows, ' radial rows) is not converged for the free-surface terms of QTF_Indirect.11d; on a'// &
-            ' test case they were 55-180 % off a mesh of lambda/30.'
+         IF (opts%qtf_fs_panel <= 0D0) WRITE (*, '(a,I0,a)') ' QTF free surface warning: the generated inner mesh (panels of'// &
+            ' lambda/10 at the largest frequency, ', nrows, ' radial rows) is not converged for the free-surface terms of'// &
+            ' QTF_Indirect.11d; on a test case they were 55-180 % off a mesh of lambda/30 (set qtf_fs_panel to refine it).'
          IF (nrows < FS_FEW_ROWS) WRITE (*, '(a,I0,a)') ' QTF free surface warning: only ', nrows, &
             ' radial rows between the waterline and R: raise qtf_fs_rows (at least 4), or give FSInnerMesh.pnl.'
       END IF

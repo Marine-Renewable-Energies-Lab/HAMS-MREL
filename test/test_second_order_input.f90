@@ -563,7 +563,7 @@ subroutine test_qtf_terms_full_accepted(error)
     call check(error, opts%qtf_terms, QTF_TERMS_FULL, "qtf_terms = full")
     if (allocated(error)) return
     call check(error, opts%qtf_fs_radius == 0d0 .and. opts%qtf_fs_rows == 0 .and. opts%qtf_fs_modes == 0 .and. &
-               opts%qtf_fs_evanescent == 0 .and. .not. opts%qtf_fs_given, "free-surface key defaults")
+               opts%qtf_fs_evanescent == 0 .and. opts%qtf_fs_panel == 0d0 .and. .not. opts%qtf_fs_given, "free-surface key defaults")
     if (allocated(error)) return
     call validate_second_order(opts, 1, 100d0, 1, 0, .false., ok, msg)
     call check(error, ok, "qtf_terms = full not validated: "//trim(msg))
@@ -619,18 +619,21 @@ subroutine test_qtf_fs_keys_ranges(error)
   call remove_directory(root)
   call make_directory(root)
   call write_input(root, [character(len=40) :: base, "qtf_fs_radius = 12.5", "qtf_fs_rows = 20", "qtf_fs_modes = 16", &
-                          "qtf_fs_evanescent = 4"])
+                          "qtf_fs_evanescent = 4", "qtf_fs_panel = 1.5"])
   call read_second_order_options(root, opts, ok, msg)
   call check(error, ok, "keys rejected: "//trim(msg))
   if (allocated(error)) return
   call check(error, opts%qtf_fs_radius == 12.5d0 .and. opts%qtf_fs_rows == 20 .and. opts%qtf_fs_modes == 16 .and. &
-             opts%qtf_fs_evanescent == 4 .and. opts%qtf_fs_given, "key values")
+             opts%qtf_fs_evanescent == 4 .and. opts%qtf_fs_panel == 1.5d0 .and. opts%qtf_fs_given, "key values")
   if (allocated(error)) return
   call expect_read_message(error, root, [character(len=40) :: base, "qtf_fs_radius = -1"], &
                            "qtf_fs_radius must not be negative in SecondOrder.in.")
   if (allocated(error)) return
   call expect_read_message(error, root, [character(len=40) :: base, "qtf_fs_rows = -1"], &
                            "qtf_fs_rows must not be negative in SecondOrder.in.")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: base, "qtf_fs_panel = -0.5"], &
+                           "qtf_fs_panel must not be negative in SecondOrder.in.")
   if (allocated(error)) return
   call expect_read_message(error, root, [character(len=40) :: base, "qtf_fs_modes = -2"], &
                            "qtf_fs_modes must not be negative in SecondOrder.in.")

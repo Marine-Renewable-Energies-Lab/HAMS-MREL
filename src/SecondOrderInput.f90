@@ -121,6 +121,9 @@ CONTAINS
       ELSE IF (opts%qtf_fs_rows < 0) THEN
          ok = .FALSE.
          msg = 'qtf_fs_rows must not be negative in SecondOrder.in.'
+      ELSE IF (opts%qtf_fs_panel < 0D0) THEN
+         ok = .FALSE.
+         msg = 'qtf_fs_panel must not be negative in SecondOrder.in.'
       ELSE IF (opts%qtf_fs_modes < 0) THEN
          ok = .FALSE.
          msg = 'qtf_fs_modes must not be negative in SecondOrder.in.'
@@ -224,6 +227,9 @@ CONTAINS
          opts%qtf_fs_given = .TRUE.
       CASE ('qtf_fs_rows')
          READ(value, *, IOSTAT=ios) opts%qtf_fs_rows
+         opts%qtf_fs_given = .TRUE.
+      CASE ('qtf_fs_panel')
+         READ(value, *, IOSTAT=ios) opts%qtf_fs_panel
          opts%qtf_fs_given = .TRUE.
       CASE ('qtf_fs_modes')
          READ(value, *, IOSTAT=ios) opts%qtf_fs_modes

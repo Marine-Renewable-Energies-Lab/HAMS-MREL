@@ -211,7 +211,7 @@ def compare_potential(results, path, nemoh, max_dw, exclude=None):
     """The --potential tables; see the module docstring. exclude (lo, hi): leave out the pairs with omega_i or omega_j
     in [lo, hi] from the max and median, keeping the scales of all the pairs."""
     ref = read_potential_reference(path, max_dw)
-    print("Potential part (qtf_terms = body), exact sharp cylinder: |HAMS - exact| / max |exact| over the pairs, max and "
+    print("Potential part (qtf_terms = body, or full for the q_sharp_full_* cases), exact sharp cylinder: |HAMS - exact| / max |exact| over the pairs, max and "
           "median, percent; omega_j - omega_i <= %.2f rad/s; a term against the larger of its and T_pot's max" % max_dw)
     if exclude:
         print("Pairs with omega_i or omega_j in [%.3f, %.3f] rad/s left out; scales from all the pairs" % tuple(exclude))
@@ -231,7 +231,9 @@ def compare_potential(results, path, nemoh, max_dw, exclude=None):
         if not indirect:
             print("%-24s no QTF_Indirect.11d" % case)
             continue
-        full = "_full_" in case     # qtf_terms = full: the total and the potential part have the free-surface integral
+        # qtf_terms = full: the total and the potential part have the free-surface integral. The mode is read from the case name
+        # (q_sharp_full_*), not from the files: a full case under another name is compared with the total without FS
+        full = "_full_" in case
         if full and not ref[motion]["FS"]:
             print("%-24s no FS reference (columns Fx_FS_re ... in %s, from qtf-potential --free-surface)" % (case, path))
             continue

@@ -2,13 +2,13 @@
 Convergence study of the mean wave drift: generate the cases, write Slurm scripts, run one case, and collect a table.
 
 Usage:
-    python drift_convergence.py list [--tier full|small] [--markdown] [--control [full|cheap]]
+    python drift_convergence.py list [--tier full|small] [--markdown] [--control [full|cheap]] [--only PREFIX]
     python drift_convergence.py generate <root> [--case NAME | --group GROUP] [--control [full|cheap]]
     python drift_convergence.py run <root> --case NAME --hams <path> [--hams-grn8 <path>] [--nemoh-build <path>] [--threads N]
                                 [--control [full|cheap]]
     python drift_convergence.py calibrate <root> --hams <path> [--threads N]
     python drift_convergence.py slurm <root on the cluster> --repo <path on the cluster> [--out <local folder>]
-                                [--tier full|small] [--account NAME] [--control [full|cheap]]
+                                [--tier full|small] [--account NAME] [--control [full|cheap]] [--only PREFIX]
     python drift_convergence.py collect <root> [--out table.csv] [--control [full|cheap]] [--reference <root>]
 
 Each case is one run of HAMS-MREL or Nemoh, under <root>/<name>. Its input is written when it is first run. A run writes
@@ -443,29 +443,35 @@ def qtf_potential_cases():
 # 100 m, so 3.14 m at the circle), radial rows the fewest for which the outer row is not thicker than that, at least 2, and R =
 # r_wl + max(0.5 r_wl, 2 x the largest hull panel size) = 15 m at m1 (r_wl = 10 m): 3 rows across the 5 m, the outer one 2.86 m
 # thick (build_fs_inner, ControlSurfaceMesh.f90; grading 4 from the outer to the inner row).
-# The convergence study of the inner mesh (fsA, fsB, fsC at m1, the default R) has one key to turn, qtf_fs_rows, the radial rows
-# (a larger value is kept). The angles of the generated mesh are not a key: the chords of the polygon on the circle are lambda/10
-# at the largest frequency (30 of them at R = 15 m), and the columns follow the hull waterline segments and those chord vertices
-# (strip_columns), so the angular refinement of the hull mesh is not reachable here. A mesh of FSInnerMesh.pnl would do it, but
-# no case writes one. So B and C refine the radial rows only, and the cases with the radial rows or the angles alone
-# (fsR, fsT) are not defined: fsR would be fsC, and fsT cannot be set.
-#   fsA  default: qtf_fs_rows 0 (3 rows at R = 15 m), outer row 2.86 m (lambda/11)
-#   fsB  qtf_fs_rows 6, outer row 1.49 m (lambda/21), the smallest count for lambda/20
-#   fsC  qtf_fs_rows 9, outer row 1.01 m (lambda/31), the smallest count for lambda/30
-# (outer row = (q^n - q^(n-1))/(q^n - 1) (R - r_wl), q = 4^(1/(n-1)), the rule of build_fs_inner.)
-FS_ROWS_STUDY = (("fsA", 0), ("fsB", 6), ("fsC", 9))
-# Radius study at m1: the default rows of each R, so the rows grow with R - r_wl (R = 15 m: 3 rows, 20 m: 6, 30 m: 12; R = 15 m is the default of m1, so R15 repeats the default case)
-FS_RADII = (15.0, 20.0, 30.0)
+# Inner-mesh convergence study at m1, the default R. q_sharp_full_free_m1 is the default mesh (A) and, as R = 15 m is the default
+# radius at m1, also the R = 15 m point of the radius study; no separate case repeats it. Two keys turn the mesh: qtf_fs_rows,
+# the radial rows (a larger value is kept), and qtf_fs_panel, the panel size in m (0: lambda/10 at the top frequency), which sets
+# the chords of the polygon on the circle (np = ceil(2 pi R/ps), 30 at R = 15 m by default) and the least rows (the outer row not
+# thicker than ps); the columns also follow the hull waterline segments (strip_columns), which stay as they are.
+#   (A) q_sharp_full_free_m1   defaults: 3 rows at R = 15 m, outer row 2.86 m (lambda/11), 30 chords
+#   fsB  qtf_fs_rows 6, outer row 1.49 m (lambda/21), chords as A: radial rows refined, angles not
+#   fsC  qtf_fs_rows 9, outer row 1.01 m (lambda/31), chords as A
+#   fsP20  qtf_fs_panel 1.5724 (lambda/20 of 31.448 m, lambda at 1.40 rad/s, depth 100 m), rows by the rule: 6 (outer row 1.49 m),
+#          60 chords: rows and angles refined; fsP20 against fsB isolates the angles
+#   fsP30  qtf_fs_panel 1.0483 (lambda/30), rows by the rule: 9, 90 chords; against fsC
+# (outer row = (q^n - q^(n-1))/(q^n - 1) (R - r_wl), q = 4^(1/(n-1)), the rule of build_fs_inner. The angles alone, without
+# more rows, are not a case: a mesh with the rows of A at lambda/20 chords is not reachable, as ps sets both.)
+FS_ROWS_STUDY = (("fsB", dict(qtf_fs_rows=6)), ("fsC", dict(qtf_fs_rows=9)),
+                 ("fsP20", dict(qtf_fs_panel=1.5724)), ("fsP30", dict(qtf_fs_panel=1.0483)))
+# Radius study at m1: the default rows of each R, so the rows grow with R - r_wl (R = 15 m: 3 rows, the default case above;
+# 20 m: 6; 30 m: 12)
+FS_RADII = (20.0, 30.0)
 
 
 def qtf_full_cases(grid):
     """The cases of qtf_terms = full on the sharp hull (Phase 6a), difference QTF on QTF_FREQUENCY_RANGE, qtf_max_dw
     QTF_POTENTIAL_MAX_DW, source velocity: q_sharp_full_{fixed,free}_m{1,2,3} (the fixed control surface CS_FIXED_M1 at m2
-    and m3, as q_sharp_free_fixc_*), the inner-mesh study q_sharp_full_free_fs{A,B,C}_m1 (FS_ROWS_STUDY) and the radius study
-    q_sharp_full_free_R{15,20,30}_m1. qtf_compare.py --potential compares them with the exact reference of
+    and m3, as q_sharp_free_fixc_*), the inner-mesh study q_sharp_full_free_fs{B,C,P20,P30}_m1 (FS_ROWS_STUDY; q_sharp_full_free_m1 is its default mesh) and
+    the radius study q_sharp_full_free_R{20,30}_m1 (q_sharp_full_free_m1 is its R = 15 m point). qtf_compare.py --potential compares them with the exact reference of
     truncated_cylinder_reference.py qtf-potential --free-surface (R 20 m there; the free surface integral does not depend on
     the split). The cost estimate is that of qtf_terms = body: the free-surface passes (fields at the inner points, per
-    frequency pair and per difference frequency) are not modelled, and not measured yet."""
+    frequency pair and per difference frequency) are not modelled, and not measured yet; job_table says so, and the Slurm
+    limit of a full case is FULL_LIMIT_FACTOR times the estimate, at least FULL_LIMIT_FLOOR_H hours."""
     def case(name, motion, m, **extra):
         return Case(name, "P", "6", "sharp", m, motion, "source", frequencies=grid, headings=(0.0,), qtf=1, qtf_terms="full",
                     qtf_max_dw=QTF_POTENTIAL_MAX_DW, extra_options=extra or None)
@@ -473,8 +479,8 @@ def qtf_full_cases(grid):
     for motion in ("fixed", "free"):
         for m in (1, 2, 3):
             chosen.append(case("q_sharp_full_%s_%s" % (motion, tag(m)), motion, m, **(CS_FIXED_M1 if m > 1 else {})))
-    for label, rows in FS_ROWS_STUDY:
-        chosen.append(case("q_sharp_full_free_%s_m1" % label, "free", 1, **dict(qtf_fs_rows=rows) if rows else {}))
+    for label, keys in FS_ROWS_STUDY:
+        chosen.append(case("q_sharp_full_free_%s_m1" % label, "free", 1, **keys))
     for radius in FS_RADII:
         chosen.append(case("q_sharp_full_free_R%d_m1" % radius, "free", 1, qtf_fs_radius=radius))
     return chosen
@@ -1319,9 +1325,24 @@ export OMP_STACKSIZE=1G
 """
 
 
+# qtf_terms = full has the cost of body in this model: the free-surface passes are neither modelled nor measured. Until one is
+# measured, its Slurm limit is this factor times the estimate, with this floor in hours
+FULL_LIMIT_FACTOR = 4.0
+FULL_LIMIT_FLOOR_H = 2.0
+FULL_COST_NOTE = "body cost, FS not modelled"
+
+
+def limit_hours(case):
+    """The Slurm time limit of a case in hours: twice the estimate, at least 30 minutes; for qtf_terms = full FULL_LIMIT_FACTOR
+    times the (body) estimate, at least FULL_LIMIT_FLOOR_H."""
+    if case.qtf_terms == "full":
+        return max(FULL_LIMIT_FLOOR_H, FULL_LIMIT_FACTOR * wall_hours(case))
+    return max(0.5, 2.0 * wall_hours(case))
+
+
 def time_limit(hours):
-    """A Slurm time limit of twice the estimate, at least 30 minutes."""
-    minutes = int(max(30.0, 120.0 * hours))
+    """A Slurm time limit of the given hours (the limit_hours of a case), as H:MM:00."""
+    minutes = int(60.0 * hours)
     return "%d:%02d:00" % (minutes // 60, minutes % 60)
 
 
@@ -1353,7 +1374,8 @@ def write_slurm(args):
     os.makedirs(out, exist_ok=True)
     script = "%s/pre_postprocessing_python/SecondOrder/drift_convergence.py" % args.repo
     extra = "#SBATCH -A %s\n" % args.account if args.account else ""
-    cases = [case for case in cases_of(args.control, study_of(args)) if in_tier(case, args.tier) and case.where == "snellius"]
+    cases = [case for case in cases_of(args.control, study_of(args)) if in_tier(case, args.tier) and case.where == "snellius"
+             and case.name.startswith(args.only or "")]
     head = dict(partition=PARTITION, cpus=CPUS, memory=MEMORY_GB, logs=logs, extra=extra)
 
     src = os.path.join(args.source or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."), "src")
@@ -1378,7 +1400,7 @@ def write_slurm(args):
             continue
         with open(os.path.join(out, label + ".txt"), "w", newline="\n") as f:
             f.write("\n".join(case.name for case in chosen) + "\n")
-        limit = time_limit(max(wall_hours(case) for case in chosen))
+        limit = time_limit(max(limit_hours(case) for case in chosen))
         with open(os.path.join(out, label + ".sbatch"), "w", newline="\n") as f:
             f.write(SBATCH_HEAD.format(name="drift_" + label, limit=limit, log="%A_%a.log",
                                        **dict(head, extra="#SBATCH --array=1-%d%%8\n%s" % (len(chosen), extra))))
@@ -1394,7 +1416,7 @@ def write_slurm(args):
             raise ValueError("%s has %d Nemoh runs for %d CPUs" % (label, len(chosen), NEMOH_CPUS))
         with open(os.path.join(out, label + ".txt"), "w", newline="\n") as f:
             f.write("\n".join(case.name for case in chosen) + "\n")
-        limit = time_limit(max(wall_hours(case) for case in chosen))
+        limit = time_limit(max(limit_hours(case) for case in chosen))
         with open(os.path.join(out, label + ".sbatch"), "w", newline="\n") as f:
             f.write(SBATCH_HEAD.format(name="drift_" + label, limit=limit, log=label + "_%j.log",
                                        **dict(head, cpus=NEMOH_CPUS, memory=NEMOH_MEMORY_GB)).replace(
@@ -1416,8 +1438,8 @@ def nemoh_batches(cases):
     return sorted(groups.items())
 
 
-def job_table(tier, markdown, control=None, qtf=False):
-    cases = [case for case in cases_of(control, qtf) if in_tier(case, tier)]
+def job_table(tier, markdown, control=None, qtf=False, only=None):
+    cases = [case for case in cases_of(control, qtf) if in_tier(case, tier) and case.name.startswith(only or "")]
     head = ("Case", "Group", "Q", "Hull", "Motion", "Velocity", "Setting", "Panels", "Freq", "Head", "Wall (h)", "Mem (GB)", "Runs on")
     rows = []
     for case in cases:
@@ -1438,6 +1460,8 @@ def job_table(tier, markdown, control=None, qtf=False):
             setting.append("qtf %d" % case.qtf)
         if case.qtf_terms:
             setting.append("qtf_terms %s, %d Omega" % (case.qtf_terms, len(difference_frequencies(case))))
+            if case.qtf_terms == "full":
+                setting.append(FULL_COST_NOTE)
             setting += ["%s %s" % item for item in sorted(case.extra_options.items()) if item[0].startswith("qtf_fs_")]
             if case.solver == "hams" and HULLS[case.hull].get("cf_points"):
                 setting.append("C+F %d" % HULLS[case.hull]["cf_points"][case.multiple])
@@ -1464,6 +1488,9 @@ def job_table(tier, markdown, control=None, qtf=False):
         longest = max([wall_hours(c) for c in chosen] or [0.0])
         print("%s: %d runs, %.1f wall h in sum, longest %.2f h, largest memory %.1f GB" % (
             label, len(chosen), hours, longest, max([memory_gb(c) for c in chosen] or [0.0])))
+    if any(c.qtf_terms == "full" for c in cases):
+        print("qtf_terms = full runs (%s): the time and memory are those of body; the Slurm limit is %g x the time, at least %g h" % (
+            FULL_COST_NOTE, FULL_LIMIT_FACTOR, FULL_LIMIT_FLOOR_H))
     hams_hours = sum(wall_hours(c) for c in cases if c.solver == "hams")
     print("Charged: HAMS %.1f job hours, %.0f CPU-hours, %.0f SBU" % (hams_hours, hams_hours * CHARGED_CPUS, hams_hours * SBU_PER_JOB_HOUR))
     for label, chosen in nemoh_batches([c for c in cases if c.solver == "nemoh" and c.where == "snellius"]):
@@ -1479,7 +1506,7 @@ def main():
 
     control_help = "the control-surface study: all frequencies, or `cheap` with three at the m4 cases of the green route"
     qtf_help = "the QTF study: quadratic QTFs on the Nemoh grid (qtf_cases)"
-    potential_help = "the QTF potential study: QTF_Indirect.11d with qtf_terms = body, and Nemoh DUOK + HASBO (qtf_potential_cases)"
+    potential_help = "the QTF potential study: QTF_Indirect.11d with qtf_terms = body or full, and Nemoh DUOK + HASBO (qtf_potential_cases)"
 
     p = sub.add_parser("list")
     p.add_argument("--tier", choices=("full", "small"), default="full")
@@ -1487,6 +1514,7 @@ def main():
     p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
     p.add_argument("--qtf", action="store_true", help=qtf_help)
     p.add_argument("--qtf-potential", action="store_true", help=potential_help)
+    p.add_argument("--only", metavar="PREFIX", help="only the cases whose name starts with PREFIX (a batch of q_sharp_full_)")
 
     p = sub.add_parser("generate")
     p.add_argument("root")
@@ -1519,6 +1547,7 @@ def main():
     p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
     p.add_argument("--qtf", action="store_true", help=qtf_help)
     p.add_argument("--qtf-potential", action="store_true", help=potential_help)
+    p.add_argument("--only", metavar="PREFIX", help="only the cases whose name starts with PREFIX (a batch of q_sharp_full_)")
 
     p = sub.add_parser("collect")
     p.add_argument("root")
@@ -1530,7 +1559,7 @@ def main():
 
     args = parser.parse_args()
     if args.command == "list":
-        job_table(args.tier, args.markdown, args.control, study_of(args))
+        job_table(args.tier, args.markdown, args.control, study_of(args), args.only)
     elif args.command == "generate":
         for case in cases_of(args.control, study_of(args)):
             if (args.case and case.name != args.case) or (args.group and case.group != args.group):

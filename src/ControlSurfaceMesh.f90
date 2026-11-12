@@ -799,7 +799,8 @@ CONTAINS
       ! on the circle of radius R, as free_surface_strips builds them to Gamma_c, graded towards the waterline. The panel
       ! size at the circle is at most lambda/10, lambda the wavelength at omega_max and depth h (h < 0: deep water); without
       ! omega_max the build stops. The rows are the fewest, at least 2, for which the outer row is not thicker than that
-      ! size; a larger qtf_fs_rows is kept.
+      ! size; a larger qtf_fs_rows is kept. The panel size is qtf_fs_panel if that is above 0 (it must be below R - r_wl, else
+      ! the build stops), lambda/10 for 0. It sets the chords of the polygon and the least rows.
       ! R is qtf_fs_radius, or for 0: r_wl + max(0.5 r_wl, 2 x the largest hull panel size), r_wl the largest distance from
       ! the centre to a waterline node. R <= r_wl stops: the circle would cut a body.
       ! ok = .false. with msg for every stop. np_circle, if present, is the number of chords of the polygon that the
@@ -931,6 +932,15 @@ CONTAINS
          END IF
          lam = 2D0*PI/wvn(1)
          ps = lam/10D0
+         IF (opts%qtf_fs_panel > 0D0) THEN
+            IF (.NOT. opts%qtf_fs_panel < radius - rwl) THEN
+               WRITE (line, '(a,f0.4,a,f0.4,a)') 'qtf_fs_panel = ', opts%qtf_fs_panel, &
+                  ' m must be below R - r_wl = ', radius - rwl, ' m (the width of the inner free surface)'
+               msg = TRIM(line)
+               RETURN
+            END IF
+            ps = opts%qtf_fs_panel
+         END IF
          ! Gamma_c of the strips: the polygon on the circle (a wall of one row is all that its waterline needs).
          CALL cylinder_surface(centre, radius, ps, ps, ps, cm)
          ! The chords of the polygon on the circle, as cylinder_surface makes them (vertices at 2 pi (j - 1) / np), for the

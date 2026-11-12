@@ -63,6 +63,7 @@ MODULE SecondOrderTypes
       ! Free-surface integral (qtf_terms = full only); 0 sets the automatic value
       REAL(8) :: qtf_fs_radius = 0D0     ! m, radius R of the circle that splits the inner mesh and the outer partial waves
       INTEGER :: qtf_fs_rows = 0         ! radial rows of the inner mesh
+      REAL(8) :: qtf_fs_panel = 0D0      ! m, panel size of the generated inner mesh; 0: lambda/10 at the largest frequency
       INTEGER :: qtf_fs_modes = 0        ! angular modes M of the outer region
       INTEGER :: qtf_fs_evanescent = 0   ! evanescent vertical modes N_ev of the outer region
       ! Panel weights of the B2 hull term at sharp edges (SharpEdge), with qtf_b2 = control; edges where the normals differ

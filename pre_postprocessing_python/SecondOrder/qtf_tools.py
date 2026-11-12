@@ -21,7 +21,8 @@ of the file give conj(T): read_qtf returns the file values; internal() conjugate
 
 With qtf_terms = body (qtf = 1 or 3), QTF_Indirect.11d holds .10d plus the body-forcing part of the second-order potential,
 T_pot, in the same layout (read_qtf reads it; potential_part gives .11d - .10d), and with write_terms >= 1
-QTF_PotentialTerms.txt holds its five terms per pair to 16 digits (read_qtf_terms). The free-surface integral is omitted.
+QTF_PotentialTerms.txt holds its five terms per pair to 16 digits (read_qtf_terms). The free-surface integral is omitted with
+body; with qtf_terms = full it is in .11d and the file has two more terms, FS_inner and FS_outer (read_qtf_terms reads 7).
 
 Newman's approximation (Newman 1974) replaces the off-diagonal difference QTF by the mean of the diagonal values,
 T-_ij ~ (T-_ii + T-_jj)/2. It needs only the mean drift, and holds when the QTF varies slowly away from the diagonal.
