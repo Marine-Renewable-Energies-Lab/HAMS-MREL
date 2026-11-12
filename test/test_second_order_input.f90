@@ -563,7 +563,7 @@ subroutine test_qtf_terms_full_accepted(error)
     call check(error, opts%qtf_terms, QTF_TERMS_FULL, "qtf_terms = full")
     if (allocated(error)) return
     call check(error, opts%qtf_fs_radius == 0d0 .and. opts%qtf_fs_rows == 0 .and. opts%qtf_fs_modes == 0 .and. &
-               opts%qtf_fs_evanescent == 8 .and. .not. opts%qtf_fs_given, "free-surface key defaults")
+               opts%qtf_fs_evanescent == 0 .and. .not. opts%qtf_fs_given, "free-surface key defaults")
     if (allocated(error)) return
     call validate_second_order(opts, 1, 100d0, 1, 0, .false., ok, msg)
     call check(error, ok, "qtf_terms = full not validated: "//trim(msg))

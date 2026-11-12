@@ -50,7 +50,7 @@ MODULE SecondOrderDriver
    ! all bodies. At set-up: the inner free-surface mesh (build_fs_inner, with the largest frequency of the grid), the offsets
    ! of its points (fs_inner_steps), the mode counts M and N_ev, and the samples on the circle (pw_sample_points). At the
    ! end of each frequency, after the field points of qtf_field: the first-order fields of every heading at the inner
-   ! points (fs_inner_fields, stock route of fields_green) and the partial waves of the scattered potential outside R
+   ! points (fs_inner_fields, 5-point stencil, stock route) and the partial waves of the scattered potential outside R
    ! (fs_circle_modes, the samples by the centroid route), with the mode check. When psi of a difference frequency is
    ! taken: psi_k at the inner points (value only) and its partial waves, as keep_cs_psi does for C and F. All go to the
    ! QTF store, whose size the log gives before qtf_init allocates it.
@@ -85,7 +85,7 @@ MODULE SecondOrderDriver
                         qtf_radiation_omegas, qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, &
                         qtf_set_edge_weights, qtf_keep_fs_state, qtf_keep_fs_psi
    USE QTFFreeSurface, ONLY: fs_point_field, fs_inner_fields, fs_inner_steps, fs_sample_phi, fs_circle_modes, fs_mode_warning, &
-                             fs_auto_modes
+                             fs_auto_modes, fs_auto_evanescent
    USE PartialWaves, ONLY: pw_set, pw_sample_points, pw_evanescent_from_wvn, PW_KR_MAX
    USE QTFPotential, ONLY: b2_control_check
    USE SharpEdge, ONLY: sharp_edge_weights
@@ -356,7 +356,7 @@ CONTAINS
       END IF
       IF (fs_terms) THEN
          CALL qtf_init(opts, nqtf, WVHD(1:NBETA), geom%nwl, mesh%n, mesh%nbody, outputdir, omegas_main=omegas, fs_pts=fs_pts, &
-                       fs_centre=fs_centre, fs_radius=fs_radius, fs_mmax=fs_mmax, fs_nev=fs_nev)
+                       fs_centre=fs_centre, fs_radius=fs_radius, fs_depth=H, fs_mmax=fs_mmax, fs_nev=fs_nev)
       ELSE
          CALL qtf_init(opts, nqtf, WVHD(1:NBETA), geom%nwl, mesh%n, mesh%nbody, outputdir, omegas_main=omegas)
       END IF
@@ -390,15 +390,16 @@ CONTAINS
       ! qtf_terms = full: the inner free surface (build_fs_inner, panel size from the largest frequency of the grid omegas),
       ! the offsets of its points (fs_inner_steps, once: they do not depend on the frequency), the mode counts of the
       ! partial waves (M = qtf_fs_modes, or ceil(k0_max R) + 10 with k0_max the wave number of the largest frequency;
-      ! N_ev = qtf_fs_evanescent) and the samples on the circle (pw_sample_points). Stops if the mesh cannot be built or
-      ! the evanescent modes do not fit at R.
+      ! N_ev = qtf_fs_evanescent, or max(8, ceil(9 h / (pi (R - r_wl)))) with r_wl the largest distance from the centre to
+      ! a waterline node, fs_auto_evanescent) and the samples on the circle (pw_sample_points). Stops if the mesh cannot be
+      ! built or the evanescent modes do not fit at R.
       TYPE(so_options), INTENT(IN) :: opts
       CHARACTER(LEN=*), INTENT(IN) :: inputdir
       REAL(8), INTENT(IN) :: omegas(:)
       CHARACTER(LEN=:), ALLOCATABLE :: msg
-      REAL(8) :: omega_max, wvn1(1), k0_max
+      REAL(8) :: omega_max, wvn1(1), k0_max, r_wl
       LOGICAL :: ok
-      INTEGER :: nshrunk
+      INTEGER :: nshrunk, nfloor, iw
       EXTERNAL :: DISPERSION
 
       omega_max = MAXVAL(omegas)
@@ -410,7 +411,12 @@ CONTAINS
       CALL DISPERSION(wvn1, 1, omega_max, H)
       k0_max = wvn1(1)
       fs_mmax = fs_auto_modes(opts%qtf_fs_modes, k0_max, fs_radius)
-      fs_nev = opts%qtf_fs_evanescent
+      ! r_wl: the largest distance from the centre to a waterline node, of all bodies (as build_fs_inner)
+      r_wl = 0D0
+      DO iw = 1, geom%nwl
+         r_wl = MAX(r_wl, NORM2(geom%wl_x1(1:2, iw) - fs_centre), NORM2(geom%wl_x2(1:2, iw) - fs_centre))
+      END DO
+      fs_nev = fs_auto_evanescent(opts%qtf_fs_evanescent, H, fs_radius, r_wl)
       IF (fs_nev > NK - 1) THEN
          WRITE (*, '(a,I0,a,I0,a)') ' QTF free surface: qtf_fs_evanescent = ', fs_nev, ' is more than the ', NK - 1, &
             ' evanescent wave numbers of the solver (WVN); lower it.'
@@ -424,16 +430,25 @@ CONTAINS
          ERROR STOP 1
       END IF
       CALL pw_sample_points(fs_centre, fs_radius, H, fs_mmax, fs_nev, fs_circle)
-      fs_step = opts%cs_fd_step
+      ! Twice cs_fd_step: the 5-point Laplacian over delta is the difference of central differences over delta/2 (the
+      ! 25-row stencil of 9fdd193 at cs_fd_step) to rounding, and a smaller delta lets the rounding of the Green function,
+      ! divided by delta^2, take over (fs_laplace_residual: 1.6e-2 at delta = 0.02 psize against 7.2e-4 at 0.1)
+      fs_step = 2D0*opts%cs_fd_step
       ALLOCATE (fs_delta(fs_pts%n))
-      CALL fs_inner_steps(mesh, fs_pts, fs_step, fs_delta, nshrunk)
+      CALL fs_inner_steps(mesh, fs_pts, fs_step, fs_delta, nshrunk, nfloor)
       WRITE (*, '(a,I0,a,F10.3,a,F10.3,a,F10.3,a)') ' QTF free surface: ', fs_pts%n, ' inner points, circle R =', fs_radius, &
          ' m about (', fs_centre(1), ',', fs_centre(2), ')'
-      WRITE (*, '(a,I0,a,I0,a,I0,a,F8.4,a)') ' QTF free surface: partial waves outside R with M = ', fs_mmax, ' and ', fs_nev, &
-         ' evanescent modes, from ', fs_circle%n, ' samples on the circle (k0_max R =', k0_max*fs_radius, ')'
+      WRITE (*, '(a,I0,a,I0,a,a,I0,a,F8.4,a,F8.3,a)') ' QTF free surface: partial waves outside R with M = ', fs_mmax, &
+         ' and N_ev = ', fs_nev, TRIM(MERGE(' (automatic)', ' (given)    ', opts%qtf_fs_evanescent == 0)), &
+         ' evanescent modes, from ', fs_circle%n, ' samples on the circle (k0_max R =', k0_max*fs_radius, ', r_wl =', r_wl, ' m)'
       IF (nshrunk > 0) THEN
          WRITE (*, '(a,I0,a)') ' QTF free surface: ', nshrunk, ' inner points next to a waterline take a smaller offset for'// &
             ' the horizontal Laplacian (the stencil must stay outside the waterplanes, about 16 offsets from the waterline).'
+      END IF
+      IF (nfloor > 0) THEN
+         WRITE (*, '(a,I0,a)') ' QTF free surface warning: ', nfloor, ' inner points are so close to a waterline that their'// &
+            ' offset is held at 1e-3 of step x size (their stencil is clear of the waterplane, but closer to it than 16'// &
+            ' offsets): check the inner mesh there.'
       END IF
    END SUBROUTINE fs_setup
 

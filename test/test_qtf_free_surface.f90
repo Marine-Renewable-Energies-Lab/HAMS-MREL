@@ -7,7 +7,7 @@ module test_qtf_free_surface
   use FirstOrderState, only : incident_phi, incident_grad, wave_gravity
   use NearFieldDrift, only : KERNEL_DIFF
   use QTFFreeSurface, only : fs_point_field, fs_forcing_diff, fs_inner_fields, fs_inner_steps, fs_circle_modes, &
-                             fs_mode_warning, fs_auto_modes, FS_MODE_TOL
+                             fs_mode_warning, fs_auto_modes, FS_MODE_TOL, fs_sample_phi, fs_mode_scales, fs_auto_evanescent
   use HAMS_mod, only : NTHREAD
   use WaveDyn_mod, only : BETA, W1, WK
   use SecondOrderTypes, only : so_options, panel_mesh, first_order_state, cs_points, cs_fields, CS_FREE
@@ -36,7 +36,9 @@ subroutine collect_qtf_free_surface(testsuite)
     new_unittest("fs_forcing_incident_only_zero", test_incident_only_zero), &
     new_unittest("fs_laplace_residual", test_laplace_residual), &
     new_unittest("fs_waterline_offsets", test_waterline_offsets), &
-    new_unittest("fs_mode_check_warns", test_mode_check_warns) &
+    new_unittest("fs_mode_check_warns", test_mode_check_warns), &
+    new_unittest("fs_mode_check_per_state", test_mode_check_per_state), &
+    new_unittest("fs_auto_evanescent", test_auto_evanescent) &
     ]
 end subroutine collect_qtf_free_surface
 
@@ -178,90 +180,100 @@ subroutine free_points(x, psz, pts)
 end subroutine free_points
 
 !> At points below z = 0 (-2 m, at r = 12, 14.5 and 19 m from the cylinder axis), the horizontal Laplacian of
-!> fs_inner_fields (from the four offsets, phi_zz = -lap_h phi) plus d2 phi / dz2 from vertical offsets (fields_green at
-!> z -+ delta, with the same decision point) is below 1e-3 of |lap_h phi|: Laplace's equation, so the offsets difference
-!> the right field. delta = step x point size = 0.05 x 1 m.
+!> fs_inner_fields (5-point, phi_zz = -lap_h phi) plus d2 phi / dz2 from the 3-point difference of phi at z -+ delta
+!> (fs_sample_phi with the same decision point) is below 1e-3 of |lap_h phi|: Laplace's equation, so the offsets
+!> difference the right field. delta = step x point size = 0.1 x 1 m, the driver's 2 x cs_fd_step for a 1 m point.
+!> Both differences are O(delta^2) in truncation, but the rounding of the Green function enters divided by delta^2, so
+!> there is a best delta, not a limit delta -> 0. Measured in fix round 1, residual relative at r = 12, 14.5, 19 m:
+!>   delta 0.02: 4.2e-3 2.0e-3 1.6e-2    delta 0.04: 2.1e-3 1.5e-3 2.4e-3    delta 0.05: 1.4e-3 6.4e-4 1.8e-3
+!>   delta 0.08: 1.0e-3 7.2e-4 5.6e-4    delta 0.10: 6.6e-4 1.8e-4 7.2e-4    delta 0.20: 1.4e-3 2.4e-3 1.5e-3
+!>   delta 0.30: 2.4e-3 2.2e-3 4.6e-4
+!> At 0.1 these are the values of the 25-row stencil of 9fdd193 at 0.05 (the same differences, to rounding). The gate is
+!> on delta = 0.1; delta = 0.05 is printed only.
 subroutine test_laplace_residual(error)
   type(error_type), allocatable, intent(out) :: error
-  real(8), parameter :: zp = -2d0, step = 0.05d0, psz = 1d0
+  real(8), parameter :: zp = -2d0, psz = 1d0, steps(2) = [0.1d0, 0.05d0]
   real(8), parameter :: rp(3) = [12d0, 14.5d0, 19d0], thp(3) = [0.3d0, 2.0d0, -1.9d0]
   type(panel_mesh) :: mesh
   type(first_order_state) :: states(1)
   type(cs_points) :: pts, vp
-  type(cs_fields) :: vf(1)
   type(fs_point_field) :: f(3, 1)
-  real(8) :: x(3, 3), xv(3, 6), dec(3, 6), d, worst, lap_min
+  complex(8) :: ph(9, 1)
+  real(8) :: x(3, 3), xv(3, 9), dec(3, 9), d, worst(2), lap_min
   complex(8) :: lap_h, phizz_fd
-  integer :: i, nthread_saved
-  character(len=160) :: info
+  integer :: i, is, nthread_saved
+  character(len=200) :: info
 
   call cylinder_fixture(mesh, states, error)
   if (allocated(error)) return
   nthread_saved = NTHREAD
   NTHREAD = 4
-  d = step * psz
-  do i = 1, 3
-    x(:, i) = [rp(i) * cos(thp(i)), rp(i) * sin(thp(i)), zp]
-    xv(:, 2 * i - 1) = x(:, i) + [0d0, 0d0, d]
-    xv(:, 2 * i) = x(:, i) - [0d0, 0d0, d]
-    dec(:, 2 * i - 1) = x(:, i)
-    dec(:, 2 * i) = x(:, i)
-  end do
-  call free_points(x, psz, pts)
-  call free_points(xv, psz, vp)
-  call fs_inner_fields(mesh, pts, states, step, .false., f)
-  call fields_green(mesh, vp, states, step, .false., vf, decide=dec)
-  NTHREAD = nthread_saved
-
   worst = 0d0
   lap_min = huge(1d0)
-  do i = 1, 3
-    lap_h = -f(i, 1)%phizz
-    phizz_fd = (vf(1)%grad(3, 2 * i - 1) - vf(1)%grad(3, 2 * i)) / (2d0 * d)
-    lap_min = min(lap_min, abs(lap_h))
-    worst = max(worst, abs(lap_h + phizz_fd) / max(abs(lap_h), tiny(1d0)))
-    print '(4x,a,f6.2,a,2es12.4,a,es10.2)', "fs_laplace_residual at r =", rp(i), ": |lap_h phi|, |phi_zz| ", abs(lap_h), &
-      abs(phizz_fd), ", residual relative ", abs(lap_h + phizz_fd) / max(abs(lap_h), tiny(1d0))
+  do is = 1, 2
+    d = steps(is) * psz
+    do i = 1, 3
+      x(:, i) = [rp(i) * cos(thp(i)), rp(i) * sin(thp(i)), zp]
+      xv(:, 3 * i - 2) = x(:, i)
+      xv(:, 3 * i - 1) = x(:, i) + [0d0, 0d0, d]
+      xv(:, 3 * i) = x(:, i) - [0d0, 0d0, d]
+      dec(:, 3 * i - 2:3 * i) = spread(x(:, i), 2, 3)
+    end do
+    call free_points(x, psz, pts)
+    call free_points(xv, psz, vp)
+    call fs_inner_fields(mesh, pts, states, steps(is), .false., f)
+    call fs_sample_phi(mesh, vp, states, .false., ph, decide=dec)
+    do i = 1, 3
+      lap_h = -f(i, 1)%phizz
+      phizz_fd = (ph(3 * i - 1, 1) + ph(3 * i, 1) - 2d0 * ph(3 * i - 2, 1)) / d**2
+      if (is == 1) lap_min = min(lap_min, abs(lap_h))
+      worst(is) = max(worst(is), abs(lap_h + phizz_fd) / max(abs(lap_h), tiny(1d0)))
+      print '(4x,a,f5.2,a,f6.2,a,2es12.4,a,es10.2)', "fs_laplace_residual delta", d, " at r =", rp(i), &
+        ": |lap_h phi|, |phi_zz| ", abs(lap_h), abs(phizz_fd), ", residual relative ", &
+        abs(lap_h + phizz_fd) / max(abs(lap_h), tiny(1d0))
+    end do
   end do
+  NTHREAD = nthread_saved
   call check(error, lap_min > 0d0, "the horizontal Laplacian of fs_inner_fields is zero")
   if (allocated(error)) return
-  write (info, '(a,es10.3)') "lap_h phi + phi_zz relative to |lap_h phi| ", worst
-  call check(error, worst <= 1d-3, trim(info))
+  write (info, '(a,2es10.3)') "lap_h phi + phi_zz relative to |lap_h phi| at delta = 0.1, 0.05 m ", worst
+  call check(error, worst(1) <= 1d-3, trim(info))
 end subroutine test_laplace_residual
 
-!> True if any of the stencil points of fs_inner_fields at x with offset d lies in a waterplane: x +- d, x +- 2d along x
-!> and y, and the four diagonals x +- d e_x +- d e_y (the offsets' own differences reach them).
+!> True if a point of the stencil of fs_inner_fields at x with offset d (x +- d e_x, x +- d e_y) lies in a waterplane.
+!> An independent copy, on purpose, of the private test of QTFFreeSurface: the test checks the module's offsets with its
+!> own oracle, so the two must be changed together if the stencil changes.
 logical function stencil_in_waterplane(mesh, x, d)
   type(panel_mesh), intent(in) :: mesh
   real(8), intent(in) :: x(3), d
   real(8), allocatable :: wind(:)
-  real(8) :: off(2, 12)
+  real(8) :: off(2, 4)
   integer :: j
 
-  off = reshape([d, 0d0, -d, 0d0, 0d0, d, 0d0, -d, 2d0 * d, 0d0, -2d0 * d, 0d0, 0d0, 2d0 * d, 0d0, -2d0 * d, &
-                 d, d, d, -d, -d, d, -d, -d], [2, 12])
+  off = reshape([d, 0d0, -d, 0d0, 0d0, d, 0d0, -d], [2, 4])
   stencil_in_waterplane = .false.
-  do j = 1, 12
+  do j = 1, 4
     call body_winding(mesh, [x(1) + off(1, j), x(2) + off(2, j), 0d0], wind)
     if (maxval(wind) >= 0.5d0) stencil_in_waterplane = .true.
   end do
 end function stencil_in_waterplane
 
-!> An inner point 0.3 m from the waterline of the cylinder (r = 10.3 m) with a point size of 10 m and step 0.05: the
-!> offsets of 0.5 m (and their own differences, 1 m) reach into the waterplane. fs_inner_steps shrinks delta there, and
-!> only there (a point at r = 25 m keeps 0.5 m), until no stencil point is in the waterplane and the waterline is about
-!> 16 delta away. fs_inner_fields with it agrees with a reference at delta = 0.0025 m (point size 0.05 m) to 1e-2 in
-!> phi_zz and 1e-3 in phi and grad phi, while the stencil with 0.5 m, inside the waterplane, does not (phi_zz off by more
-!> than 10 %). Measured with a stencil that only just clears the waterplane (delta = 0.125 m): 23 % in phi_zz.
+!> An inner point about 0.3 m from the waterline of the cylinder (r = 10.3 m) with a point size of 10 m and step 0.05:
+!> the offsets of 0.5 m reach into the waterplane. fs_inner_steps shrinks delta there, and only there (a point at
+!> r = 25 m keeps 0.5 m), until no stencil point is in the waterplane and the waterline is about 16 delta away.
+!> fs_inner_fields with it agrees with a reference at delta = 0.0025 m (point size 0.05 m) to 1e-2 in phi_zz and 1e-3 in
+!> phi and grad phi. Two stencils that do not: 0.5 m, inside the waterplane (phi_zz off by more than 10 %), and 0.25 m,
+!> the largest that only just clears it (off by more than 1e-2: the reason for the clearance of 16 offsets).
+!> Measured (fix round 1): delta 0.0156 m after shrinking, phi_zz 1.4e-3 off; just clear (0.25 m) 2.3e-1; unshrunk 59.
 subroutine test_waterline_offsets(error)
   type(error_type), allocatable, intent(out) :: error
   real(8), parameter :: step = 0.05d0, psz = 10d0, th0 = 0.05d0
   type(panel_mesh) :: mesh
   type(first_order_state) :: states(1)
   type(cs_points) :: pts, one, ref_pt
-  type(fs_point_field) :: f(2, 1), fref(1, 1), fbad(1, 1)
-  real(8) :: x(3, 2), delta(2), e_zz, e_phi, e_grad, e_bad
-  integer :: nshrunk, nthread_saved
+  type(fs_point_field) :: f(2, 1), fref(1, 1), fbad(1, 1), fclear(1, 1)
+  real(8) :: x(3, 2), delta(2), e_zz, e_phi, e_grad, e_bad, e_clear
+  integer :: nshrunk, nfloor, nthread_saved
   character(len=200) :: info
 
   call cylinder_fixture(mesh, states, error)
@@ -272,10 +284,14 @@ subroutine test_waterline_offsets(error)
   call check(error, stencil_in_waterplane(mesh, x(:, 1), step * psz), &
              "the test point's stencil at 0.5 m does not reach the waterplane: the test does not test")
   if (allocated(error)) return
+  call check(error, .not. stencil_in_waterplane(mesh, x(:, 1), 0.25d0), &
+             "the stencil at 0.25 m reaches the waterplane: the just-clear comparison does not test")
+  if (allocated(error)) return
 
-  call fs_inner_steps(mesh, pts, step, delta, nshrunk)
-  print '(4x,a,2f10.5,a,i0)', "fs_inner_steps next to the waterline and away from it: delta ", delta, ", shrunk ", nshrunk
-  call check(error, nshrunk, 1, "points with a shrunk delta")
+  call fs_inner_steps(mesh, pts, step, delta, nshrunk, nfloor)
+  print '(4x,a,2f10.5,a,i0,a,i0)', "fs_inner_steps next to the waterline and away from it: delta ", delta, ", shrunk ", &
+    nshrunk, ", at the floor ", nfloor
+  call check(error, nshrunk == 1 .and. nfloor == 0, "points with a shrunk delta, or at the floor")
   if (allocated(error)) return
   call check(error, delta(2) == step * psz, "delta away from the waterline changed")
   if (allocated(error)) return
@@ -291,19 +307,24 @@ subroutine test_waterline_offsets(error)
   call fs_inner_fields(mesh, ref_pt, states, step, .false., fref)
   call free_points(x(:, 1:1), psz, one)
   call fs_inner_fields(mesh, one, states, step, .false., fbad, delta=[step * psz])
+  call fs_inner_fields(mesh, one, states, step, .false., fclear, delta=[0.25d0])
   NTHREAD = nthread_saved
 
   e_zz = abs(f(1, 1)%phizz - fref(1, 1)%phizz) / abs(fref(1, 1)%phizz)
   e_phi = abs(f(1, 1)%phi - fref(1, 1)%phi) / abs(fref(1, 1)%phi)
   e_grad = norm2(abs(f(1, 1)%grad - fref(1, 1)%grad)) / norm2(abs(fref(1, 1)%grad))
   e_bad = abs(fbad(1, 1)%phizz - fref(1, 1)%phizz) / abs(fref(1, 1)%phizz)
-  print '(4x,a,3es10.2,a,es10.2)', "next to the waterline against delta = 0.0025 m: phi_zz, phi, grad ", e_zz, e_phi, &
-    e_grad, "; unshrunk phi_zz ", e_bad
+  e_clear = abs(fclear(1, 1)%phizz - fref(1, 1)%phizz) / abs(fref(1, 1)%phizz)
+  print '(4x,a,3es10.2,a,2es10.2)', "next to the waterline against delta = 0.0025 m: phi_zz, phi, grad ", e_zz, e_phi, &
+    e_grad, "; phi_zz unshrunk and just clear ", e_bad, e_clear
   write (info, '(a,3es10.3)') "shrunk stencil against the reference (phi_zz, phi, grad) ", e_zz, e_phi, e_grad
   call check(error, e_zz <= 1d-2 .and. e_phi <= 1d-3 .and. e_grad <= 1d-3, trim(info))
   if (allocated(error)) return
   write (info, '(a,es10.3)') "the stencil inside the waterplane agrees with the reference: the test does not test ", e_bad
   call check(error, e_bad > 0.1d0, trim(info))
+  if (allocated(error)) return
+  write (info, '(a,es10.3)') "the just-clear stencil agrees with the reference: the clearance is not needed ", e_clear
+  call check(error, e_clear > 1d-2, trim(info))
 end subroutine test_waterline_offsets
 
 !> With qtf_fs_modes = 2 on the fixture (circle R = 15 m about the axis, nev = 8), the partial waves cannot give the
@@ -360,5 +381,73 @@ subroutine test_mode_check_warns(error)
   write (info, '(a,es10.3,a,a)') "automatic M misses the samples by ", miss_auto, " or warns: ", msg
   call check(error, miss_auto <= FS_MODE_TOL .and. miss_auto > 0d0 .and. len(msg) == 0, trim(info))
 end subroutine test_mode_check_warns
+
+!> The mode check holds every state to 1e-3 of itself (review I1). Three states on the fixture, R = 15 m, M = 6, nev = 8:
+!>   1. the MacCamy-Fuchs scattered wave, which 6 angular modes resolve (k0 R = 2.3);
+!>   2. the field of one hull panel near the waterline (phi_P = 1e-4 there, 0 elsewhere): local, so 6 modes truncate it,
+!>      and 1e-4 times smaller than state 1 on the circle;
+!>   3. state 2 times 1e-12: zero up to rounding, as psi of yaw on an axisymmetric body.
+!> State 2 must warn, though its miss is far below 1e-3 of the largest sample of all states (the scale of 9fdd193, under
+!> which it was silent); states 1 and 3 must not (state 3 is held to 1e-6 of the largest, fs_mode_scales).
+subroutine test_mode_check_per_state(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: radius = 15d0
+  integer, parameter :: nev = 8, mmax = 6
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: states(3), one(1)
+  type(cs_points) :: circle
+  type(pw_set) :: pw(3)
+  complex(8), allocatable :: samples(:, :)
+  real(8) :: kev(nev), miss(3), sc(3), big, old2
+  integer :: j, nthread_saved
+  character(len=200) :: info
+
+  call cylinder_fixture(mesh, one, error)
+  if (allocated(error)) return
+  states = one(1)
+  j = minloc(norm2(mesh%xc - spread([10d0, 0d0, -0.5d0], 2, mesh%n), dim=1), dim=1)
+  states(2)%phi_p = (0d0, 0d0)
+  states(2)%dphi_p_dn = (0d0, 0d0)
+  states(2)%phi_p(j) = (1d-4, 0d0)
+  states(3) = states(2)
+  states(3)%phi_p(j) = (1d-16, 0d0)
+  call pw_evanescent_from_wvn(nev, kev)
+  call pw_sample_points([0d0, 0d0], radius, fx_depth, mmax, nev, circle)
+  nthread_saved = NTHREAD
+  NTHREAD = 4
+  call fs_circle_modes(mesh, circle, states, .false., [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pw, miss)
+  allocate (samples(circle%n, 3))
+  call fs_sample_phi(mesh, circle, states, .false., samples, centroid_only=.true.)
+  NTHREAD = nthread_saved
+  sc = fs_mode_scales(samples)
+  big = maxval(abs(samples))
+  old2 = miss(2) * sc(2) / big
+  print '(4x,a,3es10.2,a,es10.2,a,3es10.2)', "mode check per state: miss ", miss, "; state 2 against the largest of all ", &
+    old2, "; scales ", sc
+  write (info, '(a,3es10.3)') "mode check per state (1 resolved, 2 truncated, 3 rounding): ", miss
+  call check(error, miss(1) <= FS_MODE_TOL .and. miss(2) > FS_MODE_TOL .and. miss(3) <= FS_MODE_TOL, trim(info))
+  if (allocated(error)) return
+  write (info, '(a,es10.3)') "state 2 would warn under the scale of all states too: the test does not test ", old2
+  call check(error, old2 <= FS_MODE_TOL, trim(info))
+  if (allocated(error)) return
+  call check(error, len(fs_mode_warning(maxval(miss))) > 0, "no warning for the truncated state")
+end subroutine test_mode_check_per_state
+
+!> The automatic N_ev (qtf_fs_evanescent = 0): max(8, ceil(9 h / (pi (R - r_wl)))), a given value as it is.
+subroutine test_auto_evanescent(error)
+  type(error_type), allocatable, intent(out) :: error
+
+  ! 9 x 100 / (5 pi) = 57.30
+  call check(error, fs_auto_evanescent(0, 100d0, 15d0, 10d0), 58, "h 100, R 15, r_wl 10")
+  if (allocated(error)) return
+  ! 9 x 15 / (5 pi) = 8.59
+  call check(error, fs_auto_evanescent(0, 15d0, 15d0, 10d0), 9, "h 15, R 15, r_wl 10")
+  if (allocated(error)) return
+  ! 9 x 10 / (20 pi) = 1.43: the floor of 8
+  call check(error, fs_auto_evanescent(0, 10d0, 30d0, 10d0), 8, "h 10, R 30, r_wl 10")
+  if (allocated(error)) return
+  call check(error, fs_auto_evanescent(5, 100d0, 15d0, 10d0), 5, "a given N_ev")
+end subroutine test_auto_evanescent
+
 
 end module test_qtf_free_surface

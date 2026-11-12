@@ -119,8 +119,10 @@ MODULE QTFDriver
    REAL(8), ALLOCATABLE :: edge_w(:)                     ! (n_panels), weights of the B2 hull term at sharp edges, if set
    ! qtf_terms = full: the inner free surface, the circle and the fields there
    LOGICAL :: fs_active = .FALSE.
+   REAL(8), PARAMETER :: FS_GEOM_TOL = 1D-12                ! relative, for the circle and depth of a kept pw_set
    TYPE(cs_points) :: fs_store_pts                       ! the inner free-surface points (build_fs_inner)
    REAL(8) :: fs_store_centre(2) = 0D0, fs_store_radius = 0D0   ! the circle r = R of the partial waves
+   REAL(8) :: fs_store_depth = 0D0                       ! the water depth h of the partial waves
    INTEGER :: fs_store_mmax = 0, fs_store_nev = 0        ! M and N_ev of every pw_set of the store
    TYPE(fs_point_field), ALLOCATABLE :: fs_f(:, :, :)    ! (n_fs, nfreq, nbeta), total first-order fields, as store
    TYPE(pw_set), ALLOCATABLE :: fs_pw(:, :)              ! (nfreq, nbeta), partial waves of the scattered potential
@@ -135,19 +137,20 @@ MODULE QTFDriver
 CONTAINS
 
    SUBROUTINE qtf_init(opts, nfreq, beta_in_deg, nwl, n_panels, nbody, outputdir, omegas_main, fs_pts, fs_centre, fs_radius, &
-                       fs_mmax, fs_nev)
+                       fs_depth, fs_mmax, fs_nev)
       ! Allocates the whole store for up to nfreq frequencies, the headings beta_in_deg, n_panels panels and nbody bodies,
       ! so that a run that does not fit stops here, before the first-order solves. outputdir holds Wamit_format.
       ! omegas_main (rad/s), the nfreq frequencies of the QTF grid, is needed for qtf_terms = body: the store then also holds
       ! psi at every difference frequency. qtf_terms = full needs as well the inner free-surface points fs_pts, the circle
-      ! (fs_centre, fs_radius) and the mode counts fs_mmax, fs_nev of the partial waves, for the free-surface store.
+      ! (fs_centre, fs_radius), the depth fs_depth and the mode counts fs_mmax, fs_nev of the partial waves, for the
+      ! free-surface store.
       TYPE(so_options), INTENT(IN) :: opts
       INTEGER, INTENT(IN) :: nfreq, nwl, n_panels, nbody
       REAL(8), INTENT(IN) :: beta_in_deg(:)
       CHARACTER(LEN=*), INTENT(IN) :: outputdir
       REAL(8), INTENT(IN), OPTIONAL :: omegas_main(:)
       TYPE(cs_points), INTENT(IN), OPTIONAL :: fs_pts
-      REAL(8), INTENT(IN), OPTIONAL :: fs_centre(2), fs_radius
+      REAL(8), INTENT(IN), OPTIONAL :: fs_centre(2), fs_radius, fs_depth
       INTEGER, INTENT(IN), OPTIONAL :: fs_mmax, fs_nev
       INTEGER :: st, i, b
 
@@ -225,7 +228,8 @@ CONTAINS
          ! The free-surface store of qtf_terms = full, touched (default initialisation and zeros) so that it is taken now
          INTEGER :: m, k
 
-         IF (.NOT. (PRESENT(fs_pts) .AND. PRESENT(fs_centre) .AND. PRESENT(fs_radius) .AND. PRESENT(fs_mmax) .AND. &
+         IF (.NOT. (PRESENT(fs_pts) .AND. PRESENT(fs_centre) .AND. PRESENT(fs_radius) .AND. PRESENT(fs_depth) .AND. &
+                    PRESENT(fs_mmax) .AND. &
                     PRESENT(fs_nev))) THEN
             WRITE (*, '(a)') ' QTF: qtf_init needs the inner free surface, the circle and the mode counts for qtf_terms = full.'
             ERROR STOP 1
@@ -233,6 +237,7 @@ CONTAINS
          fs_store_pts = fs_pts
          fs_store_centre = fs_centre
          fs_store_radius = fs_radius
+         fs_store_depth = fs_depth
          fs_store_mmax = fs_mmax
          fs_store_nev = fs_nev
          ALLOCATE (fs_f(fs_pts%n, nfreq, nbeta), fs_pw(nfreq, nbeta), fs_kept(nfreq, nbeta), &
@@ -261,6 +266,9 @@ CONTAINS
 
          pw%mmax = fs_store_mmax
          pw%nev = fs_store_nev
+         pw%h = fs_store_depth
+         pw%radius = fs_store_radius
+         pw%centre = fs_store_centre
          ALLOCATE (pw%kev(fs_store_nev), pw%a(-fs_store_mmax:fs_store_mmax, 0:fs_store_nev), STAT=st)
          IF (st /= 0) CALL out_of_memory(body=.TRUE., fs=.TRUE.)
          pw%kev = 0D0
@@ -400,6 +408,12 @@ CONTAINS
       IF (ALLOCATED(fs_psi)) DEALLOCATE (fs_psi)
       IF (ALLOCATED(fs_pw_psi)) DEALLOCATE (fs_pw_psi)
       IF (ALLOCATED(fs_psi_kept)) DEALLOCATE (fs_psi_kept)
+      IF (ALLOCATED(fs_store_pts%x)) DEALLOCATE (fs_store_pts%x)
+      IF (ALLOCATED(fs_store_pts%nrm)) DEALLOCATE (fs_store_pts%nrm)
+      IF (ALLOCATED(fs_store_pts%w)) DEALLOCATE (fs_store_pts%w)
+      IF (ALLOCATED(fs_store_pts%psize)) DEALLOCATE (fs_store_pts%psize)
+      IF (ALLOCATED(fs_store_pts%kind)) DEALLOCATE (fs_store_pts%kind)
+      IF (ALLOCATED(fs_store_pts%body)) DEALLOCATE (fs_store_pts%body)
       fs_store_pts%n = 0
    END SUBROUTINE free_free_surface
 
@@ -409,11 +423,19 @@ CONTAINS
    END FUNCTION qtf_fs_active
 
    LOGICAL FUNCTION pw_fits(pw)
-      ! pw has the mode counts of the free-surface store
+      ! pw has the mode counts, the circle and the depth of the free-surface store
       TYPE(pw_set), INTENT(IN) :: pw
 
       pw_fits = ALLOCATED(pw%a) .AND. ALLOCATED(pw%kev)
       IF (pw_fits) pw_fits = pw%mmax == fs_store_mmax .AND. pw%nev == fs_store_nev
+      ! The circle and the depth of the store, to rounding
+      IF (pw_fits) pw_fits = near_equal(pw%radius, fs_store_radius) .AND. near_equal(pw%h, fs_store_depth) .AND. &
+                             NORM2(pw%centre - fs_store_centre) <= FS_GEOM_TOL*MAX(fs_store_radius, NORM2(fs_store_centre))
+   CONTAINS
+      LOGICAL FUNCTION near_equal(a, b)
+         REAL(8), INTENT(IN) :: a, b
+         near_equal = ABS(a - b) <= FS_GEOM_TOL*MAX(ABS(a), ABS(b))
+      END FUNCTION near_equal
    END FUNCTION pw_fits
 
    SUBROUTINE qtf_keep_fs_state(ib, f, pw)

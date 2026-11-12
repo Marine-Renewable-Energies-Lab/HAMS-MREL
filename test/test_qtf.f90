@@ -86,7 +86,7 @@ subroutine fill_store(opts, mesh, geom, states, wls, error, body, fs)
   if (allocated(error)) return
   if (present(fs)) then
     call qtf_init(opts, size(omegas), betas, geom%nwl, mesh%n, mesh%nbody, root, omegas_main=omegas, fs_pts=fs, &
-                  fs_centre=fs_centre, fs_radius=fs_radius, fs_mmax=fs_mmax, fs_nev=fs_nev)
+                  fs_centre=fs_centre, fs_radius=fs_radius, fs_depth=depth, fs_mmax=fs_mmax, fs_nev=fs_nev)
   else if (present(body)) then
     call qtf_init(opts, size(omegas), betas, geom%nwl, mesh%n, mesh%nbody, root, omegas_main=omegas)
   else
@@ -472,7 +472,7 @@ end function same_pw
 !> qtf_terms = full: the free-surface store keeps the fields at the inner points (5 complex values each) and the partial
 !> waves of every kept frequency and heading, and psi_k at the inner points with the partial waves of each psi_k at every
 !> difference frequency, and gives them back by frequency, heading and Omega, as qtf_store_matches_kernel for the states.
-!> An Omega that is not a difference frequency is refused. The size formula of qtf_stored_mb: 16 bytes x (5 n_fs + n_pw)
+!> An Omega that is not a difference frequency is refused, and so are partial waves on another circle or depth. The size formula of qtf_stored_mb: 16 bytes x (5 n_fs + n_pw)
 !> per frequency and heading, plus 16 x 6 nbody x (n_fs + n_pw) per Omega, n_pw = (2M + 1)(N_ev + 1). With
 !> qtf_terms = body the store has no free-surface part.
 subroutine test_fs_store_order(error)
@@ -550,6 +550,24 @@ subroutine test_fs_store_order(error)
   allocate (psi_pts(fs_n, 6), pw_psi(6))
   call qtf_keep_fs_psi(0.33d0, psi_pts, pw_psi, ok)
   call check(error, .not. ok, "psi at an omega that is not a difference frequency was kept")
+  if (allocated(error)) return
+  ! Partial waves on another circle or depth than the store's (review M3)
+  do k = 1, 6
+    pw_psi(k) = pw_code(100, k)
+  end do
+  pw_psi(3)%radius = fs_radius * (1d0 + 1d-9)
+  call qtf_keep_fs_psi(w(1), psi_pts, pw_psi, ok)
+  call check(error, .not. ok, "psi with partial waves on another radius was kept")
+  if (allocated(error)) return
+  pw_psi(3) = pw_code(100, 3)
+  pw_psi(4)%centre(2) = fs_centre(2) + 1d-6
+  call qtf_keep_fs_psi(w(1), psi_pts, pw_psi, ok)
+  call check(error, .not. ok, "psi with partial waves about another centre was kept")
+  if (allocated(error)) return
+  pw_psi(4) = pw_code(100, 4)
+  pw_psi(5)%h = depth + 1d-3
+  call qtf_keep_fs_psi(w(1), psi_pts, pw_psi, ok)
+  call check(error, .not. ok, "psi with partial waves of another depth was kept")
   if (allocated(error)) return
   do m = 1, size(w)
     do k = 1, 6

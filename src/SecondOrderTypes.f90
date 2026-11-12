@@ -64,7 +64,7 @@ MODULE SecondOrderTypes
       REAL(8) :: qtf_fs_radius = 0D0     ! m, radius R of the circle that splits the inner mesh and the outer partial waves
       INTEGER :: qtf_fs_rows = 0         ! radial rows of the inner mesh
       INTEGER :: qtf_fs_modes = 0        ! angular modes M of the outer region
-      INTEGER :: qtf_fs_evanescent = 8   ! evanescent vertical modes N_ev of the outer region
+      INTEGER :: qtf_fs_evanescent = 0   ! evanescent vertical modes N_ev of the outer region
       ! Panel weights of the B2 hull term at sharp edges (SharpEdge), with qtf_b2 = control; edges where the normals differ
       ! by more than qtf_edge_angle degrees. Off by default: on the sharp-cylinder fixture they moved B2 F_x and F_z away
       ! from the exact reference (15.1% to 17.2%, 30.0% to 37.4%) for an M_y gain of 11.9% to 11.1%

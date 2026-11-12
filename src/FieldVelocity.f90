@@ -71,8 +71,8 @@ CONTAINS
       ! centroid_only, if present and true, gives every panel its centroid value (near_panel = .FALSE. of
       ! field_influence_row), so that the field is a sum of the free-surface modes outside the hull (the circle samples of
       ! the QTF free-surface integral). decide(3, pts%n), if present, is the point of the near-or-far and series decision of
-      ! each point's stencil, in place of the point itself: points whose values are differenced again (the offsets of
-      ! fs_inner_fields, QTFFreeSurface) pass their common centre, for the reason of x_decide.
+      ! each point's stencil, in place of the point itself: points whose values are differenced again pass their common
+      ! centre, for the reason of x_decide (fs_sample_phi of QTFFreeSurface has the same option for values only).
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(cs_points), INTENT(IN) :: pts
       TYPE(first_order_state), INTENT(IN) :: states(:)
