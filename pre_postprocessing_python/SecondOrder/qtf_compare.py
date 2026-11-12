@@ -8,6 +8,7 @@ Usage:
     python qtf_compare.py <results> --against-nemoh <folder> [--hull oc4] [--reading as-is|conj|-1|-conj] [--max-dw 0.3]
                           [--exclude LO HI]
     python qtf_compare.py <results> --direct [<qtf_potential.csv>] [--max-dw 0.3] [--exclude LO HI] [--by-omega]
+                          (the IRSP cases q_sharp_direct_irsp*_m1 need --max-dw 2: their Omega reach 1.6 rad/s)
     python qtf_compare.py <results> --against-wamit <file.12d> [--hull oc4w] [--reading as-is|conj|-1|-conj]
                           [--max-dw 0.3] [--max-omega 1.90] [--exclude LO HI]
 
@@ -40,7 +41,8 @@ Direct method (--direct). For each q_*direct* case (`drift_convergence.py --qtf-
 rows of forces or of moments (all modes, bodies and heading pairs), max and median, the measure of the integration tests.
 They are read from QTF_DirectTerms.txt and QTF_PotentialTerms.txt (16 digits) where the run wrote them, otherwise from the
 printed files. --by-omega adds the largest error at each difference frequency (an irregular frequency of the Omega problem
-shows there as a spike). Given the qtf-potential CSV, the q_sharp_*direct* cases also get .12d and .11d against the exact
+shows there as a spike). Each case line gives the number of difference frequencies kept by --max-dw, of those of the run.
+Given the qtf-potential CSV, the q_sharp_*direct* cases except the IRSP ones (another grid) also get .12d and .11d against the exact
 total and .12d - .10d and .11d - .10d against the exact potential part, as --potential, heading 0.
 
 WAMIT (--against-wamit). A WAMIT numeric .12d (difference QTF; one header line, then PER_i PER_j BETA_i BETA_j I Mod Pha Re
@@ -325,7 +327,7 @@ def compare_direct(results, path, max_dw, exclude=None, by_omega=False):
 
     def kept(p):
         return not exclude or not any(exclude[0] - 1e-9 <= w <= exclude[1] + 1e-9 for w in p)
-    print("%-26s %-6s %18s %18s" % ("case", "from", "forces", "moments"))
+    print("%-26s %-6s %18s %18s  %s" % ("case", "from", "forces", "moments", "Omega kept (of the run's)"))
     rows, sharp = [], []
     for case in sorted(os.path.basename(p) for p in glob.glob(os.path.join(results, "q_*direct*"))):
         folder = os.path.join(results, case, "output", "Wamit_format")
@@ -342,14 +344,17 @@ def compare_direct(results, path, max_dw, exclude=None, by_omega=False):
             t_dir = qtf_tools.potential_part(quadratic, qtf_tools.read_qtf(files[1]))
             t_pot = qtf_tools.potential_part(quadratic, qtf_tools.read_qtf(files[2]))
             source = "files"
+        offdiag = {round(abs(k[1] - k[0]), 6) for k in t_pot if k[0] != k[1]}
         t_pot = {k: v for k, v in t_pot.items() if k[0] != k[1] and abs(k[1] - k[0]) <= max_dw + 1e-9}
+        kept_omegas = {round(abs(k[1] - k[0]), 6) for k in t_pot}
         if not t_pot:
             print("%-26s no pairs within %.2f rad/s" % (case, max_dw))
             continue
         cells = direct_against_indirect(t_dir, t_pot, lambda k: kept(k[:2]))
         rows.append((case, cells))
-        print("%-26s %-6s %18s %18s" % (case, source,
-                                        *["%7.2f %7.2f" % (100 * c[0], 100 * c[1]) if c else "-" for c in cells]))
+        print("%-26s %-6s %18s %18s  %d of %d" % (case, source,
+                                                *["%7.2f %7.2f" % (100 * c[0], 100 * c[1]) if c else "-" for c in cells],
+                                                len(kept_omegas), len(offdiag)))
         if by_omega:
             # The largest error at each difference frequency, over the scales of all the pairs: a spike at an irregular
             # frequency of the Omega problem shows here
@@ -360,7 +365,8 @@ def compare_direct(results, path, max_dw, exclude=None, by_omega=False):
                          if scales[i] > 0.0 else 0.0 for i, force in enumerate((True, False))]
                 print("    Omega %8.4f  %4d rows  forces %7.2f  moments %7.2f" % (omega, len(at), 100 * worst[0],
                                                                                   100 * worst[1]))
-        if case.startswith("q_sharp_"):
+        # The exact reference is on the grid of the q_sharp_free cases; the IRSP cases have another grid and none
+        if case.startswith("q_sharp_") and "_irsp" not in case:
             sharp.append((case, folder))
     if not ref:
         return rows
@@ -808,7 +814,8 @@ def check_compare_direct():
     three cases. q_sharp_direct_free_m1 has T_dir = 1.01 T_pot in its terms files and its .12d: the direct-indirect error is
     1% at the largest |T_pot| (to the 16 digits of the terms files), .11d against the exact total is 0 and .12d is not.
     q_sharp_direct_free_m2 has T_dir = -T_pot: 200%. q_round_direct_free_m1 has no terms files, two heading pairs and
-    .12d = .11d: read from the printed files, 0 to their 7 digits. --by-omega prints one line per difference frequency."""
+    .12d = .11d: read from the printed files, 0 to their 7 digits. q_sharp_direct_irsp_m1 gets no exact rows. --by-omega
+    prints one line per difference frequency; each case line counts the Omega kept."""
     import contextlib
     import io
     import tempfile
@@ -839,7 +846,8 @@ def check_compare_direct():
                 w.writerow(row)
         for case, factor, headings, with_terms in (("q_sharp_direct_free_m1", 1.01, (0.0,), True),
                                                    ("q_sharp_direct_free_m2", -1.0, (0.0,), True),
-                                                   ("q_round_direct_free_m1", 1.0, (0.0, 30.0), False)):
+                                                   ("q_round_direct_free_m1", 1.0, (0.0, 30.0), False),
+                                                   ("q_sharp_direct_irsp_m1", 1.0, (0.0,), True)):
             folder = os.path.join(d, "results", case, "output", "Wamit_format")
             os.makedirs(folder)
             names = ["QTF_Quadratic.10d", "QTF_Indirect.11d", "QTF_Direct.12d"]
@@ -878,7 +886,10 @@ def check_compare_direct():
     assert all(abs(c[0] - 2.0) < 1e-12 for c in flipped), "T_dir = -T_pot: %s" % (flipped,)
     assert all(c[0] < 1e-5 for c in round_), "T_dir = T_pot, printed files: %s" % (round_,)
     assert any(l.startswith("q_round_direct_free_m1") and " files " in l for l in lines), "round case not from the files"
-    assert sum(1 for l in lines if l.strip().startswith("Omega")) == 3, "one --by-omega line per case and Omega"
+    assert sum(1 for l in lines if l.strip().startswith("Omega")) == 4, "one --by-omega line per case and Omega"
+    assert all(l.rstrip().endswith("1 of 1") for l in lines if l.startswith("q_") and l.split()[1] in ("terms", "files")),         "the count of Omega kept"
+    exact_part = lines[lines.index(next(l for l in lines if "exact sharp" in l)):]
+    assert not any(l.startswith("q_sharp_direct_irsp") for l in exact_part), "the IRSP case has no exact reference"
 
     def cells(case, what):
         found = [l for l in lines if l.startswith(case + " ") and l.split()[1] == what]

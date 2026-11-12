@@ -381,12 +381,14 @@ DIRECT_OPTIONS = dict(qtf_b2="body", qtf_edge_weights="off", qtf_direct=1)
 # The rounded hull of the fixture qtf_direct_round (qtf_round_body: 0.70, 0.95, 1.10 rad/s, headings 0 and 30): 4.0% at
 # 480 panels, 1.27e-2 with 8 bottom rings, 8.1e-3 at 1920 panels (Task 5 scratch runs); m2 and m3 show the plan's 1%
 DIRECT_ROUND_FREQUENCIES = (0.70, 0.95, 1.10)
-# IRSP = 1 across the first irregular frequency of the sharp hull, 1.548 rad/s (IRREGULAR_FREQUENCIES): the pairs of 0.20
-# with 1.700 to 1.800 rad/s by 0.005 have Omega = 1.500 to 1.600 by 0.005, so the direct solve at Omega crosses it (the
-# discrete irregular frequency of a mesh lies near, not at, 1.548; Task 5 found a spike of 15% without the lid, 6% at
-# 0.0025 from it, on another hull). The first-order frequencies lie between the first two irregular frequencies, 1.548 and
-# 1.939; the pairs among them add Omega = 0.005 to 0.100. 22 frequencies, 41 Omega. Velocity by differencing:
-# velocity_method = source rejects IRSP = 1
+# IRSP = 1 across the first irregular frequency of the sharp hull: 1.536 rad/s from J0(ka) = 0 with a = 10 (k = 2.405/a,
+# omega^2 = g k tanh(k T) with tanh(k T) ~ 1, analytic), 1.548 rad/s as IRREGULAR_FREQUENCIES uses it; both lie in the band.
+# The pairs of 0.20 with 1.700 to 1.800 rad/s by 0.005 have Omega = 1.500 to 1.600 by 0.005, so the direct solve at Omega
+# crosses it (the discrete irregular frequency of a mesh lies near, not at, the analytic one; Task 5 found a spike of 15%
+# without the lid, 6% at 0.0025 from it, on another hull). The first-order frequencies lie between the first two
+# irregular frequencies (the second near 1.939); the pairs among them add Omega = 0.005 to 0.100. 22 frequencies, 41
+# Omega. Velocity by differencing: velocity_method = source rejects IRSP = 1. q_sharp_direct_irsp0_m1 is the same case
+# without the lid (IRSP = 0), the control: a spike there and none with the lid shows that the lid removes it
 DIRECT_IRSP_FREQUENCIES = (0.20,) + tuple(round(1.70 + 0.005 * i, 4) for i in range(21))
 
 
@@ -454,7 +456,8 @@ def qtf_potential_cases():
                            headings=(0.0,), qtf=1, qtf_terms="body", extra_options=dict(cs_shape="file", qtf_max_dw=0)))
     # The direct method (DIRECT_OPTIONS): the free sharp hull of q_sharp_free_src_m* at m1 to m3 (qtf_compare.py --direct
     # with the exact reference), the rounded hull of qtf_direct_round at m1 to m3, and IRSP = 1 across an irregular
-    # frequency of Omega (DIRECT_IRSP_FREQUENCIES, every pair, qtf_compare.py --direct --by-omega)
+    # frequency of Omega and its control without the lid (DIRECT_IRSP_FREQUENCIES, every pair, qtf_compare.py
+    # --direct --by-omega --max-dw 2)
     for m in (1, 2, 3):
         chosen.append(Case("q_sharp_direct_free_%s" % tag(m), "D", "7a", "sharp", m, "free", "source", frequencies=grid,
                            headings=(0.0,), qtf=1, qtf_terms="body", qtf_max_dw=QTF_POTENTIAL_MAX_DW,
@@ -465,6 +468,9 @@ def qtf_potential_cases():
                            qtf_max_dw=QTF_POTENTIAL_MAX_DW, extra_options=DIRECT_OPTIONS))
     chosen.append(Case("q_sharp_direct_irsp_m1", "D", "7a", "sharp", 1, "free", "differencing",
                        frequencies=DIRECT_IRSP_FREQUENCIES, headings=(0.0,), irsp=1, qtf=1, qtf_terms="body",
+                       extra_options=dict(DIRECT_OPTIONS, qtf_max_dw=0)))
+    chosen.append(Case("q_sharp_direct_irsp0_m1", "D", "7a", "sharp", 1, "free", "differencing",
+                       frequencies=DIRECT_IRSP_FREQUENCIES, headings=(0.0,), irsp=0, qtf=1, qtf_terms="body",
                        extra_options=dict(DIRECT_OPTIONS, qtf_max_dw=0)))
     return chosen
 
