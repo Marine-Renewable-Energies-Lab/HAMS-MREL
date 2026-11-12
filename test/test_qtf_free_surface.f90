@@ -8,7 +8,7 @@ module test_qtf_free_surface
   use QTFFreeSurface, only : fs_point_field, fs_forcing_diff, fs_inner_fields, fs_inner_steps, fs_circle_modes, &
                              fs_mode_warning, fs_auto_modes, FS_MODE_TOL, fs_sample_phi, fs_mode_scales, fs_auto_evanescent, &
                              fs_inner_pair, fs_outer_pair, fs_outer_annulus, fs_outer_tail, fs_outer_ring, fs_outer_rfar, &
-                             fs_outer_sliver, fs_radius_message, FS_SIGN
+                             fs_outer_sliver, fs_radius_message, FS_SIGN, fs_pair_order_message
   use HAMS_mod, only : NTHREAD, ISOL, IRSP
   use WaveDyn_mod, only : AMP, BETA, H, NK, TP, V, W1, WK, WVN
   use Body_mod, only : XW
@@ -56,6 +56,8 @@ subroutine collect_qtf_free_surface(testsuite)
     new_unittest("fs_outer_plane_wave_angular", test_outer_plane_wave_angular), &
     new_unittest("fs_outer_vs_brute_force", test_outer_vs_brute_force), &
     new_unittest("fs_outer_tail", test_outer_tail), &
+    new_unittest("fs_outer_pair_order", test_pair_order), &
+    new_unittest("fs_inner_quadrature_converges", test_inner_quadrature), &
     new_unittest("fs_inner_outer_radius", test_inner_outer_radius) &
     ]
 end subroutine collect_qtf_free_surface
@@ -693,25 +695,24 @@ subroutine test_outer_tail(error)
 end subroutine test_outer_tail
 
 !> The mesh-level radius check: on the 448-panel cylinder in depth 15, inner(R1) + outer(R1) = inner(R2) + outer(R2) for
-!> R1 = 15 m and R2 = 20 m. Measured (Task 7), relative difference: 8.9e-2 on the inner mesh of the default panel size
-!> (lambda/10 at omega_max = 1.1, 96 and 224 points), 2.15e-2 with the panel size of omega 2.2 (1152 and 2850 points),
-!> 2.11e-2 with that of 3.3 (4896 and 11550): the inner sums converge, the difference does not fall below 2e-2. Its
-!> source is the inner panel sum, not the outer integral: the outer annulus 15..20 m of the very fields equals a polar
-!> brute force to 1e-12, the inner fields equal the partial waves of R1 to 3e-4 (phi) and 6e-4 (gradient) between 15.5
-!> and 19.5 m, and with those partial waves as the field everywhere the split still differs by 1.8e-2; a smooth window over
-!> 15.5..19.5 m integrated on the R2 mesh misses the polar integral of the same pointwise integrand by 9 % (real part) on
-!> the finest mesh, against 0.3 % for a constant. The gate is 3e-2 on the omega 2.2 mesh (measured 2.15e-2), not the
-!> brief's 1e-2 (deviation; Task 10 checks the inner quadrature). Fields: the MacCamy-Fuchs wave at (1.1, heading 0.6) and (0.9, heading 0.2),
-!> amp 1 (the incident wave exactly, the scattered part from the hull panels); psi: the scattered MacCamy-Fuchs wave at
-!> Omega = 0.2 (heading 0), a field that satisfies the free-surface condition at Omega and radiates, from the hull panels.
-!> Inner: the generated inner mesh (build_fs_inner), fs_inner_fields and fs_sample_phi as the driver; outer: the partial
-!> waves of the circle samples (fs_circle_modes), fs_outer_pair to fs_outer_rfar, and the sliver between the inner polygon
-!> and the circle (fs_outer_sliver). The sum over the whole free surface outside the body cannot depend on R.
+!> R1 = 15 m and R2 = 20 m, to 1e-2 relative (the brief's gate) on the inner mesh of panel size lambda/10 at omega 3.11.
+!> Fields: the MacCamy-Fuchs wave at (1.1, heading 0.6) and (0.9, heading 0.2), amp 1 (the incident wave exactly, the
+!> scattered part from the hull panels); psi: the scattered MacCamy-Fuchs wave at Omega = 0.2 (heading 0), a field that
+!> satisfies the free-surface condition at Omega and radiates, from the hull panels. Inner: the generated inner mesh
+!> (build_fs_inner), fs_inner_fields and fs_sample_phi as the driver; outer: the partial waves of the circle samples
+!> (fs_circle_modes), fs_outer_pair to fs_outer_rfar, and the sliver between the inner polygon and the circle
+!> (fs_outer_sliver). The sum over the whole free surface outside the body cannot depend on R.
+!> The frequencies are om_a, om_b, not w1, w2: a local w1 would hide the global W1 of WaveDyn_mod, and the states would be
+!> built at the wrong frequency (the cause of the 2 % plateau of the first version, fix round 1 of Task 7).
+!> Measured (fix round 1), relative difference against the inner mesh of omega 1.1 (the default panel size), 2.2, 3.11 and
+!> 4.4: 8.5e-2, 1.28e-2, 1.90e-3, 2.35e-3. It falls as the inner panel sum converges (second order,
+!> fs_inner_quadrature_converges) down to about 2e-3.
 subroutine test_inner_outer_radius(error)
   type(error_type), allocatable, intent(out) :: error
-  real(8), parameter :: w1 = 1.1d0, w2 = 0.9d0, b1 = 0.6d0, b2 = 0.2d0, radii(2) = [15d0, 20d0], step = 0.04d0
-  ! The panel size of the inner mesh: lambda/10 at this frequency (build_fs_inner's omega_max)
-  real(8), parameter :: w_mesh = 2.2d0
+  real(8), parameter :: om_a = 1.1d0, om_b = 0.9d0, b1 = 0.6d0, b2 = 0.2d0, radii(2) = [15d0, 20d0], step = 0.04d0
+  real(8), parameter :: meshes(3) = [1.1d0, 2.2d0, 3.1112698372208d0]
+  real(8) :: errs(3)
+  integer :: im
   type(panel_mesh) :: mesh
   type(surface_geom) :: geom
   type(so_options) :: opts
@@ -724,7 +725,6 @@ subroutine test_inner_outer_radius(error)
   complex(8) :: tin(1), tout(1), tsl(1), total(2), nosliver(2), phi, grad(3)
   real(8) :: centre(2), radius, miss(1), k1, k2, k1max, rf, err, err_ns
   integer :: ir, i, mmax, nev, nshrunk, npc, nthread_saved
-  integer(8) :: c0, c1, crate
   logical :: ok
   character(len=:), allocatable :: msg
   character(len=200) :: info
@@ -736,13 +736,14 @@ subroutine test_inner_outer_radius(error)
   if (allocated(error)) return
   nthread_saved = NTHREAD
   NTHREAD = 8
+  do im = 1, 3
   do ir = 1, 2
     opts%qtf_fs_radius = radii(ir)
     call build_fs_inner(mesh, geom, opts, fx_depth, 'fs_task7_no_input_dir', pts, centre, radius, ok, msg, &
-                        omega_max=w_mesh, np_circle=npc)
+                        omega_max=meshes(im), np_circle=npc)
     call check(error, ok .and. npc >= 8, "inner mesh: "//msg)
     if (allocated(error)) exit
-    call set_frequency(w1, b1, fx_depth)
+    call set_frequency(om_a, b1, fx_depth)
     k1max = WK
     mmax = fs_auto_modes(0, k1max, radius)
     nev = fs_auto_evanescent(0, fx_depth, radius, 10d0)
@@ -753,7 +754,7 @@ subroutine test_inner_outer_radius(error)
     call pw_sample_points(centre, radius, fx_depth, mmax, nev, circle)
 
     ! psi at Omega: the scattered MacCamy-Fuchs wave, perturbation only
-    call set_frequency(w1 - w2, 0d0, fx_depth)
+    call set_frequency(om_a - om_b, 0d0, fx_depth)
     call maccamy_fuchs_state(mesh, 10d0, fx_depth, WK, W1, 1d0, 0d0, wave_gravity(W1, WK, fx_depth), rho, sp(1))
     sp(1)%amp = 0d0
     call fs_sample_phi(mesh, pts, sp, .false., psi)
@@ -763,7 +764,7 @@ subroutine test_inner_outer_radius(error)
       "), M ", mmax, ", N_ev ", nev, "; psi mode check ", miss(1)
 
     ! The two first-order states
-    call set_frequency(w1, b1, fx_depth)
+    call set_frequency(om_a, b1, fx_depth)
     k1 = WK
     call maccamy_fuchs_state(mesh, 10d0, fx_depth, WK, W1, 1d0, b1, wave_gravity(W1, WK, fx_depth), rho, s1(1))
     call fs_inner_fields(mesh, pts, s1, step, .false., f1, delta)
@@ -775,7 +776,7 @@ subroutine test_inner_outer_radius(error)
     end do
     call pw_evanescent_from_wvn(nev, kev)
     call fs_circle_modes(mesh, circle, s1, .false., centre, radius, fx_depth, WK, kev, mmax, nev, pw1, miss)
-    call set_frequency(w2, b2, fx_depth)
+    call set_frequency(om_b, b2, fx_depth)
     k2 = WK
     call maccamy_fuchs_state(mesh, 10d0, fx_depth, WK, W1, 1d0, b2, wave_gravity(W1, WK, fx_depth), rho, s2(1))
     call fs_inner_fields(mesh, pts, s2, step, .false., f2, delta)
@@ -788,26 +789,26 @@ subroutine test_inner_outer_radius(error)
     call pw_evanescent_from_wvn(nev, kev)
     call fs_circle_modes(mesh, circle, s2, .false., centre, radius, fx_depth, WK, kev, mmax, nev, pw2, miss)
 
-    call fs_inner_pair(w1, f1(:, 1), i1, w2, f2(:, 1), i2, psi, pts%w, g, rho, tin)
+    call fs_inner_pair(om_a, f1(:, 1), i1, om_b, f2(:, 1), i2, psi, pts%w, g, rho, tin)
     rf = fs_outer_rfar(pw1(1), k1, pw2(1), k2, pwp)
-    call system_clock(c0, crate)
-    call fs_outer_pair(w1, pw1(1), b1, k1, w2, pw2(1), b2, k2, pwp, w1 - w2, g, rho, rf, tout)
-    call system_clock(c1)
-    print '(4x,a,f8.3,a,i0,a)', "fs_outer_pair took ", real(c1 - c0, 8) / crate, " s on ", NTHREAD, " threads"
-    call fs_outer_sliver(w1, pw1(1), b1, k1, w2, pw2(1), b2, k2, pwp, w1 - w2, g, rho, npc, tsl)
+    call fs_outer_pair(om_a, pw1(1), b1, k1, om_b, pw2(1), b2, k2, pwp, om_a - om_b, g, rho, rf, tout)
+    call fs_outer_sliver(om_a, pw1(1), b1, k1, om_b, pw2(1), b2, k2, pwp, om_a - om_b, g, rho, npc, tsl)
     total(ir) = tin(1) + tout(1) + tsl(1)
     nosliver(ir) = tin(1) + tout(1)
     print '(4x,a,f5.1,a,2es13.5,a,2es13.5,a,2es13.5,a,f8.1)', "R =", radius, ": inner ", tin(1), ", outer ", tout(1), &
       ", sliver ", tsl(1), ", r_far ", rf
   end do
+  if (allocated(error)) exit
+  errs(im) = abs(total(1) - total(2)) / abs(total(1))
+  err_ns = abs(nosliver(1) - nosliver(2)) / abs(nosliver(1))
+  print '(4x,a,f4.1,a,2es13.5,a,es10.2,a,es10.2)', "inner mesh of omega ", meshes(im), ": total ", total(1), &
+    ", R 15 against R 20: relative ", errs(im), "; without the sliver ", err_ns
+  end do
   NTHREAD = nthread_saved
   if (allocated(error)) return
-  err = abs(total(1) - total(2)) / abs(total(1))
-  err_ns = abs(nosliver(1) - nosliver(2)) / abs(nosliver(1))
-  print '(4x,a,2es13.5,a,es10.2,a,es10.2)', "total ", total(1), ", R 15 against R 20: relative ", err, &
-    "; without the sliver ", err_ns
-  write (info, '(a,es10.3)') "inner + outer at R = 15 against R = 20, relative ", err
-  call check(error, err <= 3d-2, trim(info))
+  err = errs(1)
+  write (info, '(a,3es10.3)') "inner + outer at R = 15 against R = 20, relative (inner mesh of omega 1.1, 2.2, 3.11) ", errs
+  call check(error, errs(3) <= 1d-2, trim(info))
 end subroutine test_inner_outer_radius
 
 ! ---------------------------------------------------------------------------------------------- helpers (Task 7)
@@ -997,5 +998,161 @@ subroutine brute_outer(w1, pw1, b1, k1, w2, pw2, b2, k2, psi, omega, r_a, r_b, d
   t = t * cmplx(0d0, omega * rho / g, 8)
 end subroutine brute_outer
 
+
+
+! ---------------------------------------------------------------------------------------------- Task 7 fix round 1
+
+!> The outer routines refuse a pair that is not ordered w1 > w2 with Omega > 0 (fs_pair_order_message gives the stop
+!> message; Omega = 0 is returned as 0 before the check by the routines).
+subroutine test_pair_order(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=:), allocatable :: m_ok, m_rev, m_neg, m_eq
+
+  m_ok = fs_pair_order_message(1d0, 0.8d0, 0.2d0)
+  m_rev = fs_pair_order_message(0.8d0, 1d0, 0.2d0)
+  m_neg = fs_pair_order_message(1d0, 0.8d0, -0.2d0)
+  m_eq = fs_pair_order_message(0.8d0, 0.8d0, 0d0)
+  print '(4x,a,a)', "w1 < w2: ", m_rev
+  call check(error, len(m_ok) == 0, "an ordered pair is refused: "//m_ok)
+  if (allocated(error)) return
+  call check(error, index(m_rev, "order the pair") > 0 .and. index(m_neg, "order the pair") > 0 .and. &
+             index(m_eq, "order the pair") > 0, "an unordered pair or Omega <= 0 is not refused")
+end subroutine test_pair_order
+
+!> The partial waves at R of the fixture: psi (scattered MacCamy-Fuchs at Omega = om_a - om_b, heading 0) and the
+!> scattered parts of the states at (om_a, b1) and (om_b, b2), from the circle samples (fs_circle_modes), M and N_ev
+!> automatic. The frequencies are not called w1, w2 here: W1 is the global frequency of WaveDyn_mod.
+subroutine fixture_modes(mesh, radius, om_a, b1, om_b, b2, pw1, pw2, pwp, k1, k2)
+  type(panel_mesh), intent(in) :: mesh
+  real(8), intent(in) :: radius, om_a, b1, om_b, b2
+  type(pw_set), intent(out) :: pw1(1), pw2(1), pwp(1)
+  real(8), intent(out) :: k1, k2
+  type(first_order_state) :: s1(1), s2(1), sp(1)
+  type(cs_points) :: circle
+  real(8), allocatable :: kev(:)
+  real(8) :: miss(1)
+  integer :: mmax, nev
+
+  call set_frequency(om_a, b1, fx_depth)
+  mmax = fs_auto_modes(0, WK, radius)
+  nev = fs_auto_evanescent(0, fx_depth, radius, 10d0)
+  allocate (kev(nev))
+  call pw_sample_points([0d0, 0d0], radius, fx_depth, mmax, nev, circle)
+  call set_frequency(om_a - om_b, 0d0, fx_depth)
+  call maccamy_fuchs_state(mesh, 10d0, fx_depth, WK, W1, 1d0, 0d0, wave_gravity(W1, WK, fx_depth), rho, sp(1))
+  sp(1)%amp = 0d0
+  call pw_evanescent_from_wvn(nev, kev)
+  call fs_circle_modes(mesh, circle, sp, .false., [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pwp, miss)
+  call set_frequency(om_a, b1, fx_depth)
+  k1 = WK
+  call maccamy_fuchs_state(mesh, 10d0, fx_depth, WK, W1, 1d0, b1, wave_gravity(W1, WK, fx_depth), rho, s1(1))
+  call pw_evanescent_from_wvn(nev, kev)
+  call fs_circle_modes(mesh, circle, s1, .false., [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pw1, miss)
+  call set_frequency(om_b, b2, fx_depth)
+  k2 = WK
+  call maccamy_fuchs_state(mesh, 10d0, fx_depth, WK, W1, 1d0, b2, wave_gravity(W1, WK, fx_depth), rho, s2(1))
+  call pw_evanescent_from_wvn(nev, kev)
+  call fs_circle_modes(mesh, circle, s2, .false., [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pw2, miss)
+end subroutine fixture_modes
+
+!> psi Q_D at x (z = 0) of the partial waves pw1, pw2 (scattered), the incident waves and psi pwp, pointwise:
+!> pw_eval_surface (phi_zz exact per mode), incident_point, fs_forcing_diff
+complex(8) function modal_integrand(x, om_a, pw1, b1, k1, om_b, pw2, b2, k2, pwp) result(f)
+  real(8), intent(in) :: x(3), om_a, b1, k1, om_b, b2, k2
+  type(pw_set), intent(in) :: pw1, pw2, pwp
+  type(fs_point_field) :: i1, i2, t1, t2
+  complex(8) :: ps, gr(3), zz
+
+  i1 = incident_point(om_a, k1, b1, x, fx_depth)
+  i2 = incident_point(om_b, k2, b2, x, fx_depth)
+  t1 = add_fields(scattered_point(pw1, x), i1)
+  t2 = add_fields(scattered_point(pw2, x), i2)
+  call pw_eval_surface(pwp, x, ps, gr, zz)
+  f = ps * fs_forcing_diff(om_a, t1, i1, om_b, t2, i2, g)
+end function modal_integrand
+
+!> A C-infinity bump on (15.5, 19.5) m, 1 at 17.5 m
+real(8) function radial_bump(r)
+  real(8), intent(in) :: r
+  real(8) :: u
+
+  radial_bump = 0d0
+  u = (r - 17.5d0) / 2d0
+  if (abs(u) < 1d0) radial_bump = exp(1d0 - 1d0 / (1d0 - u * u))
+end function radial_bump
+
+!> The panel sum of the generated inner mesh (build_fs_inner, R = 20 m) converges as O(h^2) on a smooth integrand (review
+!> of Task 7, diagnostics i and ii): the partial-wave integrand of the fixture at R = 15 m (pw_eval_surface, exact phi_zz,
+!> the exact incident waves, fs_forcing_diff) under a smooth radial bump on (15.5, 19.5) m, summed over the points of the
+!> meshes with panel size ps, ps/2 and ps/4 (lambda/10 at omega 2.2, 2.2 sqrt 2, 4.4), against a polar Gauss reference
+!> (10 points per 0.25 m, 512 angles). Then the same with the evanescent modes n >= 4 zeroed.
+!> Measured: 1.41e-2, 1.82e-3, 3.21e-4 (all modes) and 1.41e-2, 1.82e-3, 3.20e-4 (n < 4): second order, and not driven
+!> by the steep evanescent modes. Gates: the finest below 1e-3, and at least 16x below the coarsest.
+subroutine test_inner_quadrature(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om_a = 1.1d0, om_b = 0.9d0, b1 = 0.6d0, b2 = 0.2d0
+  real(8), parameter :: wm(3) = [2.2d0, 3.1112698372208d0, 4.4d0]
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(so_options) :: opts
+  type(first_order_state) :: st(1)
+  type(pw_set) :: pw1(1), pw2(1), pwp(1), z1, z2, zp
+  type(cs_points) :: pts
+  real(8) :: k1, k2, centre(2), radius, xq(10), wq(10), r, th, x(3), rr, e(2, 3)
+  complex(8) :: ref(2), msum(2)
+  integer :: im, i, j, l, npc, nthread_saved
+  logical :: ok
+  character(len=:), allocatable :: msg
+  character(len=200) :: info
+
+  call cylinder_fixture(mesh, st, error)
+  if (allocated(error)) return
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  nthread_saved = NTHREAD
+  NTHREAD = 8
+  call fixture_modes(mesh, 15d0, om_a, b1, om_b, b2, pw1, pw2, pwp, k1, k2)
+  NTHREAD = nthread_saved
+  z1 = pw1(1)
+  z2 = pw2(1)
+  zp = pwp(1)
+  z1%a(:, 4:) = (0d0, 0d0)
+  z2%a(:, 4:) = (0d0, 0d0)
+  zp%a(:, 4:) = (0d0, 0d0)
+  call gauss_legendre01(10, xq, wq)
+  ref = (0d0, 0d0)
+  do i = 1, 16
+    do j = 1, 10
+      r = 15.5d0 + (i - 1 + xq(j)) * 0.25d0
+      do l = 0, 511
+        th = 2d0 * pi * l / 512
+        x = [r * cos(th), r * sin(th), 0d0]
+        ref(1) = ref(1) + radial_bump(r) * wq(j) * 0.25d0 * r * (2d0 * pi / 512) * &
+          modal_integrand(x, om_a, pw1(1), b1, k1, om_b, pw2(1), b2, k2, pwp(1))
+        ref(2) = ref(2) + radial_bump(r) * wq(j) * 0.25d0 * r * (2d0 * pi / 512) * &
+          modal_integrand(x, om_a, z1, b1, k1, om_b, z2, b2, k2, zp)
+      end do
+    end do
+  end do
+  opts%qtf_fs_radius = 20d0
+  do im = 1, 3
+    call build_fs_inner(mesh, geom, opts, fx_depth, 'fs_task7_no_input_dir', pts, centre, radius, ok, msg, &
+                        omega_max=wm(im), np_circle=npc)
+    call check(error, ok, "inner mesh: "//msg)
+    if (allocated(error)) return
+    msum = (0d0, 0d0)
+    do i = 1, pts%n
+      rr = norm2(pts%x(1:2, i) - centre)
+      if (radial_bump(rr) == 0d0) cycle
+      msum(1) = msum(1) + pts%w(i) * radial_bump(rr) * modal_integrand(pts%x(:, i), om_a, pw1(1), b1, k1, om_b, &
+        pw2(1), b2, k2, pwp(1))
+      msum(2) = msum(2) + pts%w(i) * radial_bump(rr) * modal_integrand(pts%x(:, i), om_a, z1, b1, k1, om_b, z2, b2, k2, zp)
+    end do
+    e(:, im) = abs(msum - ref) / abs(ref)
+    print '(4x,a,f6.3,a,i0,a,2es11.3)', "inner mesh of omega ", wm(im), " (", pts%n, &
+      " points): bump sum against polar, all modes and n < 4 ", e(:, im)
+  end do
+  write (info, '(a,6es10.3)') "panel sum of a smooth integrand at ps, ps/2, ps/4 (all modes, n < 4) ", e
+  call check(error, maxval(e(:, 3)) <= 1d-3 .and. minval(e(:, 1) / e(:, 3)) >= 16d0, trim(info))
+end subroutine test_inner_quadrature
 
 end module test_qtf_free_surface

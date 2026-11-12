@@ -51,7 +51,7 @@ MODULE QTFFreeSurface
    PUBLIC :: fs_inner_fields, fs_inner_steps, fs_sample_phi, fs_circle_modes, fs_mode_miss, fs_mode_warning, fs_auto_modes
    PUBLIC :: FS_MODE_TOL, fs_mode_scales, fs_auto_evanescent
    PUBLIC :: FS_SIGN, fs_inner_pair, fs_outer_pair, fs_outer_annulus, fs_outer_tail, fs_outer_ring, fs_outer_rfar
-   PUBLIC :: fs_outer_sliver, fs_radius_message
+   PUBLIC :: fs_outer_sliver, fs_radius_message, fs_pair_order_message
 
    ! The mode check: the partial waves must give the samples on the circle to this fraction of their largest value
    REAL(8), PARAMETER :: FS_MODE_TOL = 1D-3
@@ -481,6 +481,21 @@ CONTAINS
       msg = TRIM(line)
    END FUNCTION fs_radius_message
 
+   FUNCTION fs_pair_order_message(w1, w2, omega) RESULT(msg)
+      ! The stop message of the outer integral when the pair is not ordered w1 > w2 with Omega = omega > 0 (the
+      ! difference frequency; psi_k enters as H^(1)(K r), so the phase class k1 - k2 + K of the tail must be positive),
+      ! else ''. Omega = 0 is not refused here: the routines return 0 for it before asking.
+      REAL(8), INTENT(IN) :: w1, w2, omega
+      CHARACTER(LEN=:), ALLOCATABLE :: msg
+      CHARACTER(LEN=300) :: line
+
+      msg = ''
+      IF (w1 > w2 .AND. omega > 0D0) RETURN
+      WRITE (line, '(a,ES12.5,a,ES12.5,a,ES12.5,a)') 'the outer free-surface integral needs the pair ordered w1 > w2 '// &
+         'with Omega > 0 (w1 = ', w1, ', w2 = ', w2, ', Omega = ', omega, '): the caller must order the pair.'
+      msg = TRIM(line)
+   END FUNCTION fs_pair_order_message
+
    SUBROUTINE fs_inner_pair(w1, f1, inc1, w2, f2, inc2, psi, wts, g, rho, t_in)
       ! The inner part of T_FS for the pair of states 1 (omega w1) and 2 (omega w2): the sum over the inner points of
       !   t_in(k) = s_FS (i Omega rho / g) sum_i wts(i) psi(i, k) Q_D(x_i),   Omega = w1 - w2,
@@ -556,6 +571,10 @@ CONTAINS
       END IF
       ka = pw1%k0
       kb = pw2%k0
+      IF (.NOT. ka > kb) THEN
+         WRITE (*, '(a)') ' fs_outer_rfar: the pair must be ordered w1 > w2 (k1 > k2); the caller must order the pair.'
+         ERROR STOP 1
+      END IF
       kmin = ABS(ka - kb + kp)
       IF (k1 > 0D0) kmin = MIN(kmin, ABS(-ka - kb + kp))
       IF (k2 > 0D0) kmin = MIN(kmin, ABS(ka + kb + kp))
@@ -578,6 +597,7 @@ CONTAINS
 
       t = (0D0, 0D0)
       IF (omega == 0D0 .OR. .NOT. r_b > r_a .OR. SIZE(t) == 0) RETURN
+      CALL stop_if_unordered(w1, w2, omega)
       CALL outer_setup(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, g, od)
       IF (SIZE(t) /= od%nk) THEN
          WRITE (*, '(a)') ' fs_outer_annulus: t must have one entry per set of pw_psi.'
@@ -647,6 +667,7 @@ CONTAINS
 
       t = (0D0, 0D0)
       IF (omega == 0D0 .OR. SIZE(t) == 0) RETURN
+      CALL stop_if_unordered(w1, w2, omega)
       CALL outer_setup(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, g, od)
       IF (SIZE(t) /= od%nk) THEN
          WRITE (*, '(a)') ' fs_outer_tail: t must have one entry per set of pw_psi.'
@@ -689,6 +710,7 @@ CONTAINS
       TYPE(outer_data) :: od
       TYPE(outer_work) :: wk
 
+      CALL stop_if_unordered(w1, w2, w1 - w2)
       CALL outer_setup(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, g, od)
       IF (SIZE(ring) /= od%nk) THEN
          WRITE (*, '(a)') ' fs_outer_ring: ring must have one entry per set of pw_psi.'
@@ -718,7 +740,12 @@ CONTAINS
 
       t = (0D0, 0D0)
       IF (omega == 0D0 .OR. np < 3 .OR. SIZE(t) == 0) RETURN
+      CALL stop_if_unordered(w1, w2, omega)
       CALL outer_setup(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, g, od)
+      IF (SIZE(t) /= od%nk) THEN
+         WRITE (*, '(a)') ' fs_outer_sliver: t must have one entry per set of pw_psi.'
+         ERROR STOP 1
+      END IF
       CALL work_alloc(od, wk)
       CALL gauss_legendre01(NSL_TH, xt, wt)
       CALL gauss_legendre01(NSL_R, xr, wr)
@@ -839,6 +866,18 @@ CONTAINS
       od%a2c = (0D0, 0D0)
       od%a2c(:, 0, 1) = CONJG(od%a2(:, 0, 1))
    END SUBROUTINE outer_setup
+
+   SUBROUTINE stop_if_unordered(w1, w2, omega)
+      ! ERROR STOP with fs_pair_order_message unless w1 > w2 and omega > 0
+      REAL(8), INTENT(IN) :: w1, w2, omega
+      CHARACTER(LEN=:), ALLOCATABLE :: msg
+
+      msg = fs_pair_order_message(w1, w2, omega)
+      IF (LEN(msg) > 0) THEN
+         WRITE (*, '(a,a)') ' QTF free surface: ', msg
+         ERROR STOP 1
+      END IF
+   END SUBROUTINE stop_if_unordered
 
    LOGICAL FUNCTION same_circle(a, b)
       TYPE(pw_set), INTENT(IN) :: a, b
