@@ -565,8 +565,9 @@ CONTAINS
       !   miss = (pi R^2 - awp - sum w) / (pi R^2 - awp),
       ! the fraction of the free surface inside R that the mesh leaves out (< 0: more area than there is, from overlapping
       ! panels or panels over a waterplane). |miss| > FS_COVER_WARN: msg is a warning; |miss| > FS_COVER_STOP: msg is a
-      ! stop message and stops is true (the mesh does not reach R, or it counts part of the free surface twice). A mesh that ends on a polygon inscribed in the circle leaves
-      ! out the polygon gap, about (2 pi / n)^2 / 6 of pi R^2 for n chords.
+      ! stop message and stops is true (the mesh does not reach R, or it counts part of the free surface twice).
+      ! A mesh that ends on a polygon inscribed in the circle leaves out the polygon gap,
+      ! about (2 pi / n)^2 / 6 of pi R^2 for n chords.
       REAL(8), INTENT(IN) :: w(:), radius, awp
       REAL(8), INTENT(OUT) :: miss
       CHARACTER(LEN=:), ALLOCATABLE, INTENT(OUT) :: msg
