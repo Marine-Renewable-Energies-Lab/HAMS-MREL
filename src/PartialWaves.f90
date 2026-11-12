@@ -43,7 +43,7 @@ MODULE PartialWaves
    PRIVATE
 
    PUBLIC :: pw_set, pw_radial, pw_sample_points, pw_decompose, pw_eval_surface, pw_eval_point, pw_radial_at, pw_bessel_k
-   PUBLIC :: pw_evanescent_from_wvn, PW_KR_MAX
+   PUBLIC :: pw_evanescent_from_wvn, PW_KR_MAX, pw_bessel_k_scaled, pw_bessel_k_scaled_c, pw_hankel_scaled
 
    REAL(8), PARAMETER :: PI = 3.14159265358979323846D0
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
@@ -439,6 +439,190 @@ CONTAINS
          k(m + 1) = k(m - 1) + (2D0*m/x)*k(m)
       END DO
    END SUBROUTINE pw_bessel_k
+
+
+   PURE SUBROUTINE pw_bessel_k_scaled(mmax, x, k)
+      ! e^x K_m(x), m = 0..mmax, x > 0: pw_bessel_k_scaled_c on the real axis. It stays O(x^-1/2) where K_m itself
+      ! underflows (x above about 700), as the outer radial integral of QTFFreeSurface needs far out (pw_bessel_k_far).
+      INTEGER, INTENT(IN) :: mmax
+      REAL(8), INTENT(IN) :: x
+      REAL(8), INTENT(OUT) :: k(0:mmax)
+      COMPLEX(8) :: kc(0:mmax)
+      INTEGER :: m
+
+      CALL pw_bessel_k_scaled_c(mmax, CMPLX(x, 0D0, KIND=8), kc)
+      DO m = 0, mmax
+         k(m) = REAL(kc(m))
+      END DO
+   END SUBROUTINE pw_bessel_k_scaled
+
+   PURE SUBROUTINE pw_bessel_k_scaled_c(mmax, w, k)
+      ! e^w K_m(w), m = 0..mmax, for complex w /= 0 with Re w >= 0 (the closed right half-plane, where the Hankel functions
+      ! of the tail contours need it: H^(1)_m(z) = (2/pi) i^-(m+1) K_m(-i z)). The algorithm of pw_bessel_k in complex
+      ! arithmetic: for |w| <= 2 the power series of K_0 and K_1 (Abramowitz and Stegun 9.6.13 and 9.6.11, principal log),
+      ! times e^w; for |w| > 2 Steed's continued fraction CF2 with Temme's normalisation (Temme 1975; Numerical Recipes 2nd
+      ! ed. section 6.7), which gives e^w K_0 directly. Then the upward recurrence K_{m+1} = K_{m-1} + (2m/w) K_m, stable
+      ! for K (the dominant solution in m), with the common factor e^w. Relative accuracy about 1e-15 (pw_bessel_k_far).
+      INTEGER, INTENT(IN) :: mmax
+      COMPLEX(8), INTENT(IN) :: w
+      COMPLEX(8), INTENT(OUT) :: k(0:mmax)
+      REAL(8), PARAMETER :: EULER = 0.57721566490153286061D0, EPS = 1D-17
+      COMPLEX(8) :: t, lg, term0, term1, s0, s1, si1, k0, k1, b, d, hh, delh, q1, q2, qnew, q, s, dels, ew
+      REAL(8) :: psi1, psi2, cc, a, a1
+      INTEGER :: i, m
+
+      IF (ABS(w) <= 2D0) THEN
+         t = 0.25D0*w*w
+         lg = LOG(0.5D0*w)
+         psi1 = -EULER
+         psi2 = 1D0 - EULER
+         term0 = (1D0, 0D0)
+         term1 = (1D0, 0D0)
+         s0 = psi1 - lg
+         s1 = CMPLX(psi1 + psi2, 0D0, KIND=8)
+         si1 = (1D0, 0D0)
+         DO i = 1, 200
+            psi1 = psi2
+            psi2 = psi1 + 1D0/(i + 1)
+            term0 = term0*t/(REAL(i, 8)*i)
+            term1 = term1*t/(REAL(i, 8)*(i + 1))
+            s0 = s0 + term0*(psi1 - lg)
+            s1 = s1 + term1*(psi1 + psi2)
+            si1 = si1 + term1
+            IF (ABS(term0) < EPS*ABS(s0) .AND. ABS(term1) < EPS*ABS(si1)) EXIT
+         END DO
+         ew = EXP(w)
+         k0 = s0*ew
+         k1 = (1D0/w + lg*0.5D0*w*si1 - 0.25D0*w*s1)*ew
+      ELSE
+         b = 2D0*(1D0 + w)
+         d = 1D0/b
+         hh = d
+         delh = d
+         q1 = (0D0, 0D0)
+         q2 = (1D0, 0D0)
+         a1 = 0.25D0
+         q = a1
+         cc = a1
+         a = -a1
+         s = 1D0 + q*delh
+         DO i = 2, 100000
+            a = a - 2D0*(i - 1)
+            cc = -a*cc/i
+            qnew = (q1 - b*q2)/a
+            q1 = q2
+            q2 = qnew
+            q = q + cc*qnew
+            b = b + 2D0
+            d = 1D0/(b + a*d)
+            delh = (b*d - 1D0)*delh
+            hh = hh + delh
+            dels = q*delh
+            s = s + dels
+            IF (ABS(dels) < EPS*ABS(s)) EXIT
+         END DO
+         hh = a1*hh
+         k0 = SQRT(PI/(2D0*w))/s
+         k1 = k0*(w + 0.5D0 - hh)/w
+      END IF
+
+      k(0) = k0
+      IF (mmax >= 1) k(1) = k1
+      DO m = 1, mmax - 1
+         k(m + 1) = k(m - 1) + (2D0*m/w)*k(m)
+      END DO
+   END SUBROUTINE pw_bessel_k_scaled_c
+
+   PURE SUBROUTINE pw_hankel_scaled(kind, mmax, z, hs)
+      ! The Hankel functions with their exponential factor taken out, at complex z with Re z > 0, m = 0..mmax:
+      !   kind 1: H^(1)_m(z) e^{-iz},   kind 2: H^(2)_m(z) e^{+iz},
+      ! both O(|z|^-1/2) for large |z| in either half-plane, so that a product of them along a rotated contour carries
+      ! its exponential e^{i kappa r} explicitly (the tail of QTFFreeSurface). Each kind is computed where it decays and
+      ! reflected (H^(2)_m(conj z) = conj H^(1)_m(z) for integer m) into the other half-plane:
+      !   H^(1), Im z >= 0: (2/pi) i^-(m+1) e^w K_m(w), w = -iz (Re w >= 0; Abramowitz and Stegun 9.6.4), by
+      !     pw_bessel_k_scaled_c;
+      !   H^(2), Im z > 0: 2 J_m(z) e^{iz} - H^(1)_m(z) e^{-iz} e^{2iz}, with J_m(z) e^{iz} by Miller's backward recurrence
+      !     normalised by e^{-iz} = J_0 + 2 sum_n (-i)^n J_n (the Jacobi-Anger series at theta = pi), whose terms are of the
+      !     size of the sum, so that there is no cancellation however large Im z is;
+      !   Im z < 0: the conjugates of these at conj z.
+      ! Checked against scipy (Amos) to 1e-12 in both half-planes, |z| 0.7 to 3000 (pw_hankel_scaled_values).
+      INTEGER, INTENT(IN) :: kind, mmax
+      COMPLEX(8), INTENT(IN) :: z
+      COMPLEX(8), INTENT(OUT) :: hs(0:mmax)
+      COMPLEX(8) :: zu
+      LOGICAL :: lower
+
+      lower = AIMAG(z) < 0D0
+      zu = z
+      IF (lower) zu = CONJG(z)
+      ! In the upper half-plane, kind 1 at z is the decaying one; kind 2 at z in the lower half-plane is conj(kind 1 at zu)
+      IF ((kind == 1) .NEQV. lower) THEN
+         CALL hankel1_upper(mmax, zu, hs)
+      ELSE
+         CALL hankel2_upper(mmax, zu, hs)
+      END IF
+      IF (lower) hs = CONJG(hs)
+   END SUBROUTINE pw_hankel_scaled
+
+   PURE SUBROUTINE hankel1_upper(mmax, z, hs)
+      ! H^(1)_m(z) e^{-iz} for Im z >= 0: (2/pi) i^-(m+1) e^w K_m(w), w = -iz
+      INTEGER, INTENT(IN) :: mmax
+      COMPLEX(8), INTENT(IN) :: z
+      COMPLEX(8), INTENT(OUT) :: hs(0:mmax)
+      COMPLEX(8) :: ph
+      INTEGER :: m
+
+      CALL pw_bessel_k_scaled_c(mmax, -CI*z, hs)
+      ph = -CI*(2D0/PI)
+      DO m = 0, mmax
+         hs(m) = ph*hs(m)
+         ph = -CI*ph
+      END DO
+   END SUBROUTINE hankel1_upper
+
+   PURE SUBROUTINE hankel2_upper(mmax, z, hs)
+      ! H^(2)_m(z) e^{iz} for Im z >= 0: 2 J_m(z) e^{iz} - H^(1)_m(z) e^{-iz} e^{2iz}. J_m(z) e^{iz} by Miller's backward
+      ! recurrence J_{n-1} = (2n/z) J_n - J_{n+1} from n0 = mmax + |z| + 40 + 8 |z|^(1/3) (even), normalised by
+      ! J_0 + 2 sum_{n>=1} (-i)^n J_n = e^{-iz}; rescaled on the way down so that nothing overflows.
+      INTEGER, INTENT(IN) :: mmax
+      COMPLEX(8), INTENT(IN) :: z
+      COMPLEX(8), INTENT(OUT) :: hs(0:mmax)
+      REAL(8), PARAMETER :: BIG = 1D250, SMALL = 1D-250
+      COMPLEX(8) :: jp, jc, jm, nrm, ph, e2, h1(0:mmax)
+      INTEGER :: n0, n
+
+      n0 = mmax + INT(ABS(z)) + 40 + INT(8D0*ABS(z)**(1D0/3D0))
+      IF (MODULO(n0, 2) == 1) n0 = n0 + 1
+      jp = (0D0, 0D0)        ! J_{n+1}
+      jc = (1D-30, 0D0)      ! J_n, n = n0
+      ! (-i)^n0
+      ph = (-CI)**MODULO(n0, 4)
+      nrm = 2D0*ph*jc
+      hs = (0D0, 0D0)
+      IF (n0 <= mmax) hs(n0) = jc
+      DO n = n0, 1, -1
+         jm = (2D0*n/z)*jc - jp
+         jp = jc
+         jc = jm
+         ! jc is J_{n-1}
+         ph = CI*ph         ! (-i)^(n-1) = (-i)^n * i
+         IF (n - 1 >= 1) THEN
+            nrm = nrm + 2D0*ph*jc
+         ELSE
+            nrm = nrm + jc
+         END IF
+         IF (n - 1 <= mmax) hs(n - 1) = jc
+         IF (ABS(jc) > BIG) THEN
+            jc = jc*SMALL
+            jp = jp*SMALL
+            nrm = nrm*SMALL
+            hs = hs*SMALL
+         END IF
+      END DO
+      CALL hankel1_upper(mmax, z, h1)
+      e2 = EXP(2D0*CI*z)
+      hs = 2D0*hs/nrm - h1*e2
+   END SUBROUTINE hankel2_upper
 
    SUBROUTINE pw_evanescent_from_wvn(nev, kev)
       ! The first nev evanescent wave numbers of the current frequency, WVN(2:nev+1) (DISPERSION, WaveDyn_mod): the roots of

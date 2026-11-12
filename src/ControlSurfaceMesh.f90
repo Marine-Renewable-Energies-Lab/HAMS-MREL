@@ -786,7 +786,7 @@ CONTAINS
 
    END SUBROUTINE free_surface_strips
 
-   SUBROUTINE build_fs_inner(mesh, geom, opts, h, inputdir, pts, centre, radius, ok, msg, omega_max)
+   SUBROUTINE build_fs_inner(mesh, geom, opts, h, inputdir, pts, centre, radius, ok, msg, omega_max, np_circle)
       ! The inner free surface of the QTF free-surface integral: the part of z = 0 between the waterlines and a circle of
       ! radius R about the centre of the waterline bounding box of all bodies. Returned as CS_FREE points, nrm (0, 0, -1),
       ! w the panel area; centre and R are returned too. From FSInnerMesh.pnl in inputdir when that file exists, else
@@ -802,7 +802,9 @@ CONTAINS
       ! size; a larger qtf_fs_rows is kept.
       ! R is qtf_fs_radius, or for 0: r_wl + max(0.5 r_wl, 2 x the largest hull panel size), r_wl the largest distance from
       ! the centre to a waterline node. R <= r_wl stops: the circle would cut a body.
-      ! ok = .false. with msg for every stop.
+      ! ok = .false. with msg for every stop. np_circle, if present, is the number of chords of the polygon that the
+      ! generated mesh ends on (inscribed in the circle, vertices at theta = 2 pi (j - 1) / np about the centre), 0 for a mesh
+      ! from the file.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       TYPE(so_options), INTENT(IN) :: opts
@@ -813,6 +815,7 @@ CONTAINS
       LOGICAL, INTENT(OUT) :: ok
       CHARACTER(LEN=:), ALLOCATABLE, INTENT(OUT) :: msg
       REAL(8), INTENT(IN), OPTIONAL :: omega_max
+      INTEGER, INTENT(OUT), OPTIONAL :: np_circle
       CHARACTER(LEN=*), PARAMETER :: NAME = 'FSInnerMesh.pnl'
       REAL(8), ALLOCATABLE :: psz(:)
       REAL(8) :: lo(2), hi(2), rwl, rmin, rgiven, rfile, ps, lam, wvn(1), d, q, frac, dnode, e(2), t
@@ -828,6 +831,7 @@ CONTAINS
       msg = ''
       centre = 0D0
       radius = 0D0
+      IF (PRESENT(np_circle)) np_circle = 0
       IF (geom%nwl == 0) THEN
          msg = 'the inner free surface needs a waterline, and no body has one'
          RETURN
@@ -928,6 +932,9 @@ CONTAINS
          ps = lam/10D0
          ! Gamma_c of the strips: the polygon on the circle (a wall of one row is all that its waterline needs).
          CALL cylinder_surface(centre, radius, ps, ps, ps, cm)
+         ! The chords of the polygon on the circle, as cylinder_surface makes them (vertices at 2 pi (j - 1) / np), for the
+         ! sliver between it and the circle (fs_outer_sliver of QTFFreeSurface)
+         IF (PRESENT(np_circle)) np_circle = MAX(8, CEILING(2D0*PI*radius/ps))
          CALL add_surface_points(cm, 1, gam, star_ok, msg)
          IF (.NOT. star_ok) THEN
             msg = 'inner free surface circle: '//msg

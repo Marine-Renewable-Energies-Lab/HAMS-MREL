@@ -85,7 +85,7 @@ MODULE SecondOrderDriver
                         qtf_radiation_omegas, qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, &
                         qtf_set_edge_weights, qtf_keep_fs_state, qtf_keep_fs_psi
    USE QTFFreeSurface, ONLY: fs_point_field, fs_inner_fields, fs_inner_steps, fs_sample_phi, fs_circle_modes, fs_mode_warning, &
-                             fs_auto_modes, fs_auto_evanescent
+                             fs_auto_modes, fs_auto_evanescent, fs_radius_message
    USE PartialWaves, ONLY: pw_set, pw_sample_points, pw_evanescent_from_wvn, PW_KR_MAX
    USE QTFPotential, ONLY: b2_control_check
    USE SharpEdge, ONLY: sharp_edge_weights
@@ -416,6 +416,12 @@ CONTAINS
       DO iw = 1, geom%nwl
          r_wl = MAX(r_wl, NORM2(geom%wl_x1(1:2, iw) - fs_centre), NORM2(geom%wl_x2(1:2, iw) - fs_centre))
       END DO
+      ! R <= r_wl (the equality too) cuts a body; build_fs_inner refuses it for a given R, this holds for the file mesh too
+      msg = fs_radius_message(fs_radius, r_wl)
+      IF (LEN(msg) > 0) THEN
+         WRITE (*, '(a,a)') ' QTF free surface: ', msg
+         ERROR STOP 1
+      END IF
       fs_nev = fs_auto_evanescent(opts%qtf_fs_evanescent, H, fs_radius, r_wl)
       IF (fs_nev > NK - 1) THEN
          WRITE (*, '(a,I0,a,I0,a)') ' QTF free surface: qtf_fs_evanescent = ', fs_nev, ' is more than the ', NK - 1, &
