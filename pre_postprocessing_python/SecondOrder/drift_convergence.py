@@ -1375,8 +1375,9 @@ def write_slurm(args):
     script = "%s/pre_postprocessing_python/SecondOrder/drift_convergence.py" % args.repo
     extra = "#SBATCH -A %s\n" % args.account if args.account else ""
     cases = [case for case in cases_of(args.control, study_of(args)) if in_tier(case, args.tier) and case.where == "snellius"
-             and case.name.startswith(args.only or "")]
-    head = dict(partition=PARTITION, cpus=CPUS, memory=MEMORY_GB, logs=logs, extra=extra)
+             and case.name.startswith(only_prefixes(args.only))]
+    cpus = args.cpus or CPUS
+    head = dict(partition=PARTITION, cpus=cpus, memory=args.memory or MEMORY_GB, logs=logs, extra=extra)
 
     src = os.path.join(args.source or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."), "src")
     order = " ".join(fortran_files_in_order([src]))
@@ -1392,21 +1393,24 @@ def write_slurm(args):
     if not args.control:   # the control study needs the build only: its tests run on the laptop
         write_tests_script(args, out, root, logs, src, head)
 
-    # Arrays by the size of the run, since an array has one time limit
+    # Arrays by the size of the run, since an array has one time limit; --batch NAME puts all the HAMS cases in one array
+    # NAME (NAME.txt, NAME.sbatch), and --limit sets the time limit of every array instead of limit_hours
     classes = (("short", 0.0, 0.5), ("medium", 0.5, 2.0), ("long", 2.0, 1e9))
+    if args.batch:
+        classes = ((args.batch, 0.0, float("inf")),)
     for label, low, high in classes:
         chosen = [case for case in cases if case.solver == "hams" and low <= wall_hours(case) < high]
         if not chosen:
             continue
         with open(os.path.join(out, label + ".txt"), "w", newline="\n") as f:
             f.write("\n".join(case.name for case in chosen) + "\n")
-        limit = time_limit(max(limit_hours(case) for case in chosen))
+        limit = args.limit or time_limit(max(limit_hours(case) for case in chosen))
         with open(os.path.join(out, label + ".sbatch"), "w", newline="\n") as f:
             f.write(SBATCH_HEAD.format(name="drift_" + label, limit=limit, log="%A_%a.log",
                                        **dict(head, extra="#SBATCH --array=1-%d%%8\n%s" % (len(chosen), extra))))
             f.write("CASE=$(sed -n \"${SLURM_ARRAY_TASK_ID}p\" %s/%s.txt)\n" % (jobs, label))
             f.write("python3 %s run %s --case \"$CASE\" --hams %s/hamsmrel_grn4 --hams-grn8 %s/hamsmrel_grn8 --threads %d%s\n" % (
-                script, root, root, root, CPUS,
+                script, root, root, root, cpus,
                 " --control " + args.control if args.control else qtf_flag(study_of(args))))
 
     # Nemoh is run with one thread per case, as many at a time as there are cases, in one allocation per batch
@@ -1428,6 +1432,11 @@ def write_slurm(args):
     print("Scripts in %s, for %s on the cluster, with logs in %s. Nothing was submitted." % (out, jobs, logs))
 
 
+def only_prefixes(only):
+    """The argument of str.startswith for --only: a tuple of the given prefixes, or "" (every name) without --only."""
+    return tuple(only) if only else ""
+
+
 def nemoh_batches(cases):
     """[(label, cases)] of the Nemoh allocations: one "nemoh" for the hulls without batches of their own, and one
     "nemoh_<hull>_m<k>" per multiple of a hull with HULLS nemoh_batches (OC4: m1 and m2 are approved and run apart)."""
@@ -1439,7 +1448,7 @@ def nemoh_batches(cases):
 
 
 def job_table(tier, markdown, control=None, qtf=False, only=None):
-    cases = [case for case in cases_of(control, qtf) if in_tier(case, tier) and case.name.startswith(only or "")]
+    cases = [case for case in cases_of(control, qtf) if in_tier(case, tier) and case.name.startswith(only_prefixes(only))]
     head = ("Case", "Group", "Q", "Hull", "Motion", "Velocity", "Setting", "Panels", "Freq", "Head", "Wall (h)", "Mem (GB)", "Runs on")
     rows = []
     for case in cases:
@@ -1514,7 +1523,8 @@ def main():
     p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
     p.add_argument("--qtf", action="store_true", help=qtf_help)
     p.add_argument("--qtf-potential", action="store_true", help=potential_help)
-    p.add_argument("--only", metavar="PREFIX", help="only the cases whose name starts with PREFIX (a batch of q_sharp_full_)")
+    p.add_argument("--only", metavar="PREFIX", nargs="+",
+                   help="only the cases whose name starts with one of the PREFIXes (a batch of q_sharp_full_)")
 
     p = sub.add_parser("generate")
     p.add_argument("root")
@@ -1547,7 +1557,13 @@ def main():
     p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
     p.add_argument("--qtf", action="store_true", help=qtf_help)
     p.add_argument("--qtf-potential", action="store_true", help=potential_help)
-    p.add_argument("--only", metavar="PREFIX", help="only the cases whose name starts with PREFIX (a batch of q_sharp_full_)")
+    p.add_argument("--only", metavar="PREFIX", nargs="+",
+                   help="only the cases whose name starts with one of the PREFIXes (a batch of q_sharp_full_)")
+    p.add_argument("--cpus", type=int, help="CPUs (and threads) of each run, by default %d" % CPUS)
+    p.add_argument("--memory", type=int, metavar="GB", help="memory of each run, by default %d GB" % MEMORY_GB)
+    p.add_argument("--limit", metavar="H:MM:SS", help="the Slurm time limit of every array, instead of the estimate's")
+    p.add_argument("--batch", metavar="NAME", help="all the HAMS cases in one array NAME (NAME.txt, NAME.sbatch), not "
+                                                   "short, medium and long")
 
     p = sub.add_parser("collect")
     p.add_argument("root")
