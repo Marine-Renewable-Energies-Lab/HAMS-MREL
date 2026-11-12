@@ -436,7 +436,8 @@ CONTAINS
    END SUBROUTINE so_after_radiation
 
    SUBROUTINE so_after_radiation_only(opts, omega)
-      ! Call after the radiation-only solve at the difference frequency omega (one of qtf_radiation_omegas()).
+      ! Call after the radiation-only solve at the difference frequency omega (one of qtf_radiation_omegas(),
+      ! or of qtf_direct_omegas() with qtf_direct = 1).
       TYPE(so_options), INTENT(IN) :: opts
       REAL(8), INTENT(IN) :: omega
 

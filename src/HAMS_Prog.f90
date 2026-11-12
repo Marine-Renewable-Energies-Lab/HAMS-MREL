@@ -874,8 +874,9 @@ contains
             end if
             if (qtf_nonfinite_psi() .ne. 0 .or. qtf_nonfinite_pairs() .ne. 0) then
                 write(*,'(a,i0,a,i0,a)') '  Error: the QTF potential part has NaN or Inf: psi at ', qtf_nonfinite_psi(), &
-                    ' difference frequencies, T_pot at ', qtf_nonfinite_pairs(), ' frequency and heading pairs.'
-                write(*,*) ' QTF_Indirect.11d is written but is not valid at those pairs (see the QTF error lines above).'
+                    ' difference frequencies, T_pot or T_dir at ', qtf_nonfinite_pairs(), ' frequency and heading pairs.'
+                write(*,*) ' QTF_Indirect.11d (and QTF_Direct.12d with qtf_direct = 1) is written but is not valid at those pairs'
+                write(*,*) ' (see the QTF error lines above).'
             end if
             write(*,*)
             stop 1

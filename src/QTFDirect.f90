@@ -146,8 +146,8 @@ MODULE QTFDirect
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
    ! As CALGREEN: a panel closer than this many panel sizes gets panel integrals of 1/r and of its image
    REAL(8), PARAMETER :: NEAR_PANEL_SIZES = 50D0
-   ! direct_at_omega takes the pairs of one Omega in blocks of at most this many bytes of work arrays (about 20 complex
-   ! values per panel and pair: the fields, the right sides, the B2 densities and their linear parts, phi_D)
+   ! direct_at_omega takes the pairs of one Omega in blocks of at most this many bytes of work arrays (about 25 complex
+   ! values per panel and pair with a lid: the fields, the right sides, the B2 densities and their linear parts, phi_D)
    REAL(8), PARAMETER :: DIRECT_BLOCK_BYTES = 256D6
    ! The sharp-edge mask of the run (direct_setup): panels that keep the one-point rule in the B2 right side
    LOGICAL, ALLOCATABLE :: edge_mask(:)
@@ -423,7 +423,7 @@ CONTAINS
       CALL direct_factor(mesh, multi)
       CALL SYSTEM_CLOCK(c1)
       sec(3) = sec(3) + REAL(c1 - c0, 8)/REAL(rate, 8)
-      ncol_max = MAX(1, INT(DIRECT_BLOCK_BYTES/(16D0*20D0*REAL(n, 8))))
+      ncol_max = MAX(1, INT(DIRECT_BLOCK_BYTES/(16D0*25D0*REAL(n, 8))))
       DO first = 1, npair, ncol_max
          last = MIN(npair, first + ncol_max - 1)
          nc = last - first + 1
