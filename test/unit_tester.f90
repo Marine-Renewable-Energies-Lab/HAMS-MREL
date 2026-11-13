@@ -34,6 +34,7 @@ program unit_tester
     use test_qtf_free_surface, only : collect_qtf_free_surface
     use test_partial_waves, only : collect_partial_waves
     use test_qtf_direct, only : collect_qtf_direct
+    use test_qtf_direct_field, only : collect_qtf_direct_field
 
     implicit none
     integer :: stat, is
@@ -75,7 +76,8 @@ program unit_tester
         new_testsuite("qtf_field", collect_qtf_field), &
         new_testsuite("qtf_free_surface", collect_qtf_free_surface), &
         new_testsuite("partial_waves", collect_partial_waves), &
-        new_testsuite("qtf_direct", collect_qtf_direct) &
+        new_testsuite("qtf_direct", collect_qtf_direct), &
+        new_testsuite("qtf_direct_field", collect_qtf_direct_field) &
     ]
 
     stat = 0
@@ -97,7 +99,8 @@ program unit_tester
                                      .and. testsuites(is)%name /= "qtf_potential" &
                                      .and. testsuites(is)%name /= "qtf_free_surface" &
                                      .and. testsuites(is)%name /= "partial_waves" &
-                                     .and. testsuites(is)%name /= "qtf_direct"))
+                                     .and. testsuites(is)%name /= "qtf_direct" &
+                                     .and. testsuites(is)%name /= "qtf_direct_field"))
     end do
 
     if (stat > 0) then

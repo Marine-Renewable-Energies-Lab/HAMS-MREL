@@ -9,6 +9,7 @@ module test_sharp_edge
   private
 
   public :: collect_sharp_edge
+  public :: make_closed_box
 
   real(8), parameter :: pi = 3.14159265358979323846d0
   ! f of the first row (rho_c = h/2) and of the second row (rho_c = 3h/2) for p = -1/3, from the closed forms
