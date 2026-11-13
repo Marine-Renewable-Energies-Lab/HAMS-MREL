@@ -253,7 +253,8 @@ subroutine collect_partial_waves(testsuite)
     new_unittest("pw_hams_field", test_hams_field), &
     new_unittest("green_modes_match_fingreen", test_green_modes_fingreen), &
     new_unittest("green_modes_near_circle", test_green_modes_near_circle), &
-    new_unittest("green_modes_match_decompose", test_green_modes_decompose) &
+    new_unittest("green_modes_match_decompose", test_green_modes_decompose), &
+    new_unittest("green_modes_cut_reported", test_green_modes_cut) &
     ]
 end subroutine collect_partial_waves
 
@@ -828,6 +829,66 @@ subroutine test_green_modes_decompose(error)
   write (info, '(a,es10.3)') "pw_green_modes differs from pw_decompose of FINGREEN3D, relative ", worst / scale
   call check(error, worst <= 1d-6 * scale, trim(info))
 end subroutine test_green_modes_decompose
+
+!> The overflow cut of pw_green_modes is reported (review of Task 1): a long wave on a moderate circle, difference frequency
+!> 0.2 rad/s in h = 200 m, R = 30 m, source at r_x = 0.97 R. H_m(k0 R) passes 1e300 long before the order that
+!> pw_green_mmax(r_x, R, 1e-10) asks for; mcut must say so: mcut < that order, every mode nonzero up to mcut, the next
+!> order zero in some mode, and mcut pinned where |H_{mcut+1}| and K_{mcut+1} are <= 1e300 in every mode and one of them
+!> exceeds it at mcut + 2 (bessel_yn and pw_bessel_k, independent of the recurrence in the module). And in the case of
+!> green_modes_match_fingreen nothing is cut: mcut = mmax.
+subroutine test_green_modes_cut(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: h = 200d0, omega = 0.2d0, radius = 30d0, big = 1d300
+  integer, parameter :: nev = 10
+  real(8) :: wvn_local(nev + 1), x(3), k0r, tail
+  real(8), allocatable :: kv(:)
+  type(pw_set) :: pw
+  integer :: mneed, mc, n
+  logical :: beyond, zero_next
+  character(len=200) :: info
+  external :: DISPERSION
+
+  call DISPERSION(wvn_local, nev + 1, omega, h)
+  x = [0.97d0 * radius * gm_x(1:2) / norm2(gm_x(1:2)), -4d0]
+  mneed = pw_green_mmax(0.97d0 * radius, radius, 1d-10)
+  call pw_green_modes(x, [0d0, 0d0], radius, h, wvn_local(1), wvn_local(2:), mneed, nev, pw, mcut=mc)
+  k0r = wvn_local(1) * radius
+  tail = 0.97d0**(mc + 1) / (mc + 1)
+  print '(4x,a,f6.3,a,i0,a,i0,a,es10.2)', "k0 R ", k0r, ": order asked ", mneed, ", represented (mcut) ", mc, &
+    ", tail beyond it about ", tail
+  write (info, '(a,i0,a,i0)') "the cut is not reported: mcut ", mc, ", order asked ", mneed
+  call check(error, mc >= 0 .and. mc < mneed, trim(info))
+  if (allocated(error)) return
+  call check(error, tail > 1d-10, "the cut does not matter in this case: the test does not test it")
+  if (allocated(error)) return
+  call check(error, all(pw%a(-mc:mc, :) /= (0d0, 0d0)), "an amplitude at |m| <= mcut is zero")
+  if (allocated(error)) return
+  zero_next = any(pw%a(mc + 1, :) == (0d0, 0d0)) .and. any(pw%a(-mc - 1, :) == (0d0, 0d0))
+  call check(error, zero_next, "no mode is cut at mcut + 1")
+  if (allocated(error)) return
+  ! Where the cut lies: the radial functions at R up to mcut + 1 are <= big in every mode, and one exceeds it at mcut + 2
+  allocate (kv(0:mc + 2))
+  beyond = .not. (abs(bessel_yn(mc + 2, k0r)) <= big)
+  write (info, '(a,i0,a)') "|Y_", mc + 1, "(k0 R)| exceeds 1e300: mcut too high"
+  call check(error, abs(bessel_yn(mc + 1, k0r)) <= big, trim(info))
+  if (allocated(error)) return
+  do n = 1, nev
+    call pw_bessel_k(mc + 2, wvn_local(n + 1) * radius, kv)
+    write (info, '(a,i0,a,i0,a)') "K_", mc + 1, "(k_", n, " R) exceeds 1e300: mcut too high"
+    call check(error, kv(mc + 1) <= big, trim(info))
+    if (allocated(error)) return
+    beyond = beyond .or. .not. (kv(mc + 2) <= big)
+  end do
+  call check(error, beyond, "no radial function exceeds 1e300 at mcut + 2: mcut too low")
+  if (allocated(error)) return
+
+  ! Nothing cut in the case of the brief
+  call DISPERSION(wvn_local, nev + 1, gm_omega, gm_depth)
+  mneed = pw_green_mmax(norm2(gm_x(1:2)), gm_radius, 1d-10)
+  call pw_green_modes(gm_x, [0d0, 0d0], gm_radius, gm_depth, wvn_local(1), wvn_local(2:), mneed, nev, pw, mcut=mc)
+  write (info, '(a,i0,a,i0)') "mcut ", mc, " below mmax ", mneed
+  call check(error, mc == mneed, trim(info))
+end subroutine test_green_modes_cut
 
 !> The worst errors of pw_green_modes(x) against the full G of FINGREEN3D (err_fg) and of the direct eigen-sum (err_ds) at
 !> 12 angles on r = R, 18 m, 30 m and z = 0, -10 m, relative to the largest |G| there.

@@ -630,7 +630,7 @@ CONTAINS
       hs = 2D0*hs/nrm - h1*e2
    END SUBROUTINE hankel2_upper
 
-   SUBROUTINE pw_green_modes(x, centre, radius, h, k0, kev, mmax, nev, pw)
+   SUBROUTINE pw_green_modes(x, centre, radius, h, k0, kev, mmax, nev, pw, mcut)
       ! The partial waves of the finite-depth Green function G(x, xi) of HAMS as a field of xi outside the circle r = radius
       ! about centre, for a source x inside it (r_x < radius): pw_eval_point(pw, xi) is the full G (1/r and 1/r1 included)
       ! for r_xi >= radius, -h <= xi_z <= 0 (Phase 7b, the outer contraction of the free-surface forcing).
@@ -653,14 +653,19 @@ CONTAINS
       ! Orders m whose radial function at R, H_{m+1}(k0 R) or K_{m+1}(kn R), exceeds 1e300 (the plain pw_set amplitude
       ! times it would overflow) are set to exactly zero; pw_eval_point and pw_eval_surface skip zero amplitudes. Their
       ! terms are of order (r_x / R)^m / m relative to the leading ones: for k0 R = 0.22 (the test case) the cut is near
-      ! m = 118 for H, where (0.9)^m / m is 4e-8. A long wave on a small circle (k0 R << 1) cuts earlier.
+      ! m = 118 for H, where (0.9)^m / m is 4e-8. A long wave cuts earlier: k0 R = 0.157 at m = 109, where at r_x = 0.97 R
+      ! the dropped tail is about 3e-4 (green_modes_cut_reported). mcut, if present, returns the highest order represented
+      ! in every mode (all a(m, n) with |m| > mcut may be zero; mcut = mmax if nothing is cut), so that a caller can
+      ! compare it with the order it needs (pw_green_mmax) and stop or warn: the expansion is then only good to about
+      ! (r_x / R)^(mcut+1) / (mcut+1).
       REAL(8), INTENT(IN) :: x(3), centre(2), radius, h, k0, kev(:)
       INTEGER, INTENT(IN) :: mmax, nev
       TYPE(pw_set), INTENT(OUT) :: pw
+      INTEGER, INTENT(OUT), OPTIONAL :: mcut
       REAL(8), PARAMETER :: BIG = 1D300
       REAL(8) :: dxy(2), rx, thx, e1, e2, c0, cn, xn, jm(0:mmax), is(0:mmax), kv(0:mmax + 1), ym, ym1, yp, sgn
       COMPLEX(8) :: e(0:mmax)
-      INTEGER :: m, n, mcut
+      INTEGER :: m, n, m0, mrep
 
       dxy = x(1:2) - centre
       rx = NORM2(dxy)
@@ -693,15 +698,16 @@ CONTAINS
       ! for Y; |J| < 1 and |Y| grows with m beyond k0 R, so |H_m| <= BIG then
       ym = BESSEL_Y0(k0*radius)
       ym1 = BESSEL_Y1(k0*radius)
-      mcut = -1
+      m0 = -1
       DO m = 0, mmax
          IF (ABS(ym) > BIG .OR. ABS(ym1) > BIG) EXIT
-         mcut = m
+         m0 = m
          yp = (2D0*(m + 1)/(k0*radius))*ym1 - ym
          ym = ym1
          ym1 = yp
       END DO
-      DO m = 0, mcut
+      mrep = m0
+      DO m = 0, m0
          pw%a(m, 0) = CI*c0*jm(m)*e(m)
          sgn = MERGE(-1D0, 1D0, MODULO(m, 2) == 1)
          IF (m > 0) pw%a(-m, 0) = CI*c0*sgn*jm(m)*CONJG(e(m))
@@ -714,11 +720,15 @@ CONTAINS
          CALL bessel_i_scaled(mmax, xn, is)
          CALL pw_bessel_k(mmax + 1, kev(n)*radius, kv)
          DO m = 0, mmax
-            IF (.NOT. (kv(m + 1) <= BIG)) EXIT
+            IF (.NOT. (kv(m + 1) <= BIG)) THEN
+               mrep = MIN(mrep, m - 1)
+               EXIT
+            END IF
             pw%a(m, n) = cn*is(m)*EXP(xn)*e(m)
             IF (m > 0) pw%a(-m, n) = cn*is(m)*EXP(xn)*CONJG(e(m))
          END DO
       END DO
+      IF (PRESENT(mcut)) mcut = mrep
    END SUBROUTINE pw_green_modes
 
    PURE INTEGER FUNCTION pw_green_mmax(r_x, radius, tol)
