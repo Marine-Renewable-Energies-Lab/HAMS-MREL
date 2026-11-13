@@ -13,9 +13,10 @@ on:
 jobs:
   build-and-test:
     
-    # Use ubuntu-latest runner.
+    # Ubuntu 24.04, pinned: ubuntu-latest moves to 26.04 in November 2026, where apt-key is gone and the
+    # Intel install of setup-fortran@math (sudo apt-key add) fails.
     # See https://github.com/actions/runner-images for a list of available runners.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     # FPM will use the FPM_FFLAGS/FPM_LDFLAGS variables to determine what compiler/linker flags to use.
     # They are set for the whole job so that the build and the tests use the same flags.
