@@ -31,6 +31,8 @@ program unit_tester
     use test_qtf_potential, only : collect_qtf_potential
     use test_sharp_edge, only : collect_sharp_edge
     use test_qtf_field, only : collect_qtf_field
+    use test_qtf_free_surface, only : collect_qtf_free_surface
+    use test_partial_waves, only : collect_partial_waves
 
     implicit none
     integer :: stat, is
@@ -69,7 +71,9 @@ program unit_tester
         new_testsuite("so_incident", collect_so_incident), &
         new_testsuite("qtf_potential", collect_qtf_potential), &
         new_testsuite("sharp_edge", collect_sharp_edge), &
-        new_testsuite("qtf_field", collect_qtf_field) &
+        new_testsuite("qtf_field", collect_qtf_field), &
+        new_testsuite("qtf_free_surface", collect_qtf_free_surface), &
+        new_testsuite("partial_waves", collect_partial_waves) &
     ]
 
     stat = 0
@@ -88,7 +92,9 @@ program unit_tester
                                      .and. testsuites(is)%name /= "control_surface_mesh" &
                                      .and. testsuites(is)%name /= "field_velocity" &
                                      .and. testsuites(is)%name /= "qtf" &
-                                     .and. testsuites(is)%name /= "qtf_potential"))
+                                     .and. testsuites(is)%name /= "qtf_potential" &
+                                     .and. testsuites(is)%name /= "qtf_free_surface" &
+                                     .and. testsuites(is)%name /= "partial_waves"))
     end do
 
     if (stat > 0) then

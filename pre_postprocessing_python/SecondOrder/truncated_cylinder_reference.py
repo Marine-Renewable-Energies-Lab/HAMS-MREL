@@ -338,6 +338,8 @@ The script exits with 1 if one fails. What each covers, and what it does not:
 - compare_signs (in SLOW_CHECKS): see "Comparison with HAMS". Without the study's results it prints SKIP and counts as
   neither passed nor failed.
 - incident2, haskind_indirect, stokes: the QTF potential part; see "QTF potential part" and each check's docstring.
+- fs_forcing_vs_incident, fs_radius_invariance, fs_outer, fs_sign_from_bvp: the free-surface integral; see "QTF
+  free-surface integral" and each check's docstring.
 
 Reference values. python -I truncated_cylinder_reference.py reference [--out CSV] writes, at DEFAULT_RESOLUTION
 (N = 64000, gap basis (20, 4, 4), orders 0 ... 15) and every WIDE_FREQUENCIES, the fixed and the free rows of reference
@@ -389,8 +391,9 @@ reference's docstring), then the convergence table, then runs every check; exit 
   - Free body at 1.40 to 1.80 rad/s: near-field F_x is -1.11e-4, -1.29e-4, -1.26e-4 from far F_x (fx_identity), so
     KNOWN_UNCERTAINTY states 2e-4 for it there. F_z and M_y there have no separate estimate (check_uncertainty covers
     0.60 to 0.80 rad/s only); they carry DEFAULT_UNCERTAINTY.
-- Run time, laptop, measured once each (November 2026): check (the 20 checks without SLOW_CHECKS) 5 min 4 s, most of
-  it convergence (146 s) and fx_identity (93 s, the 22 reference rows). reference --out 7 min 11 s for all 22 checks: the
+- Run time, laptop, measured once each (November 2026): check (then 20 checks without SLOW_CHECKS) 5 min 4 s, most of
+  it convergence (146 s) and fx_identity (93 s, the 22 reference rows); with the 29 checks of Phase 6a 9 min 45 s on a
+  slower day (the four fs_* checks 57 s; convergence 215 s, fx_identity 125 s). reference --out 7 min 11 s for all 22 checks: the
   rows 92 s, convergence 135 s, uncertainty 137 s (the rows at N = 128000 that no other check computes); compare_signs
   takes 0 s there, since the rows are cached, and alone about the 92 s of the rows (an estimate, not measured). compare
   93 s computing the rows, under 1 s with --reference. A row pair (fixed and free) at the default costs about
@@ -429,7 +432,8 @@ QTF potential part. python -I truncated_cylinder_reference.py qtf-potential --ou
 omega_i <= omega_j of the grid within max-dw, heading 0, the quadratic T-_ij of the qtf subcommand (same columns) and the
 five body-forcing terms of the second-order potential's load, FK, ID, B1, B2, B3 (the order of QTF_PotentialTerms.txt),
 F/(rho g), M_y in m about the origin, e^(-i omega t) (the files hold the conjugates). The free-surface integral of the
-second-order diffraction potential is omitted, as in .11d. Every sign is derived from the boundary-value problem, not
+second-order diffraction potential is omitted, as in .11d of qtf_terms = body, unless --free-surface adds it (next
+paragraph). Every sign is derived from the boundary-value problem, not
 taken from the Fortran code (incident2, potential_terms_states, _b2_converted give the derivations):
 - incident2: phi_I2 = Q- e^(i K.x) Z_K(z)/D from the second-order free-surface condition, Q- = i Omega sum pair(u, u)
   + (1/g) pair(-i omega phi, s); check_incident2 tests Q- against the forcing sampled in time from the real waves, and
@@ -457,6 +461,48 @@ depth T_pot does not tend to 0 as Omega -> 0 (the set-down: phi_I2 ~ 1/Omega, so
 the diagonal, where it is 0. psi_1 and psi_5 stay bounded as Omega -> 0 and psi_3 grows slowly (waterline maxima at
 LIGHT_RESOLUTION, Omega = 0.1 ... 0.01 rad/s: 6.66 ... 6.61, 17.0 ... 16.9, 2.86 ... 3.91). qtf_compare.py --potential and qtf_plots.py --potential read
 the CSV.
+
+QTF free-surface integral (Phase 6a). qtf-potential ... --free-surface [--fs-radius R] [--fs-check] adds the columns
+Fx_FS_re ... My_FS_im (QTF_FS_COLUMNS), T_FS, so that the quadratic part plus FK, ID, B1, B2, B3 and FS is the complete
+difference QTF of the indirect method (the reference of qtf_terms = full). fs_terms_states derives it from the
+boundary-value problem: T_FS,k = s_FS (i Omega rho/g) int_(z = 0, r > a) psi_k Q_D dS, Q_D = Q[tot, tot] - Q[I, I] with
+Q incident2's forcing for any first-order fields (_fs_forcing), and s_FS = +1 (FS_SIGN); check_fs_sign_from_bvp
+confirms the sign by a direct solve of phi_D. The method, all of it independent of the Fortran code:
+- Fields on z = 0. The radiating part S of each first-order state (scattered, radiated, evanescent) per order from the
+  exterior series (_z0_modal: Z_n(0) = 1, phi_z = nu phi and phi_zz = k**2 phi or -k_n**2 phi per mode, exact); the
+  incident wave exactly, not its truncated series. Q_D = Q[I, S] + Q[S, I] + Q[S, S] (bilinear).
+- Angular moments A_m(r) = int_0^2pi Q_D cos(m theta) d theta, m = 0, 1: psi_3 is of order 0, psi_1 and psi_5 of order 1,
+  so T_FS,k ~ int_a^inf psi_k(r) A_m(r) r dr. The direct solve uses the same moments.
+- Inner, a + delta < r < R (default FS_RADIUS = 20 m): the polar grid, trapezoidal in theta on FS_THETA_INNER = 128
+  points with the plane waves sampled; Gauss-Legendre in r (FS_GAUSS = 12 nodes) on panels [delta, 2 delta],
+  [2 delta, 4 delta], ... doubling up to half the shortest wavelength 2 pi/(2 k_max + nu_max) of the grid.
+- Waterline strip, a < r < a + delta, delta = 36 h/(N pi) (FS_STRIP_DECAY; 0.018 m at N = 64000, 1.15 m at N = 1000):
+  the series of phi_zz grow like n**(1/3) at r = a and do not converge there; at r - a = delta the last mode is down by
+  exp(-36). A_m is extended into the strip by a least-squares fit of c0 + c1 log x + c2 x + c3 x log x (x = r - a) on
+  the nodes of [delta, 4 delta] (FS_STRIP_BASIS), integrated on 16 geometric sub-panels down to delta 2**-15. The log:
+  a moving wall's velocity gradient is logarithmic where it meets the free surface, since the wall condition
+  phi_x = U(z) and phi_z = nu phi give two values of phi_xz at the corner unless U' = nu U (the wavemaker singularity)
+  [derived]; the fixed body has none (phi_zz from the series is smooth to 0.02 m at N = 64000). psi_k on the strip is a
+  smooth fit too (FS_PSI_STRIP_BASIS; 2e-7 from its series there at N = 64000). Measured, (0.90, 1.10) rad/s, free: the
+  strip is 0.9e-3 (F_z) to 3.1e-3 (M_y) of T_FS at N = 64000, and the fit basis changes T_FS by 5e-8 (1.5e-5 at
+  N = 8000); a cubic without the log changed it by 3.5e-4.
+- Outer, R < r < r_far = R + 36/k_1 (FS_FAR_DECAY, k_1 the smallest first evanescent root of the grid's frequencies;
+  about 2100 m), real axis: Q[S, S] cos(m theta) trapezoidal on FS_THETA_OUTER = 64 points (degree 31 < 64, exact),
+  Q[I_i, S_j] = e^(i k_i x) Q[I~_i, S_j] and Q[S_i, I_j] = e^(-i k_j x) Q[S_i, I~_j] by Jacobi-Anger,
+  int e^(+-i k r cos theta) g d theta = 2 pi sum_n g_n (+-i)**n J_n(k r), g = sum_n g_n e^(i n theta) band-limited.
+  Panels from (R - a)/40 doubling to half the shortest wavelength.
+- Beyond r_far: the evanescent modes are below exp(-36); the propagating parts are analytic in r. With J_n = (H1_n +
+  H2_n)/2 the integrand psi_k A_m r splits into three phase classes, e^(i kappa r), kappa = s_i k_i + s_j k_j + nu
+  (FS_CLASSES: state i outgoing or incoming, the conjugate of state j likewise, psi outgoing), each contour rotated to
+  r = r_far + i sign(kappa) t (Cauchy's theorem; Jordan's lemma on the arc), where it decays like exp(-abs(kappa) t),
+  and integrated to exp(-40) by Gauss-Legendre (scaled Hankel functions, no overflow). This is exact, with no
+  asymptotic expansion: it takes the place of the asymptotic tail by integration by parts that the plan names.
+Run time, laptop, measured once (November 2026), DEFAULT_RESOLUTION, the hams grid's nodes (3468 outer, 108 inner,
+192 strip): per frequency 5 s for the free-surface state (on top of the 10 s of the first-order solve and the body
+state), per difference frequency 4 s for the three psi tests, per pair 0.33 s (the body terms 0.02 s). The hams grid
+(2565 pairs off the diagonal, 30 difference frequencies) then adds about 25 min per motion, 50 min with --fs-check, to
+about 22 min of the run without --free-surface. fs_states are kept only while a later pair needs them (about 31 at a
+time, 4.5 MB each).
 
 Sources.
 - Ogilvie, T.F. (1983). Second-order hydrodynamic effects on ocean platforms. Proc. Int. Workshop on Ship and Platform
@@ -490,7 +536,8 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.integrate import IntegrationWarning, quad
 from scipy.optimize import brentq
-from scipy.special import eval_gegenbauer, gamma, gammaln, h1vp, hankel1, ive, jv, jvp, kve, roots_jacobi, zeta
+from scipy.special import (eval_gegenbauer, gamma, gammaln, h1vp, hankel1, hankel1e, hankel2e, ive, jv, jvp, kve, roots_jacobi,
+                           zeta)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import drift_convergence  # noqa: E402
@@ -979,10 +1026,16 @@ def _matching_tail(cyl, basis, n_modes):
 
 
 def _solve_order(cyl, m, k, kn, basis, incident=0.0, wall=None, particular=None, inner=None, wall_velocity=(0.0, 0.0),
-                 modes=None):
+                 modes=None, forced=None):
     """One order of the matching; see the module docstring. A complex system of the basis.size unknowns, or of the kept
     Gram combinations with several families (plus one for m = 0). inner: _inner_products, if already computed; modes: the
-    _Modes of (cyl, omega, N, p_max), which supplies inner, the norms and the radial ratios."""
+    _Modes of (cyl, omega, N, p_max), which supplies inner, the norms and the radial ratios.
+
+    forced[n], n = 0 ... N: an exterior particular solution p_n(r) of each vertical mode (the free-surface forcing of
+    fs_direct_force), entered through e_n = p_n(a) - p_n'(a)/kappa_n: the exterior is then f_n = c_n R_n(r)/R_n(a) + p_n,
+    the gap potential row gains sum_n E_pn e_n (as the incident term, which is the case p_0 = inc J_m), and the Order's
+    scattered and evanescent hold f_n(a), the values at r = a of homogeneous plus particular part (_body_integrals needs
+    only those; the exterior series of such an Order away from r = a is not the solution)."""
     a, g = cyl.radius, cyl.gap
     n_modes = len(kn)
     if modes is not None:
@@ -1010,6 +1063,8 @@ def _solve_order(cyl, m, k, kn, basis, incident=0.0, wall=None, particular=None,
     # incident: E_p0 inc (J_m - J_m' H_m/H_m') = E_p0 inc 2i/(pi ka H_m'(ka)), by the Wronskian
     incident_at_wall = incident * 2j / (math.pi * ka * h1vp(m, ka))
     rhs = pot_p - big_e[:, 0] * incident_at_wall - ext @ wall - intr @ flux_p
+    if forced is not None:
+        rhs = rhs - big_e @ forced
     if MATRIX_TAIL:
         rhs = rhs - tail_wall * (wall_velocity[0] - cyl.draft * wall_velocity[1])
     if len(basis.families) > 1:
@@ -1041,6 +1096,8 @@ def _solve_order(cyl, m, k, kn, basis, incident=0.0, wall=None, particular=None,
         gap = np.linalg.solve(matrix, rhs)
         const = None
     exterior = (gap @ big_e + wall) / (norms * kappa)       # amplitudes at r = a of the scattered parts
+    if forced is not None:
+        exterior = exterior + forced                        # f_n(a) = c_n + p_n(a) = (gap E + wall)/(N kappa) + e_n
     scattered = exterior[0] - incident * k * jvp(m, ka) / kappa[0]
     interior = np.where(live, (gap @ big_f - flux_p) / np.where(live, nu_int * mu, 1.0), 0.0).astype(complex)
     if const is not None:
@@ -2810,8 +2867,571 @@ def _potential_columns():
 
 QTF_POTENTIAL_COLUMNS = QTF_COLUMNS + _potential_columns() + ("psi_warning",)
 
+# ---------------------------------------------------------------------------------------------------------------------
+# Free-surface integral of the QTF potential part (Phase 6a). Derivation in fs_terms_states; method in the module
+# docstring, "QTF free-surface integral".
 
-def qtf_potential_table(cyl, frequencies, motion, n_modes, p_max, orders, max_dw=QTF_MAX_DW, log=None):
+FS_SIGN = 1.0             # s_FS of T_FS = s_FS (i Omega rho/g) int psi_k Q_D dS: +1 by fs_terms_states' derivation, and
+#                           by check_fs_sign_from_bvp (the direct solve of phi_D)
+FS_RADIUS = 20.0          # default split radius R (m) between the inner polar grid and the outer modal integral
+FS_THETA_INNER = 128      # trapezoidal points in theta on the inner grid, where the plane waves are sampled
+FS_THETA_OUTER = 64       # in theta beyond R: the sampled parts have degree <= 2 M + 1 = 31 < 64 (exact)
+FS_GAUSS = 12             # Gauss-Legendre nodes per radial panel
+FS_PANEL_WAVELENGTH = 0.5   # the longest radial panel, in shortest wavelengths 2 pi/(k_i + k_j + nu) of the grid
+FS_STRIP_DECAY = 36.0     # waterline strip 0 <= r - a < delta, delta = 36/k_N, k_N = N pi/h (exp(-36) = 2e-16)
+FS_STRIP_LEVELS = 16      # geometric sub-panels of the strip, down to delta 2**-15
+# the moments are extended into the strip by a least-squares fit of c0 + c1 log x + c2 x + c3 x log x on the fit nodes
+# (x = r - a): the local expansion at the waterline of a moving wall, whose velocity gradient is logarithmic there
+FS_STRIP_BASIS = (lambda x: np.ones_like(x), np.log, lambda x: x, lambda x: x * np.log(x))
+FS_EVANESCENT_CUT = 40.0  # an evanescent mode is dropped at r where k_n (r - a) > 40
+FS_FAR_DECAY = 36.0       # r_far = R + 36/k_1, k_1 the smallest first evanescent root of the grid's frequencies
+FS_TAIL_DECAY = 40.0      # the rotated contour beyond r_far runs to exp(-40)
+FS_TAIL_PANELS = 20       # its Gauss-Legendre panels (FS_GAUSS nodes each)
+FS_MOMENTS = (0, 1)       # the angular orders of Q_D the loads need: psi_3 is order 0, psi_1 and psi_5 order 1
+
+
+def _fs_forcing(wi, fi, wj, cfj, grav=None):
+    """Q of the pair (i, j) at points, difference kernel: fi = (phi, u_r, u_theta, u_z, phi_zz) of state i on z = 0 and
+    cfj the same of the conjugate of state j (conj of each field on the real axis; its analytic continuation in r for
+    the rotated contour), arrays of one shape. Q = i Omega sum_m pair(u_m, u_m) + (1/g) pair(-i omega phi, s),
+    s = -omega**2 phi_z + g phi_zz, Omega = wi - wj, pair = _pair written out with the conjugate given:
+    pair(f, g) = (f_i conj(g_j) + conj(f_j) g_i)/4. This is incident2's Q- for any first-order fields (its derivation)."""
+    g = make_mesh.G if grav is None else grav
+    phi_i, ur_i, ut_i, uz_i, zz_i = fi
+    cphi_j, cur_j, cut_j, cuz_j, czz_j = cfj
+    s_i = -wi ** 2 * uz_i + g * zz_i
+    cs_j = -wj ** 2 * cuz_j + g * czz_j
+    return (0.5j * (wi - wj) * (ur_i * cur_j + ut_i * cut_j + uz_i * cuz_j)
+            + (-1j * wi * phi_i * cs_j + 1j * wj * cphi_j * s_i) / (4.0 * g))
+
+
+def _gauss_panels(edges, n=FS_GAUSS):
+    """Nodes and weights of n-point Gauss-Legendre on each panel [edges[i], edges[i+1]], ascending."""
+    x, w = np.polynomial.legendre.leggauss(n)
+    edges = np.asarray(edges, dtype=float)
+    lo, hi = edges[:-1, None], edges[1:, None]
+    return (0.5 * (hi - lo) * x + 0.5 * (hi + lo)).ravel(), (0.5 * (hi - lo) * w).ravel()
+
+
+def _graded_edges(start, stop, first, longest):
+    """Panel edges from start to stop: lengths first, 2 first, 4 first ... up to longest, then longest; the last panel
+    ends at stop (merged with the one before if it would be under a quarter of it)."""
+    edges, step = [start], first
+    while edges[-1] < stop * (1.0 - 1e-14):
+        edges.append(edges[-1] + step)
+        step = min(2.0 * step, longest)
+    edges[-1] = stop
+    if len(edges) > 2 and edges[-1] - edges[-2] < 0.25 * (edges[-2] - edges[-3]):
+        del edges[-2]
+    return np.array(edges)
+
+
+@dataclass(eq=False)
+class FSGrid:
+    """The radial nodes of the free-surface integral, z = 0, r > a: strip (a to a + delta, where the series do not
+    converge and the moments are extended by a polynomial), inner (a + delta to R, the polar grid), outer (R to r_far,
+    real axis, modal angular integral); (r, w) each. fit: the inner nodes in [a + delta, a + 4 delta] the strip
+    polynomial is fitted on. Beyond r_far the contour is rotated per pair (FSPair)."""
+    cyl: Cylinder
+    radius: float
+    delta: float
+    r_far: float
+    strip: tuple
+    inner: tuple
+    outer: tuple
+    fit: np.ndarray
+
+
+def fs_grid(cyl, radius, omegas, big_omegas, n_modes, gauss=FS_GAUSS, panel=FS_PANEL_WAVELENGTH, far=None):
+    """FSGrid for the first-order frequencies omegas and the difference frequencies big_omegas, first-order series of
+    n_modes evanescent modes (which sets the strip, delta = FS_STRIP_DECAY h/(N pi)). far: r_far - R (default
+    FS_FAR_DECAY/k_1, k_1 the smallest first evanescent root of all the frequencies)."""
+    a, h = cyl.radius, cyl.depth
+    delta = FS_STRIP_DECAY * h / (n_modes * math.pi)
+    if radius < a + 4.0 * delta:
+        raise ValueError("fs_grid: R = %g m is inside the waterline strip (a + 4 delta = %g m)" % (radius, a + 4 * delta))
+    everything = list(omegas) + list(big_omegas)
+    roots = {w: wave_numbers(w, h, 1) for w in everything}
+    k_top = max(roots[w][0] for w in omegas)
+    nu_top = max(roots[w][0] for w in big_omegas) if len(big_omegas) else 0.0
+    longest = panel * 2.0 * math.pi / (2.0 * k_top + nu_top)
+    k_first = min(roots[w][1][0] for w in everything)
+    r_far = radius + (FS_FAR_DECAY / k_first if far is None else far)
+    strip_edges = np.concatenate([[0.0], delta * 2.0 ** -np.arange(FS_STRIP_LEVELS - 1, -1, -1)])
+    xs, ws = _gauss_panels(strip_edges, gauss)
+    # the first two panels, [delta, 2 delta] and [2 delta, 4 delta], carry the strip fit: the same for every R
+    inner_edges = np.concatenate([[delta, 2.0 * delta], _graded_edges(4.0 * delta, radius - a, min(4.0 * delta, longest),
+                                                                     longest)])
+    xi, wi = _gauss_panels(inner_edges, gauss)
+    outer_edges = _graded_edges(radius, r_far, min((radius - a) / FS_EVANESCENT_CUT, longest), longest)
+    ro, wo = _gauss_panels(outer_edges, gauss)
+    fit = np.nonzero(xi <= 4.0 * delta * (1.0 + 1e-12))[0]
+    if fit.size < 2 * len(FS_STRIP_BASIS):
+        raise ValueError("fs_grid: too few nodes to fit the strip extension")
+    return FSGrid(cyl, float(radius), delta, r_far, (a + xs, ws), (a + xi, wi), (ro, wo), fit)
+
+
+def _kve_orders(m_top, x):
+    """kve(m, x) for m = 0 ... m_top by upward recurrence (stable for K), shape (m_top + 1,) + shape(x)."""
+    x = np.asarray(x, dtype=float)
+    out = np.empty((m_top + 1,) + x.shape)
+    out[0] = kve(0, x)
+    if m_top >= 1:
+        out[1] = kve(1, x)
+    for m in range(1, m_top):
+        out[m + 1] = out[m - 1] + 2.0 * m / x * out[m]
+    return out
+
+
+def _z0_modal(sol, r):
+    """(P, D, Z), each (len(r), number of orders), orders ascending: phi_m, d phi_m/dr and phi_zz,m on z = 0 of the
+    radiating part of sol (scattered and evanescent; the incident series of a diffraction solution is left out, the
+    plane wave enters exactly), at real r >= a. On z = 0 every mode has Z_n(0) = 1 and phi_zz = k**2 phi (propagating),
+    -k_n**2 phi (evanescent). A mode is dropped where k_n (r - a) > FS_EVANESCENT_CUT."""
+    cyl, k, kn = sol.cyl, sol.k, sol.kn
+    a = cyl.radius
+    orders = sorted(sol.orders)
+    r = np.asarray(r, dtype=float)
+    shape = (r.size, len(orders))
+    big_p, big_d, big_z = (np.zeros(shape, complex) for _ in range(3))
+    for c, m in enumerate(orders):
+        coef = sol.orders[m].scattered / hankel1(m, k * a)
+        big_p[:, c] = coef * hankel1(m, k * r)
+        big_d[:, c] = coef * k * h1vp(m, k * r)
+        big_z[:, c] = k ** 2 * big_p[:, c]
+    if not len(kn):
+        return big_p, big_d, big_z
+    top = max(orders)
+    b = np.array([sol.orders[m].evanescent for m in orders])
+    denom = _kve_orders(top, kn * a)
+    order = np.argsort(r)
+    live = np.searchsorted(kn, FS_EVANESCENT_CUT / np.maximum(r - a, 1e-300))
+    index = {m: c for c, m in enumerate(orders)}
+    for start in range(0, r.size, FS_GAUSS):
+        chunk = order[start:start + FS_GAUSS]
+        n = int(live[chunk].max())
+        if n == 0:
+            continue
+        q = kn[:n, None]
+        rr = r[chunk][None, :]
+        xr = q * rr
+        decay = np.exp(-q * (rr - a))
+        cur, nxt = kve(0, xr), kve(1, xr)
+        prev = nxt                                               # K_-1 = K_1 (scaled)
+        for m in range(top + 1):
+            if m in index:
+                c = index[m]
+                weight = b[c, :n, None] * decay / denom[m, :n, None]
+                big_p[chunk, c] += np.sum(weight * cur, axis=0)
+                big_d[chunk, c] += np.sum(weight * (-0.5 * q) * (prev + nxt), axis=0)
+                big_z[chunk, c] += np.sum(weight * (-q ** 2) * cur, axis=0)
+            prev, cur, nxt = cur, nxt, cur + 2.0 * (m + 1) / xr * nxt
+    return big_p, big_d, big_z
+
+
+def _z0_scaled(state, r, conj):
+    """(P, D, Z) of the propagating part of a state at complex r (the rotated contour), scaled: phi_m = P e^(i k r) with
+    hankel1e, or for conj the analytic continuation of the conjugate, conj(c_m) H2_m(k r) = P e^(-i k r), hankel2e."""
+    r = np.asarray(r)
+    k = state.k
+    fn = hankel2e if conj else hankel1e
+    orders = np.asarray(state.orders)
+    span = np.arange(orders.min() - 1, orders.max() + 2)
+    values = fn(span[None, :], k * r[:, None])                  # orders min - 1 ... max + 1, once
+    at = orders - span[0]
+    coef = np.conj(state.prop) if conj else state.prop
+    big_p = coef * values[:, at]
+    big_d = coef * k * 0.5 * (values[:, at - 1] - values[:, at + 1])
+    return big_p, big_d, k ** 2 * big_p
+
+
+def _theta_fields(modal, r, nu, theta, orders):
+    """(phi, u_r, u_theta, u_z, phi_zz), each (len(r), len(theta)), on z = 0 from the modal (P, D, Z), cos(m theta)
+    series; u_z = nu phi (the first-order free-surface condition, exact per mode). r may be complex (analytic
+    continuation: u_theta = (1/r) d phi/d theta)."""
+    big_p, big_d, big_z = modal
+    m = np.asarray(orders, dtype=float)
+    cos, sin = np.cos(np.outer(m, theta)), np.sin(np.outer(m, theta))
+    phi = big_p @ cos
+    return phi, big_d @ cos, -((big_p * m) @ sin) / np.asarray(r)[:, None], nu * phi, big_z @ cos
+
+
+def _plane_fields(state, theta, conj=False):
+    """The fields of HAMS's incident wave (heading 0) on z = 0 without its factor e^(i k x) (conj: of the conjugate,
+    without e^(-i k x)): phi = -g/omega, u = phi (i k cos theta, -i k sin theta, nu) in (r, theta, z), phi_zz = k**2 phi."""
+    amp, k = state.amplitude, state.k
+    i = -1j if conj else 1j
+    ones = np.ones(np.shape(theta))
+    return (amp * ones, i * k * np.cos(theta) * amp, -i * k * np.sin(theta) * amp, state.nu * amp * ones,
+            k ** 2 * amp * ones)
+
+
+@dataclass(eq=False)
+class FSState:
+    """A first-order state on the free surface: frequency, wave number k, nu = omega**2/g, the plane-wave amplitude
+    -g/omega, the orders, prop[c] the coefficient of H1_m(k r) of order orders[c], and the modal (P, D, Z) of
+    _z0_modal on the grid's inner and outer nodes; bessel[l, n] = J_n(k r_l) at the outer nodes, n in the harmonic order of
+    FS_THETA_OUTER samples (_harmonics), for the Jacobi-Anger sums of _fs_outer_moments."""
+    omega: float
+    k: float
+    nu: float
+    amplitude: float
+    orders: list
+    prop: np.ndarray
+    inner: tuple
+    outer: tuple
+    bessel: np.ndarray
+
+
+def fs_state(grid, omega, total):
+    """FSState of a first-order total solution (solve_diffraction or total_solution) on grid."""
+    orders = sorted(total.orders)
+    a = grid.cyl.radius
+    prop = np.array([total.orders[m].scattered / hankel1(m, total.k * a) for m in orders])
+    n = np.fft.fftfreq(FS_THETA_OUTER, 1.0 / FS_THETA_OUTER).astype(int)
+    return FSState(float(omega), total.k, omega ** 2 / make_mesh.G, -make_mesh.G / omega, orders, prop,
+                   _z0_modal(total, grid.inner[0]), _z0_modal(total, grid.outer[0]),
+                   jv(n[None, :], total.k * grid.outer[0][:, None]))
+
+
+def _fs_inner_moments(grid, si, sj):
+    """A_m(r) = int_0^2pi Q_D(r, theta) cos(m theta) d theta at the inner nodes, m in FS_MOMENTS, by the trapezoidal
+    rule on FS_THETA_INNER points, with the plane waves sampled (the polar grid). Q_D = Q[tot, tot] - Q[I, I]
+    = Q[I, S] + Q[S, I] + Q[S, S] (bilinear), S the radiating part."""
+    r = grid.inner[0]
+    theta = 2.0 * math.pi * np.arange(FS_THETA_INNER) / FS_THETA_INNER
+    if max(si.k, sj.k) * grid.radius + 2 * max(max(si.orders), max(sj.orders)) + 40 > FS_THETA_INNER:
+        raise ValueError("_fs_inner_moments: FS_THETA_INNER too small for k R = %.1f" % (max(si.k, sj.k) * grid.radius))
+    s_i = _theta_fields(si.inner, r, si.nu, theta, si.orders)
+    cs_j = _theta_fields(tuple(np.conj(v) for v in sj.inner), r, sj.nu, theta, sj.orders)
+    x = np.outer(r, np.cos(theta))
+    plane_i, cplane_j = np.exp(1j * si.k * x), np.exp(-1j * sj.k * x)
+    inc_i = tuple(v * plane_i for v in _plane_fields(si, theta))
+    cinc_j = tuple(v * cplane_j for v in _plane_fields(sj, theta, conj=True))
+    q = (_fs_forcing(si.omega, inc_i, sj.omega, cs_j) + _fs_forcing(si.omega, s_i, sj.omega, cinc_j)
+         + _fs_forcing(si.omega, s_i, sj.omega, cs_j))
+    return {m: (2.0 * math.pi / FS_THETA_INNER) * (q @ np.cos(m * theta)) for m in FS_MOMENTS}
+
+
+def _harmonics(values):
+    """(n, g_n): the coefficients of g(theta) = sum_n g_n e^(i n theta) from samples on the last axis (uniform theta)."""
+    count = values.shape[-1]
+    return np.fft.fftfreq(count, 1.0 / count).astype(int), np.fft.fft(values, axis=-1) / count
+
+
+def _angular_plane(values, k, r, sign, kind=None, bessel=None):
+    """int_0^2pi e^(sign i k r cos theta) g(theta) d theta = 2 pi sum_n g_n (sign i)**n J_n(k r) (Jacobi-Anger), for
+    g sampled on the last axis of values (rows: the radii r). kind 1 or 2: the same with J_n replaced by H_n/2 of that
+    kind, scaled (hankel1e, hankel2e), for the rotated contour. bessel: J_n(k r) already computed (FSState.bessel)."""
+    n, coef = _harmonics(values)
+    if bessel is None:
+        z = k * np.asarray(r)[:, None]
+        if kind is None:
+            bessel = jv(n[None, :], z)
+        else:
+            bessel = 0.5 * (hankel1e if kind == 1 else hankel2e)(n[None, :], z)
+    return 2.0 * math.pi * np.sum(coef * (sign * 1j) ** n[None, :] * bessel, axis=-1)
+
+
+def _fs_outer_moments(grid, si, sj):
+    """A_m(r) at the outer nodes (real axis): Q[S, S] cos(m theta) by the trapezoidal rule (degree < FS_THETA_OUTER,
+    exact), and the parts with a plane wave by Jacobi-Anger, Q[I_i, S_j] = e^(i k_i x) Q[I~_i, S_j] with the sampled,
+    band-limited Q[I~_i, S_j] cos(m theta), and Q[S_i, I_j] = e^(-i k_j x) Q[S_i, I~_j] (the conjugate of I_j)."""
+    r = grid.outer[0]
+    theta = 2.0 * math.pi * np.arange(FS_THETA_OUTER) / FS_THETA_OUTER
+    s_i = _theta_fields(si.outer, r, si.nu, theta, si.orders)
+    cs_j = _theta_fields(tuple(np.conj(v) for v in sj.outer), r, sj.nu, theta, sj.orders)
+    q_ss = _fs_forcing(si.omega, s_i, sj.omega, cs_j)
+    g_1 = _fs_forcing(si.omega, _plane_fields(si, theta), sj.omega, cs_j)
+    g_2 = _fs_forcing(si.omega, s_i, sj.omega, _plane_fields(sj, theta, conj=True))
+    out = {}
+    for m in FS_MOMENTS:
+        cm = np.cos(m * theta)
+        out[m] = ((2.0 * math.pi / FS_THETA_OUTER) * (q_ss @ cm) + _angular_plane(g_1 * cm, si.k, r, 1, bessel=si.bessel)
+                  + _angular_plane(g_2 * cm, sj.k, r, -1, bessel=sj.bessel))
+    return out
+
+
+# The three phase classes of the rotated contour: (s_i, s_j), state i's part outgoing (+, H1) or incoming (-, H2), the
+# conjugate of state j's likewise; A-phase s_i k_i + s_j k_j. The class (-, +) has no term.
+FS_CLASSES = ((1, -1), (-1, -1), (1, 1))
+
+
+def _fs_tail_moments(si, sj, r, cls):
+    """The scaled moments A^c_m(r), A_m^c = A^c_m e^(i (s_i k_i + s_j k_j) r), of one phase class at complex r beyond
+    r_far, propagating parts only (the evanescent ones are below exp(-FS_FAR_DECAY) there)."""
+    theta = 2.0 * math.pi * np.arange(FS_THETA_OUTER) / FS_THETA_OUTER
+    s_i = _theta_fields(_z0_scaled(si, r, False), r, si.nu, theta, si.orders)
+    cs_j = _theta_fields(_z0_scaled(sj, r, True), r, sj.nu, theta, sj.orders)
+    n = _harmonics(np.zeros(FS_THETA_OUTER))[0]
+    # the plane-wave parts are of degree <= max order + 2 in theta (the order, the gradient of the plane wave, cos(m
+    # theta)); the Hankel functions of the other harmonics, zero coefficients, are not computed
+    band = np.abs(n) <= max(max(si.orders), max(sj.orders)) + 2
+    plane_i, plane_j = None, None
+    if cls != (1, 1):        # Q[I_i, S_j]: H1 half of J_n(k_i r) in (+, -), H2 half in (-, -)
+        plane_i = _fs_forcing(si.omega, _plane_fields(si, theta), sj.omega, cs_j)
+        bessel_i = np.where(band, 0.5 * (hankel1e if cls == (1, -1) else hankel2e)(np.where(band, n, 0)[None, :],
+                                                                                   si.k * r[:, None]), 0.0)
+    if cls != (-1, -1):      # Q[S_i, I_j]: H2 half of J_n(k_j r) in (+, -), H1 half in (+, +)
+        plane_j = _fs_forcing(si.omega, s_i, sj.omega, _plane_fields(sj, theta, conj=True))
+        bessel_j = np.where(band, 0.5 * (hankel2e if cls == (1, -1) else hankel1e)(np.where(band, n, 0)[None, :],
+                                                                                   sj.k * r[:, None]), 0.0)
+    both = _fs_forcing(si.omega, s_i, sj.omega, cs_j) if cls == (1, -1) else None
+    out = {}
+    for m in FS_MOMENTS:
+        cm = np.cos(m * theta)
+        value = 0j
+        if both is not None:
+            value = value + (2.0 * math.pi / FS_THETA_OUTER) * (both @ cm)
+        if plane_i is not None:
+            value = value + _angular_plane(plane_i * cm, si.k, r, 1, bessel=bessel_i)
+        if plane_j is not None:
+            value = value + _angular_plane(plane_j * cm, sj.k, r, -1, bessel=bessel_j)
+        out[m] = value
+    return out
+
+
+def _strip_extension(grid, inner, basis=FS_STRIP_BASIS):
+    """The moment A_m at the strip nodes: the least-squares fit of the basis functions of x = r - a to its values at the
+    fit nodes (x in [delta, 4 delta]), evaluated in the strip (0, delta)."""
+    a = grid.cyl.radius
+    x_fit, x_strip = grid.inner[0][grid.fit] - a, grid.strip[0] - a
+    design = np.array([f(x_fit) for f in basis]).T
+    coef = np.linalg.lstsq(design, inner[grid.fit], rcond=None)[0]
+    return np.array([f(x_strip) for f in basis]).T @ coef
+
+
+@dataclass(eq=False)
+class FSPair:
+    """The angular moments A_m(r) of Q_D of one pair (omega_i > omega_j) on a grid: strip, inner, outer values per m,
+    and the rotated contour per phase class: tail[m] = [(sigma, kappa, r, w, A^c)], kappa = s_i k_i + s_j k_j + nu the
+    total phase with a test function of wave number nu (psi_k, or the Green function of fs_direct_force, both at
+    Omega), r = r_far + i sigma t, sigma = sign(kappa)."""
+    grid: FSGrid
+    omega_i: float
+    omega_j: float
+    nu: float
+    strip: dict
+    inner: dict
+    outer: dict
+    tail: dict
+
+
+def fs_pair(grid, si, sj, gauss=FS_GAUSS, tail_decay=FS_TAIL_DECAY):
+    """FSPair of the states si (omega_i) and sj (omega_j < omega_i)."""
+    if si.omega <= sj.omega:
+        raise ValueError("fs_pair: omega_i > omega_j is required")
+    big_omega = si.omega - sj.omega
+    nu = drift_convergence.wave_number(big_omega, grid.cyl.depth)
+    inner = _fs_inner_moments(grid, si, sj)
+    outer = _fs_outer_moments(grid, si, sj)
+    a = grid.cyl.radius
+    strip = {m: _strip_extension(grid, inner[m]) for m in FS_MOMENTS}
+    tail = {m: [] for m in FS_MOMENTS}
+    for cls in FS_CLASSES:
+        kappa = cls[0] * si.k + cls[1] * sj.k + nu
+        sigma = 1.0 if kappa > 0.0 else -1.0
+        t, w = _gauss_panels(np.linspace(0.0, tail_decay / abs(kappa), FS_TAIL_PANELS + 1), gauss)
+        r = grid.r_far + 1j * sigma * t
+        values = _fs_tail_moments(si, sj, r, cls)
+        for m in FS_MOMENTS:
+            tail[m].append((sigma, kappa, r, w, values[m]))
+    return FSPair(grid, si.omega, sj.omega, nu, strip, inner, outer, tail)
+
+
+@dataclass(eq=False)
+class FSTest:
+    """A test function T(r) cos(m theta) on z = 0: its values at the grid's strip, inner and outer nodes, and beyond
+    r_far tau H1_m(nu r) (nu the pair's wave number at Omega), tau = 0 for one that has decayed by r_far."""
+    m: int
+    strip: np.ndarray
+    inner: np.ndarray
+    outer: np.ndarray
+    tau: complex
+
+
+# psi on the strip: the fit of _strip_extension with this basis (psi is a potential, smooth up to x**2 log x at the
+# waterline of a moving wall), instead of the full series at every strip node (all N modes are live there)
+FS_PSI_STRIP_BASIS = (lambda x: np.ones_like(x), lambda x: x, lambda x: x ** 2, lambda x: x ** 2 * np.log(x),
+                      lambda x: x ** 3)
+
+
+def fs_psi_test(grid, psi):
+    """FSTest of a radiation potential psi_k (one order) at z = 0: the series at the inner and outer nodes, their fit
+    (FS_PSI_STRIP_BASIS) on the strip."""
+    (m,) = psi.orders
+    a = grid.cyl.radius
+    inner, outer = (_z0_modal(psi, nodes[0])[0][:, 0] for nodes in (grid.inner, grid.outer))
+    return FSTest(m, _strip_extension(grid, inner, FS_PSI_STRIP_BASIS), inner, outer,
+                  psi.orders[m].scattered / hankel1(m, psi.k * a))
+
+
+def fs_integral(pair, test):
+    """int_(z = 0, r > a) T(r) cos(m theta) Q_D dS = int_a^inf T(r) A_m(r) r dr: Gauss-Legendre on the strip, inner and
+    outer nodes, and beyond r_far the contour r = r_far + i sigma t of each phase class, along which
+    tau H1_m(nu r) A_m^c(r) r = tau hankel1e(m, nu r) A^c_m(r) r e^(i kappa r) decays like exp(-abs(kappa) t)
+    (Cauchy's theorem: the integrand is analytic in the quarter plane and vanishes on its arc, Jordan's lemma)."""
+    m, grid = test.m, pair.grid
+    total = 0j
+    for nodes, t, a_m in ((grid.strip, test.strip, pair.strip[m]), (grid.inner, test.inner, pair.inner[m]),
+                          (grid.outer, test.outer, pair.outer[m])):
+        total += np.sum(nodes[1] * nodes[0] * t * a_m)
+    if test.tau != 0.0:
+        for sigma, kappa, r, w, values in pair.tail[m]:
+            total += np.sum(1j * sigma * w * test.tau * hankel1e(m, pair.nu * r) * values * r * np.exp(1j * kappa * r))
+    return total
+
+
+def fs_terms_states(pair, psi_tests):
+    """T_FS,k/(rho g), k = 1, 3, 5 (components 0, 2, 4 of a (6,) complex array; M_y in m about the origin), of the pair,
+    e^(-i Omega t), per unit amplitudes; psi_tests {k: fs_psi_test of psi_k at Omega}.
+
+    Derivation (the boundary-value problem, not the plan or the Fortran code). phi_2 = phi_I2 + phi_D at
+    Omega = omega_i - omega_j: on z = 0, -Omega**2 phi_2 + g phi_2z = Q[tot, tot] (incident2's derivation, for any
+    first-order fields: Q is _fs_forcing), and phi_I2 meets the same condition with Q[I, I] (incident2), so phi_D meets
+    -Omega**2 phi_D + g phi_Dz = Q_D = Q[tot, tot] - Q[I, I], with d phi_D/dn = B - d phi_I2/dn on the hull, no flux
+    through the bed, radiating. psi_k meets -Omega**2 psi + g psi_z = 0, d psi_k/dn = n_k, radiating. Green's second
+    identity over the fluid, n out of the fluid on every face (into the body on the hull S_B, +e_z on the free surface
+    S_F, -e_z on the bed):
+        0 = int_SB (phi_D d psi_k/dn - psi_k d phi_D/dn) dS + int_SF (phi_D psi_kz - psi_k phi_Dz) dS + int_bed (0) + S_inf.
+    On S_F, phi_D psi_z - psi phi_Dz = phi_D (Omega**2/g) psi - psi (Omega**2 phi_D + Q_D)/g = -psi Q_D/g, so
+        int_SB phi_D n_k dS = int_SB psi_k d phi_D/dn dS + (1/g) int_SF psi_k Q_D dS,
+    S_inf -> 0 as the cylinder at infinity grows (both radiate, and Q_D's locked part ~ r**(-1/2) times psi's, with
+    oscillating phase, as the free-surface integral itself; it converges as an oscillatory integral, which the rotated
+    contour sums exactly). The load i Omega rho int phi_D n_k dS (potential_terms_states) is then ID + B1 + B2 + B3 +
+    T_FS with T_FS,k = s_FS (i Omega rho/g) int_SF psi_k Q_D dS, s_FS = +1, over rho g: (i Omega/g**2) int psi_k Q_D.
+    S_F is z = 0 for r > a (outside the waterplane). check_fs_sign_from_bvp confirms s_FS against the direct solve."""
+    big_omega = pair.omega_i - pair.omega_j
+    out = np.zeros(6, complex)
+    for k in MOTION_MODES:
+        out[k - 1] = FS_SIGN * 1j * big_omega / make_mesh.G ** 2 * fs_integral(pair, psi_tests[k])
+    return out
+
+
+class _IncidentParticular:
+    """The interior particular solution -phi_I2 of order m (the hook of Solution, as _Particular): phi_p = c J_m(K r)
+    Z_K(z), c = -coef eps_m i**m, from phi_I2 = coef e^(i K x) Z_K(z) = coef sum eps_m i**m J_m(K r) Z_K(z) cos(m theta)
+    (incident2, heading 0, K = k_i - k_j along +x). Harmonic, no flux through the bed, and d phi_p/dz = -d phi_I2/dz on
+    the bottom z = -d, so with the homogeneous interior modes (d/dz = 0 there) phi_D meets the bottom condition of a fixed
+    body, d phi_D/dn = -d phi_I2/dn. potential_gap by the basis's Gauss-Jacobi rules, flux_gap and bottom in closed form:
+    int_0^g cosh(K s) cos(lambda_n s) ds = K sinh(K g) (-1)**n/(K**2 + lambda_n**2), int_0^a J_m(K r) r**(m+1) dr
+    = a**(m+1) J_(m+1)(K a)/K."""
+
+    def __init__(self, cyl, inc, m, basis, n_modes):
+        self.cyl, self.m, self.big_k = cyl, m, inc.kmag
+        self.c = -inc.coef * (1.0 if m == 0 else 2.0) * 1j ** m
+        a, g, h = cyl.radius, cyl.gap, cyl.depth
+        self.potential_gap = basis.project(cyl, lambda s: self.fields(np.full(s.shape, a), s - h)[0])
+        self.flux_gap = self.flux(n_modes)
+        big_k = self.big_k
+        self.bottom = self.c * _cosh_ratio(big_k, g, h)[0] * a ** (m + 1) * jv(m + 1, big_k * a) / big_k
+
+    def flux(self, n_modes):
+        a, g, h, big_k = self.cyl.radius, self.cyl.gap, self.cyl.depth, self.big_k
+        lam = np.arange(n_modes + 1) * math.pi / g
+        sinh_ratio = _cosh_ratio(big_k, g, h)[1]                       # sinh(K g)/cosh(K h)
+        return (self.c * big_k * jvp(self.m, big_k * a) * big_k * sinh_ratio * (-1.0) ** np.arange(n_modes + 1)
+                / (big_k ** 2 + lam ** 2))
+
+    def fields(self, r, z):
+        r, z = np.asarray(r, dtype=float), np.asarray(z, dtype=float)
+        big_k, m = self.big_k, self.m
+        zk, dzk = _cosh_ratio(big_k, z + self.cyl.depth, self.cyl.depth)
+        return (self.c * jv(m, big_k * r) * zk, self.c * big_k * jvp(m, big_k * r) * zk,
+                self.c * jv(m, big_k * r) * big_k * dzk)
+
+
+def _incident_wall(cyl, particular, k, kn):
+    """(wall, V_c): wall[n] = int_-d^0 v_r Z_n dz of the wall velocity v_r = d phi_D/dr = -d phi_I2,m/dr
+    = c K J_m'(K a) Z_K(z) of a fixed body, n = 0 ... N (n = 0 by Gauss-Legendre, 64 nodes, smooth; n >= 1 in closed
+    form, int cosh(K s) cos(q s) ds = [K sinh(K s) cos(q s) + q cosh(K s) sin(q s)]/(K**2 + q**2)), and its value at the
+    corner, V_c = v_r(-d), for the matching tail."""
+    g, h = cyl.gap, cyl.depth
+    big_k, m = particular.big_k, particular.m
+    amp = particular.c * big_k * jvp(m, big_k * cyl.radius)
+    x, w = _gauss_panels([g, h], 64)
+    wall0 = np.sum(w * _cosh_ratio(big_k, x, h)[0] * _cosh_ratio(k, x, h)[0])
+    ch_k = math.cosh(big_k * h)
+
+    def antiderivative(s):
+        return (big_k * np.sinh(big_k * s) * np.cos(kn * s) + kn * np.cosh(big_k * s) * np.sin(kn * s)) / (big_k ** 2 + kn ** 2)
+
+    walln = (antiderivative(h) - antiderivative(g)) / (ch_k * np.cos(kn * h))
+    return amp * np.concatenate([[wall0], walln]), amp * _cosh_ratio(big_k, g, h)[0]
+
+
+def _evanescent_integrals(grid, m, kn, a_all, nodes):
+    """I_n = int_a^inf G_n(r) A(r) r dr on the real-axis nodes, n = 1 ... N, G_n = K_m(k_n r)/(k_n a K_m'(k_n a)), the
+    Neumann Green function's radial factor of fs_direct_force (decayed far below round-off by r_far)."""
+    a = grid.cyl.radius
+    r, w = nodes
+    qa = kn * a
+    kprime = -0.5 * (kve(m - 1, qa) + kve(m + 1, qa))                 # K_m'(k_n a) e^(k_n a)
+    live = np.searchsorted(kn, FS_EVANESCENT_CUT / np.maximum(r - a, 1e-300))
+    out = np.zeros(kn.size, complex)
+    weight = w * r * a_all
+    for start in range(0, r.size, FS_GAUSS):
+        chunk = slice(start, start + FS_GAUSS)
+        n = int(live[chunk].max())
+        if n == 0:
+            continue
+        q = kn[:n, None]
+        g_n = kve(m, q * r[None, chunk]) * np.exp(-q * (r[None, chunk] - a)) / (q * a * kprime[:n, None])
+        out[:n] += g_n @ weight[chunk]
+    return out
+
+
+def fs_direct_force(pair, n_modes, p_max):
+    """(i Omega/g) int phi_D n_k dS, k = 1, 3, 5 ((6,) complex, over rho g, moments about the origin): the load of the
+    second-order diffraction potential of a fixed body from a direct solve of its boundary-value problem by matching,
+    orders 0 and 1 (the only ones the loads of an axisymmetric body see), N = n_modes, gap basis p_max, at Omega.
+
+    Exterior: phi_D = sum_n Z_n(z) f_n(r) cos(m theta) with the vertical modes at Omega. Projecting Laplace's equation
+    on Z_n and integrating by parts in z, the inhomogeneous free-surface condition -Omega**2 phi + g phi_z = Q_D enters
+    as a source: (d2/dr2 + (1/r) d/dr - m**2/r**2 + mu_n) f_n = S_n = -Q_m(r)/(g N_n), mu_0 = k**2, mu_n = -k_n**2,
+    Q_m the cos(m theta) coefficient of Q_D on z = 0 (A_m/pi, A_0/(2 pi)). The outgoing particular solution by variation of
+    parameters, -(i pi/2)[H_m(k r) int_a^r J_m S r' dr' + J_m(k r) int_r^inf H_m S r' dr'] (n = 0; W[J, H] = 2i/(pi x)),
+    -[K_m int_a^r I_m S r' + I_m int_r^inf K_m S r'] (n >= 1; W[K, I] = 1/x), behaves at r = a as an incident wave, so it
+    enters _solve_order as forced: e_n = p_n(a) - p_n'(a)/kappa_n = int_a^inf R_n(r) S_n(r) r dr/(x R_n'(x)), x = k_n a,
+    R_0 = H_m(k r), R_n = K_m(k_n r). e_0 is fs_integral of the outgoing test function H_m(k r)/(k a H_m'(k a)), with
+    its rotated contour; e_n, n >= 1, are real-axis sums (_evanescent_integrals). Interior: _IncidentParticular, -phi_I2.
+    Wall: d phi_D/dr = -d phi_I2/dr (_incident_wall). Then the load is _body_integrals of the solution at r = a."""
+    grid = pair.grid
+    cyl = grid.cyl
+    big_omega = pair.omega_i - pair.omega_j
+    modes = _modes(cyl, big_omega, n_modes, p_max)
+    k, kn, norms = modes.k, modes.kn, modes.norms
+    a = cyl.radius
+    inc = incident2(pair.omega_i, 0.0, pair.omega_j, 0.0, cyl.depth)
+    nodes = tuple(np.concatenate([getattr(grid, part)[c] for part in ("strip", "inner", "outer")]) for c in (0, 1))
+    orders = {}
+    for m in FS_MOMENTS:
+        scale = -1.0 / (math.pi * (2.0 if m == 0 else 1.0) * make_mesh.G)
+        green0 = 1.0 / (k * a * h1vp(m, k * a))
+        test = FSTest(m, *[green0 * hankel1(m, k * part[0]) for part in (grid.strip, grid.inner, grid.outer)], green0)
+        a_all = np.concatenate([pair.strip[m], pair.inner[m], pair.outer[m]])
+        integrals = np.concatenate([[fs_integral(pair, test)], _evanescent_integrals(grid, m, kn, a_all, nodes)])
+        forced = scale * integrals / norms
+        particular = _IncidentParticular(cyl, inc, m, modes.basis, n_modes)
+        wall, corner = _incident_wall(cyl, particular, k, kn)
+        orders[m] = _solve_order(cyl, m, k, kn, modes.basis, wall=wall, particular=particular,
+                                 wall_velocity=(corner, 0.0), modes=modes, forced=forced)
+    sol = Solution(cyl, big_omega, k, kn, p_max, orders)
+    out = np.zeros(6, complex)
+    for j, value in _body_integrals(cyl, sol).items():
+        out[j - 1] = 1j * big_omega / make_mesh.G * value
+    return out
+
+
+FS_COLUMNS = tuple("%s_FS_%s" % (q, part) for q in ("Fx", "Fz", "My") for part in ("re", "im"))
+# The columns of qtf-potential --free-surface: those of QTF_POTENTIAL_COLUMNS, then T_FS and fs_check (--fs-check:
+# max abs(T_FS(R) - T_FS(FS_CHECK_FACTOR R))/max abs(T_FS(R)) over F_x, F_z, M_y; empty without it)
+QTF_FS_COLUMNS = QTF_POTENTIAL_COLUMNS[:-1] + FS_COLUMNS + ("fs_check", "psi_warning")
+FS_CHECK_FACTOR = 1.5
+
+
+def qtf_potential_table(cyl, frequencies, motion, n_modes, p_max, orders, max_dw=QTF_MAX_DW, log=None,
+                        free_surface=None):
     """Rows of QTF_POTENTIAL_COLUMNS for every pair omega_i <= omega_j of frequencies with omega_j - omega_i <= max_dw,
     difference kernel only: Fx_re ... My_im are the quadratic T-_ij of qtf_table (the same columns and values, so
     qtf_compare.read_reference reads the file as the quadratic reference), and <quantity>_<term>_re/_im each body-forcing
@@ -2823,12 +3443,24 @@ def qtf_potential_table(cyl, frequencies, motion, n_modes, p_max, orders, max_dw
     the difference frequency where they fail the energy identity by more than PSI_ENERGY_TOLERANCE (psi_energy_residual),
     else it is empty. The phase of the wave (qtf_table) cancels in every difference-kernel product. Quadrature
     POTENTIAL_QUADRATURE for the quadratic part and the terms alike (the quadratic columns then differ from the qtf
-    subcommand's, at NEAR_QUADRATURE, by the quadrature error of the near field, below 1e-6 relative)."""
+    subcommand's, at NEAR_QUADRATURE, by the quadrature error of the near field, below 1e-6 relative).
+
+    free_surface: None, or {"radius": R, "check": bool}: adds FS_COLUMNS, T_FS of fs_terms_states (conjugated as the
+    other terms), split at R, and with check fs_check, the relative change of T_FS with the split at FS_CHECK_FACTOR R
+    (QTF_FS_COLUMNS). The free-surface states of a frequency are dropped once no later pair needs them."""
     quad = body_quadrature(cyl, *POTENTIAL_QUADRATURE)
-    states = []
+    states, totals = [], []
     for omega in frequencies:
         total, xi = _first_order_case(cyl, omega, motion, n_modes, p_max, orders)
         states.append(surface_state(cyl, omega, total, xi, quad))
+        if free_surface:
+            totals.append(total)
+    if free_surface:
+        big_omegas = sorted({round(wj - wi, 9) for wi in frequencies for wj in frequencies
+                             if 0.0 < wj - wi <= max_dw * (1.0 + 1e-9)})
+        radii = [free_surface["radius"]] + ([FS_CHECK_FACTOR * free_surface["radius"]] if free_surface["check"] else [])
+        grids = [fs_grid(cyl, radius, frequencies, big_omegas, n_modes) for radius in radii]
+        fs_states, fs_tests = {}, {}
     warnings_by_omega = {}
     rows = []
     for i, wi in enumerate(frequencies):
@@ -2852,22 +3484,43 @@ def qtf_potential_table(cyl, frequencies, motion, n_modes, p_max, orders, max_dw
                                                                                  " WARNING" if bad else ""))
                 psi = psi_states(cyl, big_omega, n_modes, p_max, quad)
                 pot = potential_terms_states(cyl, wj, states[j], wi, states[i], psi, quad, b2_parts=True)
+                if free_surface:
+                    values = []
+                    for g_index, grid in enumerate(grids):
+                        for index in (i, j):
+                            if (g_index, index) not in fs_states:
+                                fs_states[g_index, index] = fs_state(grid, frequencies[index], totals[index])
+                        if (g_index, big_omega) not in fs_tests:
+                            rads = _psi_solutions(cyl, big_omega, n_modes, _spec_key(p_max))
+                            fs_tests[g_index, big_omega] = {k: fs_psi_test(grid, rads[k]) for k in MOTION_MODES}
+                        pair = fs_pair(grid, fs_states[g_index, j], fs_states[g_index, i])
+                        values.append(fs_terms_states(pair, fs_tests[g_index, big_omega]))
+                    pot["FS"] = values[0]
+                    if len(values) > 1:
+                        row["fs_check"] = "%.3e" % (np.max(np.abs(values[1] - values[0])) / np.max(np.abs(values[0])))
                 if warnings_by_omega[big_omega][0]:
                     row["psi_warning"] = "energy identity %.1e at Omega %.4f" % (warnings_by_omega[big_omega][1],
                                                                                  big_omega)
             else:
-                pot = {key: np.zeros(6, complex) for key in POTENTIAL_TERMS + B2_PIECES}
+                pot = {key: np.zeros(6, complex) for key in POTENTIAL_TERMS + B2_PIECES + ("FS",)}
+            if free_surface:
+                row.setdefault("fs_check", "")
             for name, index in (("Fx", 0), ("Fz", 2), ("My", 4)):
-                for key in POTENTIAL_TERMS + B2_PIECES:
+                for key in POTENTIAL_TERMS + B2_PIECES + (("FS",) if free_surface else ()):
                     value = np.conj(pot[key][index])                 # T_ij = conj(T_ji)
                     row["%s_%s_re" % (name, key)], row["%s_%s_im" % (name, key)] = value.real, value.imag
             rows.append(row)
+        if free_surface:   # no later pair has omega_i below this one's
+            for key in [key for key in fs_states if key[1] == i]:
+                del fs_states[key]
     return rows
 
 
-def run_qtf_potential(out, motions=("fixed", "free"), frequencies=QTF_FREQUENCIES, resolution=None, max_dw=QTF_MAX_DW):
+def run_qtf_potential(out, motions=("fixed", "free"), frequencies=QTF_FREQUENCIES, resolution=None, max_dw=QTF_MAX_DW,
+                      free_surface=None):
     """The qtf-potential subcommand: qtf_potential_table at DEFAULT_RESOLUTION (or resolution) for each motion, written
-    to out. Prints the distinct difference frequencies and the psi warnings."""
+    to out. Prints the distinct difference frequencies and the psi warnings. free_surface: as qtf_potential_table (the
+    --free-surface, --fs-radius and --fs-check options); the CSV then has QTF_FS_COLUMNS."""
     res = resolution or DEFAULT_RESOLUTION
     cyl, start = Cylinder(), time.time()
     omegas = sorted({round(wj - wi, 9) for wi in frequencies for wj in frequencies if 0.0 < wj - wi <= max_dw * (1 + 1e-9)})
@@ -2877,13 +3530,14 @@ def run_qtf_potential(out, motions=("fixed", "free"), frequencies=QTF_FREQUENCIE
     rows = []
     for motion in motions:
         rows += qtf_potential_table(cyl, frequencies, motion, res["n_modes"], res["p_max"], res["orders"], max_dw,
-                                    log=lambda text: print(text, flush=True))
+                                    log=lambda text: print(text, flush=True), free_surface=free_surface)
         print("qtf-potential %s: %d rows, %.0f s" % (motion, len(rows), time.time() - start), flush=True)
+    columns = QTF_FS_COLUMNS if free_surface else QTF_POTENTIAL_COLUMNS
     with open(out, "w", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(QTF_POTENTIAL_COLUMNS)
+        writer.writerow(columns)
         for row in rows:
-            writer.writerow([row[c] if isinstance(row[c], str) else "%.10g" % row[c] for c in QTF_POTENTIAL_COLUMNS])
+            writer.writerow([row[c] if isinstance(row[c], str) else "%.10g" % row[c] for c in columns])
     print("wrote %d rows to %s" % (len(rows), out))
     return 0
 
@@ -4085,6 +4739,190 @@ def check_compare_signs():
                           "; ".join(cancelling) or "none"))
 
 
+# Checks of the free-surface integral (Phase 6a)
+FS_CHECK_RESOLUTION = dict(n_modes=1000, p_max=(20, 4, 4), orders=15)   # the first-order fields of the FS checks
+FS_RADIUS_PAIRS = ((0.60, 0.70), (0.90, 1.10))     # (omega_j, omega_i) of fs_radius_invariance and fs_outer
+FS_RADIUS_SPLITS = (15.0, 20.0, 30.0)
+FS_RADIUS_TOLERANCE = 1e-6
+FS_FORCING_TOLERANCE = 1e-10
+FS_SIGN_PAIR = (0.90, 1.10)
+FS_SIGN_RESOLUTION = dict(n_modes=2000, p_max=(20, 4, 4))   # psi and the direct solve of check_fs_sign_from_bvp
+FS_SIGN_TOLERANCE = 1e-4
+FS_OUTER_TOLERANCE = 1e-10
+
+
+def _fs_check_fields(cyl, omega, motion, grid):
+    res = FS_CHECK_RESOLUTION
+    total, _ = _first_order_case(cyl, omega, motion, res["n_modes"], res["p_max"], res["orders"])
+    return fs_state(grid, omega, total)
+
+
+def _fs_check_value(cyl, low, high, motion, radius=FS_RADIUS, far=None, tail_decay=FS_TAIL_DECAY):
+    """T_FS of fs_terms_states for the pair (high, low), the first-order fields and psi at FS_CHECK_RESOLUTION."""
+    res = FS_CHECK_RESOLUTION
+    big_omega = round(high - low, 9)
+    grid = fs_grid(cyl, radius, (low, high), (big_omega,), res["n_modes"], far=far)
+    pair = fs_pair(grid, _fs_check_fields(cyl, high, motion, grid), _fs_check_fields(cyl, low, motion, grid),
+                   tail_decay=tail_decay)
+    rads = _psi_solutions(cyl, big_omega, res["n_modes"], _spec_key(res["p_max"]))
+    return fs_terms_states(pair, {k: fs_psi_test(grid, rads[k]) for k in MOTION_MODES})
+
+
+def check_fs_forcing_vs_incident():
+    """The free-surface forcing of fs_terms_states (_fs_forcing) for incident-only fields equals the second-order
+    incident wave's own -Omega**2 phi_I2 + g d phi_I2/dz on z = 0 (incident2's coefficient and Incident2.fields), to
+    FS_FORCING_TOLERANCE relative, at 0.80 and 0.60 rad/s, h = 100 m, at three points: (a) Cartesian fields, headings 0
+    and 0 (collinear) and 0 and 30 degrees; (b) the polar fields of the cylinder code (_plane_fields times e^(i k x), in
+    (r, theta, z)), heading 0. It tests Q's kernel, its factors and the conjugate convention of _fs_forcing (the fields of
+    state j enter conjugated), and _plane_fields; the free-surface condition of phi_I2 itself is incident2's, which
+    check_incident2 tests against the forcing sampled in time."""
+    wi, wj, depth = 0.80, 0.60, 100.0
+    g = make_mesh.G
+    x, y = np.array([0.0, 13.7, -25.1]), np.array([0.0, -4.2, 31.9])
+    worst = 0.0
+    for bj in (0.0, math.radians(30.0)):
+        inc = incident2(wi, 0.0, wj, bj, depth)
+        phi2, grad2 = inc.fields(x, y, 0.0 * x)
+        exact = -inc.omega ** 2 * phi2 + g * grad2[2]
+        fields = []
+        for omega, beta in ((wi, 0.0), (wj, bj)):
+            k = _wave_number_g(omega, depth, g)
+            phi = -g / omega * np.exp(1j * k * (x * math.cos(beta) + y * math.sin(beta)))
+            fields.append((phi, 1j * k * math.cos(beta) * phi, 1j * k * math.sin(beta) * phi, omega ** 2 / g * phi,
+                           k ** 2 * phi))
+        q = _fs_forcing(wi, fields[0], wj, tuple(np.conj(v) for v in fields[1]))
+        worst = max(worst, np.max(np.abs(q - exact) / np.abs(exact)))
+    inc = incident2(wi, 0.0, wj, 0.0, depth)
+    r, theta = np.array([10.0, 17.3, 41.0]), np.array([0.0, 2.1, 4.4])
+    phi2 = inc.fields(r * np.cos(theta), r * np.sin(theta), 0.0 * r)
+    exact = -inc.omega ** 2 * phi2[0] + g * phi2[1][2]
+    states = []
+    for omega in (wi, wj):
+        k = drift_convergence.wave_number(omega, depth)
+        states.append(FSState(omega, k, omega ** 2 / g, -g / omega, [], None, None, None, None))
+    f_i = tuple(v * np.exp(1j * states[0].k * r * np.cos(theta)) for v in _plane_fields(states[0], theta))
+    cf_j = tuple(v * np.exp(-1j * states[1].k * r * np.cos(theta)) for v in _plane_fields(states[1], theta, conj=True))
+    polar = np.max(np.abs(_fs_forcing(wi, f_i, wj, cf_j) - exact) / np.abs(exact))
+    return max(worst, polar) <= FS_FORCING_TOLERANCE, ("max |Q[I, I] - (-Omega**2 phi_I2 + g phi_I2,z)|/|.| %.1e "
+                                                       "(Cartesian, headings 0/0 and 0/30 deg), %.1e (polar fields)"
+                                                       % (worst, polar))
+
+
+def check_fs_radius_invariance():
+    """T_FS with the split between the inner polar grid and the outer modal integral at R = 15, 20 and 30 m agrees to
+    FS_RADIUS_TOLERANCE of max abs(T_FS) (F_x, F_z, M_y), at (0.60, 0.70) and (0.90, 1.10) rad/s, fixed and free, first
+    order at FS_CHECK_RESOLUTION. Between the radii the two methods integrate the same annulus: the inner one samples
+    the plane waves on FS_THETA_INNER points, the outer one takes them through Jacobi-Anger with the band-limited rest
+    on FS_THETA_OUTER points, and on different radial panels. So it tests the angular mode algebra of the outer region
+    (the sign of (+-i)**n, the conjugate wave e^(-i k_j x), the harmonic order) and both radial rules, not the forcing
+    (fs_forcing_vs_incident) nor the tail (fs_outer). Measured 6.1e-16."""
+    cyl = Cylinder()
+    worst = 0.0
+    for low, high in FS_RADIUS_PAIRS:
+        for motion in ("fixed", "free"):
+            values = [_fs_check_value(cyl, low, high, motion, radius) for radius in FS_RADIUS_SPLITS]
+            scale = max(np.max(np.abs(v)) for v in values)
+            worst = max(worst, max(np.max(np.abs(v - values[1])) for v in values) / scale)
+    return worst <= FS_RADIUS_TOLERANCE, ("max |T_FS(R) - T_FS(20 m)|/max |T_FS|, R = 15, 30 m: %.1e (pairs %s, fixed "
+                                          "and free)" % (worst, ", ".join("(%.2f, %.2f)" % p for p in FS_RADIUS_PAIRS)))
+
+
+def check_fs_outer():
+    """The outer integral's pieces: (a) the Jacobi-Anger angular integral (_angular_plane, both signs) of
+    e^(+-i k r cos theta) g(theta), g a trigonometric polynomial of degree 17, against the trapezoidal rule on 4096
+    points, at k r = 5 and 50, to FS_OUTER_TOLERANCE of 2 pi max abs(g); (b) the radial integral beyond r_far, by the
+    rotated contour: T_FS at (0.90, 1.10) rad/s, free, with r_far moved out by 317.3 m (not a multiple of any of the
+    wavelengths, so the real-axis part changes by an oscillating O(r**(-1/2)) amount that the tail must give back), and
+    with the contour run to exp(-80) instead of exp(-40), each to FS_OUTER_TOLERANCE of max abs(T_FS) (measured 4e-17);
+    (c) the radiating fields on z = 0 (_z0_modal) against the exterior series of Solution, less its incident part, at
+    r = 12 and 25 m, phi and d phi/dr to 1e-10 relative, and d phi/dz = nu phi. Not covered: the tail's own quadrature
+    beyond what (b) moves, and r_far itself where an evanescent mode would still matter (measured: r_far - R = 500 m
+    changes T_FS by 8e-9, 150 m by 5e-4; the default, 36/k_1, is 2100 m at (0.90, 1.10))."""
+    rng = np.random.RandomState(7)
+    theta = 2.0 * math.pi * np.arange(FS_THETA_OUTER) / FS_THETA_OUTER
+    fine = 2.0 * math.pi * np.arange(4096) / 4096
+    coef = rng.randn(35) + 1j * rng.randn(35)
+    def poly(t):
+        return sum(c * np.exp(1j * n * t) for c, n in zip(coef, range(-17, 18)))
+    angular = 0.0
+    for kr in (5.0, 50.0):
+        for sign in (1, -1):
+            mine = _angular_plane(poly(theta)[None, :], kr, np.array([1.0]), sign)[0]
+            brute = 2.0 * math.pi * np.mean(np.exp(sign * 1j * kr * np.cos(fine)) * poly(fine))
+            angular = max(angular, abs(mine - brute) / (2.0 * math.pi * np.max(np.abs(poly(fine)))))
+    cyl = Cylinder()
+    low, high = FS_RADIUS_PAIRS[1]
+    base = _fs_check_value(cyl, low, high, "free")
+    grid = fs_grid(cyl, FS_RADIUS, (low, high), (round(high - low, 9),), FS_CHECK_RESOLUTION["n_modes"])
+    moved = _fs_check_value(cyl, low, high, "free", far=grid.r_far - FS_RADIUS + 317.3)
+    longer = _fs_check_value(cyl, low, high, "free", tail_decay=2.0 * FS_TAIL_DECAY)
+    scale = np.max(np.abs(base))
+    tail = max(np.max(np.abs(moved - base)), np.max(np.abs(longer - base))) / scale
+    res = FS_CHECK_RESOLUTION
+    total, _ = _first_order_case(cyl, high, "free", res["n_modes"], res["p_max"], res["orders"])
+    r, th = np.array([12.0, 25.0]), np.array([0.3, 1.7])
+    big_p, big_d, _ = _z0_modal(total, r)
+    m = np.array(sorted(total.orders))
+    field = np.zeros(r.size, complex)
+    field_r = np.zeros(r.size, complex)
+    series = np.zeros(r.size, complex)
+    series_r = np.zeros(r.size, complex)
+    series_z = np.zeros(r.size, complex)
+    for c, order in enumerate(m):
+        phi, dr, dz = total._exterior(order, r, 0.0 * r)
+        o = total.orders[order]
+        inc, dinc = o.incident * jv(order, total.k * r), o.incident * total.k * jvp(order, total.k * r)
+        series += (phi - inc) * np.cos(order * th)
+        series_r += (dr - dinc) * np.cos(order * th)
+        series_z += (dz - total.k * math.tanh(total.k * cyl.depth) * inc) * np.cos(order * th)
+        field += big_p[:, c] * np.cos(order * th)
+        field_r += big_d[:, c] * np.cos(order * th)
+    nu = high ** 2 / make_mesh.G
+    fields = max(np.max(np.abs(field - series) / np.abs(series)), np.max(np.abs(field_r - series_r) / np.abs(series_r)),
+                 np.max(np.abs(nu * field - series_z) / np.abs(series_z)))
+    ok = angular <= FS_OUTER_TOLERANCE and tail <= FS_OUTER_TOLERANCE and fields <= 1e-10
+    return ok, ("(a) Jacobi-Anger against the trapezoidal rule %.1e; (b) T_FS with r_far + 317.3 m and the contour to "
+                "exp(-80): %.1e of max |T_FS|; (c) fields on z = 0 against the exterior series %.1e"
+                % (angular, tail, fields))
+
+
+def check_fs_sign_from_bvp():
+    """The sign s_FS of T_FS, from the boundary-value problem: at (0.90, 1.10) rad/s, fixed body, the load of phi_D
+    from a direct solve of its boundary-value problem (fs_direct_force: matching, orders 0 and 1, with the
+    free-surface forcing Q_D as an exterior source and the body condition -d phi_I2/dn) against the indirect form
+    ID + s_FS T_FS (potential_terms_states' ID, Green's identity with psi_k): with s_FS = FS_SIGN = +1 they agree to
+    FS_SIGN_TOLERANCE of max abs(direct) over F_x, F_z, M_y, and with -s_FS they miss by more than 100 times that (T_FS
+    is of the size of ID here, so the sign is resolved). Psi and the direct solve at FS_SIGN_RESOLUTION, first order at
+    FS_CHECK_RESOLUTION: Green's identity holds for any forcing, so the first-order accuracy does not enter. This is the
+    direct solve the brief asks for, not the fallback of Green's identity on a closed contour. Measured 7.0e-6 (+1) and
+    1.25 (-1); fitted s_FS = 0.99998, 0.99999, 1.00000. It tests the sign and the factor of T_FS, psi on z = 0 and the
+    strip and inner integrals; it cannot see an error of the integral beyond r_far that is the same for psi and the
+    Green function (both are H1_m(nu r) there; fs_outer tests the tail) nor an error of Q_D (both sides see the same Q_D)."""
+    cyl = Cylinder()
+    low, high = FS_SIGN_PAIR
+    big_omega = round(high - low, 9)
+    res, sign_res = FS_CHECK_RESOLUTION, FS_SIGN_RESOLUTION
+    quad = body_quadrature(cyl, *POTENTIAL_QUADRATURE)
+    grid = fs_grid(cyl, FS_RADIUS, (low, high), (big_omega,), res["n_modes"])
+    totals = {w: _first_order_case(cyl, w, "fixed", res["n_modes"], res["p_max"], res["orders"]) for w in (low, high)}
+    pair = fs_pair(grid, fs_state(grid, high, totals[high][0]), fs_state(grid, low, totals[low][0]))
+    rads = _psi_solutions(cyl, big_omega, sign_res["n_modes"], _spec_key(sign_res["p_max"]))
+    fs = fs_terms_states(pair, {k: fs_psi_test(grid, rads[k]) for k in MOTION_MODES}) / FS_SIGN
+    surface = {w: surface_state(cyl, w, totals[w][0], totals[w][1], quad) for w in (low, high)}
+    psi = psi_states(cyl, big_omega, sign_res["n_modes"], sign_res["p_max"], quad)
+    ident = potential_terms_states(cyl, high, surface[high], low, surface[low], psi, quad)["ID"]
+    direct = fs_direct_force(pair, sign_res["n_modes"], sign_res["p_max"])
+    idx = [0, 2, 4]
+    scale = np.max(np.abs(direct[idx]))
+    plus = np.max(np.abs(direct - ident - FS_SIGN * fs)[idx]) / scale
+    minus = np.max(np.abs(direct - ident + FS_SIGN * fs)[idx]) / scale
+    fitted = ((direct - ident)[idx] / fs[idx]).real
+    ok = plus <= FS_SIGN_TOLERANCE and minus >= 100.0 * FS_SIGN_TOLERANCE
+    return ok, ("direct solve of phi_D (not the closed-contour fallback): |direct - ID - s T_FS|/max |direct| %.1e with "
+                "s = %+g, %.2e with s = %+g; fitted s (F_x, F_z, M_y) %s" % (plus, FS_SIGN, minus, -FS_SIGN,
+                                                                            ", ".join("%.5f" % v for v in fitted)))
+
+
 CHECKS = {"roots": check_roots, "inner_products": check_inner_products, "polylog": check_polylog,
           "matching_tail": check_matching_tail, "bottom_limit_x1": check_bottom_limit_x1, "matching": check_matching,
           "scattering_energy": check_scattering_energy, "reciprocity": check_reciprocity,
@@ -4095,7 +4933,9 @@ CHECKS = {"roots": check_roots, "inner_products": check_inner_products, "polylog
           "corner_limit": check_corner_limit, "reference_point": check_reference_point,
           "pair_symmetry": check_pair_symmetry, "fx_identity": check_fx_identity, "convergence": check_convergence,
           "compare_fixture": check_compare_fixture, "qtf_diagonal": check_qtf_diagonal,
-          "incident2": check_incident2, "haskind_indirect": check_haskind_indirect, "stokes": check_stokes}
+          "incident2": check_incident2, "haskind_indirect": check_haskind_indirect, "stokes": check_stokes,
+          "fs_forcing_vs_incident": check_fs_forcing_vs_incident, "fs_radius_invariance": check_fs_radius_invariance,
+          "fs_outer": check_fs_outer, "fs_sign_from_bvp": check_fs_sign_from_bvp}
 # Run by name (check uncertainty compare_signs) and by the reference subcommand, not by a bare check: uncertainty computes
 # nine rows at N = 128000 that no other check needs; compare_signs reads the study's results outside the repository and
 # computes the 22 reference rows (about 92 s)
@@ -4230,6 +5070,12 @@ def main(argv=None):
     p_pot.add_argument("--max-dw", type=float, default=QTF_MAX_DW)
     p_pot.add_argument("--light", action="store_true", help="LIGHT_RESOLUTION instead of DEFAULT_RESOLUTION (a quick look; "
                                                            "no stated uncertainty)")
+    p_pot.add_argument("--free-surface", action="store_true",
+                       help="add the free-surface integral T_FS (columns Fx_FS_re ... My_FS_im; qtf_terms = full)")
+    p_pot.add_argument("--fs-radius", type=float, default=FS_RADIUS, metavar="R",
+                       help="split radius of the free-surface integral, m (default %g)" % FS_RADIUS)
+    p_pot.add_argument("--fs-check", action="store_true",
+                       help="also split at %g R and write the relative change of T_FS (column fs_check)" % FS_CHECK_FACTOR)
     p_cmp = sub.add_parser("compare", help="compare the HAMS a_sharp_* case folders under RESULTS with the reference")
     p_cmp.add_argument("results", metavar="RESULTS", help="folder holding the case folders (a_sharp_*/output/Wamit_format)")
     p_cmp.add_argument("--out", metavar="CSV", help="write the comparison to this CSV file")
@@ -4243,9 +5089,12 @@ def main(argv=None):
     if args.command == "qtf":
         return run_qtf(args.out, ("fixed", "free") if args.motion == "both" else (args.motion,))
     if args.command == "qtf-potential":
+        if (args.fs_check or args.fs_radius != FS_RADIUS) and not args.free_surface:
+            parser.error("--fs-radius and --fs-check need --free-surface")
         return run_qtf_potential(args.out, ("fixed", "free") if args.motion == "both" else (args.motion,),
                                  QTF_FINE_FREQUENCIES if args.grid == "hams" else QTF_FREQUENCIES,
-                                 LIGHT_RESOLUTION if args.light else None, args.max_dw)
+                                 LIGHT_RESOLUTION if args.light else None, args.max_dw,
+                                 dict(radius=args.fs_radius, check=args.fs_check) if args.free_surface else None)
     names = args.names or list(CHECKS)
     unknown = [n for n in names if n not in ALL_CHECKS]
     if unknown:

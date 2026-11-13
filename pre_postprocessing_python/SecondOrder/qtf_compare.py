@@ -33,6 +33,9 @@ compares QTF_Indirect.11d with that total, .11d - .10d with the sum of the terms
 (16 digits, conjugated back) with its reference; the scale of a term is the larger of its own and the potential part's
 largest abs over the pairs, so that a term that is small everywhere is not measured against itself. Nemoh's OUT_QTFM_N.dat
 of a DUOK + HASBO run (body forcing, no free-surface integral) is compared with the reference total, readings as above.
+For a q_sharp_full_* case (qtf_terms = full, 19-column terms file) the reference total and potential part include the
+free-surface integral, and a row FS compares FS_inner + FS_outer with the reference column FS (CSV of qtf-potential
+--free-surface); `check` tests it (fs_columns).
 
 WAMIT (--against-wamit). A WAMIT numeric .12d (difference QTF; one header line, then PER_i PER_j BETA_i BETA_j I Mod Pha Re
 Im, periods in s, nondimensional by rho g L^k with L = 1 m: the layout HAMS writes for .10d and .11d) is read "as written":
@@ -142,16 +145,20 @@ POTENTIAL_TERMS = qtf_tools.POTENTIAL_TERMS
 def read_potential_reference(path, max_dw):
     """{motion: {"total" | "pot" | term: {(w_i, w_j): {quantity: complex}}}} of a qtf-potential CSV, w_i <= w_j,
     w_j - w_i <= max_dw: the reference total of QTF_Indirect.11d (quadratic + terms), the potential part (sum of the
-    terms) and each term, internal e^{-i omega t}, over rho g."""
+    terms) and each term, internal e^{-i omega t}, over rho g. A CSV with the free-surface columns (--free-surface) also has
+    "FS", the free-surface integral, and "total_fs" and "pot_fs", the total and the potential part with it (those of
+    qtf_terms = full); without the columns these three are empty."""
     out = {}
     with open(path, newline="") as f:
-        for r in csv.DictReader(f):
+        reader = csv.DictReader(f)
+        has_fs = "Fx_FS_re" in (reader.fieldnames or ())
+        for r in reader:
             if r["kernel"] != "diff":
                 continue
             wi, wj = round(float(r["omega_i"]), 4), round(float(r["omega_j"]), 4)
             if wj - wi > max_dw + 1e-9:
                 continue
-            m = out.setdefault(r["motion"], {key: {} for key in ("total", "pot") + POTENTIAL_TERMS})
+            m = out.setdefault(r["motion"], {key: {} for key in ("total", "pot", "total_fs", "pot_fs", "FS") + POTENTIAL_TERMS})
             for q, _ in QUANTITIES:
                 terms = {t: complex(float(r["%s_%s_re" % (q, t)]), float(r["%s_%s_im" % (q, t)])) for t in POTENTIAL_TERMS}
                 pot = sum(terms.values())
@@ -159,6 +166,11 @@ def read_potential_reference(path, max_dw):
                 m["pot"].setdefault((wi, wj), {})[q] = pot
                 for t in POTENTIAL_TERMS:
                     m[t].setdefault((wi, wj), {})[q] = terms[t]
+                if has_fs:
+                    fs = complex(float(r["%s_FS_re" % q]), float(r["%s_FS_im" % q]))
+                    m["FS"].setdefault((wi, wj), {})[q] = fs
+                    m["pot_fs"].setdefault((wi, wj), {})[q] = pot + fs
+                    m["total_fs"].setdefault((wi, wj), {})[q] = m["total"][(wi, wj)][q] + fs
     return out
 
 
@@ -184,8 +196,10 @@ def _difference(a, b):
 
 
 def _term(terms, t):
-    """(wi, wj, index) -> term t of a read_hams_terms table; zero on the diagonal, where the file has no row."""
-    table = {k: values[t] for k, values in terms.items()}
+    """(wi, wj, index) -> term t (or the sum of the terms t, a tuple) of a read_hams_terms table; zero on the diagonal, where
+    the file has no row."""
+    ts = (t,) if isinstance(t, int) else t
+    table = {k: sum(values[i] for i in ts) for k, values in terms.items()}
 
     def value(wi, wj, index):
         v = lookup(table, wi, wj, index, "diff")
@@ -197,7 +211,7 @@ def compare_potential(results, path, nemoh, max_dw, exclude=None):
     """The --potential tables; see the module docstring. exclude (lo, hi): leave out the pairs with omega_i or omega_j
     in [lo, hi] from the max and median, keeping the scales of all the pairs."""
     ref = read_potential_reference(path, max_dw)
-    print("Potential part (qtf_terms = body), exact sharp cylinder: |HAMS - exact| / max |exact| over the pairs, max and "
+    print("Potential part (qtf_terms = body, or full for the q_sharp_full_* cases), exact sharp cylinder: |HAMS - exact| / max |exact| over the pairs, max and "
           "median, percent; omega_j - omega_i <= %.2f rad/s; a term against the larger of its and T_pot's max" % max_dw)
     if exclude:
         print("Pairs with omega_i or omega_j in [%.3f, %.3f] rad/s left out; scales from all the pairs" % tuple(exclude))
@@ -217,14 +231,23 @@ def compare_potential(results, path, nemoh, max_dw, exclude=None):
         if not indirect:
             print("%-24s no QTF_Indirect.11d" % case)
             continue
+        # qtf_terms = full: the total and the potential part have the free-surface integral. The mode is read from the case name
+        # (q_sharp_full_*), not from the files: a full case under another name is compared with the total without FS
+        full = "_full_" in case
+        if full and not ref[motion]["FS"]:
+            print("%-24s no FS reference (columns Fx_FS_re ... in %s, from qtf-potential --free-surface)" % (case, path))
+            continue
+        total_key, pot_key = ("total_fs", "pot_fs") if full else ("total", "pot")
 
         def of(table):
             return lambda wi, wj, index: lookup(table, wi, wj, index, "diff")
-        rows = [(".11d", of(indirect), "total", None)]
+        rows = [(".11d", of(indirect), total_key, None)]
         if quadratic:
-            rows.append(("pot", _difference(of(indirect), of(quadratic)), "pot", None))
+            rows.append(("pot", _difference(of(indirect), of(quadratic)), pot_key, None))
         if terms:
-            rows += [(name, _term(terms, t), name, "pot") for t, name in enumerate(POTENTIAL_TERMS)]
+            rows += [(name, _term(terms, t), name, pot_key) for t, name in enumerate(POTENTIAL_TERMS)]
+            if full and all(len(v) == len(POTENTIAL_TERMS) + 2 for v in terms.values()):
+                rows.append(("FS", _term(terms, (5, 6)), "FS", pot_key))   # FS_inner + FS_outer; the split is the mesh's
         for label, source, key, against in rows:
             cells = []
             for q, index in QUANTITIES:
@@ -672,10 +695,104 @@ def check_compare_potential():
     return "exact fixture max %.1e %%, swapped ID/B2 seen, fixed case noted" % max(numbers)
 
 
+def check_fs_columns():
+    """compare_potential on a qtf_terms = full fixture: a reference CSV with the FS column, a HAMS case whose terms file has
+    19 columns (FS_inner + FS_outer = FS, split 0.4 / 0.6), written conjugated as the program does, and one whose FS_inner is
+    wrong. The exact case has every error 0 (to 1e-6) in the total, the potential part, the five terms and the FS row, so the
+    reader of the 19 columns, FS = FS_inner + FS_outer, and the total with FS agree; the wrong one shows in FS and in the
+    total; a body case (15 columns) is compared with the total without FS; a full case against a CSV without FS columns
+    prints its note."""
+    import contextlib
+    import io
+    import tempfile
+    pairs = ((0.7, 0.7), (0.7, 0.95), (0.95, 0.95))
+    rng = np.random.default_rng(5)
+    quad = {p: {q: complex(*rng.normal(size=2)) for q, _ in QUANTITIES} for p in pairs}
+    terms = {p: {q: [complex(*rng.normal(size=2)) if p[0] != p[1] else 0j for _ in range(6)] for q, _ in QUANTITIES}
+             for p in pairs}    # five terms and FS
+
+    def internal(wi, wj, q, what):
+        return what(wi, wj, q) if (wi, wj) in quad else what(wj, wi, q).conjugate()
+
+    def write_reference(path, with_fs):
+        cols = ["motion", "omega_i", "omega_j", "kernel"] + ["%s_%s" % (q, part) for q, _ in QUANTITIES for part in ("re", "im")]
+        names = POTENTIAL_TERMS + (("FS",) if with_fs else ())
+        cols += ["%s_%s_%s" % (q, t, part) for q, _ in QUANTITIES for t in names for part in ("re", "im")]
+        with open(path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(cols)
+            for wi, wj in pairs:
+                row = ["free", wi, wj, "diff"]
+                for q, _ in QUANTITIES:
+                    row += [quad[wi, wj][q].real, quad[wi, wj][q].imag]
+                for q, _ in QUANTITIES:
+                    for t in range(len(names)):
+                        row += [terms[wi, wj][q][t].real, terms[wi, wj][q][t].imag]
+                w.writerow(row)
+
+    def write_case(root, case, full, wrong=False):
+        folder = os.path.join(root, case, "output", "Wamit_format")
+        os.makedirs(folder)
+        files = {name: open(os.path.join(folder, name), "w") for name in
+                 ("QTF_Quadratic.10d", "QTF_Indirect.11d", "QTF_PotentialTerms.txt")}
+        files["QTF_PotentialTerms.txt"].write("# header\n")
+        count = 6 if full else 5
+        for wi in (0.7, 0.95):
+            for wj in (0.7, 0.95):
+                for q, index in QUANTITIES:
+                    a = internal(wi, wj, q, lambda x, y, z: quad[x, y][z])
+                    tt = [internal(wi, wj, q, lambda x, y, z, t=t: terms[x, y][z][t]) for t in range(count)]
+                    for name, v in (("QTF_Quadratic.10d", a), ("QTF_Indirect.11d", a + sum(tt))):
+                        v = v.conjugate()
+                        files[name].write("%14.6E%14.6E%14.6E%14.6E%6d%14.6E%14.6E%14.6E%14.6E\n" % (
+                            wi, wj, 0.0, 0.0, index, abs(v), 0.0, v.real, v.imag))
+                    if wi != wj:
+                        columns = tt[:5]
+                        if full:
+                            inner = 0.4 * tt[5] * (1.5 if wrong else 1.0)
+                            columns += [inner, tt[5] - 0.4 * tt[5]]
+                        files["QTF_PotentialTerms.txt"].write(
+                            "%14.6E%14.6E%14.6E%14.6E%6d" % (wi, wj, 0.0, 0.0, index)
+                            + "".join("%24.15E%24.15E" % (v.real, -v.imag) for v in columns) + "\n")
+        for f in files.values():
+            f.close()
+
+    def run(results, reference):
+        text = io.StringIO()
+        with contextlib.redirect_stdout(text):
+            compare_potential(results, reference, None, 0.3)
+        return text.getvalue().splitlines()
+
+    def worst(lines, case, labels):
+        return max(float(x) for l in lines if l.startswith(case + " ") and l.split()[1] in labels for x in l.split()[2:])
+    with tempfile.TemporaryDirectory() as d:
+        ref, ref_body = os.path.join(d, "ref.csv"), os.path.join(d, "ref_body.csv")
+        write_reference(ref, True)
+        write_reference(ref_body, False)
+        results = os.path.join(d, "results")
+        write_case(results, "q_sharp_full_free_m1", True)
+        write_case(results, "q_sharp_full_free_bad_m1", True, wrong=True)
+        write_case(results, "q_sharp_free_src_m1", False)
+        lines = run(results, ref)
+        note = run(results, ref_body)
+    good = [l for l in lines if l.startswith("q_sharp_full_free_m1 ")]
+    labels = (".11d", "pot", "FK", "ID", "B1", "B2", "B3", "FS")
+    assert len(good) == 8 and {l.split()[1] for l in good} == set(labels), "rows of the full case: %s" % good
+    exact = worst(lines, "q_sharp_full_free_m1", labels)
+    assert exact <= 1e-4, "errors of the exact full fixture: %s" % good
+    assert worst(lines, "q_sharp_full_free_bad_m1", ("FS", ".11d")) > 1.0, "wrong FS_inner not seen"
+    body = [l for l in lines if l.startswith("q_sharp_free_src_m1 ")]
+    assert len(body) == 7 and "FS" not in {l.split()[1] for l in body}, "body case: %s" % body
+    assert worst(lines, "q_sharp_free_src_m1", labels) <= 1e-4, "body case errors: %s" % body
+    assert any("no FS reference" in l and l.startswith("q_sharp_full_free_m1 ") for l in note), "no note without FS columns"
+    return "exact full fixture max %.1e %%, wrong FS_inner seen, body case without FS row, note without FS reference" % exact
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     if argv is None and sys.argv[1:2] == ["check"]:
         print("compare_potential    %s" % check_compare_potential())
+        print("fs_columns           %s" % check_fs_columns())
         print("against_nemoh        %s" % check_against_nemoh())
         print("against_wamit        %s" % check_against_wamit())
         return 0

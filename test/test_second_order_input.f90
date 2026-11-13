@@ -2,7 +2,7 @@
 module test_second_order_input
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use IO, only : CreateDirectory
-  use SecondOrderTypes, only : so_options, QTF_TERMS_QUADRATIC, QTF_TERMS_BODY, QTF_B2_BODY, QTF_B2_CONTROL
+  use SecondOrderTypes, only : so_options, QTF_TERMS_QUADRATIC, QTF_TERMS_BODY, QTF_TERMS_FULL, QTF_B2_BODY, QTF_B2_CONTROL
   use SecondOrderInput, only : read_second_order_options, validate_second_order
   implicit none
   private
@@ -32,6 +32,11 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("control_rejections", test_control_rejections), &
     new_unittest("qtf_keys", test_qtf_keys), &
     new_unittest("qtf_terms_body", test_qtf_terms_body), &
+    new_unittest("qtf_terms_full_accepted", test_qtf_terms_full_accepted), &
+    new_unittest("qtf_full_deep_water_stops", test_qtf_full_deep_water_stops), &
+    new_unittest("qtf_full_sum_only_stops", test_qtf_full_sum_only_stops), &
+    new_unittest("qtf_fs_keys_ranges", test_qtf_fs_keys_ranges), &
+    new_unittest("qtf_fs_keys_ignored_note", test_qtf_fs_keys_ignored_note), &
     new_unittest("qtf_b2_key", test_qtf_b2_key), &
     new_unittest("qtf_edge_keys", test_qtf_edge_keys), &
     new_unittest("qtf_field_key", test_qtf_field_key) &
@@ -452,9 +457,6 @@ subroutine test_qtf_keys(error)
   call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 4"], &
                            "qtf must be 0, 1, 2 or 3 in SecondOrder.in.")
   if (allocated(error)) return
-  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = full"], &
-                           "qtf_terms = full is not implemented (Phase 6); use quadratic or body.")
-  if (allocated(error)) return
   call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_max_dw = -1"], &
                            "qtf_max_dw must not be negative in SecondOrder.in.")
   if (allocated(error)) return
@@ -537,12 +539,136 @@ subroutine test_qtf_terms_body(error)
                                          "qtf_terms = body"], &
                            "qtf_terms = body needs the difference QTF (qtf = 1 or 3); sum-frequency body forcing needs "// &
                            "the free-surface integrals (Phase 6).")
-  if (allocated(error)) return
-  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 3", &
-                                         "qtf_terms = full"], &
-                           "qtf_terms = full is not implemented (Phase 6); use quadratic or body.")
   call remove_directory(root)
 end subroutine test_qtf_terms_body
+
+!> qtf_terms = full is read with qtf = 1 and 3 and validated in finite depth; the free-surface keys keep their defaults
+subroutine test_qtf_terms_full_accepted(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_full"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+  integer :: q
+
+  call remove_directory(root)
+  call make_directory(root)
+  do q = 1, 3, 2
+    write (msg, '(a,I0)') "qtf = ", q
+    call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", trim(msg), &
+                            "qtf_terms = full"])
+    call read_second_order_options(root, opts, ok, msg)
+    call check(error, ok, "qtf_terms = full rejected: "//trim(msg))
+    if (allocated(error)) return
+    call check(error, opts%qtf_terms, QTF_TERMS_FULL, "qtf_terms = full")
+    if (allocated(error)) return
+    call check(error, opts%qtf_fs_radius == 0d0 .and. opts%qtf_fs_rows == 0 .and. opts%qtf_fs_modes == 0 .and. &
+               opts%qtf_fs_evanescent == 0 .and. opts%qtf_fs_panel == 0d0 .and. .not. opts%qtf_fs_given, "free-surface key defaults")
+    if (allocated(error)) return
+    call validate_second_order(opts, 1, 100d0, 1, 0, .false., ok, msg)
+    call check(error, ok, "qtf_terms = full not validated: "//trim(msg))
+    if (allocated(error)) return
+  end do
+  call remove_directory(root)
+end subroutine test_qtf_terms_full_accepted
+
+!> qtf_terms = full with H < 0 stops in the validation, with the message of the plan
+subroutine test_qtf_full_deep_water_stops(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_full_deep"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=300) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 1", "qtf_terms = full"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call validate_second_order(opts, 1, -1d0, 1, 0, .false., ok, msg)
+  call check(error, .not. ok, "deep water accepted with qtf_terms = full")
+  if (allocated(error)) return
+  call check(error, trim(msg) == "qtf_terms = full needs a finite water depth (the outer free-surface integral uses the "// &
+             "finite-depth modes); set a large finite depth instead.", "message: "//trim(msg))
+  call remove_directory(root)
+end subroutine test_qtf_full_deep_water_stops
+
+!> qtf_terms = full with the sum frequency only stops at reading
+subroutine test_qtf_full_sum_only_stops(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_full_sum"
+
+  call remove_directory(root)
+  call make_directory(root)
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 2", &
+                                         "qtf_terms = full"], &
+                           "qtf_terms = full needs the difference QTF (qtf = 1 or 3); the sum frequency is Phase 6b.")
+  call remove_directory(root)
+end subroutine test_qtf_full_sum_only_stops
+
+!> The free-surface keys are read with their values and marked as given; negative values stop
+subroutine test_qtf_fs_keys_ranges(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_fs"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+  character(len=40), parameter :: base(3) = [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = full"]
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: base, "qtf_fs_radius = 12.5", "qtf_fs_rows = 20", "qtf_fs_modes = 16", &
+                          "qtf_fs_evanescent = 4", "qtf_fs_panel = 1.5"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "keys rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_fs_radius == 12.5d0 .and. opts%qtf_fs_rows == 20 .and. opts%qtf_fs_modes == 16 .and. &
+             opts%qtf_fs_evanescent == 4 .and. opts%qtf_fs_panel == 1.5d0 .and. opts%qtf_fs_given, "key values")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: base, "qtf_fs_radius = -1"], &
+                           "qtf_fs_radius must not be negative in SecondOrder.in.")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: base, "qtf_fs_rows = -1"], &
+                           "qtf_fs_rows must not be negative in SecondOrder.in.")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: base, "qtf_fs_panel = -0.5"], &
+                           "qtf_fs_panel must not be negative in SecondOrder.in.")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: base, "qtf_fs_modes = -2"], &
+                           "qtf_fs_modes must not be negative in SecondOrder.in.")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: base, "qtf_fs_evanescent = -1"], &
+                           "qtf_fs_evanescent must not be negative in SecondOrder.in.")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: base, "qtf_fs_modes = many"], &
+                           'Invalid value "many" for key "qtf_fs_modes" in SecondOrder.in.')
+  call remove_directory(root)
+end subroutine test_qtf_fs_keys_ranges
+
+!> The keys are marked as given also without qtf_terms = full (here with body); the driver then notes in the log that they
+!> are ignored, as for qtf_b2. Not given: no note.
+subroutine test_qtf_fs_keys_ignored_note(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_fs_note"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = body", "qtf_fs_modes = 12"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_fs_given .and. opts%qtf_terms == QTF_TERMS_BODY .and. opts%qtf_fs_modes == 12, &
+             "given with body: ignored, marked for the note")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = body"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok .and. .not. opts%qtf_fs_given, "not given: no note")
+  call remove_directory(root)
+end subroutine test_qtf_fs_keys_ignored_note
 
 !> qtf_b2 is control by default, reads body and control, and rejects other values
 subroutine test_qtf_b2_key(error)

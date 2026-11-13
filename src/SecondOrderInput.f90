@@ -115,6 +115,24 @@ CONTAINS
       ELSE IF (opts%qtf_field == 1 .AND. opts%qtf == 0) THEN
          ok = .FALSE.
          msg = 'qtf_field needs qtf = 1, 2 or 3 in SecondOrder.in.'
+      ELSE IF (opts%qtf_fs_radius < 0D0) THEN
+         ok = .FALSE.
+         msg = 'qtf_fs_radius must not be negative in SecondOrder.in.'
+      ELSE IF (opts%qtf_fs_rows < 0) THEN
+         ok = .FALSE.
+         msg = 'qtf_fs_rows must not be negative in SecondOrder.in.'
+      ELSE IF (opts%qtf_fs_panel < 0D0) THEN
+         ok = .FALSE.
+         msg = 'qtf_fs_panel must not be negative in SecondOrder.in.'
+      ELSE IF (opts%qtf_fs_modes < 0) THEN
+         ok = .FALSE.
+         msg = 'qtf_fs_modes must not be negative in SecondOrder.in.'
+      ELSE IF (opts%qtf_fs_evanescent < 0) THEN
+         ok = .FALSE.
+         msg = 'qtf_fs_evanescent must not be negative in SecondOrder.in.'
+      ELSE IF (opts%qtf_terms == QTF_TERMS_FULL .AND. opts%qtf == 2) THEN
+         ok = .FALSE.
+         msg = 'qtf_terms = full needs the difference QTF (qtf = 1 or 3); the sum frequency is Phase 6b.'
       ELSE IF (opts%qtf_terms == QTF_TERMS_BODY .AND. opts%qtf == 2) THEN
          ok = .FALSE.
          msg = 'qtf_terms = body needs the difference QTF (qtf = 1 or 3); sum-frequency body forcing needs the free-surface'// &
@@ -199,14 +217,28 @@ CONTAINS
          ELSE IF (value == 'body') THEN
             opts%qtf_terms = QTF_TERMS_BODY
          ELSE IF (value == 'full') THEN
-            ok = .FALSE.
-            msg = 'qtf_terms = full is not implemented (Phase 6); use quadratic or body.'
-            RETURN
+            opts%qtf_terms = QTF_TERMS_FULL
          ELSE
             ios = 1
          END IF
+      CASE ('qtf_fs_radius')
+         ! The four qtf_fs_* keys are read always, used with qtf_terms = full only
+         READ(value, *, IOSTAT=ios) opts%qtf_fs_radius
+         opts%qtf_fs_given = .TRUE.
+      CASE ('qtf_fs_rows')
+         READ(value, *, IOSTAT=ios) opts%qtf_fs_rows
+         opts%qtf_fs_given = .TRUE.
+      CASE ('qtf_fs_panel')
+         READ(value, *, IOSTAT=ios) opts%qtf_fs_panel
+         opts%qtf_fs_given = .TRUE.
+      CASE ('qtf_fs_modes')
+         READ(value, *, IOSTAT=ios) opts%qtf_fs_modes
+         opts%qtf_fs_given = .TRUE.
+      CASE ('qtf_fs_evanescent')
+         READ(value, *, IOSTAT=ios) opts%qtf_fs_evanescent
+         opts%qtf_fs_given = .TRUE.
       CASE ('qtf_b2')
-         ! Read always, used with qtf_terms = body only
+         ! Read always, used with qtf_terms = body or full only
          CALL choose(value, 'body', 'control', opts%qtf_b2, ios)
          opts%qtf_b2_given = .TRUE.
       CASE ('qtf_edge_weights')
@@ -324,6 +356,9 @@ CONTAINS
          msg = 'cs_fd_step must be above 0 and at most 0.5 in SecondOrder.in.'
       ELSE IF (opts%cs_fs_rows < 0) THEN
          msg = 'cs_fs_rows must not be negative in SecondOrder.in.'
+      ELSE IF (opts%qtf_terms == QTF_TERMS_FULL .AND. (opts%qtf == 1 .OR. opts%qtf == 3) .AND. h < 0D0) THEN
+         msg = 'qtf_terms = full needs a finite water depth (the outer free-surface integral uses the finite-depth modes); '// &
+               'set a large finite depth instead.'
       ELSE IF (opts%qtf > 0 .AND. .NOT. opts%do_near) THEN
          msg = 'qtf needs drift_methods to include near.'
       ELSE

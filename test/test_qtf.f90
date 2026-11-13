@@ -4,11 +4,15 @@ module test_qtf
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use Const_mod, only : G_SOLVER => G, RHO_SOLVER => RHO
   use IO, only : CreateDirectory
-  use SecondOrderTypes, only : so_options, panel_mesh, first_order_state, surface_geom, QTF_TERMS_BODY
+  use SecondOrderTypes, only : so_options, panel_mesh, first_order_state, surface_geom, cs_points, QTF_TERMS_BODY, &
+                               QTF_TERMS_FULL, CS_FREE
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use NearFieldDrift, only : near_field_pair, KERNEL_DIFF, KERNEL_SUM
   use QTFDriver, only : qtf_init, qtf_keep, qtf_pair_load, qtf_finish, qtf_kept, qtf_radiation_list, qtf_radiation_omegas, &
-                        qtf_keep_psi, qtf_nonfinite_psi, qtf_nonfinite_pairs, qtf_psi_tolerance, qtf_psi_index
+                        qtf_keep_psi, qtf_nonfinite_psi, qtf_nonfinite_pairs, qtf_psi_tolerance, qtf_psi_index, &
+                        qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active, qtf_stored_mb
+  use QTFFreeSurface, only : fs_point_field
+  use PartialWaves, only : pw_set
   use, intrinsic :: ieee_arithmetic, only : ieee_value, ieee_quiet_nan
   use SecondOrderOutput, only : write_qtf_row
   use second_order_fixtures, only : make_cylinder, maccamy_fuchs_state, maccamy_fuchs_phi
@@ -19,6 +23,9 @@ module test_qtf
 
   real(8), parameter :: radius = 5d0, depth = 10d0, g = 9.81d0, rho = 1025d0
   real(8), parameter :: omegas(3) = [0.8d0, 1.0d0, 1.3d0], betas(2) = [0d0, 30d0]
+  ! The free-surface store of fs_store_order: 5 inner points, partial waves of M = 2 and N_ev = 1 about (1, 2), R = 7
+  integer, parameter :: fs_n = 5, fs_mmax = 2, fs_nev = 1
+  real(8), parameter :: fs_centre(2) = [1d0, 2d0], fs_radius = 7d0
   complex(8), parameter :: ci = (0d0, 1d0)
   character(len=*), parameter :: root = "hams_test_qtf_files"
 
@@ -37,6 +44,7 @@ subroutine collect_qtf(testsuite)
     new_unittest("potential_part_period_grid", test_potential_part_period_grid), &
     new_unittest("psi_store_order", test_psi_store_order), &
     new_unittest("psi_nonfinite_counted", test_psi_nonfinite_counted), &
+    new_unittest("fs_store_order", test_fs_store_order), &
     new_unittest("qtf_files", test_files) &
     ]
 end subroutine collect_qtf
@@ -53,7 +61,7 @@ real(8) function wave_number(omega, h)
 end function wave_number
 
 !> Cylinder with the exact fixed-body fields at each frequency and heading, and made-up motions, kept in the store.
-subroutine fill_store(opts, mesh, geom, states, wls, error, body)
+subroutine fill_store(opts, mesh, geom, states, wls, error, body, fs)
   type(so_options), intent(in) :: opts
   type(panel_mesh), intent(out) :: mesh
   type(surface_geom), intent(out) :: geom
@@ -61,6 +69,8 @@ subroutine fill_store(opts, mesh, geom, states, wls, error, body)
   complex(8), allocatable, intent(out) :: wls(:,:,:)
   type(error_type), allocatable, intent(out) :: error
   logical, intent(in), optional :: body   ! qtf_terms = body: the store also takes psi at the differences of omegas
+  ! qtf_terms = full: the store also takes the free-surface fields at these points (fs_code, pw_code), with body
+  type(cs_points), intent(in), optional :: fs
   logical :: ok
   character(len=:), allocatable :: msg
   real(8) :: k, b
@@ -74,7 +84,10 @@ subroutine fill_store(opts, mesh, geom, states, wls, error, body)
   call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
   call check(error, ok, "build_surface_geom stopped: "//msg)
   if (allocated(error)) return
-  if (present(body)) then
+  if (present(fs)) then
+    call qtf_init(opts, size(omegas), betas, geom%nwl, mesh%n, mesh%nbody, root, omegas_main=omegas, fs_pts=fs, &
+                  fs_centre=fs_centre, fs_radius=fs_radius, fs_depth=depth, fs_mmax=fs_mmax, fs_nev=fs_nev)
+  else if (present(body)) then
     call qtf_init(opts, size(omegas), betas, geom%nwl, mesh%n, mesh%nbody, root, omegas_main=omegas)
   else
     call qtf_init(opts, size(omegas), betas, geom%nwl, mesh%n, mesh%nbody, root)
@@ -91,6 +104,7 @@ subroutine fill_store(opts, mesh, geom, states, wls, error, body)
         wls(j, i, ib) = maccamy_fuchs_phi(geom%wl_xm(:, j), radius, depth, k, omegas(i), 1d0, b, g)
       end do
       call qtf_keep(ib, states(i, ib), wls(:, i, ib), omegas(i))
+      if (present(fs)) call qtf_keep_fs_state(ib, fs_codes(fs%n, i, ib), pw_code(i, ib))
     end do
   end do
   call check(error, qtf_kept(), size(omegas), "frequencies kept")
@@ -408,6 +422,208 @@ subroutine test_psi_nonfinite_counted(error)
   call check(error, qtf_nonfinite_psi(), 1, "the psi count is kept after qtf_finish")
   call remove_files()
 end subroutine test_psi_nonfinite_counted
+
+!> The fields kept for inner point p of frequency i and heading ib: distinct values per point, frequency and heading.
+function fs_codes(n, i, ib) result(f)
+  integer, intent(in) :: n, i, ib
+  type(fs_point_field) :: f(n)
+  integer :: p, c
+  do p = 1, n
+    f(p)%phi = cmplx(100 * i + 10 * ib + p, -p, 8)
+    do c = 1, 3
+      f(p)%grad(c) = cmplx(1000 * c + 100 * i + 10 * ib + p, 0.5d0 * c, 8)
+    end do
+    f(p)%phizz = cmplx(-(100 * i + 10 * ib + p), 7d0 * i, 8)
+  end do
+end function fs_codes
+
+!> The partial waves kept for frequency i and heading ib (code = 10 i + ib), or for psi_k at a difference frequency
+!> (code = 1000 m + k): the sizes of the store, distinct coefficients.
+function pw_code(i, ib) result(pw)
+  integer, intent(in) :: i, ib
+  type(pw_set) :: pw
+  integer :: m, n
+  pw%mmax = fs_mmax
+  pw%nev = fs_nev
+  ! k0 and kev are those that qtf_finish needs for the free-surface integral (Task 8): the wave number of the state for
+  ! a state (i <= size(omegas)), and the same k0 and kev for every mode of a psi (i > 100), so that the outer integral
+  ! accepts the sets; the amplitudes tell the frequencies, headings and modes apart
+  if (i <= size(omegas)) then
+    pw%k0 = wave_number(omegas(i), depth)
+  else
+    pw%k0 = 0.001d0 * i
+  end if
+  pw%h = depth
+  pw%radius = fs_radius
+  pw%centre = fs_centre
+  allocate (pw%kev(fs_nev), pw%a(-fs_mmax:fs_mmax, 0:fs_nev))
+  pw%kev = 0.3d0 + 0.001d0 * i
+  do n = 0, fs_nev
+    do m = -fs_mmax, fs_mmax
+      pw%a(m, n) = cmplx(10 * i + ib + 0.1d0 * m, n - 0.01d0 * m, 8)
+    end do
+  end do
+end function pw_code
+
+!> True if two pw_sets hold the same modes, to the bit.
+logical function same_pw(a, b)
+  type(pw_set), intent(in) :: a, b
+  same_pw = .false.
+  if (.not. (allocated(a%a) .and. allocated(b%a) .and. allocated(a%kev) .and. allocated(b%kev))) return
+  if (a%mmax /= b%mmax .or. a%nev /= b%nev .or. a%k0 /= b%k0 .or. a%h /= b%h .or. a%radius /= b%radius) return
+  if (any(a%centre /= b%centre) .or. any(a%kev /= b%kev)) return
+  if (any(shape(a%a) /= shape(b%a))) return
+  same_pw = all(a%a == b%a)
+end function same_pw
+
+!> qtf_terms = full: the free-surface store keeps the fields at the inner points (5 complex values each) and the partial
+!> waves of every kept frequency and heading, and psi_k at the inner points with the partial waves of each psi_k at every
+!> difference frequency, and gives them back by frequency, heading and Omega, as qtf_store_matches_kernel for the states.
+!> An Omega that is not a difference frequency is refused, and so are partial waves on another circle or depth. The size formula of qtf_stored_mb: 16 bytes x (5 n_fs + n_pw)
+!> per frequency and heading, plus 16 x 6 nbody x (n_fs + n_pw) per Omega, n_pw = (2M + 1)(N_ev + 1). With
+!> qtf_terms = body the store has no free-surface part.
+subroutine test_fs_store_order(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(so_options) :: opts
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: states(size(omegas), size(betas))
+  complex(8), allocatable :: wls(:,:,:), psi(:,:), psi_pts(:,:), psi_back(:,:)
+  type(cs_points) :: fs
+  type(fs_point_field), allocatable :: f_back(:), f_ref(:)
+  type(pw_set) :: pw_back
+  type(pw_set), allocatable :: pw_psi(:), pw_psi_back(:)
+  real(8), allocatable :: w(:)
+  real(8) :: mb0, mb1, expected
+  logical :: ok, same
+  integer :: i, ib, m, k, p, npw
+
+  fs%n = fs_n
+  allocate (fs%x(3, fs_n), fs%nrm(3, fs_n), fs%w(fs_n), fs%psize(fs_n), fs%kind(fs_n), fs%body(fs_n))
+  do p = 1, fs_n
+    fs%x(:, p) = [6d0 + p, 0.5d0 * p, 0d0]
+  end do
+  fs%nrm = 0d0
+  fs%nrm(3, :) = -1d0
+  fs%w = 1d0
+  fs%psize = 1d0
+  fs%kind = CS_FREE
+  fs%body = 0
+
+  ! The size formula
+  npw = (2 * fs_mmax + 1) * (fs_nev + 1)
+  mb0 = qtf_stored_mb(10, 4, 1, 3, 2, npsi=3, npairs=4)
+  mb1 = qtf_stored_mb(10, 4, 1, 3, 2, npsi=3, npairs=4, nfs=fs_n, npw=npw)
+  expected = 16d0 * (5 * fs_n + npw) * 3 * 2 / 1d6 + 16d0 * 6 * (fs_n + npw) * 3 / 1d6
+  call check(error, abs((mb1 - mb0) - expected) <= 1d-12 * expected, "free-surface share of qtf_stored_mb")
+  if (allocated(error)) return
+
+  ! qtf_terms = body: no free-surface store
+  opts%mean_drift = 2; opts%qtf = 1; opts%qtf_terms = QTF_TERMS_BODY; opts%write_terms = 0
+  call fill_store(opts, mesh, geom, states, wls, error, body=.true.)
+  if (allocated(error)) return
+  call check(error, .not. qtf_fs_active(), "qtf_terms = body has a free-surface store")
+  if (allocated(error)) return
+  call keep_all_psi()
+  call qtf_finish(mesh, geom, 1d0)
+
+  opts%qtf_terms = QTF_TERMS_FULL
+  call fill_store(opts, mesh, geom, states, wls, error, body=.true., fs=fs)
+  if (allocated(error)) return
+  call check(error, qtf_fs_active(), "qtf_terms = full has no free-surface store")
+  if (allocated(error)) return
+  ! The fields by frequency and heading
+  same = .true.
+  do i = 1, size(omegas)
+    do ib = 1, size(betas)
+      call qtf_fs_state(i, ib, f_back, pw_back)
+      f_ref = fs_codes(fs_n, i, ib)
+      if (size(f_back) /= fs_n) then
+        same = .false.
+        cycle
+      end if
+      do p = 1, fs_n
+        if (f_back(p)%phi /= f_ref(p)%phi .or. any(f_back(p)%grad /= f_ref(p)%grad) .or. &
+            f_back(p)%phizz /= f_ref(p)%phizz) same = .false.
+      end do
+      if (.not. same_pw(pw_back, pw_code(i, ib))) same = .false.
+    end do
+  end do
+  call check(error, same, "the free-surface fields do not come back by frequency and heading")
+  if (allocated(error)) return
+
+  ! psi_k at the difference frequencies, and a frequency that is not one
+  w = qtf_radiation_omegas()
+  allocate (psi_pts(fs_n, 6), pw_psi(6))
+  call qtf_keep_fs_psi(0.33d0, psi_pts, pw_psi, ok)
+  call check(error, .not. ok, "psi at an omega that is not a difference frequency was kept")
+  if (allocated(error)) return
+  ! Partial waves on another circle or depth than the store's (review M3)
+  do k = 1, 6
+    pw_psi(k) = pw_code(100, k)
+  end do
+  pw_psi(3)%radius = fs_radius * (1d0 + 1d-9)
+  call qtf_keep_fs_psi(w(1), psi_pts, pw_psi, ok)
+  call check(error, .not. ok, "psi with partial waves on another radius was kept")
+  if (allocated(error)) return
+  pw_psi(3) = pw_code(100, 3)
+  pw_psi(4)%centre(2) = fs_centre(2) + 1d-6
+  call qtf_keep_fs_psi(w(1), psi_pts, pw_psi, ok)
+  call check(error, .not. ok, "psi with partial waves about another centre was kept")
+  if (allocated(error)) return
+  pw_psi(4) = pw_code(100, 4)
+  pw_psi(5)%h = depth + 1d-3
+  call qtf_keep_fs_psi(w(1), psi_pts, pw_psi, ok)
+  call check(error, .not. ok, "psi with partial waves of another depth was kept")
+  if (allocated(error)) return
+  do m = 1, size(w)
+    do k = 1, 6
+      do p = 1, fs_n
+        psi_pts(p, k) = cmplx(m, 10 * k + p, 8)
+      end do
+      pw_psi(k) = pw_code(100 + m, k)
+    end do
+    call qtf_keep_fs_psi(w(m), psi_pts, pw_psi, ok)
+    call check(error, ok, "psi at a difference frequency was not kept")
+    if (allocated(error)) return
+  end do
+  do m = size(w), 1, -1
+    call qtf_fs_psi(w(m), psi_back, pw_psi_back, ok)
+    call check(error, ok, "psi at a difference frequency does not come back")
+    if (allocated(error)) return
+    same = size(psi_back, 1) == fs_n .and. size(psi_back, 2) == 6 .and. size(pw_psi_back) == 6
+    if (same) then
+      do k = 1, 6
+        do p = 1, fs_n
+          if (psi_back(p, k) /= cmplx(m, 10 * k + p, 8)) same = .false.
+        end do
+        if (.not. same_pw(pw_psi_back(k), pw_code(100 + m, k))) same = .false.
+      end do
+    end if
+    call check(error, same, "psi at the inner points or its partial waves do not come back by Omega")
+    if (allocated(error)) return
+  end do
+  call keep_all_psi()
+  call qtf_finish(mesh, geom, 1d0)
+  call check(error, .not. qtf_fs_active(), "qtf_finish does not free the free-surface store")
+  call remove_files()
+
+contains
+
+  subroutine keep_all_psi()
+    ! psi on the hull at every difference frequency, so that qtf_finish can form the potential part
+    real(8), allocatable :: wd(:)
+    integer :: md
+    wd = qtf_radiation_omegas()
+    allocate (psi(mesh%n, 6))
+    psi = (0.4d0, -0.1d0)
+    do md = 1, size(wd)
+      call qtf_keep_psi(wd(md), psi)
+    end do
+    deallocate (psi)
+  end subroutine keep_all_psi
+
+end subroutine test_fs_store_order
 
 !> Rows of both files: the full square of frequency pairs, heading pairs for mean_drift = 2, and qtf_max_dw on .10d only.
 subroutine test_files(error)

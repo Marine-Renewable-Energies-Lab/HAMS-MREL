@@ -52,7 +52,7 @@ MODULE WaterlineField
 
 CONTAINS
 
-   SUBROUTINE field_influence_row(mesh, xp, is_multi, row_g, row_dg, x_decide, field_mode)
+   SUBROUTINE field_influence_row(mesh, xp, is_multi, row_g, row_dg, x_decide, field_mode, near_panel)
       ! G and dG/dn at xp, integrated over each base panel for each image. The panels stay in place and xp is mirrored, as in
       ! CalPotential. is_multi selects the panel integrals that read the combined multi-body arrays.
       ! A panel within 50 panel sizes of the point gets panel integrals of 1/r and of its image, and one further away the
@@ -62,14 +62,18 @@ CONTAINS
       ! FINGREEN3D picks at the centre (RR_DECIDE): the series do not agree exactly at the switches (FINGREEN3D_R).
       ! field_mode, if present and true, passes FIELD to FINGREEN3D: its Limes returns isolated outliers, which a difference
       ! takes over 2 delta. Only fields_green passes it, so the waterline rows (waterline_rows) keep the default route.
+      ! near_panel, if present and false, gives every panel its centroid value, near or not: the row is then a pure sum of
+      ! Green functions at the centroids, so a field made from it is a sum of the free-surface modes outside the hull. The
+      ! panel integrals of 1/r and of its image near the point satisfy phi_z = 0 on z = 0, not the free-surface condition,
+      ! so they are not (PartialWaves; the circle samples of the QTF free-surface integral, QTFFreeSurface).
       !   row_g, row_dg   (nbase, nsys)
       TYPE(panel_mesh), INTENT(IN) :: mesh
       REAL(8), INTENT(IN) :: xp(3)
       LOGICAL, INTENT(IN) :: is_multi
       COMPLEX(8), INTENT(OUT) :: row_g(:, :), row_dg(:, :)
       REAL(8), INTENT(IN), OPTIONAL :: x_decide(3)
-      LOGICAL, INTENT(IN), OPTIONAL :: field_mode
-      REAL(8) :: xq(3), xf(3), xd(3), xdi(3), nrm(3), area, rkn(4), rr_decide
+      LOGICAL, INTENT(IN), OPTIONAL :: field_mode, near_panel
+      REAL(8) :: xq(3), xf(3), xd(3), xdi(3), nrm(3), area, rkn(4), rr_decide, near_sizes
       COMPLEX(8) :: grn(4)
       INTEGER :: jel, is, flag
       LOGICAL :: field
@@ -78,6 +82,11 @@ CONTAINS
       IF (PRESENT(x_decide)) xd = x_decide
       field = .FALSE.
       IF (PRESENT(field_mode)) field = field_mode
+      ! A panel within near_sizes of its size from the point takes the panel integrals; -1 for none
+      near_sizes = 50D0
+      IF (PRESENT(near_panel)) THEN
+         IF (.NOT. near_panel) near_sizes = -1D0
+      END IF
 
       !$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(jel, is, flag, xq, xf, xdi, nrm, area, rkn, grn, rr_decide) &
       !$OMP SCHEDULE(DYNAMIC, 16)
@@ -88,7 +97,7 @@ CONTAINS
          DO is = 1, mesh%nsys
             xf = image_signs(is, ISX, ISY)*xp
             xdi = image_signs(is, ISX, ISY)*xd
-            flag = MERGE(1, 0, NORM2(xdi - xq) <= 50D0*mesh%psize(jel))
+            flag = MERGE(1, 0, NORM2(xdi - xq) <= near_sizes*mesh%psize(jel))
 
             IF (H < 0D0) THEN
                CALL INFGREEN3D(xq(1), xf(1), xq(2), xf(2), xq(3), xf(3), V, grn, flag)

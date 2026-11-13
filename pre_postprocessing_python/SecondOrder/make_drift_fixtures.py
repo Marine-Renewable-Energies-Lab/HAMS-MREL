@@ -81,6 +81,21 @@ QTF_CONVERGENCE_MESHES = (dict(ntheta=16, nz=4, narc=2, nr=2), dict(ntheta=24, n
                           dict(ntheta=32, nz=8, narc=4, nr=4))
 QTF_CONVERGENCE_POINTS = ((15.0, 0.0, 0.0), (0.0, 15.0, 0.0), (-25.0, 0.0, 0.0), (15.0, 0.0, -3.0), (0.0, -25.0, -5.0))
 QTF_CONVERGENCE_FREQUENCIES = (0.8, 1.0)
+# The free-surface integral of the QTF potential part (qtf_terms = full): the small rounded hull of qtf_two_round_body in
+# 20 m of water (N_ev and the circle samples stay few), the circle at R = 10 m (r_wl = 5 m), Omega = 0.2 rad/s. The main
+# grid with 0.2 rad/s added takes psi of that Omega from the main grid (qtf_max_dw 0.2 keeps the pair (0.8, 1.0) only).
+# Two of the hulls at y = +-10 m inside a circle of 25 m, with FSInnerMesh.pnl (two_body_free_surface), at heading 0:
+# the layout is its own mirror image about y = 0
+QTF_FS_FREQUENCIES = (0.8, 1.0)
+QTF_FS_MAIN_FREQUENCIES = (0.2, 0.8, 1.0)
+QTF_FS_DEPTH = 20.0
+QTF_FS_RADIUS = 10.0
+QTF_FS_TWO_OFFSET = 10.0
+QTF_FS_TWO_RADIUS = 25.0
+QTF_FS_TWO_SPACING = 4.0   # point spacing of FSInnerMesh.pnl away from the waterlines, about lambda/15 at 1.0 rad/s
+# IRSP = 1 against IRSP = 0 on a finer mesh of the same hull (960 panels): the lid changes the first-order solution at the
+# discretisation level, and the free-surface terms with it (measured 3.0e-3 at 220 panels, 9.6e-4 at 512, 6.3e-4 at 960)
+QTF_FS_IRSP_MESH = dict(TWO_ROUND_MESH, ntheta=48, nz=10, narc=5, nr=5)
 
 
 def real12(value):
@@ -408,6 +423,7 @@ def main():
                        write_terms=0, velocity_method="source", qtf=3, qtf_b2="body")
     write_qtf_body_fixtures(data, both)
     write_qtf_field_fixtures(data, both)
+    write_qtf_fs_fixtures(data, both)
 
     # The control-surface method on the hull of drift_cyl: held fixed, and with the limit frequencies and all heading pairs
     for name, control, options in (("control_cyl", dict(), dict(mean_drift=1, drift_methods="far control", write_terms=1,
@@ -571,6 +587,147 @@ def write_qtf_field_fixtures(data, both):
     write_control(os.path.join(target, "ControlFile.in"), depth=QTF_TINY_DEPTH, frequencies=(QTF_TINY_FREQUENCY,),
                   headings=(0.0,), field_points=QTF_TINY_POINTS)
     write_second_order(os.path.join(target, "SecondOrder.in"), **dict(field, mean_drift=1))
+
+
+def write_qtf_fs_fixtures(data, both):
+    """Fixtures of the free-surface integral (qtf_terms = full): the small rounded hull with the generated inner mesh, its
+    qtf_terms = body twin, its half mesh, the main grid with Omega = 0.2 rad/s on it, IRSP = 1 and its IRSP = 0 reference
+    on a finer mesh of the hull, and two hulls with FSInnerMesh.pnl. Velocity by differencing in all (the source solve
+    does not take IRSP = 1). On CONTROL_THREADS threads."""
+    full = dict(mean_drift=1, drift_methods=both, motion_state="free", write_terms=1, qtf_terms="full", qtf=1,
+                qtf_b2="body", qtf_edge_weights="off", qtf_fs_radius=QTF_FS_RADIUS)
+    for name, irsp, half, frequencies, options, hull in (
+            ("qtf_fs_round", 0, False, QTF_FS_FREQUENCIES, {}, TWO_ROUND_MESH),
+            ("qtf_fs_body", 0, False, QTF_FS_FREQUENCIES, dict(qtf_terms="body"), TWO_ROUND_MESH),
+            ("qtf_fs_half", 0, True, QTF_FS_FREQUENCIES, {}, TWO_ROUND_MESH),
+            ("qtf_fs_main", 0, False, QTF_FS_MAIN_FREQUENCIES, dict(qtf_max_dw=0.2), TWO_ROUND_MESH),
+            ("qtf_fs_irsp_ref", 0, False, QTF_FS_FREQUENCIES, {}, QTF_FS_IRSP_MESH),
+            ("qtf_fs_irsp", 1, False, QTF_FS_FREQUENCIES, {}, QTF_FS_IRSP_MESH)):
+        target = case_dir(data, name)
+        make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
+                                         half_y=half, **hull)
+        if irsp == 1:
+            make_mesh.write_waterplane(os.path.join(target, "WaterPlaneMesh.pnl"), hull["radius"], hull["ntheta"],
+                                       hull["nr"])
+        write_control(os.path.join(target, "ControlFile.in"), depth=QTF_FS_DEPTH, frequencies=frequencies,
+                      headings=DRIFT_CYL_HEADINGS, irsp=irsp, threads=CONTROL_THREADS)
+        write_second_order(os.path.join(target, "SecondOrder.in"), **dict(full, **options))
+    target = case_dir(data, "qtf_fs_two")
+    for b in (1, 2):
+        make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh_%d.pnl" % b),
+                                         os.path.join(target, "Hydrostatic_%d.in" % b), **TWO_ROUND_MESH)
+    free = two_body_free_surface(QTF_FS_TWO_OFFSET, TWO_ROUND_MESH["radius"], TWO_ROUND_MESH["ntheta"], QTF_FS_TWO_RADIUS,
+                                 QTF_FS_TWO_SPACING)
+    make_mesh.write_mesh(os.path.join(target, "FSInnerMesh.pnl"), free, title="Free Surface Mesh File")
+    write_control(os.path.join(target, "ControlFile.in"), depth=QTF_FS_DEPTH, frequencies=QTF_FS_FREQUENCIES,
+                  headings=(0.0,), body_origins=[(0.0, QTF_FS_TWO_OFFSET), (0.0, -QTF_FS_TWO_OFFSET)],
+                  threads=CONTROL_THREADS)
+    write_second_order(os.path.join(target, "SecondOrder.in"), **dict(full, qtf_fs_radius=QTF_FS_TWO_RADIUS))
+
+
+def two_body_free_surface(offset, wl_radius, ntheta, radius, spacing):
+    """FSInnerMesh.pnl of two hulls with the waterline polygons of make_mesh.revolved (ntheta nodes at wl_radius) about
+    (0, +-offset): the plane z = 0 between the waterlines and the polygon of the circle of the given radius about the origin,
+    as triangles with HAMS normals -z, mirror symmetric about y = 0 by construction. The half y >= 0 is a Delaunay
+    triangulation (make_mesh._Triangulation) of: the waterline nodes of the upper hull, the nodes of the upper half of the
+    circle, nodes on y = 0 spaced from the waterline spacing up to spacing, rings around the waterline (spacing growing by
+    make_mesh.FS_GROWTH, as make_mesh.oc4_free_surface) and in from the circle, and a hexagonal lattice of the given
+    spacing elsewhere; the hull centre is added and its triangles removed, so that the waterplane stays a hole. The nodes
+    on y = 0 go in last, in ascending x, so that no three of them form a triangle. Then the half is mirrored. Checked: the
+    triangles tile the half exactly (area) and its boundary is the waterline, the arc and y = 0."""
+    a0 = 2.0 * math.pi * wl_radius / ntheta
+    c_count = 2 * max(8, int(math.ceil(math.pi * radius / spacing)))
+    wl = [(wl_radius * math.cos(2.0 * math.pi * j / ntheta), offset + wl_radius * math.sin(2.0 * math.pi * j / ntheta))
+          for j in range(ntheta)]
+    arc = [(radius * math.cos(2.0 * math.pi * k / c_count), radius * math.sin(2.0 * math.pi * k / c_count))
+           for k in range(1, c_count // 2)]
+    xs = [0.0]
+    step = a0
+    while xs[-1] + step <= radius - 0.5 * step:
+        xs.append(xs[-1] + step)
+        step = min(spacing, step * make_mesh.FS_GROWTH)
+    line = sorted(set([-x for x in xs] + xs))
+    line = [(-radius, 0.0)] + [(x, 0.0) for x in line] + [(radius, 0.0)]
+    centre = (0.0, offset)
+    accepted = []
+
+    def clear(p, sp, own):
+        if math.hypot(p[0], p[1]) > radius - 0.5 * sp or p[1] < 0.5 * sp:
+            return False
+        if math.hypot(p[0] - centre[0], p[1] - centre[1]) < wl_radius + (0.3 if own == 0 else 0.6) * sp:
+            return False
+        return all(math.hypot(p[0] - q[0], p[1] - q[1]) >= 0.7 * sp for q, owner in accepted if owner != own)
+
+    sources = [(centre, wl_radius, a0, 1.0, 0), ((0.0, 0.0), radius, 2.0 * math.pi * radius / c_count, -1.0, -1)]
+    state = [dict(radius=r, spacing=a) for _, r, a, _, _ in sources]
+    level = 0
+    while any(st["spacing"] < spacing for st in state):
+        level += 1
+        candidates = []
+        for (c, _, a, direction, owner), st in zip(sources, state):
+            if st["spacing"] >= spacing:
+                continue
+            sp = min(spacing, a * make_mesh.FS_GROWTH ** level)
+            st["radius"] += direction * 0.5 * math.sqrt(3.0) * 0.5 * (st["spacing"] + sp)
+            st["spacing"] = sp
+            count = max(6, int(round(2.0 * math.pi * st["radius"] / sp)))
+            shift = math.pi / count if level % 2 else 0.0
+            ring = [make_mesh._ring_point(c[0], c[1], st["radius"], count, k, 0.0, shift)[:2] for k in range(count)]
+            candidates += [(p, sp, owner) for p in ring]
+        kept = [(p, owner) for p, sp, owner in candidates if clear(p, sp, owner)
+                and all(math.hypot(p[0] - q[0], p[1] - q[1]) >= 0.7 * sp for q, _, o in candidates if o != owner)]
+        accepted += kept
+    rows = int(radius / (0.5 * math.sqrt(3.0) * spacing)) + 1
+    for row in range(1, rows + 1):
+        y = row * 0.5 * math.sqrt(3.0) * spacing
+        shift = 0.5 * spacing if row % 2 else 0.0
+        for col in range(-rows - 1, rows + 2):
+            p = (col * spacing + shift, y)
+            if clear(p, spacing, None) and all(math.hypot(p[0] - q[0], p[1] - q[1]) >= 0.75 * spacing
+                                                for q, _ in accepted):
+                accepted.append((p, -2))
+    free = [p for p, _ in accepted]
+    jitter = [((math.sin(12.9898 * i + 78.233) * 43758.5453) % 1.0 - 0.5, (math.sin(39.346 * i + 11.135) * 24634.6345) % 1.0
+               - 0.5) for i in range(len(free))]
+    free = [(p[0] + 1e-6 * j[0], p[1] + 1e-6 * j[1]) for p, j in zip(free, jitter)]
+    points = wl + arc + line + [centre] + free
+    n_wl, n_arc, n_line = len(wl), len(arc), len(line)
+    first_line = n_wl + n_arc
+    i_centre = first_line + n_line
+    order = [i_centre] + list(range(i_centre + 1, len(points))) + list(range(first_line)) + \
+        list(range(first_line, first_line + n_line))
+    triangles = [t for t in make_mesh._Triangulation(points, order).triangles if i_centre not in t]
+
+    # Checks of the half: the area, and the boundary edges (used once) are the waterline, the arc and y = 0
+    area = sum(abs(make_mesh._signed_area(*[points[i] for i in t])) for t in triangles)
+    boundary = [line[-1]] + arc + [line[0]] + line[1:-1]
+    region = make_mesh.polygon_moments(boundary)[0] - make_mesh.polygon_moments(wl)[0]
+    if abs(area - region) > 1e-9 * region:
+        raise ValueError("the half of FSInnerMesh.pnl does not tile: %.9f against %.9f m^2" % (area, region))
+    use = {}
+    for t in triangles:
+        for k in range(3):
+            key = (min(t[k], t[(k + 1) % 3]), max(t[k], t[(k + 1) % 3]))
+            use[key] = use.get(key, 0) + 1
+    expected = set()
+    for k in range(n_wl):
+        expected.add((min(k, (k + 1) % n_wl), max(k, (k + 1) % n_wl)))
+    chain = [first_line + n_line - 1] + list(range(n_wl, n_wl + n_arc)) + list(range(first_line, first_line + n_line))
+    for k in range(len(chain) - 1):
+        expected.add((min(chain[k], chain[k + 1]), max(chain[k], chain[k + 1])))
+    found = set(key for key, count in use.items() if count == 1)
+    if found != expected or max(use.values()) > 2:
+        raise ValueError("the boundary of the half of FSInnerMesh.pnl is not the waterline, the arc and y = 0")
+    smallest = min(abs(make_mesh._signed_area(*[points[i] for i in t])) for t in triangles)
+    if smallest < 1e-6 * a0 ** 2:
+        raise ValueError("FSInnerMesh.pnl has a degenerate triangle")
+
+    out = make_mesh.Mesh()
+    for t in triangles:
+        corners = [points[i] + (0.0,) for i in t]
+        make_mesh._add_oriented(out, corners, (0.0, 0.0, -1.0))
+        make_mesh._add_oriented(out, [(x, -y, z) for x, y, z in corners], (0.0, 0.0, -1.0))
+    return out
 
 
 def copy_inputs(data, source, target, files):

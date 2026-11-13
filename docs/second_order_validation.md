@@ -568,6 +568,72 @@ Wall time per run on Snellius, 32 threads, 101 frequencies and 30 radiation-only
 - The product weights make the rule exact for the singular velocity ρ^p at the panel centres. With exact fields at the panel centres they help (prototype on the reference), but HAMS's constant-panel velocities next to the edge do not carry the exact singular value, so the weight over-corrects ([SharpEdge.f90](../src/SharpEdge.f90)).
 - With exact fields at 7 panels per face, the rot piece is within 1.3% to 2.6%; in HAMS at 448 panels it is off by 8% to 22%. That error comes from HAMS's velocity near the sharp edge and falls with the mesh (8.3% → 3.7% and 21.8% → 8.5% from 448 to 1792 panels).
 
+## QTF free-surface integral
+
+The free-surface integral of the second-order potential (`qtf_terms = full`, Phase 6a): the terms FS_inner and FS_outer
+of `QTF_PotentialTerms.txt` and their sum in `QTF_Indirect.11d`, against an exact reference. Runs on Snellius
+(`fat_genoa`, 24 threads, ifx from `intel/2024a`) on 2026-11-12 and 2026-11-13. Outputs and scripts in
+`validation-runs/snellius-qtf-fs` (outside the repository).
+
+**Setup.** The sharp truncated cylinder of the [QTF potential part](#qtf-potential-part), with the same grid (101
+frequencies, 0.40 to 1.40 rad/s, `qtf_max_dw = 0.3`, 2666 difference pairs), fixed and free, meshes m1 to m3, the
+default inner mesh (`q_sharp_full_{fixed,free}_m{1,2,3}`); at m1, free body, four other inner meshes and two radii
+(`q_sharp_full_free_fs{B,C,P20,P30}_m1`, `q_sharp_full_free_R{20,30}_m1`, [Python scripts](python_scripts.md)).
+
+**Reference.** `truncated_cylinder_reference.py qtf-potential --free-surface`: the first-order fields by eigenfunction
+matching, and the free-surface integral in zones: a strip at the waterline with a log basis, polar Gauss to 20 m,
+Jacobi–Anger outside to about 2 km, and rotated complex contours to infinity. Moving its split radius changes the result
+by less than 1e-15. The sign of the term was fixed by solving the second-order problem in the reference (7e-6 with +1,
+1.25 with −1). 30 min on Snellius for both motions.
+
+**Measure.** As for the potential part (`qtf_compare.py --potential`): |HAMS − exact| / max |exact| over the pairs,
+largest and median, in percent; the FS row is measured against the larger of its own maximum and that of the potential
+part with FS. `--exclude 0.75 0.79` leaves out the pairs at the undamped surge–pitch resonance, where the first-order
+motions are off ([The resonance and the motions](#the-resonance-and-the-motions)).
+
+### Hull meshes, default inner mesh
+
+FS_inner + FS_outer, without 0.75–0.79 rad/s, largest / median, percent:
+
+| Hull | Inner points | Free F_x | Free F_z | Free M_y | Fixed F_x | Fixed F_z | Fixed M_y |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| m1 (448 panels) | 186 | 12.0 / 2.0 | 4.3 / 0.5 | 2.4 / 0.4 | 22.5 / 3.6 | 29.4 / 7.8 | 20.2 / 3.2 |
+| m2 (1792) | 276 | 4.5 / 0.8 | 3.2 / 0.9 | 0.9 / 0.2 | 10.5 / 3.1 | 7.6 / 1.5 | 9.0 / 2.6 |
+| m3 (4032) | 360 | 2.2 / 0.4 | 1.3 / 0.4 | 0.4 / 0.1 | 4.0 / 1.2 | 2.9 / 0.6 | 3.5 / 1.0 |
+
+- The term converges with the hull mesh. The free body is within 5% at m2; the whole potential part with FS is within
+  4.4 / 3.7 / 0.9% at m2 and 1.6 / 1.5 / 0.6% at m3.
+- The fixed body converges by a factor 2.1–2.6 per level and is within 5% at m3. Its FS is a smaller share of its
+  potential part, so the same absolute error is a larger percentage; its error grows with ω_i up to 1.1 rad/s.
+- The inner mesh refines with the hull: it takes a column at every hull waterline node (62, 92 and 120 columns).
+
+### Inner mesh and radius at m1
+
+Free body, FS largest error without 0.75–0.79 rad/s, percent:
+
+| Inner mesh | Points | R (m) | F_x | F_z | M_y |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| default: λ/10, 3 rows | 186 | 15.18 | 12.0 | 4.3 | 2.4 |
+| `qtf_fs_rows = 6` (fsB) | 372 | 15.18 | 28.2 | 11.6 | 5.5 |
+| `qtf_fs_rows = 9` (fsC) | 558 | 15.18 | 30.5 | 12.5 | 5.9 |
+| `qtf_fs_panel` ≈ λ/20, 6 rows (fsP20) | 648 | 15.18 | 2.0 | 1.1 | 0.4 |
+| `qtf_fs_panel` ≈ λ/30, 9 rows (fsP30) | 1560 | 15.18 | 9.3 | 6.4 | 1.8 |
+| `qtf_fs_radius = 20` | 480 | 20 | 3.5 | 2.8 | 0.7 |
+| `qtf_fs_radius = 30` | 1248 | 30 | 2.8 | 2.1 | 0.6 |
+
+- A larger circle or smaller panels bring the m1 error to 2–3.5%.
+- But the error is not monotone in the inner mesh: more radial rows alone make it worse, and λ/30 is worse than λ/20.
+  Neither the panel size nor the panel shape explains it. The cause is not found. At m1 the first ring of inner points
+  lies within one hull panel (about 2.6 m) of the hull, where the constant-panel first-order field and the horizontal
+  Laplacian (its stencil shrinks next to the waterline, 50–144 points) are least accurate [inferred].
+- The default was kept (2026-11-13): it meets the 5% target at m2 and improves with the hull mesh.
+
+### Cost
+
+At m1 a full run took 1 h on 24 CPUs: the fields at the 186 inner points 0.22 h (3.9 s per frequency, with 6840 samples
+on the circle), ψ there 0.04 h, the pair loop 0.5 h (0.35 s per pair, serial), peak memory 148 MB. m2 took 2 h 45 min,
+m3 7 h 10 min. The 11 runs of the study cost 673 core-hours.
+
 ## Partial second-order field
 
 `QTF_FieldPartial.txt` (`qtf_field = 1`) holds the quadratic part and the second-order incident wave at the field points. It omits the second-order diffracted wave and, for a free body, the wave radiated by its second-order motion; near the bodies, where the free-surface forcing drives the second-order scattered wave, the omitted part is not small (see [Partial second-order field](input_files.md#partial-second-order-field-at-the-field-points)). There is no reference for the complete field, so the checks below cover the two parts that are computed. The complete field is a later phase. Tests in `test/test_second_order_incident.f90`, `test/test_qtf_field.f90` and `test/test_integration_drift.f90`; fixtures `test/data/qtf_field*`, written by `make_drift_fixtures.py`.
@@ -623,7 +689,7 @@ The largest d12 is 1.427e-3 and the largest d23 8.17e-4, a ratio of 0.573. The p
 - OC4 semisubmersible: HAMS against Nemoh at 1224 and 4608 panels, with no exact reference and without the pontoons and braces. The free M_y difference (4.08% and 4.15%) does not fall with the mesh, and the free F_z difference is still 10.12% at 4608 panels; neither was traced to a cause.
 - OC4 against WAMIT: the pairs with a frequency in 0.25 to 0.35 rad/s differ by over 100% in the largest value at both meshes, and the largest values away from them (15.43 / 8.92 / 4.88% at 1224 panels, 24.11 / 18.13 / 5.51% at 4608) do not fall with the mesh. Whether this is the hull model (pontoons and braces), the restoring and damping, or the resonance was not separated.
 - Nemoh's HASBO: whether it contains a term like B3 was not checked, and the sharp-cylinder Nemoh maps were made with the hull form of B2 only.
-- The free-surface integral of the second-order potential, and the sum-frequency potential part, are not implemented (Phase 6), so `QTF_Indirect.11d` is validated as body forcing only, against a reference that leaves out the same integral.
+- The free-surface integral (`qtf_terms = full`) is validated on one hull, single body, heading 0, finite depth; deep water is not supported. At m1 its error is not monotone in the inner mesh, and the cause is not found ([QTF free-surface integral](#qtf-free-surface-integral)). The sum-frequency potential part is not implemented (Phase 6b).
 - Two unit tests failed under ifx 2024a on Snellius (job of 2026-11-09, the build of the hull-form runs): `control_surface_mesh/separate_bodies_accepted` and `field_velocity/field_green_is_smooth_in_z`, in modules the potential part does not change. Both are fixed on the `second-order-drift` branch by commit 60a972e, which this branch does not contain yet. With ifort 2022.1 on Windows all tests pass ([Developer Documentation](developer_documentation.md#qtf-potential-part)).
 - WAMIT: the OC4 comparison with the public WAMIT run of OpenFAST now exists ([OC4 against WAMIT](#oc4-against-wamit)). A WAMIT licence would still be needed to settle the conjugation and axes of the WAMIT-format output on a hull with a known answer, since the diagonal of that comparison is real. The semi-analytical reference covers the signs of the mean drift values (210 values agree at 7168 panels), not the phases of the complex outputs.
 
