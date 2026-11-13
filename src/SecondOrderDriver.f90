@@ -76,7 +76,8 @@ MODULE SecondOrderDriver
    USE FarFieldDrift, ONLY: far_amplitude, far_field_pair, far_field_pairs
    USE NearFieldDrift, ONLY: waterline_extrapolate, near_field_pair, T_WATERLINE, T_HYDROSTATIC
    USE WaterlineField, ONLY: waterline_rows, waterline_field, field_point_inside_body
-   USE ControlSurfaceMesh, ONLY: build_control_surface, check_control_surface, write_control_surface, build_fs_inner
+   USE ControlSurfaceMesh, ONLY: build_control_surface, check_control_surface, write_control_surface, build_fs_inner, &
+                                 hull_radius
    USE FieldVelocity, ONLY: fields_green, fields_source
    USE ControlSurfaceDrift, ONLY: control_surface_pair, CS_T_LINE, CS_T_PRESSURE, CS_T_HYDROSTATIC
    USE SecondOrderOutput, ONLY: write_drift_row, write_terms_row
@@ -442,7 +443,9 @@ CONTAINS
          WRITE (*, '(a,a)') ' QTF free surface: ', msg
          ERROR STOP 1
       END IF
-      fs_nev = fs_auto_evanescent(opts%qtf_fs_evanescent, H, fs_radius, r_wl)
+      ! The modes must also clear the hull below the waterline (build_fs_inner stops R <= r_hull): the evanescent count
+      ! takes the larger of the two radii
+      fs_nev = fs_auto_evanescent(opts%qtf_fs_evanescent, H, fs_radius, MAX(r_wl, hull_radius(mesh, fs_centre)))
       IF (fs_nev > NK - 1) THEN
          WRITE (*, '(a,I0,a,I0,a)') ' QTF free surface: qtf_fs_evanescent = ', fs_nev, ' is more than the ', NK - 1, &
             ' evanescent wave numbers of the solver (WVN); lower it.'

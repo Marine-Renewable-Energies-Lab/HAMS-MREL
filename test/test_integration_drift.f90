@@ -4659,7 +4659,7 @@ contains
                    "qtf_fs_two: the generated-mesh note with FSInnerMesh.pnl")
     end subroutine qtf_fs_columns
 
-    !> Without qtf_terms = full nothing changes: qtf_fs_body (qtf_terms = body) writes the first-order files, the mean drift
+    !> Without qtf_terms = full the free-surface code adds nothing (on this build): qtf_fs_body (qtf_terms = body) writes the first-order files, the mean drift
     !> and .10d of qtf_fs_round to the bit, its terms file has the 5 terms and the header of Phase 5, the first 5 terms of
     !> qtf_fs_round are its terms exactly, and .11d of qtf_fs_round is its .11d plus FS_inner + FS_outer to the printed
     !> digits. (The Phase 5 fixtures pin the body outputs themselves.)

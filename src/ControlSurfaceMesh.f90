@@ -37,7 +37,7 @@ MODULE ControlSurfaceMesh
    PRIVATE
 
    PUBLIC :: cylinder_surface, box_surface, add_surface_points, build_control_surface, check_control_surface, &
-             write_control_surface, read_control_mesh, free_surface_strips, build_fs_inner
+             write_control_surface, read_control_mesh, free_surface_strips, build_fs_inner, hull_radius
 
    REAL(8), PARAMETER :: PI = 3.141592653589793D0
    REAL(8), PARAMETER :: WL_TOL = 1D-6        ! waterline tolerance for Gamma_c, relative to the size of C
@@ -801,8 +801,10 @@ CONTAINS
       ! omega_max the build stops. The rows are the fewest, at least 2, for which the outer row is not thicker than that
       ! size; a larger qtf_fs_rows is kept. The panel size is qtf_fs_panel if that is above 0 (it must be below R - r_wl, else
       ! the build stops), lambda/10 for 0. It sets the chords of the polygon and the least rows.
-      ! R is qtf_fs_radius, or for 0: r_wl + max(0.5 r_wl, 2 x the largest hull panel size), r_wl the largest distance from
-      ! the centre to a waterline node. R <= r_wl stops: the circle would cut a body.
+      ! R is qtf_fs_radius, or for 0: r_x + max(0.5 r_x, 2 x the largest hull panel size), r_x = max(r_wl, r_hull), r_wl the
+      ! largest distance from the centre to a waterline node and r_hull that to any hull node (hull_radius). R <= r_wl
+      ! stops: the circle would cut a body; so does R <= r_hull, for any mesh: the circle would pass through the submerged
+      ! hull (a hull wider below the waterline), where the partial waves outside R do not hold.
       ! ok = .false. with msg for every stop. np_circle, if present, is the number of chords of the polygon that the
       ! generated mesh ends on (inscribed in the circle, vertices at theta = 2 pi (j - 1) / np about the centre), 0 for a mesh
       ! from the file. n_rows, if present, is the number of radial rows of the generated mesh (0 for a mesh from the file).
@@ -819,7 +821,7 @@ CONTAINS
       INTEGER, INTENT(OUT), OPTIONAL :: np_circle, n_rows
       CHARACTER(LEN=*), PARAMETER :: NAME = 'FSInnerMesh.pnl'
       REAL(8), ALLOCATABLE :: psz(:)
-      REAL(8) :: lo(2), hi(2), rwl, rmin, rgiven, rfile, ps, lam, wvn(1), d, q, frac, dnode, e(2), t
+      REAL(8) :: lo(2), hi(2), rwl, rmin, rgiven, rfile, ps, lam, wvn(1), d, q, frac, dnode, e(2), t, rhull, rx
       INTEGER :: nr0
       INTEGER :: nr, i, m, idx
       LOGICAL :: exists, star_ok
@@ -857,11 +859,17 @@ CONTAINS
          t = MAX(0D0, MIN(1D0, DOT_PRODUCT(centre - geom%wl_x1(1:2, i), e)/MAX(DOT_PRODUCT(e, e), TINY(1D0))))
          rmin = MIN(rmin, NORM2(geom%wl_x1(1:2, i) + t*e - centre))
       END DO
+      rhull = hull_radius(mesh, centre)
+      rx = MAX(rwl, rhull)
       rgiven = opts%qtf_fs_radius
       IF (rgiven > 0D0 .AND. .NOT. rgiven > rwl) THEN
          WRITE (line, '(a,f0.4,a,f0.4,a)') 'qtf_fs_radius = ', rgiven, ' m does not exceed the waterline radius ', rwl, &
             ' m (largest distance from the centre of the waterplanes to a waterline node): the circle would cut a body'
          msg = TRIM(line)
+         RETURN
+      END IF
+      IF (rgiven > 0D0 .AND. .NOT. rgiven > rhull) THEN
+         msg = hull_radius_message('qtf_fs_radius', rgiven, rhull)
          RETURN
       END IF
 
@@ -894,6 +902,10 @@ CONTAINS
                msg = TRIM(line)
                RETURN
             END IF
+            IF (.NOT. radius > rhull) THEN
+               msg = hull_radius_message(NAME//' (its largest node distance)', radius, rhull)
+               RETURN
+            END IF
          END IF
          DO i = 1, fm%n
             IF (ABS(waterline_winding(geom, fm%xc(1:2, i))) > PI) THEN
@@ -923,7 +935,7 @@ CONTAINS
          radius = rgiven
          IF (.NOT. radius > 0D0) THEN
             psz = mesh%psize(1:mesh%n)
-            radius = rwl + MAX(0.5D0*rwl, 2D0*MAXVAL(psz))
+            radius = rx + MAX(0.5D0*rx, 2D0*MAXVAL(psz))
          END IF
          IF (h > 0D0) THEN
             CALL DISPERSION(wvn, 1, omega_max, h)
@@ -982,6 +994,32 @@ CONTAINS
       pts%body = MERGE(0, 1, exists)
       ok = .TRUE.
    END SUBROUTINE build_fs_inner
+
+   REAL(8) FUNCTION hull_radius(mesh, centre)
+      ! The largest horizontal distance from centre(2) to a hull node, of all bodies (symmetry images included, as the
+      ! mesh holds them). For a hull wider below the waterline it exceeds the waterline radius.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      REAL(8), INTENT(IN) :: centre(2)
+      INTEGER :: i
+
+      hull_radius = 0D0
+      DO i = 1, mesh%nnode
+         hull_radius = MAX(hull_radius, HYPOT(mesh%xnode(1, i) - centre(1), mesh%xnode(2, i) - centre(2)))
+      END DO
+   END FUNCTION hull_radius
+
+   FUNCTION hull_radius_message(what, radius, rhull) RESULT(msg)
+      ! The stop message when the circle R lies inside the hull's horizontal extent (R <= r_hull).
+      CHARACTER(LEN=*), INTENT(IN) :: what
+      REAL(8), INTENT(IN) :: radius, rhull
+      CHARACTER(LEN=:), ALLOCATABLE :: msg
+      CHARACTER(LEN=400) :: line
+
+      WRITE (line, '(a,a,f0.4,a,f0.4,a)') what, ' = ', radius, ' m does not exceed the hull radius ', rhull, &
+         ' m (largest horizontal distance from the centre to a hull node): the circle would pass through the submerged'// &
+         ' hull, where the partial waves do not hold; raise qtf_fs_radius'
+      msg = TRIM(line)
+   END FUNCTION hull_radius_message
 
    REAL(8) FUNCTION waterline_winding(geom, p)
       ! Total angle (radians) that the waterline segments of all bodies subtend at the point p in z = 0: 2 pi inside a
