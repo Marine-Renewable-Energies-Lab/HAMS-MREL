@@ -44,6 +44,7 @@ MODULE PartialWaves
 
    PUBLIC :: pw_set, pw_radial, pw_sample_points, pw_decompose, pw_eval_surface, pw_eval_point, pw_radial_at, pw_bessel_k
    PUBLIC :: pw_evanescent_from_wvn, PW_KR_MAX, pw_bessel_k_scaled, pw_bessel_k_scaled_c, pw_hankel_scaled
+   PUBLIC :: pw_green_modes, pw_green_mmax
 
    REAL(8), PARAMETER :: PI = 3.14159265358979323846D0
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
@@ -234,6 +235,9 @@ CONTAINS
          END IF
          s = (0D0, 0D0)
          DO m = -pw%mmax, pw%mmax
+            ! A zero amplitude adds nothing: skipping it keeps out radial functions that overflow at high order (the
+            ! orders that pw_green_modes sets to zero), which would give 0 * Inf = NaN
+            IF (pw%a(m, n) == (0D0, 0D0)) CYCLE
             am = ABS(m)
             IF (n == 0) THEN
                sgn = MERGE(-1D0, 1D0, m < 0 .AND. MODULO(am, 2) == 1)
@@ -277,6 +281,7 @@ CONTAINS
       ! Propagating mode: H_m and H_m' = (H_{m-1} - H_{m+1}) / 2, H_{-1} = -H_1
       dz0 = pw%k0*TANH(pw%k0*pw%h)
       DO m = -pw%mmax, pw%mmax
+         IF (pw%a(m, 0) == (0D0, 0D0)) CYCLE       ! as in pw_eval_point
          am = ABS(m)
          sgn = MERGE(-1D0, 1D0, m < 0 .AND. MODULO(am, 2) == 1)
          CALL hankel_pair(own%hk, am, sgn, pw%k0, rd, drd)
@@ -292,6 +297,7 @@ CONTAINS
       DO n = 1, pw%nev
          dzn = -pw%kev(n)*TAN(pw%kev(n)*pw%h)
          DO m = -pw%mmax, pw%mmax
+            IF (pw%a(m, n) == (0D0, 0D0)) CYCLE    ! as in pw_eval_point
             am = ABS(m)
             CALL bessel_k_pair(own%kv(:, n), am, pw%kev(n), rd, drd)
             e = EXP(CI*(m*th))*pw%a(m, n)
@@ -623,6 +629,165 @@ CONTAINS
       e2 = EXP(2D0*CI*z)
       hs = 2D0*hs/nrm - h1*e2
    END SUBROUTINE hankel2_upper
+
+   SUBROUTINE pw_green_modes(x, centre, radius, h, k0, kev, mmax, nev, pw)
+      ! The partial waves of the finite-depth Green function G(x, xi) of HAMS as a field of xi outside the circle r = radius
+      ! about centre, for a source x inside it (r_x < radius): pw_eval_point(pw, xi) is the full G (1/r and 1/r1 included)
+      ! for r_xi >= radius, -h <= xi_z <= 0 (Phase 7b, the outer contraction of the free-surface forcing).
+      !
+      ! G as FINGREEN3D sums it (EIGEN; John 1950), rho the horizontal distance of x and xi:
+      !   G = i P0 H_0(k0 rho) + sum_n Pn K_0(kn rho),
+      !   P0 = (pi / N0) cosh k0(z_x+h) cosh k0(xi_z+h),   N0 = (h/2) (1 + sinh 2k0h / (2k0h))   (WAVE_DEPTH_FACTORS),
+      !   Pn = 4 / (h (1 + sin 2knh / (2knh))) cos kn(z_x+h) cos kn(xi_z+h).
+      ! The series holds for rho > 0 and contains the Rankine parts 1/r + 1/r1 (EIGEN subtracts them afterwards). On the
+      ! Z(0) = 1 eigenfunctions of pw_set, P0 = c0 Z_0(z_x) Z_0(xi_z) and Pn = cn Z_n(z_x) Z_n(xi_z) with
+      !   c0 = pi cosh^2 k0h / N0 = 2 pi k0 / (k0h sech^2 k0h + tanh k0h),   cn = 4 cos^2 knh / (h + sin 2knh / (2kn)).
+      ! Graf's addition theorem for r_xi > r_x, alpha = theta_xi - theta_x (Abramowitz and Stegun 9.1.79 for H_0; for K_0 the
+      ! same form with I_m, A&S 9.1.80 at nu = 0 with z -> iz, all terms of sign +, as the test green_modes_match_fingreen
+      ! confirms):
+      !   H_0(k rho) = sum_m J_m(k r_x) H_m(k r_xi) e^{i m alpha},   K_0(k rho) = sum_m I_m(k r_x) K_m(k r_xi) e^{i m alpha},
+      ! so a(m, 0) = i c0 Z_0(z_x) J_m(k0 r_x) e^{-i m theta_x},  a(m, n) = cn Z_n(z_x) I_m(kn r_x) e^{-i m theta_x}
+      ! (J_{-m} = (-1)^m J_m, I_{-m} = I_m). I_m is computed as e^{-x} I_m(x) (bessel_i_scaled) and multiplied by e^x, x =
+      ! kn r_x < kn R <= PW_KR_MAX, which does not overflow. The terms decay like (r_x / R)^m (pw_green_mmax).
+      !
+      ! Orders m whose radial function at R, H_{m+1}(k0 R) or K_{m+1}(kn R), exceeds 1e300 (the plain pw_set amplitude
+      ! times it would overflow) are set to exactly zero; pw_eval_point and pw_eval_surface skip zero amplitudes. Their
+      ! terms are of order (r_x / R)^m / m relative to the leading ones: for k0 R = 0.22 (the test case) the cut is near
+      ! m = 118 for H, where (0.9)^m / m is 4e-8. A long wave on a small circle (k0 R << 1) cuts earlier.
+      REAL(8), INTENT(IN) :: x(3), centre(2), radius, h, k0, kev(:)
+      INTEGER, INTENT(IN) :: mmax, nev
+      TYPE(pw_set), INTENT(OUT) :: pw
+      REAL(8), PARAMETER :: BIG = 1D300
+      REAL(8) :: dxy(2), rx, thx, e1, e2, c0, cn, xn, jm(0:mmax), is(0:mmax), kv(0:mmax + 1), ym, ym1, yp, sgn
+      COMPLEX(8) :: e(0:mmax)
+      INTEGER :: m, n, mcut
+
+      dxy = x(1:2) - centre
+      rx = NORM2(dxy)
+      thx = ATAN2(dxy(2), dxy(1))
+      IF (rx >= radius) ERROR STOP "pw_green_modes: the source is not inside the circle"
+      IF (SIZE(kev) < nev) ERROR STOP "pw_green_modes: fewer evanescent wave numbers than nev"
+      IF (nev > 0) THEN
+         IF (kev(nev)*radius > KR_MAX) ERROR STOP "pw_green_modes: kn R too large for K_m(kn R) (lower nev or the radius)"
+      END IF
+
+      pw%mmax = mmax
+      pw%nev = nev
+      pw%k0 = k0
+      pw%h = h
+      pw%radius = radius
+      pw%centre = centre
+      ALLOCATE (pw%kev(nev), pw%a(-mmax:mmax, 0:nev))
+      pw%kev = kev(1:nev)
+      pw%a = (0D0, 0D0)
+      DO m = 0, mmax
+         e(m) = EXP(-CI*(m*thx))
+      END DO
+
+      ! Propagating mode. c0 with sech and tanh from e^{-k0h}, which do not overflow at large k0h
+      e1 = EXP(-k0*h)
+      e2 = e1*e1
+      c0 = 2D0*PI*k0/(k0*h*(2D0*e1/(1D0 + e2))**2 + (1D0 - e2)/(1D0 + e2))*z0_mode(k0, h, x(3))
+      jm = BESSEL_JN(0, mmax, k0*rx)
+      ! The cut: the largest m with |Y_{m'}(k0 R)| <= BIG for m' <= m + 1, Y by the upward recurrence (A&S 9.1.27), stable
+      ! for Y; |J| < 1 and |Y| grows with m beyond k0 R, so |H_m| <= BIG then
+      ym = BESSEL_Y0(k0*radius)
+      ym1 = BESSEL_Y1(k0*radius)
+      mcut = -1
+      DO m = 0, mmax
+         IF (ABS(ym) > BIG .OR. ABS(ym1) > BIG) EXIT
+         mcut = m
+         yp = (2D0*(m + 1)/(k0*radius))*ym1 - ym
+         ym = ym1
+         ym1 = yp
+      END DO
+      DO m = 0, mcut
+         pw%a(m, 0) = CI*c0*jm(m)*e(m)
+         sgn = MERGE(-1D0, 1D0, MODULO(m, 2) == 1)
+         IF (m > 0) pw%a(-m, 0) = CI*c0*sgn*jm(m)*CONJG(e(m))
+      END DO
+
+      ! Evanescent modes: cn Z_n(z_x) = 4 cos knh cos kn(z_x+h) / (h + sin 2knh / (2kn))
+      DO n = 1, nev
+         cn = 4D0*COS(kev(n)*h)*COS(kev(n)*(x(3) + h))/(h + SIN(2D0*kev(n)*h)/(2D0*kev(n)))
+         xn = kev(n)*rx
+         CALL bessel_i_scaled(mmax, xn, is)
+         CALL pw_bessel_k(mmax + 1, kev(n)*radius, kv)
+         DO m = 0, mmax
+            IF (.NOT. (kv(m + 1) <= BIG)) EXIT
+            pw%a(m, n) = cn*is(m)*EXP(xn)*e(m)
+            IF (m > 0) pw%a(-m, n) = cn*is(m)*EXP(xn)*CONJG(e(m))
+         END DO
+      END DO
+   END SUBROUTINE pw_green_modes
+
+   PURE INTEGER FUNCTION pw_green_mmax(r_x, radius, tol)
+      ! The angular order for pw_green_modes: the smallest m with (r_x / radius)^m <= tol, at least 4. The m-th terms of
+      ! Graf's sums at r >= radius, J_m(k r_x) H_m(k r) and I_m(k r_x) K_m(k r), are of order (r_x / r)^m / m for large m
+      ! (A&S 9.3.1). Not capped: it grows like log(tol) / log(r_x / radius) as the source nears the circle.
+      REAL(8), INTENT(IN) :: r_x, radius, tol
+      REAL(8) :: q
+      INTEGER :: m
+
+      q = r_x/radius
+      IF (q >= 1D0) ERROR STOP "pw_green_mmax: r_x is not inside the circle"
+      IF (q <= 0D0 .OR. tol >= 1D0) THEN
+         pw_green_mmax = 4
+         RETURN
+      END IF
+      m = MAX(1, CEILING(LOG(tol)/LOG(q)))
+      ! Rounding of the logarithms: step to the smallest m
+      DO WHILE (m > 1)
+         IF (q**(m - 1) > tol) EXIT
+         m = m - 1
+      END DO
+      DO WHILE (q**m > tol)
+         m = m + 1
+      END DO
+      pw_green_mmax = MAX(4, m)
+   END FUNCTION pw_green_mmax
+
+   PURE SUBROUTINE bessel_i_scaled(mmax, x, is)
+      ! e^{-x} I_m(x), m = 0..mmax, x >= 0, by Miller's backward recurrence I_{m-1} = I_{m+1} + (2m/x) I_m (A&S 9.6.26),
+      ! for which I_m is the minimal solution, normalised by e^{-x} (I_0 + 2 sum_{m>=1} I_m) = 1 (A&S 9.6.34 at theta = 0).
+      ! The start n0 lies beyond mmax and beyond the orders that carry the sum (I_m / I_0 ~ e^{-m^2 / 2x} for large x);
+      ! the values are rescaled on the way down so that nothing overflows.
+      INTEGER, INTENT(IN) :: mmax
+      REAL(8), INTENT(IN) :: x
+      REAL(8), INTENT(OUT) :: is(0:mmax)
+      REAL(8), PARAMETER :: BIG = 1D250, SMALL = 1D-250
+      REAL(8) :: ip, ic, im, nrm
+      INTEGER :: n0, n
+
+      is = 0D0
+      IF (x < 1D-300) THEN
+         is(0) = 1D0
+         RETURN
+      END IF
+      n0 = mmax + 40 + INT(SQRT(80D0*x)) + INT(x)
+      ip = 0D0          ! I_{n+1}
+      ic = 1D-30        ! I_n, n = n0
+      nrm = 2D0*ic
+      DO n = n0, 1, -1
+         im = (2D0*n/x)*ic + ip
+         ip = ic
+         ic = im
+         ! ic is I_{n-1}
+         IF (n - 1 >= 1) THEN
+            nrm = nrm + 2D0*ic
+         ELSE
+            nrm = nrm + ic
+         END IF
+         IF (n - 1 <= mmax) is(n - 1) = ic
+         IF (ic > BIG) THEN
+            ic = ic*SMALL
+            ip = ip*SMALL
+            nrm = nrm*SMALL
+            is = is*SMALL
+         END IF
+      END DO
+      is = is/nrm
+   END SUBROUTINE bessel_i_scaled
 
    SUBROUTINE pw_evanescent_from_wvn(nev, kev)
       ! The first nev evanescent wave numbers of the current frequency, WVN(2:nev+1) (DISPERSION, WaveDyn_mod): the roots of
