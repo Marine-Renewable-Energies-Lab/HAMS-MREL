@@ -4602,8 +4602,7 @@ contains
         type(error_type), allocatable, intent(out) :: error
         character(len=12), parameter :: cases(2) = [character(len=12) :: "qtf_fs_round", "qtf_fs_two"]
         character(len=*), parameter :: line = "QTF_Indirect.11d: body forcing and the free-surface integral (qtf_terms = full)."
-        character(len=*), parameter :: not_converged = "is not converged for the free-surface terms"
-        character(len=*), parameter :: few_rows = "radial rows between the waterline and R: raise qtf_fs_rows"
+        character(len=*), parameter :: mesh_note = "QTF free surface note: generated inner mesh"
         character(len=:), allocatable :: lines(:)
         real(8), allocatable :: t(:,:), d(:,:), x(:,:)
         real(8) :: worst, s
@@ -4651,16 +4650,13 @@ contains
                        "free-surface line in the log of "//trim(cases(c)))
             if (allocated(error)) return
         end do
-        ! The generated inner mesh is not converged for the free-surface terms (Task 8 review, Important 1): the log says
-        ! so for the generated mesh of qtf_fs_round, with the few-rows warning, and not for the file mesh of qtf_fs_two
-        call check(error, count_log_lines(get_running_exe_path()//"qtf_fs_round.log", not_converged), 1, &
-                   "qtf_fs_round: no warning that the generated inner mesh is not converged")
+        ! The log notes, for the generated mesh of qtf_fs_round and not for the file mesh of qtf_fs_two, that the
+        ! free-surface terms get more accurate with a finer hull mesh (Task 10 validation)
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_fs_round.log", mesh_note), 1, &
+                   "qtf_fs_round: no note on the generated inner mesh")
         if (allocated(error)) return
-        call check(error, count_log_lines(get_running_exe_path()//"qtf_fs_round.log", few_rows), 1, &
-                   "qtf_fs_round: no warning about the few radial rows")
-        if (allocated(error)) return
-        call check(error, count_log_lines(get_running_exe_path()//"qtf_fs_two.log", not_converged), 0, &
-                   "qtf_fs_two: the generated-mesh warning with FSInnerMesh.pnl")
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_fs_two.log", mesh_note), 0, &
+                   "qtf_fs_two: the generated-mesh note with FSInnerMesh.pnl")
     end subroutine qtf_fs_columns
 
     !> Without qtf_terms = full nothing changes: qtf_fs_body (qtf_terms = body) writes the first-order files, the mean drift

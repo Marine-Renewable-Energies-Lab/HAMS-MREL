@@ -451,7 +451,7 @@ def qtf_potential_cases():
 #   (A) q_sharp_full_free_m1   defaults: 3 rows at R = 15 m, outer row 2.86 m (lambda/11), 30 chords
 #   fsB  qtf_fs_rows 6, outer row 1.49 m (lambda/21), chords as A: radial rows refined, angles not
 #   fsC  qtf_fs_rows 9, outer row 1.01 m (lambda/31), chords as A
-#   fsP20  qtf_fs_panel 1.5724 (lambda/20 of 31.448 m, lambda at 1.40 rad/s, depth 100 m), rows by the rule: 6 (outer row 1.49 m),
+#   fsP20  qtf_fs_panel 1.5724 (about lambda/20, lambda 31.44 m at 1.40 rad/s, depth 100 m), rows by the rule: 6 (outer row 1.49 m),
 #          60 chords: rows and angles refined; fsP20 against fsB isolates the angles
 #   fsP30  qtf_fs_panel 1.0483 (lambda/30), rows by the rule: 9, 90 chords; against fsC
 # (outer row = (q^n - q^(n-1))/(q^n - 1) (R - r_wl), q = 4^(1/(n-1)), the rule of build_fs_inner. The angles alone, without

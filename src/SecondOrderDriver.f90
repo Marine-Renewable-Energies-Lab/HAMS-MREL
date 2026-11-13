@@ -105,7 +105,8 @@ MODULE SecondOrderDriver
    TYPE(first_order_state), ALLOCATABLE :: states(:)   ! one per heading for mean_drift = 2 or control, otherwise the current
    COMPLEX(8), ALLOCATABLE :: phi_wl(:,:)              ! (nwl, size(states)), total potential on the waterline segments; allocated
                                                        ! for the near-field method and for the Phase B control-surface loads
-   COMPLEX(8), ALLOCATABLE :: rows_g(:,:,:), rows_dg(:,:,:)   ! (nbase, nsys, nwl), of the current frequency, for waterline_method = field
+   ! (nbase, nsys, nwl), of the current frequency, for waterline_method = field
+   COMPLEX(8), ALLOCATABLE :: rows_g(:,:,:), rows_dg(:,:,:)
    LOGICAL :: multi_arrays = .FALSE.                   ! the solver's mesh is in the combined multi-body arrays
    INTEGER :: unit_far = 0, unit_near = 0, unit_terms = 0, unit_diag = 0   ! 0: not open (NEWUNIT gives negative numbers)
    INTEGER :: n_velocity_fields = 0, n_fallback_total = 0                  ! over the run, logged by so_finish
@@ -194,12 +195,12 @@ CONTAINS
          WRITE (*, '(a)') ' QTF note: qtf_b2 is ignored; it applies with qtf_terms = body or full and the difference QTF only.'
       END IF
       IF (opts%qtf_edge_given .AND. .NOT. b2_control) THEN
-         WRITE (*, '(a)') ' QTF note: qtf_edge_weights and qtf_edge_angle are ignored; they apply with qtf_terms = body or full,'// &
-            ' the difference QTF and qtf_b2 = control only.'
+         WRITE (*, '(a)') ' QTF note: qtf_edge_weights and qtf_edge_angle are ignored; they apply with qtf_terms = body or'// &
+            ' full, the difference QTF and qtf_b2 = control only.'
       END IF
       IF (opts%qtf_fs_given .AND. .NOT. (opts%qtf_terms == QTF_TERMS_FULL .AND. (opts%qtf == 1 .OR. opts%qtf == 3))) THEN
-         WRITE (*, '(a)') ' QTF note: qtf_fs_radius, qtf_fs_rows, qtf_fs_panel, qtf_fs_modes and qtf_fs_evanescent are ignored; they apply'// &
-            ' with qtf_terms = full and the difference QTF only.'
+         WRITE (*, '(a)') ' QTF note: qtf_fs_radius, qtf_fs_rows, qtf_fs_panel, qtf_fs_modes and qtf_fs_evanescent are ignored;'// &
+            ' they apply with qtf_terms = full and the difference QTF only.'
       END IF
       ALLOCATE (states(MERGE(NBETA, 1, keep_all_headings(opts))))
       ! Only the near-field and control-surface methods use the surface geometry (the control surface takes the waterplane
@@ -402,8 +403,6 @@ CONTAINS
       REAL(8) :: omega_max, wvn1(1), k0_max, r_wl, miss
       LOGICAL :: ok, stops
       INTEGER :: nshrunk, nfloor, iw, nrows
-      ! The generated inner mesh with fewer radial rows than this is coarse for the free-surface terms (warning below)
-      INTEGER, PARAMETER :: FS_FEW_ROWS = 4
       EXTERNAL :: DISPERSION
 
       omega_max = MAXVAL(omegas)
@@ -414,14 +413,13 @@ CONTAINS
          ERROR STOP 1
       END IF
       IF (fs_np > 0) THEN
-         ! The generated mesh (panels of lambda/10 at omega_max) is not converged for the free-surface terms: on the
-         ! smoke case (qtf_round_body with full) they were 55-180 % off a lambda/30 mesh (Task 8 report). Its panel
-         ! size is set in a later task; until then, say so in the log, with the radial rows
-         IF (opts%qtf_fs_panel <= 0D0) WRITE (*, '(a,I0,a)') ' QTF free surface warning: the generated inner mesh (panels of'// &
-            ' lambda/10 at the largest frequency, ', nrows, ' radial rows) is not converged for the free-surface terms of'// &
-            ' QTF_Indirect.11d; on a test case they were 55-180 % off a mesh of lambda/30 (set qtf_fs_panel to refine it).'
-         IF (nrows < FS_FEW_ROWS) WRITE (*, '(a,I0,a)') ' QTF free surface warning: only ', nrows, &
-            ' radial rows between the waterline and R: raise qtf_fs_rows (at least 4), or give FSInnerMesh.pnl.'
+         ! The free-surface terms on the generated mesh get more accurate as the hull mesh is refined (the mesh takes a
+         ! column at every hull waterline node): on the sharp cylinder, free body, 12 / 4.5 / 2.2 % of the exact value
+         ! at m1 / m2 / m3 (docs/second_order_validation.md). Say so in the log, with the rows, so that a coarse hull is
+         ! checked on a finer one
+         WRITE (*, '(a,I0,a)') ' QTF free surface note: generated inner mesh, ', nrows, ' radial rows; the free-surface'// &
+            ' terms get more accurate with a finer hull mesh (sharp cylinder: 12 % at m1, 4.5 % at m2). Check them on a'// &
+            ' finer hull mesh; qtf_fs_panel and qtf_fs_radius refine the inner mesh.'
       END IF
       IF (fs_np == 0) THEN
          CALL fs_coverage_check(fs_pts%w, fs_radius, SUM(geom%awp), miss, msg, stops)
