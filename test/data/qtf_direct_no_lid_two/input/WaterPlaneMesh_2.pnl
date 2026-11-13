@@ -1,0 +1,12 @@
+    --------------Waterplane Mesh File---------------
+
+    # Number of Panels, Nodes, X-Symmetry and Y-Symmetry
+           0         0         0         0
+
+    # Start Definition of Node Coordinates     ! node_number   x   y   z
+    # End Definition of Node Coordinates
+
+    # Start Definition of Node Relations   ! panel_number  number_of_vertices   Vertex1_ID ...
+    # End Definition of Node Relations
+
+    --------------End Waterplane Mesh File---------------

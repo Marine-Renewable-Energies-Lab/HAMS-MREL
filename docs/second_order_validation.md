@@ -1,6 +1,6 @@
 # Second-order wave loads: validation
 
-This page holds the evidence behind the second-order methods, defaults and advice of [SecondOrder.in](input_files.md#secondorderin-optional): the mean drift convergence study, the comparison with Nemoh, the semi-analytical reference for a sharp truncated cylinder, the control-surface study, a study of graded meshes, the quadratic QTFs and the potential part of the difference QTF. The integration fixtures and the limits of their tests are in [test/data/drift_cyl/README.md](../test/data/drift_cyl/README.md). All values are measured unless marked inferred.
+This page holds the evidence behind the second-order methods, defaults and advice of [SecondOrder.in](input_files.md#secondorderin-optional): the mean drift convergence study, the comparison with Nemoh, the semi-analytical reference for a sharp truncated cylinder, the control-surface study, a study of graded meshes, the quadratic QTFs, the potential part of the difference QTF and the direct method against the indirect method. The integration fixtures and the limits of their tests are in [test/data/drift_cyl/README.md](../test/data/drift_cyl/README.md). All values are measured unless marked inferred.
 
 ## Mean drift convergence study
 
@@ -634,6 +634,87 @@ At m1 a full run took 1 h on 24 CPUs: the fields at the 186 inner points 0.22 h 
 on the circle), ψ there 0.04 h, the pair loop 0.5 h (0.35 s per pair, serial), peak memory 148 MB. m2 took 2 h 45 min,
 m3 7 h 10 min. The 11 runs of the study cost 673 core-hours.
 
+## Direct method against indirect method
+
+The direct method (`qtf_direct = 1`, `QTF_Direct.12d`) solves the second-order boundary-value problem for φ_D at each difference frequency Ω and integrates φ_I2 + φ_D over the hull. The indirect method (`qtf_terms = body`, `QTF_Indirect.11d`) integrates the radiation potentials ψ_k against the same body forcing. With the same forcing and no free-surface forcing, Green's theorem makes the two loads equal, so `.12d` and `.11d` (with `qtf_b2 = body`, the form of B2 that the direct method uses) must agree to the mesh error. This is the check. Both methods share the incident-wave terms, B1, B3 and the Stokes form of B2, so it tests the direct solve (the matrix, the right side, the block solve, the symmetry images) and not those terms. The formulation is in [Developer Documentation](developer_documentation.md#direct-method-qtfdirectf90).
+
+Runs on Snellius (`fat_genoa`, 24 CPUs per job, ifx from `intel/2024a`) on 2026-11-12: one build and nine runs of the cases of `drift_convergence.py` (group D, `--qtf-potential`), about 76 core-hours against an estimate of 84. The job scripts and the cluster-side steps are in `validation-runs/snellius-qtfdirect/jobs`. All cases have `qtf = 1`, `qtf_terms = body`, `qtf_b2 = body`, `qtf_direct = 1` and a free body; the per-pair tables are not in the repository.
+
+| Case | Hull | Panels | Frequencies (rad/s) | Headings | Difference frequencies Ω (rad/s) | Pairs solved |
+| :--- | :--- | ---: | :--- | :--- | :--- | ---: |
+| `q_round_direct_free_m1`, `_m2`, `_m3` | rounded cylinder, radius 10 m | 480, 1920, 4320 | 0.70, 0.95, 1.10 | 0 and 30 | 0.15, 0.25 | 8 |
+| `q_sharp_direct_free_m1`, `_m2`, `_m3` | sharp cylinder, radius 10 m, draft 10 m | 448, 1792, 4032 | 0.40 to 1.40 by 0.01 | 0 | 0.01 to 0.30 by 0.01 | 5130 |
+| `q_sharp_direct_irsp_m1` | sharp cylinder, `If_remove_irr_freq = 1` | 448 and 192 lid | 0.20 and 1.700 to 1.800 by 0.005 | 0 | 0.005 to 0.100 and 1.500 to 1.600 by 0.005 | 462 |
+| `q_sharp_direct_irsp0_m1` | the same without the lid (control) | 448 | the same | 0 | the same | 462 |
+
+The sharp meshes and frequencies are those of the [QTF potential part](#qtf-potential-part) (`q_sharp_free_src_m1` to `_m3`), with `velocity_method = source`. The IRSP cases use `differencing`, since `source` does not allow the lid. Their pairs have Ω = 1.500 to 1.600 rad/s, across the first irregular frequency of the sharp hull, 1.548 rad/s (`IRREGULAR_FREQUENCIES`).
+
+**Measure.** `qtf_compare.py --direct` gives |T_dir − T_pot| / max |T_pot|, with T_dir = `.12d` − `.10d` and T_pot = `.11d` − `.10d`, over the rows of the forces (modes 1 to 3) and of the moments (modes 4 to 6), all pairs and heading pairs, as the largest and the median, in percent. `--by-omega` gives the largest per Ω. With the CSV of the exact sharp-cylinder reference (`truncated_cylinder_reference.py qtf-potential`), it also gives the error of each method against the exact potential part, |HAMS − exact| / max |exact|.
+
+### Rounded hull: second-order convergence
+
+Largest error over the rows (median in brackets), percent:
+
+| Panels | Forces | Moments |
+| ---: | :--- | :--- |
+| 480 | 1.88 (0.05) | 3.97 (0.04) |
+| 1920 | 0.48 (0.01) | 0.81 (0.01) |
+| 4320 | 0.23 (0.01) | 0.35 (0.00) |
+
+- The largest error falls by factors of 3.9 and 2.1 for the forces and 4.9 and 2.3 for the moments from 480 to 1920 to 4320 panels. A second-order rate gives 4 and 2.25 for the panel-size ratios 2 and 1.5 [derived]. So the two methods converge to each other at the mesh rate, and at 4320 panels they agree to 0.23% (forces) and 0.35% (moments), inside the 1% aimed for.
+- The largest values are at Ω = 0.25 rad/s. At Ω = 0.15 rad/s the forces differ by 0.05, 0.02 and 0.01% at the three meshes.
+
+### Irregular frequency removal
+
+At Ω ≤ 0.1 rad/s (the 20 of 41 difference frequencies that `--max-dw 0.3` keeps) the direct and indirect results of the IRSP case and of its no-lid control differ by 0.02% in the forces and 0.2% in the moments. The informative range is Ω = 1.500 to 1.600 rad/s, where the irregular frequency lies (`--by-omega --max-dw 2`):
+
+| Case | Forces at Ω = 1.500 / 1.530 / 1.550 / 1.600 rad/s | Moments, range over 1.500 to 1.600 rad/s |
+| :--- | :--- | :--- |
+| with lid | 2.95 / 2.82 / 2.73 / 2.53% | 7.35 to 8.07% |
+| no lid | 2.97 / 3.39 / 53.01 / 4.91% | 8.14 to 8.94% |
+
+- Without the lid the force difference has a spike at Ω = 1.550 rad/s, next to the irregular frequency 1.548 rad/s. With the lid the difference is smooth and falls from 2.95 to 2.51% across the band. So the lid removes the spike of the direct-indirect difference, and the spike in the control shows that the check can see it. Without the lid both ψ and φ_D are polluted, so the spike is not the direct result alone; in the unit test on a rounded hull, the direct result alone changed by 15.1% between the runs with and without the lid.
+- The moments differ by 7 to 9% with and without the lid, so that part is not an irregular-frequency effect. The gap appears only at Ω = 1.5 to 1.6 rad/s, the pairs of 0.20 rad/s with 1.7 to 1.8 rad/s. Among the same 1.7 to 1.8 rad/s frequencies, at Ω ≤ 0.1 rad/s, the moments agree to 0.03% (`compare_by_omega.txt`), so it is not a high-frequency mesh error. The 0.20 rad/s frequency is the low frequency where the free body moves most. The IRSP cases are the sharp cylinder at 448 panels with `qtf_b2 = body`, and the free sharp case at 448 panels already differs by 25 to 43% in the moments over Ω ≤ 0.30 rad/s (largest at Ω = 0.06, 25% at 0.30; that run does not reach Ω = 1.5; next section). So the 2.5 to 3% force and 7 to 9% moment levels most likely are the sharp-hull B2 gap of the next section, not an effect of the lid [inferred; the B1 and B2 columns of `QTF_PotentialTerms.txt` at Ω = 1.5 to 1.6 rad/s were not examined]. The rounded-hull IRSP fixture (`qtf_direct_irsp`, 0.64%) shows that the lid path agrees on a smooth hull.
+
+### Sharp cylinder, free body
+
+Direct against indirect, largest over the rows (median in brackets), percent:
+
+| Panels | Forces | Moments |
+| ---: | :--- | :--- |
+| 448 | 28.5 (0.04) | 43.3 (0.00) |
+| 1792 | 8.15 (0.02) | 49.9 (0.00) |
+| 4032 | 8.75 (0.01) | 41.6 (0.00) |
+
+These differences do not fall with the mesh. Both methods integrate B2 on the hull here: the indirect side with `qtf_b2 = body` (the hull form, one-point rule and differenced ∇ψ), the direct side as the Stokes form with the Green function G(x_i, ·) on the hull panels (analytic ∇G panel integrals, near-panel linear density). The integrand is singular at the sharp bottom edge, and neither discretisation converges quickly there ([the two forms of B2](#free-body-the-hull-and-control-surface-forms-of-b2)). The gap is the difference between two discretisations of the same edge-singular hull integral. The differences grow with Ω (forces at 1792 panels: 0.30% at Ω = 0.01, 3.2% at 0.10, 8.15% at 0.30 rad/s). So the useful check on a sharp hull is against the exact potential part. Error against it (`truncated_cylinder_reference.py qtf-potential`, heading 0, pairs with ω_j − ω_i ≤ 0.3 rad/s, the same grid), largest over the pairs, percent of max |exact|, F_x / F_z / M_y:
+
+| Panels | Direct (`.12d` − `.10d`) | Indirect (`.11d` − `.10d`, `qtf_b2 = body`) |
+| ---: | :--- | :--- |
+| 448 | 36 / 27 / 72 | 30 / 32 / 79 |
+| 1792 | 19 / 18 / 40 | 26 / 21 / 61 |
+| 4032 | 13 / 13 / 28 | 21 / 21 / 49 |
+
+- The direct method is closer to the exact values than the indirect one with `qtf_b2 = body` at 1792 and 4032 panels in all three components; the gap is largest in M_y (40 against 61% and 28 against 49%). At 448 panels it is closer in F_z and M_y and farther in F_x.
+- **The largest errors are at the resonance.** They sit at the pairs with a frequency at the 0.77 rad/s coupled surge-pitch resonance (radiation damping only), where the first-order motions are 3.3 to 4.0% off in modulus in surge and pitch at 1792 panels ([the exact-motion check](#the-resonance-and-the-motions)). The terms are bilinear in the motions, so the pair error is about twice the motion error, for both methods [inferred, as in that section]. Leaving out the pairs with a frequency in 0.75 to 0.79 rad/s, the largest errors at 1792 panels are 4.7 / 8.8 / 9.7% for the direct method and 5.9 / 19.4 / 12.1% for the indirect method (`qtf_compare.py --direct <csv> --exclude 0.75 0.79`, output in `validation-runs/snellius-qtfdirect/compare_direct_excl.txt`; at 448 and 4032 panels the same option gives 8.1 / 16.6 / 17.3% and 3.3 / 6.1 / 6.9% for the direct method).
+- Both methods integrate B2 on the hull here: the indirect one in the hull form (`qtf_b2 = body`), the direct one in the Stokes form with the Green function in its right side. So the F_z difference (19.4% against 8.8% away from the resonance) is between two discretisations of the same integral, which is singular at the bottom edge; neither is the reference. The default `qtf_b2 = control` moves B2 off the hull and is the most accurate of the three ([the free body](#free-body-the-hull-and-control-surface-forms-of-b2)). Why the Stokes form has the smaller F_z error was not tested; a possible cause is that the right side integrates the near-panel part of the density to first order in the panel size, which the hull-form integral of ψ does not.
+- The direct errors fall by 1.3 to 1.5 from 1792 to 4032 panels (F_x 19 → 13, F_z 18 → 13, M_y 40 → 28%), close to the panel-size ratio of 1.5. That is a first-order rate, as the resonant pairs are set by the first-order motion error, which falls with the panel size ([the resonance](#the-resonance-and-the-motions)).
+
+![Direct and indirect potential part of the free sharp cylinder against the exact reference at 448, 1792 and 4032 panels](../validation-runs/snellius-qtfdirect/sharp_direct_vs_indirect.png)
+
+The figure is `validation-runs/snellius-qtfdirect/sharp_direct_vs_indirect.png`, kept with the Snellius results and not copied into the repository.
+
+### Cost of the direct solves
+
+The direct solves add the right sides and one block solve per Ω. The matrix is that of the radiation-only solve at Ω, which the potential part already makes. Measured on a laptop (8 threads) for the 448-panel sharp case: 36.8 s of 746 s in the direct solves for 30 Ω and 5130 pairs, which is 7.2 ms per pair. The B2 right side took 32.9 s of it, the pair forcing 3.3 s and the block solve 0.4 s. The cost per pair grows with the square of the number of panels. The 4032-panel sharp case took 2 h 26 min on Snellius (24 CPUs, about 58 core-hours).
+
+### Limits of this check
+
+- On a sharp hull `.12d` and `.11d` (`qtf_b2 = body`) do not agree to a few percent, because both integrate B2 on the hull with different discretisations of an edge-singular integral; the check there is against the exact potential part.
+- **The default indirect method is more accurate than the direct one on this sharp hull.** With `qtf_b2 = control` (fixed C and F, 4032 panels, the same 2666 pairs) the indirect potential part is 6.9 / 9.1 / 5.8% off the exact one in F_x / F_z / M_y ([the table above](#free-body-the-hull-and-control-surface-forms-of-b2), row "fixed C, 4032"), against 13 / 13 / 28% for the direct method. For accuracy on a sharp hull use `.11d` with the default `qtf_b2 = control`, and `.12d` as an independent check.
+- Validated in finite depth only (depth 100 in every direct case). The 0.46% inconsistency between G and ∇G in deep water (developer documentation) enters the B2 right side there and was not checked end-to-end.
+- The direct method has no free-surface forcing (Phase 7b), so `.12d` is the body forcing only; `.11d` with `qtf_terms = full` has the free-surface integral ([QTF free-surface integral](#qtf-free-surface-integral)).
+- One IRSP mesh (448 panels with the lid) was run, with heading 0 and a free body.
+
 ## Partial second-order field
 
 `QTF_FieldPartial.txt` (`qtf_field = 1`) holds the quadratic part and the second-order incident wave at the field points. It omits the second-order diffracted wave and, for a free body, the wave radiated by its second-order motion; near the bodies, where the free-surface forcing drives the second-order scattered wave, the omitted part is not small (see [Partial second-order field](input_files.md#partial-second-order-field-at-the-field-points)). There is no reference for the complete field, so the checks below cover the two parts that are computed. The complete field is a later phase. Tests in `test/test_second_order_incident.f90`, `test/test_qtf_field.f90` and `test/test_integration_drift.f90`; fixtures `test/data/qtf_field*`, written by `make_drift_fixtures.py`.
@@ -690,6 +771,7 @@ The largest d12 is 1.427e-3 and the largest d23 8.17e-4, a ratio of 0.573. The p
 - OC4 against WAMIT: the pairs with a frequency in 0.25 to 0.35 rad/s differ by over 100% in the largest value at both meshes, and the largest values away from them (15.43 / 8.92 / 4.88% at 1224 panels, 24.11 / 18.13 / 5.51% at 4608) do not fall with the mesh. Whether this is the hull model (pontoons and braces), the restoring and damping, or the resonance was not separated.
 - Nemoh's HASBO: whether it contains a term like B3 was not checked, and the sharp-cylinder Nemoh maps were made with the hull form of B2 only.
 - The free-surface integral (`qtf_terms = full`) is validated on one hull, single body, heading 0, finite depth; deep water is not supported. At m1 its error is not monotone in the inner mesh, and the cause is not found ([QTF free-surface integral](#qtf-free-surface-integral)). The sum-frequency potential part is not implemented (Phase 6b).
+- Direct method (`QTF_Direct.12d`): validated on a smooth hull to 0.23% / 0.35% (forces / moments) against the indirect method at 4320 panels, and on the sharp cylinder only against the exact potential part (13 / 13 / 28% at 4032 panels, resonance pairs included). The cause of its smaller F_z error than the hull-form indirect result is not tested, and the IRSP case ran at one mesh (448 panels).
 - Two unit tests failed under ifx 2024a on Snellius (job of 2026-11-09, the build of the hull-form runs): `control_surface_mesh/separate_bodies_accepted` and `field_velocity/field_green_is_smooth_in_z`, in modules the potential part does not change. Both are fixed on the `second-order-drift` branch by commit 60a972e, which this branch does not contain yet. With ifort 2022.1 on Windows all tests pass ([Developer Documentation](developer_documentation.md#qtf-potential-part)).
 - WAMIT: the OC4 comparison with the public WAMIT run of OpenFAST now exists ([OC4 against WAMIT](#oc4-against-wamit)). A WAMIT licence would still be needed to settle the conjugation and axes of the WAMIT-format output on a hull with a known answer, since the diagonal of that comparison is real. The semi-analytical reference covers the signs of the mean drift values (210 values agree at 7168 panels), not the phases of the complex outputs.
 

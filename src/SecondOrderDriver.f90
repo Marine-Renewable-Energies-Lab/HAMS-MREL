@@ -83,11 +83,12 @@ MODULE SecondOrderDriver
    USE SecondOrderOutput, ONLY: write_drift_row, write_terms_row
    USE QTFDriver, ONLY: qtf_init, qtf_keep, qtf_finish, qtf_stored_mb, qtf_keep_psi, qtf_psi_index, qtf_psi_count, &
                         qtf_radiation_list, qtf_psi_tolerance, &
-                        qtf_radiation_omegas, qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, &
-                        qtf_set_edge_weights, qtf_keep_fs_state, qtf_keep_fs_psi
+                        qtf_radiation_omegas, qtf_omega_on_grid, qtf_set_control_surface, qtf_keep_cs_velocity, &
+                        qtf_keep_cs_psi, qtf_set_edge_weights, qtf_keep_fs_state, qtf_keep_fs_psi, qtf_direct_at_omega
    USE QTFFreeSurface, ONLY: fs_point_field, fs_inner_fields, fs_inner_steps, fs_sample_phi, fs_circle_modes, fs_mode_warning, &
                              fs_auto_modes, fs_auto_evanescent, fs_radius_message, fs_coverage_check
    USE PartialWaves, ONLY: pw_set, pw_sample_points, pw_evanescent_from_wvn, PW_KR_MAX
+   USE QTFDirect, ONLY: direct_setup
    USE QTFPotential, ONLY: b2_control_check
    USE SharpEdge, ONLY: sharp_edge_weights
    USE QTFField, ONLY: build_field_points, qfield_init, qfield_keep, qfield_finish, qfield_stored_mb, FIELD_FD_STEP
@@ -195,9 +196,9 @@ CONTAINS
       IF (opts%qtf_b2_given .AND. .NOT. (opts%qtf_terms >= QTF_TERMS_BODY .AND. (opts%qtf == 1 .OR. opts%qtf == 3))) THEN
          WRITE (*, '(a)') ' QTF note: qtf_b2 is ignored; it applies with qtf_terms = body or full and the difference QTF only.'
       END IF
-      IF (opts%qtf_edge_given .AND. .NOT. b2_control) THEN
+      IF (opts%qtf_edge_given .AND. .NOT. (b2_control .OR. opts%qtf_direct == 1)) THEN
          WRITE (*, '(a)') ' QTF note: qtf_edge_weights and qtf_edge_angle are ignored; they apply with qtf_terms = body or'// &
-            ' full, the difference QTF and qtf_b2 = control only.'
+            ' full, the difference QTF and qtf_b2 = control (qtf_edge_angle also with qtf_direct = 1) only.'
       END IF
       IF (opts%qtf_fs_given .AND. .NOT. (opts%qtf_terms == QTF_TERMS_FULL .AND. (opts%qtf == 1 .OR. opts%qtf == 3))) THEN
          WRITE (*, '(a)') ' QTF note: qtf_fs_radius, qtf_fs_rows, qtf_fs_panel, qtf_fs_modes and qtf_fs_evanescent are ignored;'// &
@@ -326,7 +327,7 @@ CONTAINS
       REAL(8) :: omegas(nqtf), mb, mb_cs, mb_fs
       REAL(8), ALLOCATABLE :: need(:)
       INTEGER, ALLOCATABLE :: reuse(:)
-      INTEGER :: i, first, nneed, nreuse, npairs
+      INTEGER :: i, first, nneed, nreuse, npairs, nmask
 
       first = MERGE(2, 0, SYBO == 1)
       DO i = 1, nqtf
@@ -340,6 +341,8 @@ CONTAINS
       WRITE (*, '(a,I0,a,I0,a,I0,a)') ' QTF body forcing: psi at ', nneed, ' difference frequencies, ', nreuse, &
          ' from the main grid and ', nneed - nreuse, ' radiation-only solves (each costs about one radiation solve)'
       npairs = MERGE(NBETA*NBETA, NBETA, opts%mean_drift == 2)
+      ! qtf_direct = 1 keeps T_dir beside T_pot, of the same size
+      IF (opts%qtf_direct == 1) npairs = 2*npairs
       mb = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs)
       fs_terms = uses_fs(opts)
       IF (fs_terms) THEN
@@ -376,6 +379,12 @@ CONTAINS
          WRITE (*, '(a)') ' QTF_Indirect.11d: body forcing and the free-surface integral (qtf_terms = full).'
       ELSE
          WRITE (*, '(a)') ' QTF_Indirect.11d: body forcing only, the free-surface integral is omitted.'
+      END IF
+      IF (opts%qtf_direct == 1) THEN
+         ! The sharp-edge mask of the B2 right side, once for the run (ruling M9 of Phase 7a)
+         CALL direct_setup(mesh, opts%qtf_edge_angle, nmask)
+         WRITE (*, '(a,I0,a,I0,a,F6.1,a)') ' QTF direct: phi_D solved at every difference frequency; ', nmask, ' of ', &
+            mesh%n, ' panels at sharp edges (qtf_edge_angle', opts%qtf_edge_angle, ') keep the one-point rule in B2.'
       END IF
       ALLOCATE (psi_main(mesh%n, 6*mesh%nbody))
       psi_main = (0D0, 0D0)
@@ -566,12 +575,45 @@ CONTAINS
    END SUBROUTINE so_after_radiation
 
    SUBROUTINE so_after_radiation_only(opts, omega)
-      ! Call after the radiation-only solve at the difference frequency omega (one of qtf_radiation_omegas()).
+      ! Call after the radiation-only solve at the difference frequency omega (one of qtf_radiation_omegas(),
+      ! or of qtf_direct_omegas() with qtf_direct = 1).
+      TYPE(so_options), INTENT(IN) :: opts
+      REAL(8), INTENT(IN) :: omega
+
+      ! body_terms covers body and full: with full, psi at these Omega also feeds the free-surface integral
+      IF (.NOT. body_terms .OR. opts%qtf_terms < QTF_TERMS_BODY) RETURN
+      ! With qtf_direct = 1 the loop also runs at the difference frequencies on the main grid, whose psi so_after_radiation
+      ! has kept already; the direct solve of Phase 7a runs at every one of them
+      IF (.NOT. qtf_omega_on_grid(omega)) CALL keep_radiation_only_psi(opts, omega)
+      IF (opts%qtf_direct == 1) CALL so_direct_solve(opts, omega)
+   END SUBROUTINE so_after_radiation_only
+
+   SUBROUTINE so_direct_solve(opts, omega)
+      ! The direct solution of the second-order problem at the difference frequency omega (Phase 7a): T_dir of every pair
+      ! with that Omega into the QTF store (qtf_direct_at_omega). RadiationOnlySolves calls so_after_radiation_only right
+      ! after SetWaveFromOmega(omega) and the radiation solve there (CALGREEN and ASSB_LEFT, or their multi-body forms),
+      ! and nothing in between changes CGRN, RKBN, DS or AMAT (nor DGRN, PKBN and CMAT with IRSP = 1), so the stored Green
+      ! integrals and the matrix are those of omega. direct_at_omega checks W1. The log gives the time of the pair forcing
+      ! with its field integral, of the B2 part (densities and right side) and of the factorisation, solve and load.
+      TYPE(so_options), INTENT(IN) :: opts
+      REAL(8), INTENT(IN) :: omega
+      INTEGER(8) :: t0, t1, rate
+      REAL(8) :: sec(3)
+      INTEGER :: npair
+
+      IF (opts%qtf_direct /= 1 .OR. .NOT. (omega > 0D0)) RETURN
+      CALL SYSTEM_CLOCK(t0, rate)
+      CALL qtf_direct_at_omega(mesh, geom, omega, npair, sec)
+      CALL SYSTEM_CLOCK(t1)
+      WRITE (*, '(a,F10.5,a,I0,a,F9.2,a,3F9.2,a)') ' QTF direct: omega = ', omega, ' rad/s, ', npair, ' pairs, ', &
+         REAL(t1 - t0, 8)/REAL(rate, 8), ' s (forcing, B2, solve:', sec, ' s)'
+   END SUBROUTINE so_direct_solve
+
+   SUBROUTINE keep_radiation_only_psi(opts, omega)
       TYPE(so_options), INTENT(IN) :: opts
       REAL(8), INTENT(IN) :: omega
       COMPLEX(8), ALLOCATABLE :: psi(:, :)
 
-      IF (.NOT. body_terms .OR. opts%qtf_terms < QTF_TERMS_BODY) RETURN
       ALLOCATE (psi(mesh%n, 6*mesh%nbody))
       IF (multi_arrays) THEN
          CALL radiation_psi(mesh, omega, MXPOT_MULTI_COMB, psi)
@@ -582,7 +624,7 @@ CONTAINS
       IF (b2_control) CALL keep_cs_psi(opts, omega, psi)
       IF (fs_terms) CALL keep_fs_psi(omega, psi)
       CALL write_psi_rows(omega, 2, psi)
-   END SUBROUTINE so_after_radiation_only
+   END SUBROUTINE keep_radiation_only_psi
 
    SUBROUTINE keep_cs_psi(opts, omega, psi)
       ! grad psi_k at the points of C and F, into the QTF store (qtf_b2 = control). psi_k is the perturbation potential of a

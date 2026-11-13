@@ -40,6 +40,8 @@ MODULE AssbMatx
 
    PUBLIC :: ASSB_LEFT
    PUBLIC :: ASSB_RBC
+   PUBLIC :: ASSB_RHS_FIELD
+   PUBLIC :: ASSB_RHS_FIELD_IRR
    
    PUBLIC :: ASSB_DBC
    PUBLIC :: RADIATION_SOLVER
@@ -179,6 +181,105 @@ CONTAINS
 
        RETURN
       END SUBROUTINE ASSB_RBC
+
+! -------------------------------------------------------------------
+!    Right sides for given normal velocities: r_i = int_S G(x_i, xi) V(xi) dS_xi, the panel integrals of
+!    RBC_RIGHT weighted by V instead of n_k, for NRHS fields at once (the direct second-order solve, QTFDirect).
+!    V(JEL,K,IB) is field K on symmetry image IB of base panel JEL (IB = 1 alone without symmetry), with the normals
+!    of those panels: a general field differs between the images. B(IEL,K,IP) is the right side of block IP, as
+!    BRMAT(IEL,K,IP) of ASSB_RBC; with V(JEL,K,IB) = n_K on image IB the two are equal. The stored Green function of
+!    image IS (field point mirrored) pairs field image IA with source image IB: IS = 1 for IA = IB, 2 otherwise.
+! -------------------------------------------------------------------
+      SUBROUTINE ASSB_RHS_FIELD(V,B,NELEM,NSYS,NRHS)
+      IMPLICIT  NONE
+!
+      INTEGER,INTENT(IN):: NELEM,NSYS,NRHS
+      COMPLEX*16,INTENT(IN):: V(NELEM,NRHS,NSYS)
+      COMPLEX*16,INTENT(OUT):: B(NELEM,NRHS,NSYS)
+
+      CALL ASSB_RHS_FIELD_IRR(V,B,NELEM,0,NSYS,NRHS)
+
+      RETURN
+      END SUBROUTINE ASSB_RHS_FIELD
+
+! -------------------------------------------------------------------
+!    As ASSB_RHS_FIELD, with NLID more rows at the lid points of irregular frequency removal (IRSP = 1), as
+!    ASSB_RBC_IRR builds its rows NELEM+1 to NELEM+NLID for n_k: r_l = int_S G(x_l, xi) V(xi) dS_xi, from
+!    the stored lid integrals DGRN and PKBN and the flag rule of ASSB_RBC_IRR (lid point to panel centroid within 50
+!    panel sizes). B(1:NELEM,K,IP) are the rows of ASSB_RHS_FIELD; NLID = 0 gives ASSB_RHS_FIELD.
+! -------------------------------------------------------------------
+      SUBROUTINE ASSB_RHS_FIELD_IRR(V,B,NELEM,NLID,NSYS,NRHS)
+      USE Inerfs_mod, ONLY: iXYZ_P
+      USE Potentials_mod, ONLY: DGRN, PKBN
+      IMPLICIT  NONE
+!
+      INTEGER,INTENT(IN):: NELEM,NLID,NSYS,NRHS
+      COMPLEX*16,INTENT(IN):: V(NELEM,NRHS,NSYS)
+      COMPLEX*16,INTENT(OUT):: B(NELEM+NLID,NRHS,NSYS)
+
+      INTEGER IEL,JEL,IS,IA,IB,IP,L
+      REAL*8 DIST,XF(3)
+      COMPLEX*16 DUM(2)
+      COMPLEX*16,ALLOCATABLE:: BTMP(:,:),VT(:,:,:)
+
+      B=CMPLX(0.0D0,0.0D0)
+      ! V with the field index first, so that the innermost update reads it contiguously (many fields per Omega)
+      ALLOCATE(VT(NRHS,NELEM,NSYS))
+      DO IB=1, NSYS
+       DO JEL=1, NELEM
+        VT(:,JEL,IB)=V(JEL,:,IB)
+       ENDDO
+      ENDDO
+
+!$OMP PARALLEL NUM_THREADS(NTHREAD) PRIVATE(BTMP)
+      ALLOCATE(BTMP(NRHS,NSYS))
+!$OMP DO PRIVATE(IEL,JEL,IS,IA,IB,IP,L,DIST,XF,DUM) SCHEDULE(DYNAMIC,16)
+! Row-disjoint writes on the IEL axis, no REDUCTION needed.
+      DO IEL=1, NELEM+NLID
+       L=IEL-NELEM
+       IF (L.LE.0) THEN
+        XF(:)=XYZ_P(IEL,:)
+       ELSE
+        XF(:)=iXYZ_P(L,:)
+       ENDIF
+       BTMP=CMPLX(0.0D0,0.0D0)
+       DO JEL=1, NELEM
+        DIST=SQRT((XF(1)-XYZ_P(JEL,1))**2+(XF(2)-XYZ_P(JEL,2))**2+(XF(3)-XYZ_P(JEL,3))**2)
+        DO IS=1, NSYS
+         IF (L.LE.0) THEN
+          IF (DIST.LE.50.D0*PNSZ(JEL)) THEN
+           DUM(IS)=RKBN(IEL,JEL,IS,1)+CGRN(IEL,JEL,IS,1)*DS(JEL)
+          ELSE
+           DUM(IS)=CGRN(IEL,JEL,IS,1)*DS(JEL)
+          ENDIF
+         ELSE
+          IF (DIST.LE.50.D0*PNSZ(JEL)) THEN
+           DUM(IS)=PKBN(L,JEL,IS,1)+DGRN(L,JEL,IS,1)*DS(JEL)
+          ELSE
+           DUM(IS)=DGRN(L,JEL,IS,1)*DS(JEL)
+          ENDIF
+         ENDIF
+        ENDDO
+        DO IA=1, NSYS
+         DO IB=1, NSYS
+          IS=MERGE(1,2,IA.EQ.IB)
+          BTMP(:,IA)=BTMP(:,IA)+DUM(IS)*VT(:,JEL,IB)
+         ENDDO
+        ENDDO
+       ENDDO
+       DO IP=1, NSYS
+        DO IA=1, NSYS
+         B(IEL,:,IP)=B(IEL,:,IP)+RXY(IP,IA)*BTMP(:,IA)
+        ENDDO
+       ENDDO
+      ENDDO
+!$OMP END DO
+      DEALLOCATE(BTMP)
+!$OMP END PARALLEL
+      DEALLOCATE(VT)
+
+      RETURN
+      END SUBROUTINE ASSB_RHS_FIELD_IRR
       
 ! ------------------------------------------------------------------- 
 !    Calculate the element contribution, assembly the right-hand

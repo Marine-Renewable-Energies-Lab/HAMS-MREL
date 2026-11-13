@@ -38,6 +38,8 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("qtf_fs_keys_ranges", test_qtf_fs_keys_ranges), &
     new_unittest("qtf_fs_keys_ignored_note", test_qtf_fs_keys_ignored_note), &
     new_unittest("qtf_b2_key", test_qtf_b2_key), &
+    new_unittest("qtf_direct_key", test_qtf_direct_key), &
+    new_unittest("qtf_direct_needs_body", test_qtf_direct_needs_body), &
     new_unittest("qtf_edge_keys", test_qtf_edge_keys), &
     new_unittest("qtf_field_key", test_qtf_field_key) &
     ]
@@ -256,6 +258,9 @@ subroutine test_validate_rejects(error)
   call check(error, .not. ok, "source velocity with irregular frequency removal accepted")
   if (allocated(error)) return
   call check(error, index(msg, "IRSP") > 0, "irsp message: "//trim(msg))
+  if (allocated(error)) return
+
+  ! qtf_direct = 1 with IRSP = 1 is accepted since Phase 7a Task 3b (test_qtf_direct, direct_irr_accepted)
 end subroutine test_validate_rejects
 
 subroutine test_validate_accepts(error)
@@ -669,6 +674,68 @@ subroutine test_qtf_fs_keys_ignored_note(error)
   call check(error, ok .and. .not. opts%qtf_fs_given, "not given: no note")
   call remove_directory(root)
 end subroutine test_qtf_fs_keys_ignored_note
+
+!> qtf_direct is 0 by default, reads 0 and 1, and rejects other values
+subroutine test_qtf_direct_key(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_direct"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = body"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_direct, 0, "qtf_direct default")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 3", "qtf_terms = body", "qtf_direct = 1"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "qtf_direct = 1 rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_direct, 1, "qtf_direct = 1")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = body", "qtf_direct = 0"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "qtf_direct = 0 rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_direct, 0, "qtf_direct = 0")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = body", &
+                                         "qtf_direct = 2"], "qtf_direct must be 0 or 1 in SecondOrder.in.")
+  call remove_directory(root)
+end subroutine test_qtf_direct_key
+
+!> qtf_direct = 1 needs qtf_terms = body (not full, until Phase 7b) and qtf = 1 or 3
+subroutine test_qtf_direct_needs_body(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_direct_body"
+  character(len=*), parameter :: msg_body = "qtf_direct = 1 needs qtf_terms = body in SecondOrder.in; with full the "// &
+                                            "direct solve has no free-surface forcing yet (Phase 7b)."
+
+  call remove_directory(root)
+  call make_directory(root)
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_direct = 1"], &
+                           msg_body)
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = quadratic", &
+                                         "qtf_direct = 1"], &
+                           msg_body)
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 0", "qtf_terms = body", &
+                                         "qtf_direct = 1"], &
+                           "qtf_direct = 1 needs the difference QTF (qtf = 1 or 3) in SecondOrder.in.")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 2", "qtf_terms = quadratic", &
+                                         "qtf_direct = 1"], &
+                           msg_body)
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = full", &
+                                         "qtf_direct = 1"], msg_body)
+  call remove_directory(root)
+end subroutine test_qtf_direct_needs_body
 
 !> qtf_b2 is control by default, reads body and control, and rejects other values
 subroutine test_qtf_b2_key(error)

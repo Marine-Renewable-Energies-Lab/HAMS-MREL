@@ -79,6 +79,8 @@ module test_integration_drift
     character(len=*), parameter :: qtf_indirect_file = "Wamit_format/QTF_Indirect.11d"
     character(len=*), parameter :: qtf_field_file = "Wamit_format/QTF_FieldPartial.txt"
     character(len=*), parameter :: pot_terms_file = "Wamit_format/QTF_PotentialTerms.txt"
+    character(len=*), parameter :: qtf_direct_file = "Wamit_format/QTF_Direct.12d"
+    character(len=*), parameter :: direct_terms_file = "Wamit_format/QTF_DirectTerms.txt"
     character(len=*), parameter :: terms_file = "Wamit_format/MeanDriftTerms.txt"
     character(len=*), parameter :: control_file = "Wamit_format/MeanDriftControlSurface.7"
     character(len=*), parameter :: offset_cases(4) = [character(len=17) :: "drift_field_0p005", "drift_field_0p01", &
@@ -217,6 +219,38 @@ module test_integration_drift
     real(8), parameter :: fs_main_grid_limit = 1d-8
     ! Body 2 of qtf_fs_two against body 1 mirrored about y = 0 (the layout and every mesh are mirror symmetric)
     real(8), parameter :: fs_two_mirror_limit = 1d-6
+    ! The direct method (qtf_direct = 1, QTF_Direct.12d) against the indirect one (QTF_Indirect.11d, qtf_b2 = body) of the
+    ! same run, Phase 7a Task 5: the largest |T_dir - T_pot| over max |T_pot| of the rows of forces or of moments, from the
+    ! terms files (16 digits). "1.3x measured" limits are 1.3 times the value measured when the check was written, rounded
+    ! up to two digits; these are mesh errors, not accuracy claims.
+    ! qtf_direct_round (480 panels): 3.97e-2 measured, M_y at (0.70, 0.95), where B1 and B2 (7.4 and 7.1) cancel to a T_pot
+    ! of 4.9; 1.6e-3 at (0.95, 1.10). It is the bottom of the hull: the same hull with 8 bottom rings instead of 4 (608
+    ! panels) gives 1.27e-2, and at twice the resolution everywhere (1920 panels) 8.1e-3. 1.3x measured, above the plan's 1%.
+    ! The rows of forces alone: 1.88e-2 (at (0.70, 0.95)); all rows at (0.95, 1.10): 1.61e-3. 1.3x measured each
+    real(8), parameter :: direct_round_limit = 5.2d-2, direct_round_force_limit = 2.5d-2, direct_round_quiet_limit = 2.1d-3
+    real(8), parameter :: direct_round_quiet_pair(2) = [0.95d0, 1.10d0]
+    ! The sharp cylinder at m2 (1792 panels), besides the fall from m1 (2.11e-1 and 3.26e-1): forces 7.82e-2, all rows at
+    ! the pairs other than (0.47, 0.77) 5.13e-2. 1.3x measured
+    real(8), parameter :: direct_sharp_force_limit = 1.1d-1, direct_sharp_other_limit = 6.7d-2
+    ! qtf_direct_full (480 panels, velocity by differencing, Omega = 0.15): 6.95e-3 measured; the GMRES run 6.94e-3. 1.3x
+    real(8), parameter :: direct_body_limit = 9.1d-3
+    ! The half mesh against the whole mesh: 2.57e-6 measured (T_pot 5.9e-7, pot_half_limit), 2x measured, rounded up
+    real(8), parameter :: direct_half_limit = 5.2d-6
+    ! qtf_direct_two (two hulls of 220 panels, 30 m apart): forces 1.21e-2, moments 0.229 (M_y at (0.80, 1.00), where
+    ! max |T_pot| of the moments is 0.24). One such hull alone gives the same: 1.23e-2 and 0.574 of its own smaller
+    ! moments (5.6e-2 against 5.4e-2 per rho g), and 7.2e-2 with 6 bottom rings instead of 3: the bottom of the coarse
+    ! hull, not the multi-body matrices. Forces: 1.3x measured. Moments: the largest |T_dir - T_pot| of the moments of the
+    ! two bodies over that of the same hull alone (qtf_direct_one), absolute: 0.979 measured (5.45e-2 over 5.57e-2). 1.3,
+    ! so that a coupling error of the moments of 30% of the hull's own mesh error fails
+    real(8), parameter :: direct_two_ratio_limit = 1.3d0, direct_two_force_limit = 1.6d-2
+    ! qtf_direct_irsp (IRSP = 1): 6.41e-3 measured. 1.3x measured
+    real(8), parameter :: direct_irsp_limit = 8.4d-3
+    ! ISOLV = 2 against 1: T_dir changes by 2.68e-4 where T_pot changes by 2.51e-4 (the GMRES first-order solution). The
+    ! direct solve itself is LU in both, so twice the change of T_pot, at least 1e-5
+    real(8), parameter :: direct_gmres_floor = 1d-5, direct_gmres_factor = 2d0
+    ! Body 2 against body 1 mirrored, .12d: 2.44e-6 measured (.10d 1.9e-6, .11d 2.2e-6: the printed digits and the
+    ! rounding of the solves). 2x measured, rounded up; a wrong mode or body gives order 1
+    real(8), parameter :: direct_mirror_limit = 5d-6
 
 contains
 
@@ -265,6 +299,8 @@ contains
             new_unittest("run_qtf_round_body", run_qtf_round_body), &
             new_unittest("run_qtf_round_low", run_qtf_round_low), &
             new_unittest("run_qtf_body_cases", run_qtf_body_cases), &
+            new_unittest("run_qtf_direct_cases", run_qtf_direct_cases), &
+            new_unittest("run_qtf_direct_sharp_m2", run_qtf_direct_sharp_m2), &
             new_unittest("run_qtf_sharp_b2", run_qtf_sharp_b2), &
             new_unittest("run_qtf_b2_routes", run_qtf_b2_routes), &
             new_unittest("run_qtf_b2_defaults", run_qtf_b2_defaults), &
@@ -362,6 +398,17 @@ contains
             new_unittest("qtf_body_spacing", qtf_body_spacing), &
             new_unittest("qtf_body_absent", qtf_body_absent), &
             new_unittest("qtf_body_log", qtf_body_log), &
+            new_unittest("direct_irr_runs", direct_irr_runs), &
+            new_unittest("qtf_direct_file_layout", qtf_direct_file_layout), &
+            new_unittest("direct_vs_indirect_round", direct_vs_indirect_round), &
+            new_unittest("direct_vs_indirect_sharp", direct_vs_indirect_sharp), &
+            new_unittest("direct_half_matches_full", direct_half_matches_full), &
+            new_unittest("direct_two_bodies", direct_two_bodies), &
+            new_unittest("direct_diagonal", direct_diagonal), &
+            new_unittest("direct_gmres", direct_gmres), &
+            new_unittest("direct_vs_indirect_irr_file", direct_vs_indirect_irr_file), &
+            new_unittest("qtf_indirect_reference", qtf_indirect_reference), &
+            new_unittest("direct_no_lid_stops", direct_no_lid_stops), &
             new_unittest("qtf_b2_control_sharp", qtf_b2_control_sharp), &
             new_unittest("qtf_b2_control_other_terms", qtf_b2_control_other_terms), &
             new_unittest("qtf_b2_control_main_grid", qtf_b2_control_main_grid), &
@@ -633,8 +680,9 @@ contains
     !> The fixtures of the QTF potential part besides qtf_round_body and qtf_round_low, in one setup test
     subroutine run_qtf_body_cases(error)
         type(error_type), allocatable, intent(out) :: error
-        character(len=21), parameter :: cases(7) = [character(len=21) :: "qtf_round_body_ref", "qtf_round_body_irsp", &
-            "qtf_half_body", "qtf_two_round_body", "qtf_isolated_body", "qtf_round_low_spacing", "qtf_period_body"]
+        character(len=21), parameter :: cases(8) = [character(len=21) :: "qtf_round_body_ref", "qtf_round_body_irsp", &
+            "qtf_half_body", "qtf_two_round_body", "qtf_isolated_body", "qtf_round_low_spacing", "qtf_period_body", &
+            "qtf_direct_irsp"]
         type(error_type), allocatable :: one
         integer :: c
 
@@ -647,6 +695,31 @@ contains
             end if
         end do
     end subroutine run_qtf_body_cases
+
+    !> The fixtures of the direct method (qtf_direct = 1) besides qtf_direct_irsp, in one setup test, and the sharp cylinder
+    !> at m2 (1792 panels) in its own, which runs beside it
+    subroutine run_qtf_direct_cases(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=19), parameter :: cases(7) = [character(len=19) :: "qtf_direct_round", "qtf_direct_gmres", &
+            "qtf_direct_full", "qtf_direct_half", "qtf_direct_two", "qtf_direct_one", "qtf_direct_sharp_m1"]
+        type(error_type), allocatable :: one
+        integer :: c
+
+        do c = 1, size(cases)
+            call run_case(trim(cases(c)), [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file, &
+                                           qtf_direct_file, direct_terms_file], one)
+            if (allocated(one)) then
+                print '(4x,a)', trim(cases(c))//": "//one%message
+                if (.not. allocated(error)) call move_alloc(one, error)
+            end if
+        end do
+    end subroutine run_qtf_direct_cases
+
+    subroutine run_qtf_direct_sharp_m2(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("qtf_direct_sharp_m2", [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file, &
+                                              qtf_direct_file, direct_terms_file], error)
+    end subroutine run_qtf_direct_sharp_m2
 
     !> Routes of qtf_b2 = control on the hull of drift_cyl with C and F at 6 m panels: psi of Omega = 0.23 from a radiation-only
     !> solve, from the main grid, and on the half mesh
@@ -3892,6 +3965,536 @@ contains
         call check(error, count_log_lines(get_running_exe_path()//"qtf_round.log", line), 0, &
                    "free-surface line in the log of qtf_round")
     end subroutine qtf_body_log
+
+    !> qtf_direct = 1 with irregular frequency removal (IRSP = 1, Phase 7a Task 3b) on the inputs of qtf_round_body_irsp
+    !> (run in run_qtf_body_cases): the run is accepted and completes (a NaN or Inf in T_dir would end it with exit
+    !> code 1), solves the direct problem
+    !> at its one difference frequency, and writes QTF_Indirect.11d as the run without the direct method does. T_dir
+    !> itself is checked against T_pot in the unit test direct_vs_indirect_irr; QTF_Direct.12d in qtf_direct_file_layout.
+    subroutine direct_irr_runs(error)
+        type(error_type), allocatable, intent(out) :: error
+
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_direct_irsp.log", "QTF direct: omega"), 1, &
+                   "direct-solve lines in the log of qtf_direct_irsp")
+        if (allocated(error)) return
+        call check_same_file(output_dir("qtf_round_body_irsp")//qtf_indirect_file, &
+                             output_dir("qtf_direct_irsp")//qtf_indirect_file, error)
+    end subroutine direct_irr_runs
+
+    !> QTF_Direct.12d and QTF_DirectTerms.txt of qtf_direct_irsp (one body, two headings) and qtf_direct_two (two bodies,
+    !> every heading pair): .12d has the rows of .10d, in the same order; on the diagonal (equal frequencies) it is .10d,
+    !> text for text; off the diagonal .12d - .10d is the sum of the two parts of QTF_DirectTerms.txt (the part from phi_I2
+    !> and the part from phi_D), to the printed digits; the terms file has one row per off-diagonal row of .12d, with 9
+    !> columns (keys, I, Re Im of each part). Not vacuous: both parts are non-zero, and .12d differs from .10d off the
+    !> diagonal. The mode and heading mapping: .12d is Hermitian over the frequency and heading pairs, to the printed
+    !> digits, and in qtf_direct_two, whose bodies are mirror images of each other in the plane y = 15 m, about which the
+    !> waves of heading 0 are symmetric, the rows of body 2 at heading (0, 0) are those of body 1 with the sign of sway,
+    !> roll and yaw changed (direct_mirror_limit).
+    subroutine qtf_direct_file_layout(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=15), parameter :: cases(2) = [character(len=15) :: "qtf_direct_irsp", "qtf_direct_two"]
+        character(len=:), allocatable :: a(:), b(:), lines(:), name
+        real(8), allocatable :: d10(:,:), d12(:,:)
+        real(8) :: t(9), diff(2), tol, worst, part_max(2), changed, scale, sgn, mirror
+        integer :: c, r, q, ios, nterms, noff, found, partners, k, nmirror
+        logical :: exists
+
+        do c = 1, size(cases)
+            name = trim(cases(c))
+            inquire (file=output_dir(name)//qtf_direct_file, exist=exists)
+            call check(error, exists, name//" wrote no QTF_Direct.12d")
+            if (allocated(error)) return
+            call read_lines(output_dir(name)//qtf_diff_file, a, error)
+            if (allocated(error)) return
+            call read_lines(output_dir(name)//qtf_direct_file, b, error)
+            if (allocated(error)) return
+            call read_qtf(output_dir(name)//qtf_diff_file, d10, error)
+            if (allocated(error)) return
+            call read_qtf(output_dir(name)//qtf_direct_file, d12, error)
+            if (allocated(error)) return
+            call check(error, size(a) == size(b) .and. size(a) > 0, name//": .12d and .10d have different numbers of rows")
+            if (allocated(error)) return
+            call read_lines(output_dir(name)//direct_terms_file, lines, error)
+            if (allocated(error)) return
+            noff = 0
+            changed = 0d0
+            do r = 1, size(a)
+                call check(error, a(r)(1:62) == b(r)(1:62), name//": .12d row of other keys than .10d: "//trim(b(r)))
+                if (allocated(error)) return
+                if (d10(r,1) == d10(r,2)) then
+                    call check(error, a(r) == b(r), name//": .12d differs from .10d on the diagonal: "//trim(b(r)))
+                    if (allocated(error)) return
+                else
+                    noff = noff + 1
+                    changed = max(changed, hypot(d12(r,8) - d10(r,8), d12(r,9) - d10(r,9)))
+                end if
+            end do
+            call check(error, noff > 0 .and. noff < size(a), name//": no diagonal or no off-diagonal rows")
+            if (allocated(error)) return
+            call check(error, changed > 0d0, name//": .12d is .10d off the diagonal")
+            if (allocated(error)) return
+            nterms = 0
+            do r = 1, size(lines)
+                if (lines(r)(1:1) == '#') cycle
+                nterms = nterms + 1
+            end do
+            call check(error, nterms == noff, name//": QTF_DirectTerms.txt does not have one row per off-diagonal row of .12d")
+            if (allocated(error)) return
+            worst = 0d0
+            part_max = 0d0
+            do r = 1, size(lines)
+                if (lines(r)(1:1) == '#') cycle
+                read (lines(r), *, iostat=ios) t
+                call check(error, ios == 0, name//": bad row in QTF_DirectTerms.txt: "//trim(lines(r)))
+                if (allocated(error)) return
+                part_max = max(part_max, [hypot(t(6), t(7)), hypot(t(8), t(9))])
+                found = 0
+                do q = 1, size(a)
+                    if (.not. (same(d12(q,1), t(1)) .and. same(d12(q,2), t(2)) .and. d12(q,3) == t(3) .and. &
+                               d12(q,4) == t(4) .and. nint(d12(q,5)) == nint(t(5)))) cycle
+                    found = found + 1
+                    diff = d12(q,8:9) - d10(q,8:9) - [t(6) + t(8), t(7) + t(9)]
+                    tol = 1d-6*(hypot(d12(q,8), d12(q,9)) + hypot(d10(q,8), d10(q,9))) + 1d-12
+                    worst = max(worst, hypot(diff(1), diff(2))/tol)
+                end do
+                call check(error, found == 1, name//": a row of QTF_DirectTerms.txt has no single .12d row")
+                if (allocated(error)) return
+            end do
+            call report("qtf_direct_file_layout "//name//" .12d - .10d against the terms (in units of the printed-digit"// &
+                        " bound)", worst)
+            call check(error, worst <= 1d0, name//": .12d - .10d is not the sum of the terms of QTF_DirectTerms.txt")
+            if (allocated(error)) return
+            call check(error, all(part_max > 0d0), name//": a part of QTF_DirectTerms.txt is zero in every row")
+            if (allocated(error)) return
+            ! Hermitian: the frequency and heading pairs map to their partners
+            worst = 0d0
+            partners = 0
+            do r = 1, size(d12, 1)
+                scale = maxval(d12(:,6), mask=same_index_kind(d12(:,5), d12(r,5)))
+                q = partner_row(d12, r)
+                if (q == 0) cycle
+                partners = partners + 1
+                worst = max(worst, (abs(d12(q,8) - d12(r,8)) + abs(d12(q,9) + d12(r,9)))/scale)
+            end do
+            call report("qtf_direct_file_layout "//name//" .12d Hermitian", worst)
+            call check(error, partners == size(d12, 1), name//": a .12d row has no partner")
+            if (allocated(error)) return
+            call check_below(error, "qtf_direct_file_layout "//name//" .12d Hermitian", worst, pot_printed_limit)
+            if (allocated(error)) return
+        end do
+
+        ! The modes of the two bodies (d12 is that of qtf_direct_two): body 2 at heading (0, 0) is body 1 mirrored in y = 15 m
+        mirror = 0d0
+        nmirror = 0
+        do r = 1, size(d12, 1)
+            if (d12(r,3) /= 0d0 .or. d12(r,4) /= 0d0 .or. nint(d12(r,5)) > 6) cycle
+            k = nint(d12(r,5))
+            sgn = merge(-1d0, 1d0, k == 2 .or. k == 4 .or. k == 6)
+            scale = maxval(d12(:,6), mask=same_index_kind(d12(:,5), d12(r,5)))
+            do q = 1, size(d12, 1)
+                if (.not. (same(d12(q,1), d12(r,1)) .and. same(d12(q,2), d12(r,2)) .and. d12(q,3) == 0d0 .and. &
+                           d12(q,4) == 0d0 .and. nint(d12(q,5)) == k + 6)) cycle
+                nmirror = nmirror + 1
+                mirror = max(mirror, (abs(d12(q,8) - sgn*d12(r,8)) + abs(d12(q,9) - sgn*d12(r,9)))/scale)
+            end do
+        end do
+        call report("qtf_direct_file_layout qtf_direct_two body 2 against body 1 mirrored", mirror)
+        call check(error, nmirror == 6*count(d12(:,3) == 0d0 .and. d12(:,4) == 0d0)/12 .and. nmirror > 0, &
+                   "qtf_direct_two: rows of body 2 at heading (0, 0) missing")
+        if (allocated(error)) return
+        call check_below(error, "qtf_direct_file_layout qtf_direct_two body 2 against body 1 mirrored", mirror, &
+                         direct_mirror_limit)
+    end subroutine qtf_direct_file_layout
+
+    ! ---------------------------------------------------------------------------------------------- the direct method
+
+    !> T_dir of each row of QTF_DirectTerms.txt: (PER1, PER2, BETA1, BETA2, I, Re, Im), the sum of its two parts, scaled
+    !> and conjugated as T_pot of read_pot_total
+    subroutine read_direct_total(path, rows, error)
+        character(len=*), intent(in) :: path
+        real(8), allocatable, intent(out) :: rows(:,:)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=:), allocatable :: lines(:)
+        real(8) :: t(9)
+        integer :: r, n, ios
+
+        call read_lines(path, lines, error)
+        if (allocated(error)) return
+        allocate (rows(size(lines), 7))
+        n = 0
+        do r = 1, size(lines)
+            if (lines(r)(1:1) == '#') cycle
+            n = n + 1
+            read (lines(r), *, iostat=ios) t
+            call check(error, ios == 0, "Bad row in "//path//": "//trim(lines(r)))
+            if (allocated(error)) return
+            rows(n,1:5) = t(1:5)
+            rows(n,6) = t(6) + t(8)
+            rows(n,7) = t(7) + t(9)
+        end do
+        rows = rows(1:n,:)
+    end subroutine read_direct_total
+
+    !> The largest |a - b| over the rows of b, each over max |b| of its rows of forces or of moments (kind_scale), with the
+    !> rows matched by their keys; a and b must have the same rows
+    subroutine largest_difference(a, b, label, worst, error)
+        real(8), intent(in) :: a(:,:), b(:,:)   ! (PER1, PER2, BETA1, BETA2, I, Re, Im)
+        character(len=*), intent(in) :: label
+        real(8), intent(out) :: worst
+        type(error_type), allocatable, intent(out) :: error
+        integer :: p, q
+
+        worst = 0d0
+        call check(error, size(a, 1) == size(b, 1) .and. size(b, 1) > 0, label//": other rows")
+        if (allocated(error)) return
+        do p = 1, size(b, 1)
+            q = matching_row(b, p, a)
+            call check(error, q > 0, label//": a row is missing")
+            if (allocated(error)) return
+            worst = max(worst, hypot(a(q,6) - b(p,6), a(q,7) - b(p,7))/kind_scale(b, b(p,5)))
+        end do
+    end subroutine largest_difference
+
+    !> T_dir (QTF_DirectTerms.txt) against T_pot (QTF_PotentialTerms.txt) of the run name, over max |T_pot| of the rows of
+    !> forces or of moments, and the same for the rows of forces alone (forces). Both terms files carry 16 digits, so this
+    !> is the difference of the methods, not of the printed digits of .12d and .11d. .12d is finite.
+    subroutine direct_against_indirect(name, worst, error, forces)
+        character(len=*), intent(in) :: name
+        real(8), intent(out) :: worst
+        type(error_type), allocatable, intent(out) :: error
+        real(8), intent(out), optional :: forces
+        real(8), allocatable :: td(:,:), tp(:,:)
+        logical, allocatable :: is_force(:)
+
+        worst = huge(1d0)
+        call check_no_bad_numbers(output_dir(name)//qtf_direct_file, error)
+        if (allocated(error)) return
+        call read_direct_total(output_dir(name)//direct_terms_file, td, error)
+        if (allocated(error)) return
+        call read_pot_total(output_dir(name)//pot_terms_file, tp, error)
+        if (allocated(error)) return
+        call largest_difference(td, tp, name//" T_dir against T_pot", worst, error)
+        if (allocated(error)) return
+        if (present(forces)) then
+            is_force = mod(nint(tp(:,5)) - 1, 6) < 3
+            call largest_difference(pack_rows(td, mod(nint(td(:,5)) - 1, 6) < 3), pack_rows(tp, is_force), &
+                                    name//" T_dir against T_pot, forces", forces, error)
+        end if
+    end subroutine direct_against_indirect
+
+    !> The rows of t where keep is true
+    function pack_rows(t, keep) result(p)
+        real(8), intent(in) :: t(:,:)
+        logical, intent(in) :: keep(:)
+        real(8), allocatable :: p(:,:)
+        integer :: k
+
+        allocate (p(count(keep), size(t, 2)))
+        do k = 1, size(t, 2)
+            p(:,k) = pack(t(:,k), keep)
+        end do
+    end function pack_rows
+
+    !> The rounded free cylinder of qtf_round_body (480 panels, 0.70, 0.95, 1.10 rad/s, headings 0 and 30): T_dir against
+    !> T_pot (qtf_b2 = body), and .11d of the direct run is that of qtf_round_body, text for text (qtf_direct = 1 leaves
+    !> the indirect method alone)
+    subroutine direct_vs_indirect_round(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: tp(:,:), e(:)
+        real(8) :: worst, forces, quiet
+
+        call direct_against_indirect("qtf_direct_round", worst, error)
+        if (allocated(error)) return
+        call direct_row_errors("qtf_direct_round", tp, e, error)
+        if (allocated(error)) return
+        forces = maxval(e, mask=is_force_row(tp))
+        quiet = maxval(e, mask=rows_at_pair(tp, direct_round_quiet_pair))
+        call report("direct_vs_indirect_round", worst)
+        call report("direct_vs_indirect_round forces", forces)
+        call report("direct_vs_indirect_round all rows at (0.95, 1.10)", quiet)
+        call check_below(error, "direct_vs_indirect_round", worst, direct_round_limit)
+        if (allocated(error)) return
+        call check_below(error, "direct_vs_indirect_round forces", forces, direct_round_force_limit)
+        if (allocated(error)) return
+        call check_below(error, "direct_vs_indirect_round all rows at (0.95, 1.10)", quiet, direct_round_quiet_limit)
+        if (allocated(error)) return
+        call check_same_file(output_dir("qtf_round_body")//qtf_indirect_file, &
+                             output_dir("qtf_direct_round")//qtf_indirect_file, error)
+    end subroutine direct_vs_indirect_round
+
+    !> The sharp cylinder of qtf_sharp_b2_body (free, heading 0, Omega 0.07, 0.23, 0.30 rad/s) at m1 (448 panels, the mesh
+    !> of drift_cyl) and m2 (1792 panels, half the panel size): T_dir against T_pot falls from m1 to m2, over the rows of
+    !> forces at every pair and over all rows at the pairs other than (0.47, 0.77). At the sharp bottom edge both methods
+    !> converge slowly (Phase 5: about h^(1/4) for the B2 surface piece of the free body), so no level is required, and at
+    !> (0.47, 0.77), next to the heave resonance, the moments are printed only: there the hull-form B2 of T_pot misses the
+    !> exact M_y by 95% at m1 and 74% at m2 (exact B2 of qtf_b2_control_sharp), T_dir moves towards T_pot with the exact
+    !> B2 faster than T_pot does (68.4 to 38.7 against 75.7 to 58.8, per rho g), and so their difference grew, 0.455 to
+    !> 0.545 (measured). Each value is over max |T_pot| of the rows of forces or of moments of its run. At m2 the forces and
+    !> the other pairs are also capped (direct_sharp_force_limit, direct_sharp_other_limit).
+    subroutine direct_vs_indirect_sharp(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=19), parameter :: cases(2) = [character(len=19) :: "qtf_direct_sharp_m1", "qtf_direct_sharp_m2"]
+        real(8), parameter :: resonance_pair(2) = [0.47d0, 0.77d0]
+        real(8), allocatable :: tp(:,:), e(:)
+        logical, allocatable :: at_pair(:), is_force(:)
+        real(8) :: forces(2), others(2), pair_moments(2), worst
+        integer :: c
+
+        do c = 1, 2
+            call direct_against_indirect(trim(cases(c)), worst, error)
+            if (allocated(error)) return
+            call direct_row_errors(trim(cases(c)), tp, e, error)
+            if (allocated(error)) return
+            is_force = is_force_row(tp)
+            at_pair = rows_at_pair(tp, resonance_pair)
+            forces(c) = maxval(e, mask=is_force)
+            others(c) = maxval(e, mask=.not. at_pair)
+            pair_moments(c) = maxval(e, mask=at_pair .and. .not. is_force)
+            call report("direct_vs_indirect_sharp "//trim(cases(c))//" forces", forces(c))
+            call report("direct_vs_indirect_sharp "//trim(cases(c))//" pairs other than (0.47, 0.77)", others(c))
+            call report("direct_vs_indirect_sharp "//trim(cases(c))//" moments at (0.47, 0.77), printed only", pair_moments(c))
+        end do
+        call check(error, forces(2) < forces(1), "direct_vs_indirect_sharp: the forces do not fall from m1 to m2")
+        if (allocated(error)) return
+        call check(error, others(2) < others(1), &
+                   "direct_vs_indirect_sharp: the pairs other than (0.47, 0.77) do not fall from m1 to m2")
+        if (allocated(error)) return
+        call check_below(error, "direct_vs_indirect_sharp m2 forces", forces(2), direct_sharp_force_limit)
+        if (allocated(error)) return
+        call check_below(error, "direct_vs_indirect_sharp m2 pairs other than (0.47, 0.77)", others(2), &
+                         direct_sharp_other_limit)
+    end subroutine direct_vs_indirect_sharp
+
+    !> |T_dir - T_pot| over max |T_pot| of the rows of forces or of moments (kind_scale), for each row of T_pot (tp) of the
+    !> run name, with the row of T_dir matched by its keys
+    subroutine direct_row_errors(name, tp, e, error)
+        character(len=*), intent(in) :: name
+        real(8), allocatable, intent(out) :: tp(:,:), e(:)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: td(:,:)
+        integer :: p, q
+
+        call read_direct_total(output_dir(name)//direct_terms_file, td, error)
+        if (allocated(error)) return
+        call read_pot_total(output_dir(name)//pot_terms_file, tp, error)
+        if (allocated(error)) return
+        allocate (e(size(tp, 1)))
+        do p = 1, size(tp, 1)
+            q = matching_row(tp, p, td)
+            call check(error, q > 0, name//": a row of T_pot has no row of T_dir")
+            if (allocated(error)) return
+            e(p) = hypot(td(q,6) - tp(p,6), td(q,7) - tp(p,7))/kind_scale(tp, tp(p,5))
+        end do
+    end subroutine direct_row_errors
+
+    !> The rows of t (column 5, I) that are forces of a body
+    function is_force_row(t) result(f)
+        real(8), intent(in) :: t(:,:)
+        logical, allocatable :: f(:)
+        f = mod(nint(t(:,5)) - 1, 6) < 3
+    end function is_force_row
+
+    !> The rows of t at the frequency pair, in either order
+    function rows_at_pair(t, pair) result(at)
+        real(8), intent(in) :: t(:,:), pair(2)
+        logical, allocatable :: at(:)
+        integer :: p
+
+        allocate (at(size(t, 1)))
+        do p = 1, size(t, 1)
+            at(p) = (same(t(p,1), pair(1)) .and. same(t(p,2), pair(2))) .or. &
+                    (same(t(p,1), pair(2)) .and. same(t(p,2), pair(1)))
+        end do
+    end function rows_at_pair
+
+    !> The half mesh (ISY = 1) against the whole mesh, T_dir: the same discrete problem by images. And T_dir against T_pot
+    !> on the whole mesh (velocity by differencing, Omega = 0.15 rad/s)
+    subroutine direct_half_matches_full(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: th(:,:), tf(:,:)
+        real(8) :: worst
+
+        call read_direct_total(output_dir("qtf_direct_half")//direct_terms_file, th, error)
+        if (allocated(error)) return
+        call read_direct_total(output_dir("qtf_direct_full")//direct_terms_file, tf, error)
+        if (allocated(error)) return
+        call largest_difference(th, tf, "direct_half_matches_full", worst, error)
+        if (allocated(error)) return
+        call report("direct_half_matches_full", worst)
+        call check_below(error, "direct_half_matches_full", worst, direct_half_limit)
+        if (allocated(error)) return
+        call direct_against_indirect("qtf_direct_full", worst, error)
+        if (allocated(error)) return
+        call report("direct_half_matches_full T_dir against T_pot, whole mesh", worst)
+        call check_below(error, "direct_half_matches_full T_dir against T_pot, whole mesh", worst, direct_body_limit)
+    end subroutine direct_half_matches_full
+
+    !> Two small rounded hulls 30 m apart (the multi-body matrices, every heading pair): T_dir against T_pot of the same run,
+    !> over the rows of forces, and the moments against the same hull alone (qtf_direct_one, direct_two_ratio_limit). The
+    !> mode mapping of the two bodies is checked in qtf_direct_file_layout.
+    subroutine direct_two_bodies(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=14), parameter :: cases(2) = [character(len=14) :: "qtf_direct_two", "qtf_direct_one"]
+        real(8), allocatable :: tp(:,:), e(:)
+        real(8) :: worst, forces, moments(2), ratio
+        integer :: c
+
+        call direct_against_indirect("qtf_direct_two", worst, error, forces)
+        if (allocated(error)) return
+        call report("direct_two_bodies forces", forces)
+        call report("direct_two_bodies forces and moments", worst)
+        call check_below(error, "direct_two_bodies forces", forces, direct_two_force_limit)
+        if (allocated(error)) return
+        ! The largest |T_dir - T_pot| of the moments, absolute, of the two bodies and of the same hull alone
+        do c = 1, 2
+            call direct_against_indirect(trim(cases(c)), worst, error)
+            if (allocated(error)) return
+            call direct_row_errors(trim(cases(c)), tp, e, error)
+            if (allocated(error)) return
+            moments(c) = maxval(e, mask=.not. is_force_row(tp))*kind_scale(tp, 4d0)
+            call report("direct_two_bodies "//trim(cases(c))//" largest moment difference", moments(c))
+        end do
+        call check(error, moments(2) > 0d0, "direct_two_bodies: the hull alone has no moment difference")
+        if (allocated(error)) return
+        ratio = moments(1)/moments(2)
+        call report("direct_two_bodies moments, two bodies over the hull alone", ratio)
+        call check_below(error, "direct_two_bodies moments, two bodies over the hull alone", ratio, direct_two_ratio_limit)
+    end subroutine direct_two_bodies
+
+    !> The diagonal (omega_i = omega_j, Omega = 0) has no direct solve: on every direct fixture .12d is .10d there, text for
+    !> text, and the log has one direct-solve line per difference frequency Omega > 0 of the pairs of .12d, none for Omega = 0
+    subroutine direct_diagonal(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=19), parameter :: cases(7) = [character(len=19) :: "qtf_direct_round", "qtf_direct_gmres", &
+            "qtf_direct_full", "qtf_direct_half", "qtf_direct_two", "qtf_direct_sharp_m1", "qtf_direct_irsp"]
+        character(len=:), allocatable :: a(:), b(:), name
+        real(8), allocatable :: d(:,:), omegas(:)
+        integer :: c, r, diagonal
+
+        do c = 1, size(cases)
+            name = trim(cases(c))
+            call read_lines(output_dir(name)//qtf_diff_file, a, error)
+            if (allocated(error)) return
+            call read_lines(output_dir(name)//qtf_direct_file, b, error)
+            if (allocated(error)) return
+            call read_qtf(output_dir(name)//qtf_direct_file, d, error)
+            if (allocated(error)) return
+            call check(error, size(a) == size(b), name//": .12d and .10d have different numbers of rows")
+            if (allocated(error)) return
+            diagonal = 0
+            if (allocated(omegas)) deallocate (omegas)
+            allocate (omegas(0))
+            do r = 1, size(b)
+                if (d(r,1) == d(r,2)) then
+                    diagonal = diagonal + 1
+                    call check(error, a(r) == b(r), name//": .12d differs from .10d on the diagonal: "//trim(b(r)))
+                    if (allocated(error)) return
+                else if (.not. any(abs(omegas - abs(d(r,1) - d(r,2))) < 1d-5)) then
+                    omegas = [omegas, abs(d(r,1) - d(r,2))]
+                end if
+            end do
+            call check(error, diagonal > 0, name//": no diagonal rows")
+            if (allocated(error)) return
+            call check(error, count_log_lines(get_running_exe_path()//name//".log", "QTF direct: omega"), size(omegas), &
+                       name//": direct-solve lines in the log against the difference frequencies of .12d")
+            if (allocated(error)) return
+        end do
+    end subroutine direct_diagonal
+
+    !> ISOLV = 2 (the first-order solves by GMRES; the direct solve factors AMAT once per Omega, Phase 7a Task 3) on the
+    !> inputs of qtf_direct_full: T_dir against T_pot of the same run within the limit of ISOLV = 1, and T_dir against T_dir
+    !> of qtf_direct_full within direct_gmres_factor times the change of T_pot between the solvers, or direct_gmres_floor
+    subroutine direct_gmres(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: tg(:,:), tl(:,:), pg(:,:), pl(:,:)
+        real(8) :: own, dir_change, pot_change
+
+        call direct_against_indirect("qtf_direct_gmres", own, error)
+        if (allocated(error)) return
+        call report("direct_gmres T_dir against T_pot", own)
+        call check_below(error, "direct_gmres T_dir against T_pot", own, direct_body_limit)
+        if (allocated(error)) return
+        call read_direct_total(output_dir("qtf_direct_gmres")//direct_terms_file, tg, error)
+        if (allocated(error)) return
+        call read_direct_total(output_dir("qtf_direct_full")//direct_terms_file, tl, error)
+        if (allocated(error)) return
+        call read_pot_total(output_dir("qtf_direct_gmres")//pot_terms_file, pg, error)
+        if (allocated(error)) return
+        call read_pot_total(output_dir("qtf_direct_full")//pot_terms_file, pl, error)
+        if (allocated(error)) return
+        call largest_difference(tg, tl, "direct_gmres T_dir", dir_change, error)
+        if (allocated(error)) return
+        call largest_difference(pg, pl, "direct_gmres T_pot", pot_change, error)
+        if (allocated(error)) return
+        call report("direct_gmres T_dir, ISOLV = 2 against 1", dir_change)
+        call report("direct_gmres T_pot, ISOLV = 2 against 1", pot_change)
+        call check_below(error, "direct_gmres T_dir, ISOLV = 2 against 1", dir_change, &
+                         max(direct_gmres_floor, direct_gmres_factor*pot_change))
+    end subroutine direct_gmres
+
+    !> .12d against .11d with irregular frequency removal (IRSP = 1) in both, on qtf_direct_irsp (the rounded hull of
+    !> qtf_round_body_irsp with its lid, Omega = 0.15 rad/s), from the terms files. The lid at the irregular frequency is
+    !> checked in the unit test direct_vs_indirect_irr.
+    subroutine direct_vs_indirect_irr_file(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: worst
+
+        call direct_against_indirect("qtf_direct_irsp", worst, error)
+        if (allocated(error)) return
+        call report("direct_vs_indirect_irr_file", worst)
+        call check_below(error, "direct_vs_indirect_irr_file", worst, direct_irsp_limit)
+    end subroutine direct_vs_indirect_irr_file
+
+    !> QTF_Indirect.11d of qtf_round_body against the file written by the binary before Phase 7a (commit d32b623), stored in
+    !> test/data/qtf_round_body/expected_output: the same rows and keys, and values within the printed digits
+    !> (pot_printed_limit of max |T| of the rows of forces or of moments; the number of identical rows is printed). Phase 7a
+    !> Task 4 shared the row writer of .11d with .12d; this pins .11d independently of the binary under test.
+    subroutine qtf_indirect_reference(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: reference = "test/data/qtf_round_body/expected_output/QTF_Indirect.11d"
+        character(len=:), allocatable :: a(:), b(:)
+        real(8), allocatable :: x(:,:), y(:,:)
+        real(8) :: worst
+        integer :: r, identical
+
+        call read_lines(get_repo_root_path()//reference, a, error)
+        if (allocated(error)) return
+        call read_lines(output_dir("qtf_round_body")//qtf_indirect_file, b, error)
+        if (allocated(error)) return
+        call read_qtf(get_repo_root_path()//reference, x, error)
+        if (allocated(error)) return
+        call read_qtf(output_dir("qtf_round_body")//qtf_indirect_file, y, error)
+        if (allocated(error)) return
+        call check(error, size(a) == size(b) .and. size(a) > 0, "qtf_indirect_reference: other number of rows")
+        if (allocated(error)) return
+        worst = 0d0
+        identical = 0
+        do r = 1, size(a)
+            call check(error, a(r)(1:62) == b(r)(1:62), "qtf_indirect_reference: other keys: "//trim(b(r)))
+            if (allocated(error)) return
+            if (a(r) == b(r)) identical = identical + 1
+            worst = max(worst, hypot(x(r,8) - y(r,8), x(r,9) - y(r,9))/maxval(x(:,6), mask=same_index_kind(x(:,5), x(r,5))))
+        end do
+        print '(4x,a,i0,a,i0,a)', "qtf_indirect_reference: ", identical, " of ", size(a), " rows identical to the reference"
+        call report("qtf_indirect_reference", worst)
+        call check_below(error, "qtf_indirect_reference", worst, pot_printed_limit)
+    end subroutine qtf_indirect_reference
+
+    !> qtf_direct = 1 with IRSP = 1 and lid meshes without panels stops in the set-up, before the first-order solves, with
+    !> its message: one body (qtf_direct_no_lid) and two bodies (qtf_direct_no_lid_two)
+    subroutine direct_no_lid_stops(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=21), parameter :: cases(2) = [character(len=21) :: "qtf_direct_no_lid", "qtf_direct_no_lid_two"]
+        integer :: c
+
+        do c = 1, size(cases)
+            call run_expecting_stop(trim(cases(c)), "the mesh has no lid points", error)
+            if (allocated(error)) return
+            call check(error, count_log_lines(get_running_exe_path()//trim(cases(c))//".log", "Wave Frequency ="), 0, &
+                       trim(cases(c))//": first-order solves ran before the stop")
+            if (allocated(error)) return
+        end do
+    end subroutine direct_no_lid_stops
 
     !> B2 of the sharp free cylinder against the exact reference (truncated_cylinder_reference.py qtf-potential, free, 0.01
     !> rad/s grid, N 64000, gap basis (20, 4, 4), converged to 2e-5 in B2), in e^{-i omega t} per rho g, for the pairs

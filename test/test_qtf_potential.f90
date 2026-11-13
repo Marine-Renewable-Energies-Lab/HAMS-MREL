@@ -22,6 +22,8 @@ module test_qtf_potential
   private
 
   public :: collect_qtf_potential
+  ! Fixtures and analytic fields for test_qtf_direct
+  public :: make_sphere, motions, velocity, normal_hessian, make_state, geometry
 
   real(8), parameter :: g = 9.81d0, depth = 100d0, pi = 3.14159265358979323846d0
   integer, parameter :: nmode = 6

@@ -61,6 +61,10 @@ QTF_SHARP_FREQUENCIES = (0.47, 0.70, 0.77)
 # (0.23 added, qtf_max_dw 0.23 keeps that pair only), and on the half mesh
 QTF_B2C_FREQUENCIES = (0.47, 0.70)
 QTF_B2C_MAIN_FREQUENCIES = (0.23, 0.47, 0.70)
+# The direct method (qtf_direct = 1) against the indirect one: two small rounded hulls at the spacing of drift_two_round,
+# where each scatters onto the other, and the sharp cylinder of drift_cyl (m1) at half its panel size (m2, 1792 panels)
+QTF_DIRECT_SEPARATION = 30.0
+QTF_DIRECT_SHARP_M2 = dict(DRIFT_CYL_MESH, ntheta=64, nz=16, nr=12)
 # Periods (Input_frequency_type 4) whose differences in omega include two 1.1e-6 rad/s apart, 0.7e-6 of the largest omega:
 # the 1e-6 merge of the first difference frequencies put them on one psi, which the check of potential_pair then refused
 # for the pair at the lower frequencies, after all the solves (final review, Important 1)
@@ -458,6 +462,12 @@ def write_qtf_body_fixtures(data, both):
         write_control(os.path.join(target, "ControlFile.in"), frequencies=QTF_BODY_FREQUENCIES, headings=DRIFT_CYL_HEADINGS,
                       irsp=irsp)
         write_second_order(os.path.join(target, "SecondOrder.in"), **body)
+    # The direct method (qtf_direct = 1) on the inputs of qtf_round_body_irsp: the lid rows of the direct right side
+    target = case_dir(data, "qtf_direct_irsp")
+    copy_inputs(data, "qtf_round_body_irsp", target, ("HullMesh.pnl", "Hydrostatic.in", "WaterPlaneMesh.pnl",
+                                                      "ControlFile.in"))
+    write_second_order(os.path.join(target, "SecondOrder.in"), **dict(body, qtf_direct=1))
+    write_qtf_direct_fixtures(data, body)
     # Two of the small rounded hulls far apart, with every heading pair, and one alone
     for name, origins, pairs in (("qtf_two_round_body", [(0.0, 0.0), (0.0, QTF_DISTANT_SEPARATION)], 2),
                                  ("qtf_isolated_body", None, 1)):
@@ -483,6 +493,64 @@ def write_qtf_body_fixtures(data, both):
     write_control(os.path.join(target, "ControlFile.in"), frequencies=QTF_PERIOD_GRID, headings=(0.0,), input_type=4)
     write_second_order(os.path.join(target, "SecondOrder.in"), **body)
     write_qtf_sharp_fixtures(data, body)
+
+
+def write_qtf_direct_fixtures(data, body):
+    """Fixtures of the direct method (qtf_direct = 1, QTF_Direct.12d) against the indirect one (QTF_Indirect.11d with
+    qtf_b2 = body) of the same run, Phase 7a Task 5. Each is an indirect fixture with qtf_direct = 1, or a variant of one."""
+    direct = dict(body, qtf_direct=1)
+    # The rounded hull of qtf_round_body (480 panels, three frequencies, two headings)
+    target = case_dir(data, "qtf_direct_round")
+    copy_inputs(data, "qtf_round_body", target, ("HullMesh.pnl", "Hydrostatic.in", "ControlFile.in"))
+    write_second_order(os.path.join(target, "SecondOrder.in"),
+                       **dict(direct, qtf=3, qtf_max_dw=0.3, velocity_method="source"))
+    # The whole mesh and the half mesh (ISY = 1) of qtf_round_body_ref and qtf_half_body, and the whole mesh with ISOLV = 2
+    # (velocity by differencing in all three: the source solve needs ISOLV = 1)
+    for name, twin in (("qtf_direct_full", "qtf_round_body_ref"), ("qtf_direct_half", "qtf_half_body"),
+                       ("qtf_direct_gmres", "qtf_round_body_ref")):
+        target = case_dir(data, name)
+        copy_inputs(data, twin, target, ("HullMesh.pnl", "Hydrostatic.in"))
+        write_control(os.path.join(target, "ControlFile.in"), frequencies=QTF_BODY_FREQUENCIES, headings=DRIFT_CYL_HEADINGS,
+                      solver=2 if name == "qtf_direct_gmres" else None)
+        write_second_order(os.path.join(target, "SecondOrder.in"), **direct)
+    # Two small rounded hulls close together (the layout of drift_two_round), with every heading pair
+    target = case_dir(data, "qtf_direct_two")
+    for b in (1, 2):
+        make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh_%d.pnl" % b),
+                                         os.path.join(target, "Hydrostatic_%d.in" % b), **TWO_ROUND_MESH)
+    write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=QTF_DISTANT_FREQUENCIES,
+                  headings=DRIFT_CYL_HEADINGS, body_origins=[(0.0, 0.0), (0.0, QTF_DIRECT_SEPARATION)])
+    write_second_order(os.path.join(target, "SecondOrder.in"), **dict(direct, mean_drift=2, velocity_method="source"))
+    # One such hull alone, with the same inputs: its mesh error of the moments is the scale of that of qtf_direct_two
+    target = case_dir(data, "qtf_direct_one")
+    make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
+                                     **TWO_ROUND_MESH)
+    write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=QTF_DISTANT_FREQUENCIES,
+                  headings=DRIFT_CYL_HEADINGS)
+    write_second_order(os.path.join(target, "SecondOrder.in"), **dict(direct, mean_drift=2, velocity_method="source"))
+    # The sharp cylinder of qtf_sharp_b2_body (m1, the mesh of drift_cyl) and the same at half the panel size (m2)
+    for name, mesh in (("qtf_direct_sharp_m1", DRIFT_CYL_MESH), ("qtf_direct_sharp_m2", QTF_DIRECT_SHARP_M2)):
+        target = case_dir(data, name)
+        make_mesh.write_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"), **mesh)
+        write_control(os.path.join(target, "ControlFile.in"), frequencies=QTF_SHARP_FREQUENCIES, headings=(0.0,),
+                      threads=CONTROL_THREADS)
+        write_second_order(os.path.join(target, "SecondOrder.in"),
+                           **dict(direct, velocity_method="source", qtf_max_dw=0.3))
+    # IRSP = 1 with lid meshes that have no panels: the direct method stops in its set-up, for one body and for two
+    target = case_dir(data, "qtf_direct_no_lid")
+    copy_inputs(data, "qtf_round_body_ref", target, ("HullMesh.pnl", "Hydrostatic.in"))
+    make_mesh.write_mesh(os.path.join(target, "WaterPlaneMesh.pnl"), make_mesh.Mesh(), title="Waterplane Mesh File")
+    write_control(os.path.join(target, "ControlFile.in"), frequencies=QTF_BODY_FREQUENCIES, headings=(0.0,), irsp=1)
+    write_second_order(os.path.join(target, "SecondOrder.in"), **direct)
+    target = case_dir(data, "qtf_direct_no_lid_two")
+    for b in (1, 2):
+        make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh_%d.pnl" % b),
+                                         os.path.join(target, "Hydrostatic_%d.in" % b), **TWO_ROUND_MESH)
+        make_mesh.write_mesh(os.path.join(target, "WaterPlaneMesh_%d.pnl" % b), make_mesh.Mesh(),
+                             title="Waterplane Mesh File")
+    write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=QTF_DISTANT_FREQUENCIES,
+                  headings=(0.0,), body_origins=[(0.0, 0.0), (0.0, QTF_DIRECT_SEPARATION)], irsp=1)
+    write_second_order(os.path.join(target, "SecondOrder.in"), **direct)
 
 
 def write_qtf_sharp_fixtures(data, body):
