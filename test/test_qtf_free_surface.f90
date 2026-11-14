@@ -9,7 +9,7 @@ module test_qtf_free_surface
                              fs_mode_warning, fs_auto_modes, FS_MODE_TOL, fs_sample_phi, fs_mode_scales, fs_auto_evanescent, &
                              fs_inner_pair, fs_outer_pair, fs_outer_annulus, fs_outer_tail, fs_outer_ring, fs_outer_rfar, &
                              fs_outer_sliver, fs_radius_message, FS_SIGN, fs_pair_order_message, fs_pair_terms, &
-                             fs_coverage_check
+                             fs_coverage_check, fs_outer_moments, fs_forcing_points
   use HAMS_mod, only : NTHREAD, ISOL, IRSP
   use WaveDyn_mod, only : AMP, BETA, H, NK, TP, V, W1, WK, WVN
   use Body_mod, only : XW
@@ -17,13 +17,14 @@ module test_qtf_free_surface
   use FieldVelocity, only : fields_green, incident_at
   use QTFField, only : body_winding
   use PartialWaves, only : pw_set, pw_sample_points, pw_evanescent_from_wvn, pw_eval_surface, pw_radial, pw_radial_at, &
-                           pw_bessel_k
+                           pw_bessel_k, pw_green_modes, pw_green_mmax
   use FirstOrderState, only : incident_phi, incident_grad, wave_gravity
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use ControlSurfaceMesh, only : build_fs_inner
   use second_order_fixtures, only : make_cylinder, maccamy_fuchs_state
   use test_waterline_field, only : set_wave, load_panels
   use Const_mod, only : g_const => G
+  use, intrinsic :: ieee_arithmetic, only : ieee_is_finite
   implicit none
   private
 
@@ -64,7 +65,10 @@ subroutine collect_qtf_free_surface(testsuite)
     new_unittest("fs_pair_terms_diagonal", test_pair_terms_diagonal), &
     new_unittest("fs_pair_terms_order", test_pair_terms_order), &
     new_unittest("fs_outer_annulus_threads", test_outer_annulus_threads), &
-    new_unittest("fs_coverage_check", test_coverage_check) &
+    new_unittest("fs_coverage_check", test_coverage_check), &
+    new_unittest("outer_moments_contract_psi", test_moments_contract_psi), &
+    new_unittest("outer_moments_contract_green", test_moments_contract_green), &
+    new_unittest("outer_moments_cost", test_moments_cost) &
     ]
 end subroutine collect_qtf_free_surface
 
@@ -1328,5 +1332,188 @@ subroutine test_coverage_check(error)
   print '(4x,a,es12.4,a,a)', "area x 1.2: miss ", miss, ": ", msg
   call check(error, stops .and. index(msg, "more area") > 0, "a mesh that counts 20 % twice does not stop: "//msg)
 end subroutine test_coverage_check
+
+! ---------------------------------------------------------------------------------------------- Phase 7b, Task 2
+
+!> The amplitudes of pw in the form of the contraction with fs_outer_moments (ledger ruling F1, as set_amplitudes):
+!> ap(m, 0) = a(m, 0) on H_m(k0 r) e^{im theta}, ap(m, n) = a(m, n) K_m(kn R) on K_m(kn r) / K_m(kn R) e^{im theta}, for
+!> |m| <= mcut; zero beyond (an order cut by pw_green_modes has a zero amplitude, and K_m(kn R) may overflow there).
+subroutine scaled_amplitudes(pw, mcut, ap)
+  type(pw_set), intent(in) :: pw
+  integer, intent(in) :: mcut
+  complex(8), intent(out) :: ap(-pw%mmax:pw%mmax, 0:pw%nev)
+  real(8) :: kv(0:pw%mmax)
+  integer :: m, n
+
+  ap = (0d0, 0d0)
+  do m = -mcut, mcut
+    ap(m, 0) = pw%a(m, 0)
+  end do
+  do n = 1, pw%nev
+    call pw_bessel_k(pw%mmax, pw%kev(n) * pw%radius, kv)
+    do m = -mcut, mcut
+      ap(m, n) = pw%a(m, n) * kv(abs(m))
+    end do
+  end do
+end subroutine scaled_amplitudes
+
+!> s_FS (i Omega rho / g) sum_{|m| <= mcut, n} ap(m, n) mom(m, n): the outer term of T_FS from the moments
+complex(8) function contract(ap, mom, mmax, nev, mcut, omega) result(t)
+  integer, intent(in) :: mmax, nev, mcut
+  complex(8), intent(in) :: ap(-mmax:mmax, 0:nev), mom(-mmax:mmax, 0:nev)
+  real(8), intent(in) :: omega
+  integer :: m, n
+
+  t = (0d0, 0d0)
+  do n = 0, nev
+    do m = -mcut, mcut
+      t = t + ap(m, n) * mom(m, n)
+    end do
+  end do
+  t = FS_SIGN * cmplx(0d0, omega * rho / g, 8) * t
+end function contract
+
+!> The moments contract to the psi path: on the synthetic fields of the fs_outer_pair tests (M = 3, one evanescent mode,
+!> R = 12 about an off-origin centre), the moments of the basis of psi (mg = 3, nev = 1, K and kev of psi) contracted
+!> with the amplitudes of each psi (set_amplitudes form) give fs_outer_pair + fs_outer_sliver (12 chords) of that psi to
+!> 1e-10 relative: annulus, tail (all three phase classes) and sliver. Twice: with both incident waves and with none.
+!> Also the inner forcing: fs_forcing_points weighted by the panel areas and psi is fs_inner_pair (1e-14).
+subroutine test_moments_contract_psi(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om1 = 1d0, om2 = 0.8d0, b1 = 0.3d0, b2 = -0.5d0
+  integer, parameter :: npoly = 12
+  type(pw_set) :: pw1, pw2, psi(2)
+  type(fs_point_field) :: f1(4), i1(4), f2(4), i2(4)
+  complex(8) :: tp(2), sl(2), t(2), mom(-sy_mmax:sy_mmax, 0:sy_nev), ap(-sy_mmax:sy_mmax, 0:sy_nev), q(4), pin(4, 2)
+  complex(8) :: tin(2), tq(2)
+  real(8) :: kk1, kk2, rf, err, worst, wts(4)
+  integer :: ic, k
+  character(len=200) :: info
+
+  call synthetic_set(om1, om2, pw1, pw2, psi)
+  worst = 0d0
+  do ic = 1, 2
+    kk1 = merge(pw1%k0, 0d0, ic == 1)
+    kk2 = merge(pw2%k0, 0d0, ic == 1)
+    rf = fs_outer_rfar(pw1, kk1, pw2, kk2, psi)
+    call fs_outer_pair(om1, pw1, b1, kk1, om2, pw2, b2, kk2, psi, om1 - om2, g, rho, rf, tp)
+    call fs_outer_sliver(om1, pw1, b1, kk1, om2, pw2, b2, kk2, psi, om1 - om2, g, rho, npoly, sl)
+    call fs_outer_moments(om1, pw1, b1, kk1, om2, pw2, b2, kk2, psi(1)%k0, psi(1)%kev, sy_h, sy_centre, sy_radius, &
+                          sy_mmax, sy_nev, om1 - om2, g, npoly, rf, mom)
+    do k = 1, 2
+      call scaled_amplitudes(psi(k), sy_mmax, ap)
+      t(k) = contract(ap, mom, sy_mmax, sy_nev, sy_mmax, om1 - om2)
+    end do
+    err = maxval(abs(t - (tp + sl))) / maxval(abs(tp + sl))
+    print '(4x,a,i0,a,2es12.4,a,es10.2)', "moments contracted with psi, case ", ic, ": |T_out| ", abs(tp + sl), &
+      ", relative error ", err
+    worst = max(worst, err)
+  end do
+  write (info, '(a,es10.3)') "the moments contracted with psi against fs_outer_pair + fs_outer_sliver, worst relative ", worst
+  call check(error, worst <= 1d-10, trim(info))
+  if (allocated(error)) return
+  ! The inner forcing at points: sum_i w_i psi_i q_i s_FS (i Omega rho / g) is fs_inner_pair
+  call pseudo_inner(4, f1, i1, f2, i2, pin, wts)
+  call fs_forcing_points(om1, f1, i1, om2, f2, i2, g, q)
+  call fs_inner_pair(om1, f1, i1, om2, f2, i2, pin, wts, g, rho, tin)
+  do k = 1, 2
+    tq(k) = FS_SIGN * cmplx(0d0, (om1 - om2) * rho / g, 8) * sum(wts * pin(:, k) * q)
+  end do
+  err = maxval(abs(tq - tin)) / maxval(abs(tin))
+  write (info, '(a,es10.3)') "fs_forcing_points weighted by psi against fs_inner_pair, relative ", err
+  print '(4x,a)', trim(info)
+  call check(error, err <= 1d-14, trim(info))
+end subroutine test_moments_contract_psi
+
+!> The moments contract to the outer integral of the Green function: with pw = pw_green_modes of a source at r_x = 0.5 R
+!> (z = -3 m) in the synthetic setting, mg = pw_green_mmax(0.5 R, R, 1e-10) and 10 evanescent modes, the moments (no
+!> sliver) contracted with the amplitudes of pw (set_amplitudes form, |m| <= mcut of pw_green_modes) give fs_outer_pair
+!> with pw_psi = [pw] (mp = mg) to 1e-10 relative, both incident waves on.
+subroutine test_moments_contract_green(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om1 = 1d0, om2 = 0.8d0, b1 = 0.3d0, b2 = -0.5d0, th_x = 0.7d0
+  integer, parameter :: nev = 10
+  type(pw_set) :: pw1, pw2, psi(2), pg(1)
+  complex(8), allocatable :: mom(:, :), ap(:, :)
+  complex(8) :: tp(1), t
+  real(8) :: wvn_l(nev + 1), x(3), rf, err, om
+  integer :: mg, mcut
+  character(len=200) :: info
+  external :: DISPERSION
+
+  call synthetic_set(om1, om2, pw1, pw2, psi)
+  om = om1 - om2
+  call DISPERSION(wvn_l, nev + 1, om, sy_h)
+  x = [sy_centre(1) + 0.5d0 * sy_radius * cos(th_x), sy_centre(2) + 0.5d0 * sy_radius * sin(th_x), -3d0]
+  mg = pw_green_mmax(0.5d0 * sy_radius, sy_radius, 1d-10)
+  call pw_green_modes(x, sy_centre, sy_radius, sy_h, wvn_l(1), wvn_l(2:), mg, nev, pg(1), mcut)
+  print '(4x,a,i0,a,i0)', "Green modes: order asked ", mg, ", order represented (mcut) ", mcut
+  rf = fs_outer_rfar(pw1, pw1%k0, pw2, pw2%k0, pg)
+  call fs_outer_pair(om1, pw1, b1, pw1%k0, om2, pw2, b2, pw2%k0, pg, om, g, rho, rf, tp)
+  allocate (mom(-mg:mg, 0:nev), ap(-mg:mg, 0:nev))
+  call fs_outer_moments(om1, pw1, b1, pw1%k0, om2, pw2, b2, pw2%k0, wvn_l(1), wvn_l(2:), sy_h, sy_centre, sy_radius, &
+                        mg, nev, om, g, 0, rf, mom)
+  call scaled_amplitudes(pg(1), mcut, ap)
+  t = contract(ap, mom, mg, nev, mcut, om)
+  err = abs(t - tp(1)) / abs(tp(1))
+  write (info, '(a,es12.4,a,es10.3)') "the moments contracted with the Green modes against fs_outer_pair: |T| ", abs(tp(1)), &
+    ", relative ", err
+  print '(4x,a)', trim(info)
+  call check(error, err <= 1d-10, trim(info))
+end subroutine test_moments_contract_green
+
+!> The cost of the moments: one pass over the radial nodes, not one per mode. On synthetic fields of M = 14 and 8
+!> evanescent modes with both incident waves, the moments of mg = 60, nev = 40 (no sliver) against fs_outer_pair with six
+!> psi sets of M = 14 (8 evanescent modes), same r_far, on one thread (the work, not the share of a busy machine), the
+!> fastest of three runs each. One mode at a time would cost at least (2 mg + 1)(nev + 1) / 6 = 827 times fs_outer_pair.
+!> One pass costs the mode pairs of ring_coef per node: 631 + 2 x 29 x 29 = 2313 for psi (|c| <= 14), 841 + 2 x 29 x 121
+!> = 7859 for the moments (|c| <= 60, the plane waves to |n| <= 74), 3.4 times as many, so the brief's gate of 3x is
+!> below the floor of any one-pass method. Measured 3.31 (2.88 s against 0.87 s). Gate at 5x: the pair count with room
+!> for timing noise.
+subroutine test_moments_cost(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om1 = 1d0, om2 = 0.8d0, b1 = 0.3d0, b2 = -0.5d0
+  integer, parameter :: mg = 60, nev = 40
+  type(pw_set) :: q1, q2, qp(6)
+  complex(8) :: t6(6)
+  complex(8), allocatable :: mom(:, :)
+  real(8) :: wvn_l(nev + 1), rf, t_pair, t_mom, om
+  integer(8) :: c0, c1, rate
+  integer :: j, rep, nthread_saved
+  character(len=200) :: info
+  external :: DISPERSION
+
+  om = om1 - om2
+  call synthetic_pw(om1, 14, 8, 1, q1)
+  call synthetic_pw(om2, 14, 8, 2, q2)
+  do j = 1, 6
+    call synthetic_pw(om, 14, 8, 2 + j, qp(j))
+  end do
+  call DISPERSION(wvn_l, nev + 1, om, sy_h)
+  rf = fs_outer_rfar(q1, q1%k0, q2, q2%k0, qp)
+  allocate (mom(-mg:mg, 0:nev))
+  nthread_saved = NTHREAD
+  NTHREAD = 1
+  t_pair = huge(1d0)
+  t_mom = huge(1d0)
+  do rep = 1, 3
+    call system_clock(c0, rate)
+    call fs_outer_pair(om1, q1, b1, q1%k0, om2, q2, b2, q2%k0, qp, om, g, rho, rf, t6)
+    call system_clock(c1)
+    t_pair = min(t_pair, real(c1 - c0, 8) / real(rate, 8))
+    call system_clock(c0)
+    call fs_outer_moments(om1, q1, b1, q1%k0, om2, q2, b2, q2%k0, wvn_l(1), wvn_l(2:), sy_h, sy_centre, sy_radius, &
+                          mg, nev, om, g, 0, rf, mom)
+    call system_clock(c1)
+    t_mom = min(t_mom, real(c1 - c0, 8) / real(rate, 8))
+  end do
+  NTHREAD = nthread_saved
+  write (info, '(a,f8.4,a,f8.4,a,f6.2)') "fs_outer_moments (mg 60, nev 40) ", t_mom, " s, fs_outer_pair (six psi of M 14) ", &
+    t_pair, " s, ratio ", t_mom / t_pair
+  print '(4x,a)', trim(info)
+  call check(error, all(ieee_is_finite(abs(mom))), "the moments are not finite")
+  if (allocated(error)) return
+  call check(error, t_mom <= 5d0 * t_pair, trim(info))
+end subroutine test_moments_cost
 
 end module test_qtf_free_surface

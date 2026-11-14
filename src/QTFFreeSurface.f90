@@ -53,6 +53,7 @@ MODULE QTFFreeSurface
    PUBLIC :: FS_SIGN, fs_inner_pair, fs_outer_pair, fs_outer_annulus, fs_outer_tail, fs_outer_ring, fs_outer_rfar
    PUBLIC :: fs_outer_sliver, fs_radius_message, fs_pair_order_message
    PUBLIC :: fs_pair_terms, fs_coverage_check
+   PUBLIC :: fs_outer_moments, fs_forcing_points
 
    ! The mode check: the partial waves must give the samples on the circle to this fraction of their largest value
    REAL(8), PARAMETER :: FS_MODE_TOL = 1D-3
@@ -72,6 +73,8 @@ MODULE QTFFreeSurface
    ! that set r_far (fs_outer_rfar), and the points per chord of the sliver (fs_outer_sliver)
    INTEGER, PARAMETER :: NGL = 8, NLAG = 48, NSL_TH = 8, NSL_R = 4
    REAL(8), PARAMETER :: EV_DROP = 40D0, RFAR_DECAY = 27.631021115928547D0, RFAR_WAVES = 20D0
+   ! The outer moments (fs_outer_moments): the most blocks of radial intervals of the annulus, each summed by one thread
+   INTEGER, PARAMETER :: MOM_BLOCKS = 64
 
    TYPE :: outer_data
       ! One pair of the outer integral (outer_setup): modes of 1, 2 and psi; plane-wave modes |n| <= ni1, ni2
@@ -90,6 +93,11 @@ MODULE QTFFreeSurface
       COMPLEX(8), ALLOCATABLE :: h1(:), h2(:), hp(:), j1(:), j2(:), kc(:)
       REAL(8), ALLOCATABLE :: kq1(:, :), dkq1(:, :), kq2(:, :), dkq2(:, :), kqp(:, :), dkqp(:, :)
       COMPLEX(8), ALLOCATABLE :: f1(:, :), c2(:, :), ps(:, :), tmp(:, :), fi(:, :), ci(:, :)
+      ! The coefficients of Q_D per part at one node (coef_real, coef_tail): tq(-mp:mp, p), p = S_1 S_2, I_1 S_2, S_1 I_2,
+      ! on(p) whether the part is present; nalp the evanescent modes of psi alive at the last real r (modes_real)
+      COMPLEX(8), ALLOCATABLE :: tq(:, :)
+      LOGICAL :: on(3) = .FALSE.
+      INTEGER :: nalp = 0
    END TYPE outer_work
 
    TYPE :: fs_point_field
@@ -890,6 +898,100 @@ CONTAINS
       t = FS_SIGN*CI*omega*rho/g*t
    END SUBROUTINE fs_outer_sliver
 
+   SUBROUTINE fs_forcing_points(w1, f1, inc1, w2, f2, inc2, g, q)
+      ! Q_D at the inner points of the pair of states 1 (omega w1) and 2 (omega w2): q(i) = fs_forcing_diff of the total
+      ! fields f1(i), f2(i) and the incident fields inc1(i), inc2(i) (fs_inner_fields, incident_at). No weight and no
+      ! factor: the direct solve of Phase 7b applies its own (fs_inner_pair is sum_i wts(i) psi(i, k) q(i) times
+      ! s_FS i Omega rho / g, test outer_moments_contract_psi).
+      REAL(8), INTENT(IN) :: w1, w2, g
+      TYPE(fs_point_field), INTENT(IN) :: f1(:), inc1(:), f2(:), inc2(:)
+      COMPLEX(8), INTENT(OUT) :: q(:)
+      INTEGER :: i
+
+      IF (SIZE(f1) /= SIZE(q) .OR. SIZE(f2) /= SIZE(q) .OR. SIZE(inc1) /= SIZE(q) .OR. SIZE(inc2) /= SIZE(q)) THEN
+         WRITE (*, '(a)') ' fs_forcing_points: the fields and q do not match in size.'
+         ERROR STOP 1
+      END IF
+      DO i = 1, SIZE(q)
+         q(i) = fs_forcing_diff(w1, f1(i), inc1(i), w2, f2(i), inc2(i), g)
+      END DO
+   END SUBROUTINE fs_forcing_points
+
+   SUBROUTINE fs_outer_moments(w1, pw1, beta1, k1, w2, pw2, beta2, k2, k0, kev, h, centre, radius, mg, nev, omega, g, np, &
+                               r_far, mom)
+      ! The outer moments of the free-surface forcing of the pair of states 1 and 2 (Phase 7b): on z = 0, over the free
+      ! surface outside the inner mesh (the annulus R..r_far, the propagating tail to infinity, and the sliver between the
+      ! polygon of np chords and the circle; np < 3: no sliver),
+      !   mom(m, n) = int B_mn Q_D dS,   B_m0 = H_m(k0 r) e^{im theta},   B_mn = K_m(kn r) / K_m(kn R) e^{im theta},
+      ! |m| <= mg, n = 1..nev, r and theta about centre, k0 and kev(1:nev) the wave numbers at Omega = omega in depth h
+      ! (Z_n(0) = 1). The pair arguments are those of fs_outer_pair (ordered pairs only, w1 > w2 and omega = w1 - w2 > 0;
+      ! omega = 0 gives 0). No factor s_FS i Omega rho / g: the caller applies its own.
+      ! Contraction (ledger ruling F1): a field psi of partial waves pw_set a(m, n) on the circle is, on z = 0,
+      !   psi = sum_m [a(m, 0) H_m(k0 r) + sum_n a(m, n) K_m(kn R) K_m(kn r) / K_m(kn R)] e^{im theta}
+      !       = sum_mn ap(m, n) B_mn,   ap(m, 0) = a(m, 0),   ap(m, n) = a(m, n) K_m(kn R)
+      ! (the set_amplitudes form), so int psi Q_D dS = sum_mn ap(m, n) mom(m, n), and s_FS (i Omega rho / g) times it is
+      ! fs_outer_pair + fs_outer_sliver of psi (tests outer_moments_contract_psi and outer_moments_contract_green).
+      ! Method: at each radial node the coefficients q_c(r) of Q_D on e^{-ic theta}, Q_D = sum_c q_c e^{-ic theta}, are
+      ! computed once for |c| <= mg (coef_real, the coefficient routine that the psi path shares), and
+      !   int_0^2pi B_mn Q_D dtheta = 2 pi B_mn(r) q_m(r)
+      ! is accumulated for all (m, n): one pass over the radial nodes of fs_outer_annulus (radial_intervals with the basis
+      ! as the psi set, so mg sets the step 2 r / (M + 1) and the plane-wave orders M + mg), not one per mode. The
+      ! evanescent B_mn are dropped where they have decayed by e^-40 (as the psi modes). In the tail beyond r_far only
+      ! n = 0 survives: q_c(r) H_m(k0 r) per phase class on the rotated contours of fs_outer_tail (kappa with K = k0).
+      ! The sliver: Q_D pointwise as fs_outer_sliver, times B_mn at the point. The annulus runs in OpenMP over a fixed
+      ! partition of the radial intervals into at most MOM_BLOCKS blocks, summed in order: the same bits for any number
+      ! of threads. An order m whose H_m(k0 R) or K_m(kn R) overflows gives a moment that is not finite; the caller
+      ! contracts only the orders its amplitudes represent (mcut of pw_green_modes).
+      REAL(8), INTENT(IN) :: w1, beta1, k1, w2, beta2, k2, k0, kev(:), h, centre(2), radius, omega, g, r_far
+      TYPE(pw_set), INTENT(IN) :: pw1, pw2
+      INTEGER, INTENT(IN) :: mg, nev, np
+      COMPLEX(8), INTENT(OUT) :: mom(-mg:mg, 0:nev)
+      TYPE(pw_set) :: basis(1)
+      TYPE(outer_data) :: od
+      REAL(8), ALLOCATABLE :: edge(:)
+      COMPLEX(8), ALLOCATABLE :: part(:, :, :)
+      REAL(8) :: xg(NGL), wg(NGL)
+      INTEGER :: ni, nblk, b
+
+      mom = (0D0, 0D0)
+      IF (omega == 0D0) RETURN
+      CALL stop_if_unordered(w1, w2, omega)
+      IF (mg < 0 .OR. nev < 0 .OR. SIZE(kev) < nev) THEN
+         WRITE (*, '(a)') ' fs_outer_moments: mg and nev must not be negative, and kev must hold nev wave numbers.'
+         ERROR STOP 1
+      END IF
+      IF (.NOT. r_far > radius) THEN
+         WRITE (*, '(a)') ' fs_outer_moments: r_far must exceed the radius R.'
+         ERROR STOP 1
+      END IF
+      ! The basis B_mn as a psi set of zero amplitudes: outer_setup and radial_real then give its radial functions,
+      ! H_m(k0 r) (wk%hp) and K_m(kn r) / K_m(kn R) (wk%kqp), and the plane-wave orders M + mg
+      basis(1)%mmax = mg
+      basis(1)%nev = nev
+      basis(1)%k0 = k0
+      basis(1)%h = h
+      basis(1)%radius = radius
+      basis(1)%centre = centre
+      ALLOCATE (basis(1)%kev(nev), basis(1)%a(-mg:mg, 0:nev))
+      basis(1)%kev = kev(1:nev)
+      basis(1)%a = (0D0, 0D0)
+      CALL outer_setup(w1, pw1, beta1, k1, w2, pw2, beta2, k2, basis, g, od)
+
+      ! The annulus R..r_far
+      CALL radial_intervals(od, radius, r_far, edge, ni)
+      CALL gauss_legendre01(NGL, xg, wg)
+      nblk = MIN(ni, MOM_BLOCKS)
+      ALLOCATE (part(-mg:mg, 0:nev, nblk))
+      !$OMP PARALLEL NUM_THREADS(NTHREAD) DEFAULT(SHARED)
+      CALL moments_worker(od, edge, ni, nblk, xg, wg, part)
+      !$OMP END PARALLEL
+      DO b = 1, nblk
+         mom = mom + part(:, :, b)
+      END DO
+      CALL moments_tail(od, r_far, mom)
+      IF (np >= 3) CALL moments_sliver(od, np, mom)
+   END SUBROUTINE fs_outer_moments
+
    ! ------------------------------------------------------------------------------------------ outer integral, internals
 
    SUBROUTINE outer_setup(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, g, od)
@@ -1029,7 +1131,7 @@ CONTAINS
       ALLOCATE (wk%kq2(0:od%m2, MAX(od%n2, 1)), wk%dkq2(0:od%m2, MAX(od%n2, 1)))
       ALLOCATE (wk%kqp(0:od%mp, MAX(od%np, 1)), wk%dkqp(0:od%mp, MAX(od%np, 1)))
       ALLOCATE (wk%f1(-od%m1:od%m1, 4), wk%c2(-od%m2:od%m2, 4), wk%ps(-od%mp:od%mp, od%nk), wk%tmp(-od%mp:od%mp, 4))
-      ALLOCATE (wk%fi(-od%ni1:od%ni1, 4), wk%ci(-od%ni2:od%ni2, 4))
+      ALLOCATE (wk%fi(-od%ni1:od%ni1, 4), wk%ci(-od%ni2:od%ni2, 4), wk%tq(-od%mp:od%mp, 3))
       wk%kq1 = 0D0
       wk%dkq1 = 0D0
       wk%kq2 = 0D0
@@ -1078,8 +1180,9 @@ CONTAINS
    END SUBROUTINE radial_intervals
 
    SUBROUTINE radial_real(k0, kev, nev, mmax, radius, kr, r, hv, kq, dkq, nal, kc)
-      ! The radial functions of one set at real r: hv(0:mmax+1) = H_m(k0 r) (J by the intrinsic, Y by its upward
-      ! recurrence from Y_0 and Y_1, which is stable); for the evanescent modes still alive (k_n (r - R) < 40, the first nal)
+      ! The radial functions of one set at real r: hv(0:mmax+1) = H_m(k0 r) (J by the intrinsic, J_2.. in one call of its
+      ! array form; Y by its upward recurrence from Y_0 and Y_1, which is stable); for the evanescent modes still alive
+      ! (k_n (r - R) < 40, the first nal)
       ! kq(m, n) = K_m(k_n r) / K_m(k_n R) and dkq(m, n) = its d/dr, from the scaled K of pw_bessel_k_scaled_c.
       INTEGER, INTENT(IN) :: nev, mmax
       REAL(8), INTENT(IN) :: k0, kev(:), radius, kr(0:, :), r
@@ -1087,10 +1190,11 @@ CONTAINS
       REAL(8), INTENT(INOUT) :: kq(0:, :), dkq(0:, :)
       INTEGER, INTENT(OUT) :: nal
       COMPLEX(8), INTENT(INOUT) :: kc(0:mmax + 1)
-      REAL(8) :: x, y0, y1, y2, ex, kn
+      REAL(8) :: x, y0, y1, y2, ex, kn, jv(0:mmax + 1)
       INTEGER :: m, n
 
       x = k0*r
+      jv = BESSEL_JN(0, mmax + 1, x)
       y0 = BESSEL_Y0(x)
       y1 = BESSEL_Y1(x)
       hv(0) = CMPLX(BESSEL_J0(x), y0, KIND=8)
@@ -1099,7 +1203,7 @@ CONTAINS
          y2 = (2D0*m/x)*y1 - y0
          y0 = y1
          y1 = y2
-         hv(m + 1) = CMPLX(BESSEL_JN(m + 1, x), y2, KIND=8)
+         hv(m + 1) = CMPLX(jv(m + 1), y2, KIND=8)
       END DO
       nal = 0
       DO n = 1, nev
@@ -1184,38 +1288,67 @@ CONTAINS
       END DO
    END SUBROUTINE plane_modes
 
-   PURE SUBROUTINE ring_q(r, w1, m1, f1, w2, m2, c2, mp, nk, ps, g, out)
-      ! out(k) += int_0^2pi psi_k Q[1, 2] dtheta = 2 pi sum_c ps(c, k) sum_a Q(a, a + c), for field 1 with amplitudes
-      ! f1(a, :) on e^{ia theta}, conj(field 2) with c2(b, :) on e^{-ib theta}, psi_k with ps(c, k) on e^{ic theta}; Q(a, b)
-      ! is free_surface_forcing (KERNEL_DIFF) of the two modes at r (complex on a tail contour): gradients (d_r, i a / r,
-      ! d_z) and (d_r, -i b / r, d_z) of the conjugate, given to it conjugated since pair_product conjugates state 2.
+   PURE SUBROUTINE ring_coef(r, w1, m1, f1, w2, m2, c2, mc, g, tc)
+      ! tc(c) = sum_a Q(a, a + c), |c| <= mc: the coefficient of Q[1, 2] on e^{-ic theta} at r, for field 1 with amplitudes
+      ! f1(a, :) on e^{ia theta} and conj(field 2) with c2(b, :) on e^{-ib theta} (the pair of modes a, b carries
+      ! e^{i(a - b) theta} = e^{-ic theta}). So int_0^2pi e^{ic theta} Q[1, 2] dtheta = 2 pi tc(c): the psi path (ring_add)
+      ! and the moments (node_moments) share these coefficients. Q(a, b) is free_surface_forcing (KERNEL_DIFF) of the two
+      ! modes at r (complex on a tail contour): gradients (d_r, i a / r, d_z) of mode a of field 1 and (d_r, i b / r, d_z) of
+      ! mode b of field 2, whose conjugate c2 carries -i b / r. [Derived from free_surface_forcing: the gradient terms are
+      ! sum_j pair_minus(g1_j, g1_j, g2_j, g2_j) = (1/2) sum_j g1_j conj(g2_j), and pair_minus(f1, g1, f2, g2) =
+      ! (f1 conj g2 + conj f2 g1) / 4 with f = -i w phi, g = s = -w^2 phi_z + g phi_zz.] With p = f1(a, 1), p_r, p_z, p_zz =
+      ! f1(a, 2..4), q = c2(b, 1), q_r, q_z, q_zz = c2(b, 2..4) and Omega = w1 - w2:
+      !   Q(a, b) = (i Omega / 2) [p_r q_r + (a b / r^2) p q + p_z q_z]
+      !             + [-i w1 p (-w2^2 q_z + g q_zz) + i w2 q (-w1^2 p_z + g p_zz)] / (4 g),
+      ! a sum of five products u_t(a) v_t(b): evaluated as such, not by a call per pair (the cost of the moments, test
+      ! outer_moments_cost). Against the call per pair the results agree to rounding: 9e-16 relative on fs_outer_pair.
       COMPLEX(8), INTENT(IN) :: r
       REAL(8), INTENT(IN) :: w1, w2, g
-      INTEGER, INTENT(IN) :: m1, m2, mp, nk
-      COMPLEX(8), INTENT(IN) :: f1(-m1:m1, 4), c2(-m2:m2, 4), ps(-mp:mp, nk)
-      COMPLEX(8), INTENT(INOUT) :: out(nk)
-      COMPLEX(8) :: tc, g1(3), g2(3), rinv
-      INTEGER :: c, a, b, k
+      INTEGER, INTENT(IN) :: m1, m2, mc
+      COMPLEX(8), INTENT(IN) :: f1(-m1:m1, 4), c2(-m2:m2, 4)
+      COMPLEX(8), INTENT(OUT) :: tc(-mc:mc)
+      COMPLEX(8) :: u(5, -m1:m1), v(5, -m2:m2), ah, s
+      INTEGER :: c, a, b
 
-      rinv = 1D0/r
-      DO c = -mp, mp
-         tc = (0D0, 0D0)
+      ah = 0.5D0*CI*(w1 - w2)
+      DO a = -m1, m1
+         u(1, a) = ah*f1(a, 2)
+         u(2, a) = ah*(a/(r*r))*f1(a, 1)
+         u(3, a) = ah*f1(a, 3)
+         u(4, a) = (-0.25D0*CI*w1/g)*f1(a, 1)
+         u(5, a) = (0.25D0*CI*w2/g)*(-w1**2*f1(a, 3) + g*f1(a, 4))
+      END DO
+      DO b = -m2, m2
+         v(1, b) = c2(b, 2)
+         v(2, b) = b*c2(b, 1)
+         v(3, b) = c2(b, 3)
+         v(4, b) = -w2**2*c2(b, 3) + g*c2(b, 4)
+         v(5, b) = c2(b, 1)
+      END DO
+      DO c = -mc, mc
+         s = (0D0, 0D0)
          DO a = MAX(-m1, -m2 - c), MIN(m1, m2 - c)
             b = a + c
-            g1(1) = f1(a, 2)
-            g1(2) = CI*a*rinv*f1(a, 1)
-            g1(3) = f1(a, 3)
-            g2(1) = CONJG(c2(b, 2))
-            g2(2) = CONJG(-CI*b*rinv*c2(b, 1))
-            g2(3) = CONJG(c2(b, 3))
-            tc = tc + free_surface_forcing(KERNEL_DIFF, w1, f1(a, 1), g1, f1(a, 4), w2, CONJG(c2(b, 1)), g2, &
-                                           CONJG(c2(b, 4)), g)
+            s = s + (u(1, a)*v(1, b) + u(2, a)*v(2, b) + u(3, a)*v(3, b) + u(4, a)*v(4, b) + u(5, a)*v(5, b))
          END DO
+         tc(c) = s
+      END DO
+   END SUBROUTINE ring_coef
+
+   PURE SUBROUTINE ring_add(mp, nk, ps, tc, out)
+      ! out(k) += int_0^2pi psi_k Q[1, 2] dtheta = 2 pi sum_c ps(c, k) tc(c), psi_k with ps(c, k) on e^{ic theta} and tc
+      ! the coefficients of one part (ring_coef)
+      INTEGER, INTENT(IN) :: mp, nk
+      COMPLEX(8), INTENT(IN) :: ps(-mp:mp, nk), tc(-mp:mp)
+      COMPLEX(8), INTENT(INOUT) :: out(nk)
+      INTEGER :: c, k
+
+      DO c = -mp, mp
          DO k = 1, nk
-            out(k) = out(k) + (2D0*PI)*ps(c, k)*tc
+            out(k) = out(k) + (2D0*PI)*ps(c, k)*tc(c)
          END DO
       END DO
-   END SUBROUTINE ring_q
+   END SUBROUTINE ring_add
 
    SUBROUTINE modes_real(od, r, wk)
       ! The modal amplitudes at real r of field 1 (wk%f1), conj(field 2) (wk%c2) and the psi_k (wk%ps), evanescent modes
@@ -1231,6 +1364,7 @@ CONTAINS
       CALL apply_modes(od%m2, od%n2, 1, 1, od%a2, od%k2, wk%h2, wk%kq2, wk%dkq2, nal, od%d2, od%e2, wk%c2)
       wk%c2 = CONJG(wk%c2)
       CALL radial_real(od%kp, od%kevp, od%np, od%mp, od%radius, od%krp, r, wk%hp, wk%kqp, wk%dkqp, nal, wk%kc)
+      wk%nalp = nal
       DO k = 1, od%nk
          CALL apply_modes(od%mp, od%np, od%nk, k, od%ap, od%kp, wk%hp, wk%kqp, wk%dkqp, nal, od%dp, od%ep, wk%tmp)
          DO c = -od%mp, od%mp
@@ -1239,54 +1373,60 @@ CONTAINS
       END DO
    END SUBROUTINE modes_real
 
+   SUBROUTINE coef_real(od, r, wk)
+      ! The coefficients of Q_D on e^{-ic theta}, |c| <= od%mp, at real r >= R, per part (ring_coef): wk%tq(:, 1) S_1 S_2,
+      ! wk%tq(:, 2) I_1 S_2 and wk%tq(:, 3) S_1 I_2 (the plane waves by their Jacobi-Anger modes, |n| <= M + od%mp, all
+      ! that |c| <= od%mp reaches, J_n by one call of the array form of the intrinsic); wk%on(p) whether part p is
+      ! present. The modal amplitudes at r (modes_real) stay in wk.
+      TYPE(outer_data), INTENT(IN) :: od
+      REAL(8), INTENT(IN) :: r
+      TYPE(outer_work), INTENT(INOUT) :: wk
+      COMPLEX(8) :: rc
+
+      CALL modes_real(od, r, wk)
+      rc = CMPLX(r, 0D0, KIND=8)
+      wk%on = [.TRUE., od%inc1, od%inc2]
+      CALL ring_coef(rc, od%w1, od%m1, wk%f1, od%w2, od%m2, wk%c2, od%mp, od%g, wk%tq(:, 1))
+      IF (od%inc1) THEN
+         wk%j1 = BESSEL_JN(0, od%ni1 + 1, od%k1*r)
+         CALL plane_modes(od%ni1, od%amp1, od%k1, od%beta1, 1D0, wk%j1, od%dzi1, wk%fi)
+         CALL ring_coef(rc, od%w1, od%ni1, wk%fi, od%w2, od%m2, wk%c2, od%mp, od%g, wk%tq(:, 2))
+      END IF
+      IF (od%inc2) THEN
+         wk%j2 = BESSEL_JN(0, od%ni2 + 1, od%k2*r)
+         CALL plane_modes(od%ni2, od%amp2c, od%k2, od%beta2, -1D0, wk%j2, od%dzi2, wk%ci)
+         CALL ring_coef(rc, od%w1, od%m1, wk%f1, od%w2, od%ni2, wk%ci, od%mp, od%g, wk%tq(:, 3))
+      END IF
+   END SUBROUTINE coef_real
+
    SUBROUTINE ring_real(od, r, ring, wk)
-      ! ring(k) = int_0^2pi psi_k Q_D dtheta at real r >= R: S_1 S_2, then I_1 S_2 and S_1 I_2 by their Jacobi-Anger modes
+      ! ring(k) = int_0^2pi psi_k Q_D dtheta at real r >= R: S_1 S_2, then I_1 S_2 and S_1 I_2 by their Jacobi-Anger modes,
+      ! from the coefficients of coef_real
       TYPE(outer_data), INTENT(IN) :: od
       REAL(8), INTENT(IN) :: r
       COMPLEX(8), INTENT(OUT) :: ring(:)
       TYPE(outer_work), INTENT(INOUT) :: wk
-      COMPLEX(8) :: rc
-      INTEGER :: n
+      INTEGER :: p
 
-      CALL modes_real(od, r, wk)
-      rc = CMPLX(r, 0D0, KIND=8)
+      CALL coef_real(od, r, wk)
       ring = (0D0, 0D0)
-      CALL ring_q(rc, od%w1, od%m1, wk%f1, od%w2, od%m2, wk%c2, od%mp, od%nk, wk%ps, od%g, ring)
-      IF (od%inc1) THEN
-         DO n = 0, od%ni1 + 1
-            wk%j1(n) = BESSEL_JN(n, od%k1*r)
-         END DO
-         CALL plane_modes(od%ni1, od%amp1, od%k1, od%beta1, 1D0, wk%j1, od%dzi1, wk%fi)
-         CALL ring_q(rc, od%w1, od%ni1, wk%fi, od%w2, od%m2, wk%c2, od%mp, od%nk, wk%ps, od%g, ring)
-      END IF
-      IF (od%inc2) THEN
-         DO n = 0, od%ni2 + 1
-            wk%j2(n) = BESSEL_JN(n, od%k2*r)
-         END DO
-         CALL plane_modes(od%ni2, od%amp2c, od%k2, od%beta2, -1D0, wk%j2, od%dzi2, wk%ci)
-         CALL ring_q(rc, od%w1, od%m1, wk%f1, od%w2, od%ni2, wk%ci, od%mp, od%nk, wk%ps, od%g, ring)
-      END IF
+      DO p = 1, 3
+         IF (wk%on(p)) CALL ring_add(od%mp, od%nk, wk%ps, wk%tq(:, p), ring)
+      END DO
    END SUBROUTINE ring_real
 
-   SUBROUTINE ring_tail(od, cls, r, ring, wk)
-      ! The slowly varying part G(r) of phase class cls (fs_outer_tail) at complex r: the ring integral of the class with
-      ! every Hankel function scaled (pw_hankel_scaled), the propagating modes only
+   SUBROUTINE coef_tail(od, cls, r, wk)
+      ! The coefficients of the slowly varying part of phase class cls (fs_outer_tail) at complex r, per part as coef_real,
+      ! every Hankel function scaled (pw_hankel_scaled), the propagating modes only: class 1 (kappa_a) S_1 S_2, the H^(1)
+      ! half of I_1 with S_2, S_1 with the H^(2) half of I_2; class 2 (kappa_b) the H^(2) half of I_1 with S_2; class 3
+      ! (kappa_c) S_1 with the H^(1) half of I_2. psi (wk%ps, wk%hp) is not touched.
       TYPE(outer_data), INTENT(IN) :: od
       INTEGER, INTENT(IN) :: cls
       COMPLEX(8), INTENT(IN) :: r
-      COMPLEX(8), INTENT(OUT) :: ring(:)
       TYPE(outer_work), INTENT(INOUT) :: wk
-      INTEGER :: k, c, n
+      INTEGER :: n
 
-      ring = (0D0, 0D0)
-      ! psi_k: H^(1)(K r)
-      CALL pw_hankel_scaled(1, od%mp + 1, od%kp*r, wk%hp)
-      DO k = 1, od%nk
-         CALL apply_modes(od%mp, od%np, od%nk, k, od%ap, od%kp, wk%hp, wk%kqp, wk%dkqp, 0, od%dp, od%ep, wk%tmp)
-         DO c = -od%mp, od%mp
-            wk%ps(c, k) = wk%tmp(c, 1)
-         END DO
-      END DO
+      wk%on = .FALSE.
       ! conj(S_2): conj(a_2) H^(2)(k_2 r), in classes a and b
       IF (cls == 1 .OR. cls == 2) THEN
          CALL pw_hankel_scaled(2, od%m2 + 1, od%k2*r, wk%h2)
@@ -1299,39 +1439,248 @@ CONTAINS
       END IF
       SELECT CASE (cls)
       CASE (1)
-         CALL ring_q(r, od%w1, od%m1, wk%f1, od%w2, od%m2, wk%c2, od%mp, od%nk, wk%ps, od%g, ring)
+         wk%on(1) = .TRUE.
+         CALL ring_coef(r, od%w1, od%m1, wk%f1, od%w2, od%m2, wk%c2, od%mp, od%g, wk%tq(:, 1))
          IF (od%inc1) THEN
+            wk%on(2) = .TRUE.
             CALL pw_hankel_scaled(1, od%ni1 + 1, od%k1*r, wk%j1)
             DO n = 0, od%ni1 + 1
                wk%j1(n) = 0.5D0*wk%j1(n)
             END DO
             CALL plane_modes(od%ni1, od%amp1, od%k1, od%beta1, 1D0, wk%j1, od%dzi1, wk%fi)
-            CALL ring_q(r, od%w1, od%ni1, wk%fi, od%w2, od%m2, wk%c2, od%mp, od%nk, wk%ps, od%g, ring)
+            CALL ring_coef(r, od%w1, od%ni1, wk%fi, od%w2, od%m2, wk%c2, od%mp, od%g, wk%tq(:, 2))
          END IF
          IF (od%inc2) THEN
+            wk%on(3) = .TRUE.
             CALL pw_hankel_scaled(2, od%ni2 + 1, od%k2*r, wk%j2)
             DO n = 0, od%ni2 + 1
                wk%j2(n) = 0.5D0*wk%j2(n)
             END DO
             CALL plane_modes(od%ni2, od%amp2c, od%k2, od%beta2, -1D0, wk%j2, od%dzi2, wk%ci)
-            CALL ring_q(r, od%w1, od%m1, wk%f1, od%w2, od%ni2, wk%ci, od%mp, od%nk, wk%ps, od%g, ring)
+            CALL ring_coef(r, od%w1, od%m1, wk%f1, od%w2, od%ni2, wk%ci, od%mp, od%g, wk%tq(:, 3))
          END IF
       CASE (2)
+         wk%on(2) = .TRUE.
          CALL pw_hankel_scaled(2, od%ni1 + 1, od%k1*r, wk%j1)
          DO n = 0, od%ni1 + 1
             wk%j1(n) = 0.5D0*wk%j1(n)
          END DO
          CALL plane_modes(od%ni1, od%amp1, od%k1, od%beta1, 1D0, wk%j1, od%dzi1, wk%fi)
-         CALL ring_q(r, od%w1, od%ni1, wk%fi, od%w2, od%m2, wk%c2, od%mp, od%nk, wk%ps, od%g, ring)
+         CALL ring_coef(r, od%w1, od%ni1, wk%fi, od%w2, od%m2, wk%c2, od%mp, od%g, wk%tq(:, 2))
       CASE (3)
+         wk%on(3) = .TRUE.
          CALL pw_hankel_scaled(1, od%ni2 + 1, od%k2*r, wk%j2)
          DO n = 0, od%ni2 + 1
             wk%j2(n) = 0.5D0*wk%j2(n)
          END DO
          CALL plane_modes(od%ni2, od%amp2c, od%k2, od%beta2, -1D0, wk%j2, od%dzi2, wk%ci)
-         CALL ring_q(r, od%w1, od%m1, wk%f1, od%w2, od%ni2, wk%ci, od%mp, od%nk, wk%ps, od%g, ring)
+         CALL ring_coef(r, od%w1, od%m1, wk%f1, od%w2, od%ni2, wk%ci, od%mp, od%g, wk%tq(:, 3))
       END SELECT
+   END SUBROUTINE coef_tail
+
+   SUBROUTINE ring_tail(od, cls, r, ring, wk)
+      ! The slowly varying part G(r) of phase class cls (fs_outer_tail) at complex r: the ring integral of the class with
+      ! every Hankel function scaled (pw_hankel_scaled), the propagating modes only, from the coefficients of coef_tail
+      TYPE(outer_data), INTENT(IN) :: od
+      INTEGER, INTENT(IN) :: cls
+      COMPLEX(8), INTENT(IN) :: r
+      COMPLEX(8), INTENT(OUT) :: ring(:)
+      TYPE(outer_work), INTENT(INOUT) :: wk
+      INTEGER :: k, c, p
+
+      ring = (0D0, 0D0)
+      ! psi_k: H^(1)(K r)
+      CALL pw_hankel_scaled(1, od%mp + 1, od%kp*r, wk%hp)
+      DO k = 1, od%nk
+         CALL apply_modes(od%mp, od%np, od%nk, k, od%ap, od%kp, wk%hp, wk%kqp, wk%dkqp, 0, od%dp, od%ep, wk%tmp)
+         DO c = -od%mp, od%mp
+            wk%ps(c, k) = wk%tmp(c, 1)
+         END DO
+      END DO
+      CALL coef_tail(od, cls, r, wk)
+      DO p = 1, 3
+         IF (wk%on(p)) CALL ring_add(od%mp, od%nk, wk%ps, wk%tq(:, p), ring)
+      END DO
    END SUBROUTINE ring_tail
+
+   SUBROUTINE moments_worker(od, edge, ni, nblk, xg, wg, part)
+      ! The share of one thread of the annulus of fs_outer_moments (an orphaned OMP DO): block b holds the radial
+      ! intervals (b - 1) ni / nblk + 1 .. b ni / nblk, a partition fixed by ni and nblk alone, and part(:, :, b) their
+      ! sum, written by one thread only
+      TYPE(outer_data), INTENT(IN) :: od
+      REAL(8), INTENT(IN) :: edge(:), xg(:), wg(:)
+      INTEGER, INTENT(IN) :: ni, nblk
+      COMPLEX(8), INTENT(INOUT) :: part(-od%mp:, 0:, :)
+      TYPE(outer_work) :: wk
+      REAL(8) :: r, dr
+      INTEGER :: b, i, q
+
+      CALL work_alloc(od, wk)
+      !$OMP DO SCHEDULE(DYNAMIC, 1) PRIVATE(b, i, q, r, dr)
+      DO b = 1, nblk
+         part(:, :, b) = (0D0, 0D0)
+         DO i = (b - 1)*ni/nblk + 1, b*ni/nblk
+            dr = edge(i + 1) - edge(i)
+            DO q = 1, SIZE(xg)
+               r = edge(i) + xg(q)*dr
+               CALL coef_real(od, r, wk)
+               CALL node_moments(od%mp, od%np, wk%nalp, wk%tq, wk%on, wk%hp, wk%kqp, &
+                                 CMPLX(2D0*PI*wg(q)*dr*r, 0D0, KIND=8), part(:, :, b))
+            END DO
+         END DO
+      END DO
+      !$OMP END DO
+   END SUBROUTINE moments_worker
+
+   SUBROUTINE moments_tail(od, r_far, mom)
+      ! The tail of fs_outer_moments beyond r_far, n = 0 only: per phase class kappa (fs_outer_tail, K = k0 of the basis)
+      !   int_{r_far}^inf B_m0 Q_D dS = i s e^{i kappa r_far} int_0^inf e^{-|kappa| t} 2 pi G_m(r) r dt,
+      ! G_m = q_c of the class (Hankel functions scaled, coef_tail) times the scaled H_m(k0 r), by Gauss-Laguerre. OpenMP
+      ! over the Laguerre nodes, each node its own column, summed in order (the same bits for any number of threads).
+      TYPE(outer_data), INTENT(IN) :: od
+      REAL(8), INTENT(IN) :: r_far
+      COMPLEX(8), INTENT(INOUT) :: mom(-od%mp:, 0:)
+      REAL(8) :: xl(NLAG), wl(NLAG), kap(3), s
+      COMPLEX(8) :: acc(-od%mp:od%mp), node(-od%mp:od%mp, NLAG)
+      INTEGER :: cls, q
+
+      CALL gauss_laguerre(NLAG, xl, wl)
+      kap = [od%k1 - od%k2 + od%kp, -od%k1 - od%k2 + od%kp, od%k1 + od%k2 + od%kp]
+      DO cls = 1, 3
+         IF (cls == 2 .AND. .NOT. od%inc1) CYCLE
+         IF (cls == 3 .AND. .NOT. od%inc2) CYCLE
+         IF (kap(cls) == 0D0) THEN
+            WRITE (*, '(a)') ' fs_outer_moments: a phase class of the tail does not oscillate (kappa = 0); the integral'// &
+               ' diverges.'
+            ERROR STOP 1
+         END IF
+         s = SIGN(1D0, kap(cls))
+         !$OMP PARALLEL NUM_THREADS(NTHREAD) DEFAULT(SHARED)
+         CALL tail_worker(od, cls, r_far, s, ABS(kap(cls)), xl, wl, node)
+         !$OMP END PARALLEL
+         acc = (0D0, 0D0)
+         DO q = 1, NLAG
+            acc = acc + node(:, q)
+         END DO
+         mom(:, 0) = mom(:, 0) + CI*s*EXP(CI*kap(cls)*r_far)/ABS(kap(cls))*acc
+      END DO
+   END SUBROUTINE moments_tail
+
+   SUBROUTINE tail_worker(od, cls, r_far, s, ak, xl, wl, node)
+      ! The share of one thread of moments_tail (an orphaned OMP DO): node(:, q) the term of Laguerre node q of class cls,
+      ! r = r_far + i s t, t = xl(q) / |kappa|, written by one thread only
+      TYPE(outer_data), INTENT(IN) :: od
+      INTEGER, INTENT(IN) :: cls
+      REAL(8), INTENT(IN) :: r_far, s, ak, xl(:), wl(:)
+      COMPLEX(8), INTENT(INOUT) :: node(-od%mp:, :)
+      TYPE(outer_work) :: wk
+      COMPLEX(8) :: rq
+      INTEGER :: q
+
+      CALL work_alloc(od, wk)
+      !$OMP DO SCHEDULE(DYNAMIC, 1) PRIVATE(q, rq)
+      DO q = 1, SIZE(xl)
+         rq = CMPLX(r_far, s*xl(q)/ak, KIND=8)
+         CALL coef_tail(od, cls, rq, wk)
+         CALL pw_hankel_scaled(1, od%mp + 1, od%kp*rq, wk%hp)
+         node(:, q) = (0D0, 0D0)
+         CALL node_moments(od%mp, 0, 0, wk%tq, wk%on, wk%hp, wk%kqp, (2D0*PI*wl(q))*rq, node(:, q))
+      END DO
+      !$OMP END DO
+   END SUBROUTINE tail_worker
+
+   SUBROUTINE moments_sliver(od, np, mom)
+      ! The sliver of fs_outer_moments: Q_D at the points of fs_outer_sliver (sliver_point) times B_mn there, r < R
+      ! (every evanescent mode kept; K_m(kn r) / K_m(kn R) > 1 there, at most e^{kn R (1 - cos(pi/np))})
+      TYPE(outer_data), INTENT(IN) :: od
+      INTEGER, INTENT(IN) :: np
+      COMPLEX(8), INTENT(INOUT) :: mom(-od%mp:, 0:)
+      TYPE(outer_work) :: wk
+      REAL(8) :: xt(NSL_TH), wt(NSL_TH), xr(NSL_R), wr(NSL_R), dth, r, th, sg
+      COMPLEX(8) :: q, v
+      INTEGER :: j, it, ir, m, am, n
+
+      CALL work_alloc(od, wk)
+      CALL gauss_legendre01(NSL_TH, xt, wt)
+      CALL gauss_legendre01(NSL_R, xr, wr)
+      dth = 2D0*PI/np
+      DO j = 1, np
+         DO it = 1, NSL_TH
+            DO ir = 1, NSL_R
+               CALL sliver_point(od, wk, dth*(j - 1), dth, xt(it), wt(it), xr(ir), wr(ir), r, th, q)
+               DO m = -od%mp, od%mp
+                  am = ABS(m)
+                  sg = 1D0
+                  IF (m < 0 .AND. MODULO(am, 2) == 1) sg = -1D0
+                  v = q*EXP(CI*(m*th))
+                  mom(m, 0) = mom(m, 0) + v*(sg*wk%hp(am))
+                  DO n = 1, wk%nalp
+                     mom(m, n) = mom(m, n) + v*wk%kqp(am, n)
+                  END DO
+               END DO
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE moments_sliver
+
+   PURE SUBROUTINE node_moments(mg, nev, nal, tq, on, hv, kq, wgt, mom)
+      ! mom(m, n) += wgt q_m B_mn(r) at one radial node: q_m = the sum of the parts tq(m, p) that are on (coef_real,
+      ! coef_tail), B_m0 = H_m (hv, H_{-m} = (-1)^m H_m), B_mn = kq(|m|, n) for the nal evanescent modes alive
+      INTEGER, INTENT(IN) :: mg, nev, nal
+      COMPLEX(8), INTENT(IN) :: tq(-mg:mg, 3), hv(0:mg + 1), wgt
+      LOGICAL, INTENT(IN) :: on(3)
+      REAL(8), INTENT(IN) :: kq(0:, :)
+      COMPLEX(8), INTENT(INOUT) :: mom(-mg:mg, 0:nev)
+      COMPLEX(8) :: v
+      REAL(8) :: sg
+      INTEGER :: m, am, n, p
+
+      DO m = -mg, mg
+         v = (0D0, 0D0)
+         DO p = 1, 3
+            IF (on(p)) v = v + tq(m, p)
+         END DO
+         v = wgt*v
+         am = ABS(m)
+         sg = 1D0
+         IF (m < 0 .AND. MODULO(am, 2) == 1) sg = -1D0
+         mom(m, 0) = mom(m, 0) + v*(sg*hv(am))
+         DO n = 1, nal
+            mom(m, n) = mom(m, n) + v*kq(am, n)
+         END DO
+      END DO
+   END SUBROUTINE node_moments
+
+   SUBROUTINE sliver_point(od, wk, th0, dth, xt, wt, xr, wr, r, th, q)
+      ! One quadrature point of the sliver of fs_outer_moments on the chord from th0 to th0 + dth: at theta = th0 + xt dth,
+      ! between the chord (rho_c) and the circle, r = rho_c + xr (R - rho_c); q = Q_D there times the weight
+      ! wt dth wr (R - rho_c) r. The modal amplitudes at r (modes_real) are left in wk. The same points and arithmetic as
+      ! fs_outer_sliver, which keeps its own loop: as one routine the compiler rounded fs_outer_sliver differently (1e-15).
+      TYPE(outer_data), INTENT(IN) :: od
+      TYPE(outer_work), INTENT(INOUT) :: wk
+      REAL(8), INTENT(IN) :: th0, dth, xt, wt, xr, wr
+      REAL(8), INTENT(OUT) :: r, th
+      COMPLEX(8), INTENT(OUT) :: q
+      TYPE(fs_point_field) :: s1, s2, i1, i2, t1, t2
+      REAL(8) :: rho_c, dxy(2)
+
+      th = th0 + xt*dth
+      rho_c = od%radius*COS(0.5D0*dth)/COS(th - th0 - 0.5D0*dth)
+      r = rho_c + xr*(od%radius - rho_c)
+      CALL modes_real(od, r, wk)
+      s1 = modal_point(od%m1, wk%f1, r, th, .FALSE.)
+      s2 = modal_point(od%m2, wk%c2, r, th, .TRUE.)
+      dxy = [r*COS(th), r*SIN(th)]
+      i1 = plane_point(od%inc1, od%amp1, od%k1, od%beta1, od%dzi1, dxy)
+      i2 = plane_point(od%inc2, CONJG(od%amp2c), od%k2, od%beta2, od%dzi2, dxy)
+      t1%phi = s1%phi + i1%phi
+      t1%grad = s1%grad + i1%grad
+      t1%phizz = s1%phizz + i1%phizz
+      t2%phi = s2%phi + i2%phi
+      t2%grad = s2%grad + i2%grad
+      t2%phizz = s2%phizz + i2%phizz
+      q = fs_forcing_diff(od%w1, t1, i1, od%w2, t2, i2, od%g)*(wt*dth*wr*(od%radius - rho_c)*r)
+   END SUBROUTINE sliver_point
 
    FUNCTION modal_point(mmax, f, r, th, conj_field) RESULT(p)
       ! The point field at (r, theta) of modal amplitudes f (modes_real): phi, Cartesian gradient, phi_zz. conj_field: f
