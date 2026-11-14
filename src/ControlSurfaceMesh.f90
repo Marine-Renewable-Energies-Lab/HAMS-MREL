@@ -786,7 +786,8 @@ CONTAINS
 
    END SUBROUTINE free_surface_strips
 
-   SUBROUTINE build_fs_inner(mesh, geom, opts, h, inputdir, pts, centre, radius, ok, msg, omega_max, np_circle, n_rows)
+   SUBROUTINE build_fs_inner(mesh, geom, opts, h, inputdir, pts, centre, radius, ok, msg, omega_max, np_circle, n_rows, &
+                             fs_panels)
       ! The inner free surface of the QTF free-surface integral: the part of z = 0 between the waterlines and a circle of
       ! radius R about the centre of the waterline bounding box of all bodies. Returned as CS_FREE points, nrm (0, 0, -1),
       ! w the panel area; centre and R are returned too. From FSInnerMesh.pnl in inputdir when that file exists, else
@@ -808,6 +809,8 @@ CONTAINS
       ! ok = .false. with msg for every stop. np_circle, if present, is the number of chords of the polygon that the
       ! generated mesh ends on (inscribed in the circle, vertices at theta = 2 pi (j - 1) / np about the centre), 0 for a mesh
       ! from the file. n_rows, if present, is the number of radial rows of the generated mesh (0 for a mesh from the file).
+      ! fs_panels, if present, is the panel mesh of the points (vertices, ncn, ncon; panel i is point i), for the panel
+      ! integrals of the direct free-surface right side (QTFDirectFS); left unset when ok is .false.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       TYPE(so_options), INTENT(IN) :: opts
@@ -819,6 +822,7 @@ CONTAINS
       CHARACTER(LEN=:), ALLOCATABLE, INTENT(OUT) :: msg
       REAL(8), INTENT(IN), OPTIONAL :: omega_max
       INTEGER, INTENT(OUT), OPTIONAL :: np_circle, n_rows
+      TYPE(panel_mesh), INTENT(OUT), OPTIONAL :: fs_panels
       CHARACTER(LEN=*), PARAMETER :: NAME = 'FSInnerMesh.pnl'
       REAL(8), ALLOCATABLE :: psz(:)
       REAL(8) :: lo(2), hi(2), rwl, rmin, rgiven, rfile, ps, lam, wvn(1), d, q, frac, dnode, e(2), t, rhull, rx
@@ -992,6 +996,7 @@ CONTAINS
       pts%psize = fm%psize
       pts%kind = CS_FREE
       pts%body = MERGE(0, 1, exists)
+      IF (PRESENT(fs_panels)) fs_panels = fm
       ok = .TRUE.
    END SUBROUTINE build_fs_inner
 
