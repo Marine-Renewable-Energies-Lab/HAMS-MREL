@@ -306,6 +306,7 @@ contains
             new_unittest("run_qtf_b2_defaults", run_qtf_b2_defaults), &
             new_unittest("run_qtf_field_cases", run_qtf_field_cases), &
             new_unittest("run_qtf_direct_field", run_qtf_direct_field), &
+            new_unittest("run_qtf_direct_field_six", run_qtf_direct_field_six), &
             new_unittest("run_qtf_fs_cases", run_qtf_fs_cases), &
             new_unittest("run_control_cyl", run_control_cyl), &
             new_unittest("run_control_cyl_sybo", run_control_cyl_sybo), &
@@ -428,6 +429,7 @@ contains
             new_unittest("qtf_field_no_points_stops", qtf_field_no_points_stops), &
             new_unittest("qtf_field_off", qtf_field_off), &
             new_unittest("qtf_direct_field_rows", qtf_direct_field_rows), &
+            new_unittest("qtf_direct_field_six_values", qtf_direct_field_six_values), &
             new_unittest("qtf_fs_columns", qtf_fs_columns), &
             new_unittest("qtf_fs_off_unchanged", qtf_fs_off_unchanged), &
             new_unittest("fs_half_matches_full", fs_half_matches_full), &
@@ -796,6 +798,15 @@ contains
         call run_case("qtf_direct_field", [character(len=40) :: qtf_diff_file, qtf_direct_file, qtf_field_file, &
                                            "Wamit_format/QTF_Field.txt"], error)
     end subroutine run_qtf_direct_field
+
+    !> The hull of qtf_direct_one with six field points (three on z = 0), qtf_direct = 1 and, as the reference of the partial
+    !> columns, the same case with qtf_direct = 0 (Phase 7c-1)
+    subroutine run_qtf_direct_field_six(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("qtf_direct_field_six", [character(len=40) :: qtf_field_file, "Wamit_format/QTF_Field.txt"], error)
+        if (allocated(error)) return
+        call run_case("qtf_direct_field_six_off", [character(len=40) :: qtf_field_file], error)
+    end subroutine run_qtf_direct_field_six
 
     subroutine run_control_cyl(error)
         type(error_type), allocatable, intent(out) :: error
@@ -5193,6 +5204,140 @@ contains
             if (allocated(error)) return
         end do
     end subroutine qtf_direct_field_rows
+
+    !> QTF_Field.txt of qtf_direct_field_six, six field points (the first three on z = 0, elevation) and two frequencies:
+    !> the columns Re_dir, Im_dir and has_direct are there (read by the names of the "# Columns:" line), the first 15 columns of
+    !> every row are the text of the row of QTF_FieldPartial.txt of the run without qtf_direct (an independent run) and of that
+    !> of the same run, a row with has_direct = 0 has no direct part, at least one row on a z = 0 point is solved, and the direct
+    !> parts of the solved rows equal the stored expected_direct.txt (the values of this build, extract_direct_field_expected.py)
+    !> to a relative 1e-6 of their modulus
+    subroutine qtf_direct_field_six_values(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=:), allocatable :: full(:), part(:), ref(:), exp(:)
+        character(len=512), allocatable :: frow(:), prow(:), rrow(:), erow(:)
+        character(len=32) :: names(32)
+        real(8) :: v(32), e(8), dmod
+        integer :: nf, np, nr, ne, nn, r, c, k, ios, icol_re, icol_im, icol_has, icol_ipt, n_solved, n_surface
+        logical :: have
+
+        call read_lines(output_dir("qtf_direct_field_six")//"Wamit_format/QTF_Field.txt", full, error)
+        if (allocated(error)) return
+        call read_lines(output_dir("qtf_direct_field_six")//qtf_field_file, part, error)
+        if (allocated(error)) return
+        call read_lines(output_dir("qtf_direct_field_six_off")//qtf_field_file, ref, error)
+        if (allocated(error)) return
+        call read_lines(get_repo_root_path()//"test/data/qtf_direct_field_six/expected_direct.txt", exp, error)
+        if (allocated(error)) return
+        allocate (frow(size(full)), prow(size(part)), rrow(size(ref)), erow(size(exp)))
+        ! The data rows and the column names
+        nn = 0
+        nf = 0
+        do r = 1, size(full)
+            if (len_trim(full(r)) == 0) cycle
+            if (full(r)(1:1) == '#') then
+                if (index(full(r), "# Columns:") == 1) then
+                    nn = 0
+                    c = 11
+                    do
+                        do while (c <= len_trim(full(r)))
+                            if (full(r)(c:c) /= ' ') exit
+                            c = c + 1
+                        end do
+                        if (c > len_trim(full(r))) exit
+                        k = c
+                        do while (k <= len_trim(full(r)))
+                            if (full(r)(k:k) == ' ') exit
+                            k = k + 1
+                        end do
+                        nn = nn + 1
+                        names(nn) = full(r)(c:k - 1)
+                        c = k
+                    end do
+                end if
+                cycle
+            end if
+            nf = nf + 1
+            frow(nf) = full(r)
+        end do
+        np = 0
+        do r = 1, size(part)
+            if (len_trim(part(r)) == 0 .or. part(r)(1:1) == '#') cycle
+            np = np + 1
+            prow(np) = part(r)
+        end do
+        nr = 0
+        do r = 1, size(ref)
+            if (len_trim(ref(r)) == 0 .or. ref(r)(1:1) == '#') cycle
+            nr = nr + 1
+            rrow(nr) = ref(r)
+        end do
+        ne = 0
+        do r = 1, size(exp)
+            if (len_trim(exp(r)) == 0 .or. exp(r)(1:1) == '!') cycle
+            ne = ne + 1
+            erow(ne) = exp(r)
+        end do
+        icol_re = 0
+        icol_im = 0
+        icol_has = 0
+        icol_ipt = 0
+        do c = 1, nn
+            if (trim(names(c)) == "Re_dir") icol_re = c
+            if (trim(names(c)) == "Im_dir") icol_im = c
+            if (trim(names(c)) == "has_direct") icol_has = c
+            if (trim(names(c)) == "IPT") icol_ipt = c
+        end do
+        call check(error, nn == 18 .and. icol_re == 16 .and. icol_im == 17 .and. icol_has == 18 .and. icol_ipt == 6, &
+                   "The columns of QTF_Field.txt are not those of QTF_FieldPartial.txt and Re_dir Im_dir has_direct")
+        if (allocated(error)) return
+        ! Two frequencies, four ordered pairs, six points, the difference QTF (K = 1) only: 24 rows of each file
+        call check(error, nf == 24 .and. np == 24 .and. nr == 24, "The files of qtf_direct_field_six do not have 24 rows each")
+        if (allocated(error)) return
+        n_solved = 0
+        n_surface = 0
+        do r = 1, nf
+            c = len_trim(rrow(r))
+            call check(error, frow(r)(1:c) == rrow(r)(1:c) .and. prow(r)(1:c) == rrow(r)(1:c) .and. &
+                       len_trim(prow(r)) == c, "The partial columns differ from those of the run without qtf_direct")
+            if (allocated(error)) return
+            read (frow(r), *, iostat=ios) v(1:nn)
+            call check(error, ios == 0, "Bad row in QTF_Field.txt: "//trim(frow(r)))
+            if (allocated(error)) return
+            have = nint(v(icol_has)) == 1
+            if (have) then
+                n_solved = n_solved + 1
+                if (nint(v(icol_ipt)) <= 3) n_surface = n_surface + 1
+                call check(error, abs(v(icol_re)) + abs(v(icol_im)) > 0d0, "A solved row has a zero direct part")
+            else
+                call check(error, nint(v(icol_has)) == 0 .and. v(icol_re) == 0d0 .and. v(icol_im) == 0d0, &
+                           "A row without direct solve has a direct part or has_direct /= 0")
+            end if
+            if (allocated(error)) return
+            ! The pairs i /= j are solved, the mean rows (i = j) are not
+            call check(error, have .eqv. (abs(v(1) - v(2)) > 1d-6*abs(v(1))), "has_direct is not 1 for the pairs i /= j alone")
+            if (allocated(error)) return
+        end do
+        call check(error, n_solved == 12 .and. n_surface >= 1, "Not 12 solved rows (2 pairs at 6 points) with a z = 0 point")
+        if (allocated(error)) return
+        ! The stored direct parts, in the order of the rows: PER1 PER2 BETA1 BETA2 K IPT Re_dir Im_dir
+        call check(error, ne == n_solved, "expected_direct.txt does not have a row for each solved row")
+        if (allocated(error)) return
+        k = 0
+        do r = 1, nf
+            read (frow(r), *) v(1:nn)
+            if (nint(v(icol_has)) /= 1) cycle
+            k = k + 1
+            read (erow(k), *) e
+            call check(error, abs(v(1) - e(1)) <= 1d-5*abs(e(1)) .and. abs(v(2) - e(2)) <= 1d-5*abs(e(2)) .and. &
+                       nint(v(5)) == nint(e(5)) .and. nint(v(icol_ipt)) == nint(e(6)), &
+                       "A solved row is not the row of expected_direct.txt")
+            if (allocated(error)) return
+            dmod = hypot(e(7), e(8))
+            call check(error, hypot(v(icol_re) - e(7), v(icol_im) - e(8)) <= 1d-6*dmod, &
+                       "The direct part of a solved row differs from expected_direct.txt by more than 1e-6 of its modulus")
+            if (allocated(error)) return
+        end do
+    end subroutine qtf_direct_field_six_values
 
     !> Without qtf_field no field file is written
     subroutine qtf_field_off(error)
