@@ -40,7 +40,8 @@ MODULE QTFDirectFS
    ! and -int_F (phi_D dG/dn - G dphi_D/dn) dS = +(1/g) int_F G Q_D dS. So s_D = +1: the free-surface part is added to the
    ! right side with the sign of the body part int_S G b dS. At a lid point (inside the body, outside the fluid) the
    ! identity has 0 in place of -2 pi phi, and the F term is the same: the lid rows get the same r_FS. For the first-order
-   ! problem Q = 0 and the F term vanishes, which is why ASSB_RBC has none. Task 4 pins the sign by T_dir = T_pot (full).
+   ! problem Q = 0 and the F term vanishes, which is why ASSB_RBC has none. Pinned by T_dir = T_pot (full): test
+   ! direct_fs_equals_indirect_full, 2.8e-3 of max |T_pot| with s_D = +1, 0.78 with -1.
    ! g is the gravity of the Green function, g = Omega^2 / V (Const_mod G): Q_D must be formed with the same g (fs%g).
    !
    ! The inner part (the inner free-surface mesh of build_fs_inner, nfs panels, areas w_j, centroids xi_j):
@@ -106,7 +107,8 @@ MODULE QTFDirectFS
    USE FinGreen3D_Open, ONLY: FINGREEN3D
    USE SecondOrderTypes, ONLY: panel_mesh, cs_points
    USE PartialWaves, ONLY: pw_set, pw_green_modes, pw_green_mmax, pw_bessel_k, PW_KR_MAX
-   USE QTFDirect, ONLY: direct_lid_points, rankine_moments
+   ! direct_fs_data is defined in QTFDirect, so that direct_at_omega can take it, and passed on from here
+   USE QTFDirect, ONLY: direct_lid_points, rankine_moments, direct_fs_data
    USE, INTRINSIC :: IEEE_ARITHMETIC, ONLY: IEEE_IS_FINITE
    IMPLICIT NONE
    PRIVATE
@@ -128,22 +130,6 @@ MODULE QTFDirectFS
    REAL(8), PARAMETER :: RFAR_EV_DECAY = 40D0
    REAL(8), PARAMETER :: PI = 3.14159265358979323846D0
 
-   TYPE :: direct_fs_data
-      ! The free-surface part of the direct right side at one Omega (direct_fs_setup):
-      !   gfs(nrow, nfs)          the inner Green matrix, (1 / w_j) int_{panel j} G(x_i, .) dS; rows the full hull panels,
-      !                           then the full lid points
-      !   a(-mg:mg, 0:nev, nrow)  the Graf amplitudes of G(x_i, .) outside R in the contraction form (header); zero for
-      !                           |m| > mcut
-      !   w(nfs)                  the inner panel areas
-      !   kev(nev)                the evanescent wave numbers at Omega, k0 the propagating one
-      !   cut_error               q^(mcut + 1) / ((mcut + 1) (1 - q)), q = r_max / R, when mcut < mg, else 0
-      INTEGER :: nrow = 0, nfs = 0, nbase = 0, nl = 0, nsys = 1, n = 0, mg = 0, nev = 0, mcut = -1
-      LOGICAL :: multi = .FALSE.
-      REAL(8) :: omega = 0D0, g = 0D0, h = 0D0, radius = 0D0, centre(2) = 0D0, k0 = 0D0, r_max = 0D0, cut_error = 0D0
-      REAL(8), ALLOCATABLE :: kev(:), w(:)
-      COMPLEX(8), ALLOCATABLE :: gfs(:, :), a(:, :, :)
-   END TYPE direct_fs_data
-
 CONTAINS
 
    SUBROUTINE direct_fs_setup(mesh, fs_pts, fs_panels, centre, radius, h_in, omega, is_multi, fs)
@@ -152,7 +138,7 @@ CONTAINS
       ! (finite). The solver globals must be at omega (W1, V, WVN, H); with IRSP = 1 the lid points of direct_lid_points
       ! give the lid rows. Stops if the globals are not at omega or h_in, in deep water, if fs_pts and fs_panels differ,
       ! or if a row point lies outside the circle. Writes a warning if the Graf orders or the evanescent modes had to be
-      ! cut (header).
+      ! cut (header). The pointers of fs to the 6a store are left unset (the caller of direct_at_omega sets them).
       TYPE(panel_mesh), INTENT(IN) :: mesh, fs_panels
       TYPE(cs_points), INTENT(IN) :: fs_pts
       REAL(8), INTENT(IN) :: centre(2), radius, h_in, omega

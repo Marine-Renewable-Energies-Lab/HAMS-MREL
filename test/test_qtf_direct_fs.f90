@@ -17,8 +17,28 @@ module test_qtf_direct_fs
   use PartialWaves, only : pw_set, pw_bessel_k, pw_green_mmax, pw_eval_surface
   use QTFFreeSurface, only : fs_point_field, fs_forcing_diff, fs_outer_moments
   use QTFDirectFS, only : direct_fs_data, direct_fs_setup, direct_fs_rhs, direct_fs_rfar, DIRECT_FS_SIGN, DIRECT_FS_TOL
-  use second_order_fixtures, only : make_cylinder
+  use second_order_fixtures, only : make_cylinder, set_panel, maccamy_fuchs_state
   use test_waterline_field, only : set_wave, load_panels
+  ! The direct solve with the free-surface forcing (Task 4)
+  use HAMS_mod, only : ISOLV
+  use PanelMesh_mod, only : IPIV
+  use Inerfs_mod, only : TNELEM
+  use Potentials_mod, only : CGRN, RKBN, MXPOT
+  use LinearMatrix_mod, only : AMAT, BRMAT
+  use AssbMatx, only : ASSB_LEFT, ASSB_RBC, RADIATION_SOLVER
+  use CalGreenFunc, only : CALGREEN
+  use ImplementSubs, only : SetWaveFromOmega
+  use SecondOrderTypes, only : first_order_state
+  use FirstOrderState, only : radiation_psi, wave_gravity
+  use FieldVelocity, only : incident_at
+  use NearFieldDrift, only : waterline_extrapolate
+  use QTFPotential, only : potential_pair, psi_surface_gradient, psi_waterline, NPOT_TERMS
+  use QTFFreeSurface, only : fs_inner_fields, fs_inner_steps, fs_sample_phi, fs_circle_modes, fs_auto_modes, &
+                             fs_auto_evanescent, fs_pair_terms
+  use PartialWaves, only : pw_sample_points, pw_evanescent_from_wvn
+  use ControlSurfaceMesh, only : hull_radius
+  use QTFDirect, only : direct_setup, direct_at_omega
+  use SharpEdge, only : DEFAULT_EDGE_DEG
   use, intrinsic :: ieee_arithmetic, only : ieee_is_finite, ieee_value, ieee_positive_inf, ieee_quiet_nan
   implicit none
   private
@@ -31,6 +51,20 @@ module test_qtf_direct_fs
   real(8), parameter :: fx_depth = 15d0, fx_omax = 1.1d0, fx_omega = 0.3d0
   ! Hull rows above this z are the waterline rows (the top row of the wall, 1.25 m high)
   real(8), parameter :: wl_row_z = -1.25d0
+  ! Task 4. The 480-panel rounded cylinder of the 7a fixture qtf_direct_round (radius 10, draft 10, depth 100), with its
+  ! first-order frequencies, the heading of the states and the water density
+  character(len=*), parameter :: round_mesh = "test/data/qtf_direct_round/input/HullMesh.pnl"
+  real(8), parameter :: rd_depth = 100d0, rd_omegas(3) = [0.70d0, 0.95d0, 1.10d0], rd_beta = 0.5235987755982988d0
+  real(8), parameter :: rho_w = 1025d0
+  ! direct_fs_equals_indirect_full: the free-surface part of T_dir (parts slice 3) against FS_inner + FS_outer of
+  ! fs_pair_terms, over max |T_pot| (body and free-surface terms) of the pairs of each Omega. Measured 2.34e-3 at
+  ! Omega = 0.25 and 2.83e-3 at 0.15 (max |T_FS| is 0.34 and 0.39 of max |T_pot|), well below the 1.9e-2 of the body
+  ! forcing of this hull in 7a (qtf_direct_round, M_y at (0.70, 0.95)); 1.3x the larger, rounded up. With the opposite
+  ! s_D: 0.67 and 0.78
+  real(8), parameter :: fs_indirect_limit = 3.7d-3
+  ! direct_fs_pair_order: a pair with Omega < 0 against the conjugate of the swapped pair, and the load without parts
+  ! (the free-surface right side added to the body one) against the sum of the parts
+  real(8), parameter :: pair_order_limit = 1d-12
 
 contains
 
@@ -45,7 +79,9 @@ subroutine collect_qtf_direct_fs(testsuite)
     new_unittest("fs_amplitudes_match_green", test_amplitudes_match_green), &
     new_unittest("fs_rhs_order_cut_finite", test_order_cut_finite), &
     new_unittest("fs_rhs_outer_contraction", test_outer_contraction), &
-    new_unittest("fs_rfar_evanescent", test_rfar) &
+    new_unittest("fs_rfar_evanescent", test_rfar), &
+    new_unittest("direct_fs_pair_order", test_direct_fs_pair_order), &
+    new_unittest("direct_fs_equals_indirect_full", test_direct_fs_equals_indirect) &
     ]
 end subroutine collect_qtf_direct_fs
 
@@ -795,5 +831,389 @@ subroutine test_rfar(error)
   print '(4x,a)', trim(info)
   call check(error, abs(fs%kev(1) * (r1 - radius) - 40d0) <= 1d-12 .and. r2 == radius + 1d3, trim(info))
 end subroutine test_rfar
+
+! ------------------------------------------------------------------------------------ the direct solve (Task 4)
+
+!> Reads a hull mesh of HAMS (HullMesh.pnl, no symmetry plane) into a whole panel_mesh of one body, as make_cylinder
+!> builds one: vertex-average centroid and area from the diagonals (set_panel, as HAMS), the flat-panel normal from the
+!> diagonals, turned to point into the body (towards c_in, a point inside; the hull is convex)
+subroutine read_hull(path, c_in, mesh, error)
+  character(len=*), intent(in) :: path
+  real(8), intent(in) :: c_in(3)
+  type(panel_mesh), intent(out) :: mesh
+  type(error_type), allocatable, intent(out) :: error
+  character(len=200) :: line
+  real(8) :: v(3, 4), d1(3), d2(3), c(3), nrm(3), xc(3)
+  integer :: u, ios, npan, nnode, i, m, id, nv
+
+  open (newunit=u, file=path, status='old', action='read', iostat=ios)
+  call check(error, ios == 0, "cannot open "//path)
+  if (allocated(error)) return
+  do
+    read (u, '(a)') line
+    if (index(line, 'Number of Panels') > 0) exit
+  end do
+  read (u, *) npan, nnode
+  mesh%n = npan
+  mesh%nbase = npan
+  mesh%nnode = nnode
+  mesh%nbody = 1
+  mesh%nsys = 1
+  allocate (mesh%xc(3, npan), mesh%nrm(3, npan), mesh%area(npan), mesh%psize(npan), mesh%nj(6, npan))
+  allocate (mesh%xnode(3, nnode), mesh%ncn(npan), mesh%ncon(4, npan), mesh%body(npan), mesh%base(npan), mesh%image(npan))
+  allocate (mesh%xr(3, 1))
+  mesh%xr = 0d0
+  mesh%body = 1
+  mesh%image = 1
+  mesh%base = [(i, i = 1, npan)]
+  mesh%ncon = 0
+  do
+    read (u, '(a)') line
+    if (index(line, 'Start Definition of Node Coordinates') > 0) exit
+  end do
+  do i = 1, nnode
+    read (u, *) id, mesh%xnode(:, i)
+  end do
+  do
+    read (u, '(a)') line
+    if (index(line, 'Start Definition of Node Relations') > 0) exit
+  end do
+  do i = 1, npan
+    read (u, '(a)') line
+    read (line, *) id, nv
+    mesh%ncn(i) = nv
+    read (line, *) id, nv, mesh%ncon(1:nv, i)
+  end do
+  close (u)
+  do i = 1, npan
+    nv = mesh%ncn(i)
+    do m = 1, nv
+      v(:, m) = mesh%xnode(:, mesh%ncon(m, i))
+    end do
+    xc = sum(v(:, 1:nv), dim=2) / real(nv, 8)
+    if (nv == 4) then
+      d1 = v(:, 3) - v(:, 1)
+      d2 = v(:, 4) - v(:, 2)
+    else
+      d1 = v(:, 2) - v(:, 1)
+      d2 = v(:, 3) - v(:, 1)
+    end if
+    c = [d1(2) * d2(3) - d1(3) * d2(2), d1(3) * d2(1) - d1(1) * d2(3), d1(1) * d2(2) - d1(2) * d2(1)]
+    nrm = c / norm2(c)
+    if (sum(nrm * (c_in - xc)) < 0d0) nrm = -nrm
+    call set_panel(mesh, i, nrm)
+  end do
+end subroutine read_hull
+
+!> The geometry, the inner free surface of build_fs_inner (largest first-order frequency omega_max, default radius) with
+!> its panels, and the partial-wave set-up of the driver (fs_setup of SecondOrderDriver): M and N_ev by the automatic
+!> rules, the offsets of fs_inner_fields and the samples on the circle
+subroutine fs_common(mesh, depth, omega_max, geom, pts, fm, centre, radius, npc, delta, circle, mmax, nev, error)
+  type(panel_mesh), intent(in) :: mesh
+  real(8), intent(in) :: depth, omega_max
+  type(surface_geom), intent(out) :: geom
+  type(cs_points), intent(out) :: pts, circle
+  type(panel_mesh), intent(out) :: fm
+  real(8), intent(out) :: centre(2), radius
+  integer, intent(out) :: npc, mmax, nev
+  real(8), allocatable, intent(out) :: delta(:)
+  type(error_type), allocatable, intent(out) :: error
+  type(so_options) :: opts
+  real(8) :: r_wl
+  integer :: iw, nshrunk
+  logical :: ok
+  character(len=:), allocatable :: msg
+
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call check(error, ok, "geometry: "//msg)
+  if (allocated(error)) return
+  call build_fs_inner(mesh, geom, opts, depth, 'fs_direct_no_input_dir', pts, centre, radius, ok, msg, &
+                      omega_max=omega_max, np_circle=npc, fs_panels=fm)
+  call check(error, ok, "inner mesh: "//msg)
+  if (allocated(error)) return
+  call set_omega(omega_max, depth)
+  mmax = fs_auto_modes(0, WK, radius)
+  r_wl = 0d0
+  do iw = 1, geom%nwl
+    r_wl = max(r_wl, norm2(geom%wl_x1(1:2, iw) - centre), norm2(geom%wl_x2(1:2, iw) - centre))
+  end do
+  nev = fs_auto_evanescent(0, depth, radius, max(r_wl, hull_radius(mesh, centre)))
+  allocate (delta(pts%n))
+  call fs_inner_steps(mesh, pts, 2d0 * opts%cs_fd_step, delta, nshrunk)
+  call pw_sample_points(centre, radius, depth, mmax, nev, circle)
+end subroutine fs_common
+
+!> The first-order states of the QTF store at omegas (one heading each, betas in radians): the MacCamy-Fuchs wave of a
+!> cylinder of radius 10 on the panels (a field with a scattered part; its exactness on the hull does not matter here, as
+!> both methods take the same states), with rigid motions xis (6, n) for the body forcing, the waterline potential, and the
+!> 6a store as the driver builds it: the fields at the inner points (fs_inner_fields), the incident fields there and the
+!> partial waves of the scattered potential outside R (fs_circle_modes)
+subroutine fs_states(mesh, geom, pts, delta, circle, centre, radius, depth, mmax, nev, omegas, betas, xis, nthread_fs, &
+                     store, store_wl, fa, ia, pwa)
+  type(panel_mesh), intent(in) :: mesh
+  type(surface_geom), intent(in) :: geom
+  type(cs_points), intent(in) :: pts, circle
+  real(8), intent(in) :: delta(:), centre(2), radius, depth, omegas(:), betas(:)
+  integer, intent(in) :: mmax, nev, nthread_fs
+  complex(8), intent(in) :: xis(:, :)
+  type(first_order_state), allocatable, intent(out) :: store(:, :)
+  complex(8), allocatable, intent(out) :: store_wl(:, :, :)
+  type(fs_point_field), allocatable, intent(out) :: fa(:, :, :), ia(:, :, :)
+  type(pw_set), allocatable, intent(out) :: pwa(:, :)
+  type(first_order_state) :: st(1)
+  type(fs_point_field), allocatable :: f1(:, :)
+  type(pw_set) :: pw1(1)
+  type(so_options) :: opts
+  complex(8), allocatable :: wl(:)
+  complex(8) :: phi, grad(3)
+  real(8) :: kev(nev), miss(1)
+  integer :: i, j, ns
+
+  ns = size(omegas)
+  allocate (store(ns, 1), store_wl(geom%nwl, ns, 1), fa(pts%n, ns, 1), ia(pts%n, ns, 1), pwa(ns, 1), f1(pts%n, 1), &
+            wl(geom%nwl))
+  do i = 1, ns
+    call set_omega(omegas(i), depth)
+    NTHREAD = nthread_fs
+    call maccamy_fuchs_state(mesh, 10d0, depth, WK, W1, 1d0, betas(i), wave_gravity(W1, WK, depth), rho_w, st(1))
+    st(1)%xi(:, 1) = xis(:, i)
+    call waterline_extrapolate(mesh, geom, st(1), wl)
+    store(i, 1) = st(1)
+    store_wl(:, i, 1) = wl
+    call fs_inner_fields(mesh, pts, st, 2d0 * opts%cs_fd_step, .false., f1, delta)
+    fa(:, i, 1) = f1(:, 1)
+    do j = 1, pts%n
+      call incident_at(st(1), pts%x(:, j), phi, grad)
+      ia(j, i, 1)%phi = phi
+      ia(j, i, 1)%grad = grad
+      ia(j, i, 1)%phizz = WK**2 * phi
+    end do
+    call pw_evanescent_from_wvn(nev, kev)
+    call fs_circle_modes(mesh, circle, st, .false., centre, radius, depth, WK, kev, mmax, nev, pw1, miss)
+    pwa(i, 1) = pw1(1)
+  end do
+end subroutine fs_states
+
+!> The radiation problem at omega on the ne panels of load_panels, as SolveRadiation runs it with IRSP = 0 and ISOLV = 1
+!> (as radiation_at of test_qtf_direct): the stored Green function, AMAT factored, MXPOT; the wave of the solver globals
+!> set to omega by SetWaveFromOmega, the depth that of the last set_omega
+subroutine radiation_at(omega, ne)
+  real(8), intent(in) :: omega
+  integer, intent(in) :: ne
+
+  ISOLV = 1
+  call SetWaveFromOmega(omega)
+  TNELEM = ne
+  if (allocated(CGRN)) deallocate (CGRN)
+  if (allocated(RKBN)) deallocate (RKBN)
+  if (allocated(AMAT)) deallocate (AMAT)
+  if (allocated(BRMAT)) deallocate (BRMAT)
+  if (allocated(IPIV)) deallocate (IPIV)
+  allocate (CGRN(ne, ne, NSYS, 4), RKBN(ne, ne, NSYS, 4), AMAT(ne, ne, NSYS), BRMAT(ne, 6, NSYS), IPIV(ne, NSYS))
+  call CALGREEN
+  call ASSB_LEFT(AMAT, IPIV, ne, NSYS)
+  call ASSB_RBC(BRMAT, ne, NSYS)
+  call RADIATION_SOLVER(AMAT, BRMAT, IPIV, MXPOT, ne, NSYS)
+end subroutine radiation_at
+
+!> psi_k of the radiation solve at omega (radiation_at first) at the inner points and its partial waves outside R, as
+!> keep_fs_psi of SecondOrderDriver: one state per mode with psi_k as perturbation potential, dpsi_k/dn = n_k
+subroutine psi_fs(mesh, pts, circle, centre, radius, depth, mmax, nev, omega, psi, psi_pts, pwp)
+  type(panel_mesh), intent(in) :: mesh
+  type(cs_points), intent(in) :: pts, circle
+  real(8), intent(in) :: centre(2), radius, depth, omega
+  integer, intent(in) :: mmax, nev
+  complex(8), allocatable, intent(out) :: psi(:, :), psi_pts(:, :)
+  type(pw_set), intent(out) :: pwp(6)
+  type(first_order_state) :: ps(6)
+  real(8) :: kev(nev), miss(6)
+  integer :: k
+
+  allocate (psi(mesh%n, 6), psi_pts(pts%n, 6))
+  call radiation_psi(mesh, omega, MXPOT, psi)
+  do k = 1, 6
+    ps(k)%omega = omega
+    ps(k)%k = WK
+    ps(k)%nu = V
+    ps(k)%h = H
+    ps(k)%amp = 0d0
+    ps(k)%beta = 0d0
+    ps(k)%g = g_const
+    ps(k)%rho = rho_w
+    allocate (ps(k)%phi_p(mesh%n), ps(k)%dphi_p_dn(mesh%n))
+    ps(k)%phi_p = psi(:, k)
+    ps(k)%dphi_p_dn = mesh%nj(k, :)
+  end do
+  call fs_sample_phi(mesh, pts, ps, .false., psi_pts)
+  call pw_evanescent_from_wvn(nev, kev)
+  call fs_circle_modes(mesh, circle, ps, .false., centre, radius, depth, WK, kev, mmax, nev, pwp, miss)
+end subroutine psi_fs
+
+!> Rigid motions of three states (6, 3), different in every mode, so that every body-forcing term of T_pot is present
+function rd_motions() result(x)
+  complex(8) :: x(6, 3)
+  x(:, 1) = [(0.3d0, 0d0), (-0.2d0, 0d0), (0.5d0, 0d0), (0.01d0, 0d0), (0.02d0, 0d0), (-0.015d0, 0d0)]
+  x(:, 2) = [(0.1d0, 0.2d0), (0d0, 0.3d0), (-0.4d0, 0d0), (0d0, -0.02d0), (0.01d0, 0d0), (0.03d0, 0.01d0)]
+  x(:, 3) = [(-0.2d0, 0.1d0), (0.15d0, -0.1d0), (0.3d0, 0.2d0), (0.02d0, 0.01d0), (-0.01d0, 0.02d0), (0d0, -0.02d0)]
+end function rd_motions
+
+!> A pair with Omega < 0 gives the conjugate of the swapped pair (header of QTFDirect: the pair is evaluated as the
+!> swapped one, Q_D(2, 1) = conj Q_D(1, 2), and phi_D conjugated), on the 448-panel cylinder in depth 15, the states at
+!> 1.1 rad/s (heading 0.6) and 0.8 rad/s (heading 0.2), Omega = 0.3: the free-surface part (parts slice 3) and the whole
+!> load, to pair_order_limit of the largest. Without parts the free-surface right side is added to the body one and
+!> solved with it: the load equals the sum of the three parts to the same limit. The free-surface part must be present
+!> (above 1e-3 of the load), or the checks would hold for nothing. Measured: free-surface part 0 (the swapped pair is
+!> solved from the same right side), load 2.8e-16, without parts 9.9e-16; free-surface share 0.17.
+subroutine test_direct_fs_pair_order(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om(2) = [1.1d0, 0.8d0], be(2) = [0.6d0, 0.2d0]
+  type(panel_mesh) :: full, mesh, fm
+  type(surface_geom) :: geom
+  type(cs_points) :: pts, circle
+  type(direct_fs_data) :: dfs
+  type(first_order_state), allocatable :: store(:, :)
+  complex(8), allocatable :: store_wl(:, :, :)
+  type(fs_point_field), allocatable, target :: fa(:, :, :), ia(:, :, :)
+  type(pw_set), allocatable, target :: pwa(:, :)
+  real(8), allocatable :: delta(:)
+  complex(8) :: t(6, 2), tn(6, 2), parts(6, 2, 3), xis(6, 2)
+  integer :: pairs(4, 2), npc, mmax, nev
+  real(8) :: centre(2), radius, omega, e_fs, e_all, e_sum, fs_share
+  character(len=300) :: info
+
+  call make_cylinder(10d0, 10d0, 32, 8, 6, full, .true.)
+  call set_omega(fx_omega, fx_depth)
+  call load_panels(full, 0, 0, mesh)
+  call fs_common(mesh, fx_depth, fx_omax, geom, pts, fm, centre, radius, npc, delta, circle, mmax, nev, error)
+  if (allocated(error)) return
+  xis = rd_motions_two()
+  call fs_states(mesh, geom, pts, delta, circle, centre, radius, fx_depth, mmax, nev, om, be, xis, 8, store, store_wl, &
+                 fa, ia, pwa)
+  omega = om(1) - om(2)
+  ! Pair 1 has Omega < 0, pair 2 is it swapped
+  pairs(:, 1) = [2, 1, 1, 1]
+  pairs(:, 2) = [1, 1, 2, 1]
+  call radiation_at(omega, mesh%nbase)
+  NTHREAD = 8
+  call direct_setup(mesh, DEFAULT_EDGE_DEG)
+  call direct_fs_setup(mesh, pts, fm, centre, radius, fx_depth, omega, .false., dfs)
+  dfs%f => fa
+  dfs%inc => ia
+  dfs%pw => pwa
+  dfs%np = npc
+  call direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, parts=parts, fs=dfs)
+  call direct_at_omega(mesh, geom, omega, store, store_wl, pairs, tn, fs=dfs)
+  NTHREAD = 1
+  e_fs = maxval(abs(parts(:, 1, 3) - conjg(parts(:, 2, 3)))) / maxval(abs(parts(:, 2, 3)))
+  e_all = maxval(abs(t(:, 1) - conjg(t(:, 2)))) / maxval(abs(t))
+  e_sum = maxval(abs(tn - sum(parts, dim=3))) / maxval(abs(tn))
+  fs_share = maxval(abs(parts(:, :, 3))) / maxval(abs(t))
+  write (info, '(a,es10.2,a,es10.2,a,es10.2,a,es10.2)') "Omega < 0 against the swapped pair: free-surface part ", e_fs, &
+    ", load ", e_all, "; load without parts against the sum of the parts ", e_sum, "; free-surface share ", fs_share
+  print '(4x,a)', trim(info)
+  call check(error, e_fs <= pair_order_limit .and. e_all <= pair_order_limit .and. e_sum <= pair_order_limit .and. &
+             fs_share > 1d-3, trim(info))
+end subroutine test_direct_fs_pair_order
+
+!> Rigid motions of two states (6, 2), the first two of rd_motions
+function rd_motions_two() result(x)
+  complex(8) :: x(6, 2), x3(6, 3)
+  x3 = rd_motions()
+  x = x3(:, 1:2)
+end function rd_motions_two
+
+!> The free-surface part of the direct load against that of the indirect method (the sign check of s_D, ledger Task 4):
+!> on the 480-panel rounded cylinder of the 7a fixture qtf_direct_round (radius 10, draft 10, depth 100) with the inner
+!> free surface of build_fs_inner at 1.1 rad/s, the states at 0.70, 0.95, 1.10 rad/s (heading 30 deg) and Omega = 0.25
+!> (0.95, 0.70) and 0.15 (1.10, 0.95), both orders of each pair. By Green's theorem with psi_k (the radiation potential at
+!> Omega, which solves the same equation as phi_D with n_k on the hull),
+!>    i Omega rho int_S phi_D,FS n_k dS = s_FS (i Omega rho / g) int_F psi_k Q_D dS = FS_inner + FS_outer,
+!> so parts slice 3 of direct_at_omega equals the terms of fs_pair_terms to the mesh error. Measured over max |T_pot| of
+!> the pairs of each Omega (body terms of potential_pair plus the free-surface terms). With the opposite s_D the slice
+!> changes sign, and the difference is twice the free-surface part: it must fail by order 1.
+subroutine test_direct_fs_equals_indirect(error)
+  type(error_type), allocatable, intent(out) :: error
+  integer, parameter :: hi(2) = [2, 3], lo(2) = [1, 2]
+  type(panel_mesh) :: full, mesh, fm
+  type(surface_geom) :: geom
+  type(cs_points) :: pts, circle
+  type(direct_fs_data) :: dfs
+  type(first_order_state), allocatable :: store(:, :)
+  complex(8), allocatable :: store_wl(:, :, :), psi(:, :), psi_pts(:, :), gpsi(:, :, :), pwl(:, :)
+  type(fs_point_field), allocatable, target :: fa(:, :, :), ia(:, :, :)
+  type(pw_set), allocatable, target :: pwa(:, :)
+  type(pw_set) :: pwp(6)
+  real(8), allocatable :: delta(:)
+  complex(8) :: t(6, 2), parts(6, 2, 3), terms(6, NPOT_TERMS), tin(6), tout(6), tfs(6, 2), tpot(6, 2)
+  integer :: pairs(4, 2), npc, mmax, nev, iom, p
+  real(8) :: centre(2), radius, omega, gap(2), opp(2), rel_fs(2), betas(3)
+  integer(8) :: c0, c1, rate
+  character(len=400) :: info
+
+  call system_clock(c0, rate)
+  call read_hull(round_mesh, [0d0, 0d0, -5d0], full, error)
+  if (allocated(error)) return
+  call set_omega(rd_omegas(3), rd_depth)
+  call load_panels(full, 0, 0, mesh)
+  call check(error, mesh%n == 480, "the fixture is not the 480-panel rounded cylinder")
+  if (allocated(error)) return
+  call fs_common(mesh, rd_depth, rd_omegas(3), geom, pts, fm, centre, radius, npc, delta, circle, mmax, nev, error)
+  if (allocated(error)) return
+  print '(4x,a,i0,a,f6.2,a,i0,a,i0,a,i0)', "inner points ", pts%n, ", R ", radius, ", polygon ", npc, ", M ", mmax, &
+    ", N_ev ", nev
+  betas = rd_beta
+  call fs_states(mesh, geom, pts, delta, circle, centre, radius, rd_depth, mmax, nev, rd_omegas, betas, rd_motions(), 8, &
+                 store, store_wl, fa, ia, pwa)
+  allocate (gpsi(3, mesh%n, 6), pwl(geom%nwl, 6))
+  do iom = 1, 2
+    omega = rd_omegas(hi(iom)) - rd_omegas(lo(iom))
+    pairs(:, 1) = [hi(iom), 1, lo(iom), 1]
+    pairs(:, 2) = [lo(iom), 1, hi(iom), 1]
+    call radiation_at(omega, mesh%nbase)
+    NTHREAD = 8
+    call psi_fs(mesh, pts, circle, centre, radius, rd_depth, mmax, nev, omega, psi, psi_pts, pwp)
+    call psi_surface_gradient(mesh, geom, psi, gpsi)
+    call psi_waterline(mesh, geom, psi, gpsi, pwl)
+    ! The indirect method: the body terms and FS_inner + FS_outer of each pair
+    do p = 1, 2
+      associate (s1 => store(pairs(1, p), 1), s2 => store(pairs(3, p), 1), i1 => pairs(1, p), i2 => pairs(3, p))
+        call potential_pair(mesh, geom, s1, s2, store_wl(:, i1, 1), store_wl(:, i2, 1), psi, gpsi, pwl, omega, s1%rho, &
+                            wave_gravity(s1%omega, s1%k, s1%h), terms)
+        call fs_pair_terms(s1%omega, fa(:, i1, 1), ia(:, i1, 1), pwa(i1, 1), s1%beta, s1%k, &
+                           s2%omega, fa(:, i2, 1), ia(:, i2, 1), pwa(i2, 1), s2%beta, s2%k, &
+                           psi_pts, pwp, pts%w, npc, s1%g, s1%rho, tin, tout)
+      end associate
+      tfs(:, p) = tin + tout
+      tpot(:, p) = sum(terms, dim=2) + tfs(:, p)
+    end do
+    ! The direct method with the free-surface forcing
+    call direct_setup(mesh, DEFAULT_EDGE_DEG)
+    call direct_fs_setup(mesh, pts, fm, centre, radius, rd_depth, omega, .false., dfs)
+    dfs%f => fa
+    dfs%inc => ia
+    dfs%pw => pwa
+    dfs%np = npc
+    call direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, parts=parts, fs=dfs)
+    NTHREAD = 1
+    gap(iom) = maxval(abs(parts(:, :, 3) - tfs)) / maxval(abs(tpot))
+    opp(iom) = maxval(abs(-parts(:, :, 3) - tfs)) / maxval(abs(tpot))
+    rel_fs(iom) = maxval(abs(tfs)) / maxval(abs(tpot))
+    write (info, '(a,f5.2,a,es10.3,a,es10.3,a,es10.3,a,i0,a,i0,a,i0,a,es9.2)') "Omega ", omega, &
+      ": |slice 3 - (FS_inner + FS_outer)| / max |T_pot| ", gap(iom), " (opposite s_D ", opp(iom), &
+      "; max |T_FS| / max |T_pot| ", rel_fs(iom), "); mg ", dfs%mg, ", nev ", dfs%nev, ", mcut ", dfs%mcut, &
+      ", cut error ", dfs%cut_error
+    print '(4x,a)', trim(info)
+    do p = 1, 2
+      print '(6x,a,i0,a,6es11.3)', "pair ", p, " slice 3 ", abs(parts(:, p, 3))
+      print '(6x,a,i0,a,6es11.3)', "pair ", p, " T_FS    ", abs(tfs(:, p))
+    end do
+  end do
+  call system_clock(c1)
+  write (info, '(a,2es10.3,a,es9.2,a,2es10.3,a,f7.1,a)') "gap at Omega 0.25, 0.15: ", gap, " (limit ", fs_indirect_limit, &
+    "); opposite s_D: ", opp, "; ", real(c1 - c0, 8) / real(rate, 8), " s"
+  print '(4x,a)', trim(info)
+  call check(error, DIRECT_FS_SIGN == 1 .and. all(gap <= fs_indirect_limit) .and. all(opp > 10d0 * fs_indirect_limit), &
+             trim(info))
+end subroutine test_direct_fs_equals_indirect
 
 end module test_qtf_direct_fs

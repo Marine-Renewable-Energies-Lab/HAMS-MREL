@@ -40,6 +40,7 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("qtf_b2_key", test_qtf_b2_key), &
     new_unittest("qtf_direct_key", test_qtf_direct_key), &
     new_unittest("qtf_direct_needs_body", test_qtf_direct_needs_body), &
+    new_unittest("qtf_direct_full_accepted", test_qtf_direct_full_accepted), &
     new_unittest("qtf_edge_keys", test_qtf_edge_keys), &
     new_unittest("qtf_field_key", test_qtf_field_key) &
     ]
@@ -708,12 +709,11 @@ subroutine test_qtf_direct_key(error)
   call remove_directory(root)
 end subroutine test_qtf_direct_key
 
-!> qtf_direct = 1 needs qtf_terms = body (not full, until Phase 7b) and qtf = 1 or 3
+!> qtf_direct = 1 needs qtf_terms = body or full (the free-surface forcing since Phase 7b) and qtf = 1 or 3
 subroutine test_qtf_direct_needs_body(error)
   type(error_type), allocatable, intent(out) :: error
   character(len=*), parameter :: root = "hams_test_so_qtf_direct_body"
-  character(len=*), parameter :: msg_body = "qtf_direct = 1 needs qtf_terms = body in SecondOrder.in; with full the "// &
-                                            "direct solve has no free-surface forcing yet (Phase 7b)."
+  character(len=*), parameter :: msg_body = "qtf_direct = 1 needs qtf_terms = body or full in SecondOrder.in."
 
   call remove_directory(root)
   call make_directory(root)
@@ -731,11 +731,32 @@ subroutine test_qtf_direct_needs_body(error)
   call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 2", "qtf_terms = quadratic", &
                                          "qtf_direct = 1"], &
                            msg_body)
-  if (allocated(error)) return
-  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = full", &
-                                         "qtf_direct = 1"], msg_body)
   call remove_directory(root)
 end subroutine test_qtf_direct_needs_body
+
+!> qtf_direct = 1 with qtf_terms = full is accepted (Phase 7b: the direct solve has the free-surface forcing), for the
+!> difference QTF alone and with the sum QTF
+subroutine test_qtf_direct_full_accepted(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_direct_full"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+  integer :: q
+
+  call remove_directory(root)
+  call make_directory(root)
+  do q = 1, 3, 2
+    call write_input(root, [character(len=40) :: "mean_drift = 1", merge("qtf = 1", "qtf = 3", q == 1), &
+                            "qtf_terms = full", "qtf_direct = 1"])
+    call read_second_order_options(root, opts, ok, msg)
+    call check(error, ok, "qtf_direct = 1 with qtf_terms = full rejected: "//trim(msg))
+    if (allocated(error)) exit
+    call check(error, opts%qtf_direct == 1 .and. opts%qtf_terms == QTF_TERMS_FULL, "qtf_direct or qtf_terms not read")
+    if (allocated(error)) exit
+  end do
+  call remove_directory(root)
+end subroutine test_qtf_direct_full_accepted
 
 !> qtf_b2 is control by default, reads body and control, and rejects other values
 subroutine test_qtf_b2_key(error)
