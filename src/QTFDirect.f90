@@ -141,7 +141,7 @@ MODULE QTFDirect
 
    PUBLIC :: direct_rhs_b2, direct_rhs_b2_block, b2_stokes_densities, b2_stokes_at_point
    PUBLIC :: green_panel_integrals, stored_panel_integrals, green_line_integral, rankine_moments, sharp_edge_panels
-   PUBLIC :: direct_setup, direct_edge_mask, direct_factor, direct_solve, direct_at_omega, direct_lid_points
+   PUBLIC :: direct_setup, direct_edge_mask, direct_factor, direct_solve, direct_at_omega, direct_lid_points, direct_field_at_points
 
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
    ! As CALGREEN: a panel closer than this many panel sizes gets panel integrals of 1/r and of its image
@@ -155,6 +155,19 @@ MODULE QTFDirect
    ! factors (direct_factor). A second factorisation of the same factors would give a wrong phi_D with no error.
    REAL(8) :: factored_omega = -1D0
    COMPLEX(8) :: factored_entry = (0D0, 0D0)
+
+   INTERFACE
+      MODULE SUBROUTINE direct_field_at_points(mesh, geom, xp, phi_d, vf, a, c, e, cl, is_multi, phi_field)
+         ! phi_D at field points off the hull by Green's formula (QTFDirectField.f90, a submodule of this module, which it
+         ! needs for b2_stokes_at_point); the hook of direct_at_omega
+         TYPE(panel_mesh), INTENT(IN) :: mesh
+         TYPE(surface_geom), INTENT(IN) :: geom
+         REAL(8), INTENT(IN) :: xp(:, :)
+         COMPLEX(8), INTENT(IN) :: phi_d(:, :), vf(:, :, :), a(:, :), c(:, :, :), e(:, :), cl(:, :, :, :)
+         LOGICAL, INTENT(IN) :: is_multi
+         COMPLEX(8), INTENT(OUT) :: phi_field(:, :)
+      END SUBROUTINE direct_field_at_points
+   END INTERFACE
 
 CONTAINS
 
@@ -341,7 +354,8 @@ CONTAINS
       END DO
    END SUBROUTINE direct_solve
 
-   SUBROUTINE direct_at_omega(mesh, geom, omega, store, store_wl, pairs, tdir, is_multi, omega_tol, phi2_constant, seconds, parts)
+   SUBROUTINE direct_at_omega(mesh, geom, omega, store, store_wl, pairs, tdir, is_multi, omega_tol, phi2_constant, seconds, parts, &
+                             field_points, phi_field)
       ! The direct load T_dir of every pair of the difference frequency omega (> 0), per unit amplitudes (header):
       !   store, store_wl  the first-order states (nfreq, nbeta) and their waterline potentials (nwl, nfreq, nbeta), as
       !                    QTFDriver keeps them
@@ -354,6 +368,8 @@ CONTAINS
       !   seconds          optional (3): wall time of the pair forcing with ASSB_RHS_FIELD_IRR, of the B2 part (the
       !                    densities of b2_stokes_densities and direct_rhs_b2_block) and of the factorisation, solve and
       !                    load, for the log
+      !   field_points     optional (3, npt), with phi_field (npt, npair) out, both or neither: phi_D of every pair at the
+      !                    points off the hull by Green's formula (direct_field_at_points), e^{-i omega t}
       ! The solver globals must be at omega, with CALGREEN (CALGREEN_MULTI) and ASSB_LEFT (ASSB_LEFT_MULTI) run there, as
       ! RadiationOnlySolves leaves them after the radiation solve at omega; W1 is checked. direct_setup must have been
       ! called for this mesh. With IRSP = 1 the right sides have the lid rows too (header), and the radiation solve must
@@ -371,6 +387,8 @@ CONTAINS
       COMPLEX(8), INTENT(IN), OPTIONAL :: phi2_constant
       REAL(8), INTENT(OUT), OPTIONAL :: seconds(3)
       COMPLEX(8), INTENT(OUT), OPTIONAL :: parts(:, :, :)
+      REAL(8), INTENT(IN), OPTIONAL :: field_points(:, :)
+      COMPLEX(8), INTENT(OUT), OPTIONAL :: phi_field(:, :)
       COMPLEX(8), ALLOCATABLE :: vf(:, :, :), rf(:, :, :), r2(:, :, :), a(:, :), c(:, :, :), cl(:, :, :, :), e(:, :), &
                                  phi(:, :), p2(:, :)
       REAL(8), ALLOCATABLE :: dws(:)
@@ -417,6 +435,17 @@ CONTAINS
          END IF
          parts = (0D0, 0D0)
       END IF
+      IF (PRESENT(field_points) .NEQV. PRESENT(phi_field)) THEN
+         WRITE (*, '(a)') ' direct_at_omega: field_points and phi_field must be given together.'
+         ERROR STOP 1
+      END IF
+      IF (PRESENT(phi_field)) THEN
+         IF (SIZE(field_points, 1) /= 3 .OR. SIZE(phi_field, 1) /= SIZE(field_points, 2) .OR. SIZE(phi_field, 2) /= npair) THEN
+            WRITE (*, '(a)') ' direct_at_omega: field_points must be (3, npt) and phi_field (npt, npair).'
+            ERROR STOP 1
+         END IF
+         phi_field = (0D0, 0D0)
+      END IF
       IF (npair == 0) RETURN
 
       CALL SYSTEM_CLOCK(c0, rate)
@@ -448,6 +477,16 @@ CONTAINS
          sec(2) = sec(2) + REAL(c0 - c1, 8)/REAL(rate, 8)
          rf = rf + r2
          CALL direct_solve(mesh, rf, phi, multi)
+         IF (PRESENT(phi_field)) THEN
+            ! phi_D at the field points from the columns as solved (vf, a, c, e, cl, phi are those of |Omega|). For
+            ! Omega < 0 the solved phi is conj(phi_D), since G(-|Omega|) = conj(G(|Omega|)) and the data are conjugated.
+            ! Green's formula is linear in (b, phi_D) with the kernel rows of the solver at |Omega|, so the field of the
+            ! solved columns is conj(phi_D at the point); the columns with dws < 0 are conjugated, as phi_D below.
+            CALL direct_field_at_points(mesh, geom, field_points, phi, vf, a, c, e, cl, multi, phi_field(:, first:last))
+            DO col = 1, nc
+               IF (dws(col) < 0D0) phi_field(:, first + col - 1) = CONJG(phi_field(:, first + col - 1))
+            END DO
+         END IF
          DO col = 1, nc
             IF (dws(col) < 0D0) phi(:, col) = CONJG(phi(:, col))
             CALL pair_load(first + col - 1, col)

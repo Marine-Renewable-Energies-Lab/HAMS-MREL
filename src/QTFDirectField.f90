@@ -20,7 +20,7 @@
 !    Vaibhav Raghavan
 !
 !  ------------------------------------------------------------------------------------------------------
-MODULE QTFDirectField
+SUBMODULE (QTFDirect) QTFDirectField_sm
    ! The second-order potential phi_D of the direct solution (Phase 7a, QTFDirect) at field points off the hull (Phase 7c-1),
    ! from its solved panel values by Green's formula.
    !
@@ -70,20 +70,17 @@ MODULE QTFDirectField
    ! solution are those of |Omega| before the final conjugation. This routine takes the columns as solved and returns the
    ! field at |Omega|; the caller conjugates the columns of Omega < 0 afterwards, as direct_at_omega does for phi_D.
 
-   USE HAMS_mod, ONLY: NTHREAD
-   USE SecondOrderTypes, ONLY: panel_mesh, surface_geom
+   ! A submodule of QTFDirect: direct_at_omega calls it (the field_points hook) and it calls b2_stokes_at_point of QTFDirect,
+   ! so as a separate module the two would use each other. QTFDirect holds the interface and exports direct_field_at_points;
+   ! NTHREAD, panel_mesh, surface_geom and b2_stokes_at_point come by host association.
    USE WaterlineField, ONLY: field_influence_row
-   USE QTFDirect, ONLY: b2_stokes_at_point
    IMPLICIT NONE
-   PRIVATE
-
-   PUBLIC :: direct_field_at_points
 
    REAL(8), PARAMETER :: PI = 3.141592653589793D0
 
 CONTAINS
 
-   SUBROUTINE direct_field_at_points(mesh, geom, xp, phi_d, vf, a, c, e, cl, is_multi, phi_field)
+   MODULE SUBROUTINE direct_field_at_points(mesh, geom, xp, phi_d, vf, a, c, e, cl, is_multi, phi_field)
       ! phi_D at the points xp off the hull for each column (pair) of the solution (header):
       !   xp         (3, npt), points in the fluid, full coordinates
       !   phi_d      (n, nc), the solved phi_D on the full panels, as direct_solve returns it
@@ -139,4 +136,4 @@ CONTAINS
       !$OMP END PARALLEL
    END SUBROUTINE direct_field_at_points
 
-END MODULE QTFDirectField
+END SUBMODULE QTFDirectField_sm

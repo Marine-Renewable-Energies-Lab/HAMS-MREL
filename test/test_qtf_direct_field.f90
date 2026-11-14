@@ -9,14 +9,14 @@ module test_qtf_direct_field
   use ImplementSubs, only : SetWaveFromOmega
   use PanelMesh_mod, only : ISX, ISY, NSYS
   use Potentials_mod, only : MXPOT
-  use AssbMatx, only : ASSB_RHS_FIELD
+  use AssbMatx, only : ASSB_RHS_FIELD, ASSB_RHS_FIELD_IRR
   use SecondOrderTypes, only : panel_mesh, surface_geom, first_order_state, cs_points, cs_fields, CS_LINE
   use FirstOrderState, only : radiation_psi
   use FieldVelocity, only : fields_green
-  use NearFieldDrift, only : pair_product, rigid_displacement, KERNEL_DIFF
+  use NearFieldDrift, only : pair_product, pair_cross, rigid_displacement, KERNEL_DIFF
   use QTFDirect, only : b2_stokes_densities, b2_stokes_at_point, direct_rhs_b2_block, direct_solve, rankine_moments, &
-                        sharp_edge_panels
-  use QTFDirectField, only : direct_field_at_points
+                        sharp_edge_panels, direct_setup, direct_edge_mask, direct_at_omega, &
+                        direct_field_at_points
   use SharpEdge, only : DEFAULT_EDGE_DEG
   use INFG3D_Open, only : INFGREEN3D
   use second_order_fixtures, only : make_cylinder
@@ -47,6 +47,8 @@ module test_qtf_direct_field
   real(8), parameter :: approach_limit = 2d-2
   ! Half mesh against whole: the same sums in another order, and the Green function at mirrored points; 1.7e-14 measured
   real(8), parameter :: symmetry_limit = 1d-9
+  ! The pair (2, 1) against the conjugate of the pair (1, 2): the same sums conjugated, so to rounding (Review Focus 1)
+  real(8), parameter :: conjugate_limit = 1d-12
 
 contains
 
@@ -57,7 +59,10 @@ contains
       new_unittest("direct_field_b2_identity", test_b2_identity), &
       new_unittest("direct_field_b2_field_route", test_b2_field_route), &
       new_unittest("direct_field_approaches_panel", test_approaches_panel), &
-      new_unittest("direct_field_symmetry", test_symmetry) &
+      new_unittest("direct_field_symmetry", test_symmetry), &
+      new_unittest("direct_field_hook_matches", test_hook_matches), &
+      new_unittest("direct_field_negative_omega", test_negative_omega), &
+      new_unittest("direct_field_hook_absent", test_hook_absent) &
       ]
   end subroutine collect_qtf_direct_field
 
@@ -490,5 +495,167 @@ contains
     end function smooth
 
   end subroutine test_symmetry
+
+  ! ------------------------------------------------------------------------------------------------ the hook
+
+  !> The fixture of the hook tests: the truncated cylinder at depth 10 (test_qtf_direct), the radiation solve at
+  !> Omega = w1 - w2, the two states with the motions of test_qtf_potential and the pairs (1, 2) with Omega > 0 and (2, 1)
+  !> with Omega < 0; xp holds 4 points off the hull.
+  subroutine hook_fixture(mesh, geom, store, store_wl, pairs, xp, error)
+    type(panel_mesh), intent(out) :: mesh
+    type(surface_geom), intent(out) :: geom
+    type(first_order_state), allocatable, intent(out) :: store(:, :)
+    complex(8), allocatable, intent(out) :: store_wl(:, :, :)
+    integer, allocatable, intent(out) :: pairs(:, :)
+    real(8), intent(out) :: xp(3, 4)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: full
+    complex(8) :: x1(6, 1), x2(6, 1)
+    complex(8), allocatable :: wl1(:), wl2(:)
+
+    call make_cylinder(cyl_radius, cyl_draft, 16, 4, 3, full, .true.)
+    call set_wave(cyl_depth)
+    NTHREAD = 4
+    ISOLV = 1
+    call load_panels(full, 0, 0, mesh)
+    call geometry(mesh, geom, error)
+    if (allocated(error)) return
+    call radiation_at(w1 - w2, .false., mesh%nbase)
+    call direct_setup(mesh, DEFAULT_EDGE_DEG)
+    call motions(x1, x2)
+    allocate(store(2, 1), store_wl(geom%nwl, 2, 1))
+    call make_state(mesh, geom, w1, b1, cyl_depth, x1, store(1, 1), wl1)
+    call make_state(mesh, geom, w2, b2, cyl_depth, x2, store(2, 1), wl2)
+    store_wl(:, 1, 1) = wl1
+    store_wl(:, 2, 1) = wl2
+    pairs = reshape([1, 1, 2, 1, 2, 1, 1, 1], [4, 2])
+    xp(:, 1) = [8d0, 3d0, -2d0]
+    xp(:, 2) = [-7d0, -4d0, -1d0]
+    xp(:, 3) = [3d0, -9d0, -6d0]
+    xp(:, 4) = [-6d0, 6d0, 0d0]
+  end subroutine hook_fixture
+
+  !> phi_field of the hook of direct_at_omega, for both pairs (one block) with phi_I2 replaced by zero (the test hook
+  !> phi2_constant, so that the panel forcing needs no incident field), against the same columns built here: the forcing
+  !> B1 + B3 of pair_forcing, the B2 densities, ASSB_RHS_FIELD_IRR and direct_rhs_b2_block, one direct_solve of the block,
+  !> direct_field_at_points, and the conjugation of the column of Omega < 0. The same operations on the same data, so equal
+  !> to the bit, for the pair with Omega > 0 and the pair with Omega < 0.
+  subroutine test_hook_matches(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: mesh
+    type(surface_geom) :: geom
+    type(first_order_state), allocatable :: store(:, :)
+    complex(8), allocatable :: store_wl(:, :, :), t(:, :), phi_hook(:, :), phi_ref(:, :), vf(:, :, :), rf(:, :, :), &
+                               r2(:, :, :), a(:, :), c(:, :, :), e(:, :), cl(:, :, :, :), phi(:, :)
+    integer, allocatable :: pairs(:, :)
+    logical, allocatable :: mask(:)
+    real(8) :: xp(3, 4), dw, nv(3), x(3)
+    complex(8) :: d1(3), d2(3), v1(3), v2(3), q1(3), q2(3), hx(3), b1v, b3v, field, zero3(3)
+    integer :: p, f, b, n, nb, ns
+    character(len=200) :: line
+
+    call hook_fixture(mesh, geom, store, store_wl, pairs, xp, error)
+    if (allocated(error)) return
+    n = mesh%n
+    nb = mesh%nbase
+    ns = mesh%nsys
+    allocate(t(6, 2), phi_hook(4, 2), phi_ref(4, 2))
+    call direct_at_omega(mesh, geom, w1 - w2, store, store_wl, pairs, t, phi2_constant=(0d0, 0d0), &
+                         field_points=xp, phi_field=phi_hook)
+
+    allocate(vf(nb, 2, ns), rf(nb, 2, ns), r2(nb, 2, ns), a(n, 2), c(3, n, 2), e(geom%nwl, 2), cl(3, 4, n, 2), phi(n, 2))
+    mask = direct_edge_mask()
+    zero3 = (0d0, 0d0)
+    do p = 1, 2
+      associate (s1 => store(pairs(1, p), pairs(2, p)), s2 => store(pairs(3, p), pairs(4, p)))
+        dw = s1%omega - s2%omega
+        do f = 1, n
+          b = mesh%body(f)
+          nv = mesh%nrm(:, f)
+          x = mesh%xc(:, f) - mesh%xr(:, b)
+          d1 = rigid_displacement(s1%xi(:, b), x)
+          d2 = rigid_displacement(s2%xi(:, b), x)
+          v1 = -cmplx(0d0, 1d0, kind=8)*s1%omega*d1 - (s1%grad_i(:, f) + s1%grad_p(:, f))
+          v2 = -cmplx(0d0, 1d0, kind=8)*s2%omega*d2 - (s2%grad_i(:, f) + s2%grad_p(:, f))
+          b1v = sum(nv*pair_cross(KERNEL_DIFF, v1, s1%xi(4:6, b), v2, s2%xi(4:6, b)))
+          q1 = rigid_displacement([zero3, s1%xi(4:6, b)], x)
+          q2 = rigid_displacement([zero3, s2%xi(4:6, b)], x)
+          hx = 0.5d0*pair_cross(KERNEL_DIFF, s1%xi(4:6, b), q1, s2%xi(4:6, b), q2)
+          b3v = -cmplx(0d0, 1d0, kind=8)*dw*sum(nv*hx)
+          field = b1v + b3v - (0d0, 0d0)
+          if (dw < 0d0) field = conjg(field)
+          vf(mesh%base(f), p, mesh%image(f)) = field
+        end do
+        call b2_stokes_densities(mesh, geom, s1, s2, store_wl(:, pairs(1, p), pairs(2, p)), &
+                                 store_wl(:, pairs(3, p), pairs(4, p)), a(:, p), c(:, :, p), e(:, p), cl(:, :, :, p), mask)
+        if (dw < 0d0) then
+          a(:, p) = conjg(a(:, p))
+          c(:, :, p) = conjg(c(:, :, p))
+          e(:, p) = conjg(e(:, p))
+          cl(:, :, :, p) = conjg(cl(:, :, :, p))
+        end if
+      end associate
+    end do
+    call ASSB_RHS_FIELD_IRR(vf, rf, nb, 0, ns, 2)
+    call direct_rhs_b2_block(mesh, geom, a, c, e, r2, .false., cl)
+    rf = rf + r2
+    call direct_solve(mesh, rf, phi, .false.)
+    call direct_field_at_points(mesh, geom, xp, phi, vf, a, c, e, cl, .false., phi_ref)
+    phi_ref(:, 2) = conjg(phi_ref(:, 2))
+    write(line, '(a,es10.2,a,es10.2,a,es10.2)') "hook against the separate call, largest difference ", &
+      maxval(abs(phi_hook - phi_ref)), "; largest |phi_field| ", maxval(abs(phi_ref(:, 1))), " and ", &
+      maxval(abs(phi_ref(:, 2)))
+    print '(4x,a)', trim(line)
+    call check(error, all(phi_hook == phi_ref) .and. maxval(abs(phi_ref(:, 1))) > 0d0 .and. &
+               maxval(abs(phi_ref(:, 2))) > 0d0, line)
+  end subroutine test_hook_matches
+
+  !> The pair (2, 1) is the pair (1, 2) with the waves exchanged, so its phi_D is the complex conjugate (T_dir of the
+  !> negative frequency is the conjugate of that of the positive one). phi_field of the hook, with the real phi_I2, for the
+  !> two pairs of one block: (2, 1) against conj of (1, 2).
+  subroutine test_negative_omega(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: mesh
+    type(surface_geom) :: geom
+    type(first_order_state), allocatable :: store(:, :)
+    complex(8), allocatable :: store_wl(:, :, :), t(:, :), phi_field(:, :)
+    integer, allocatable :: pairs(:, :)
+    real(8) :: xp(3, 4), rel
+    character(len=200) :: line
+
+    call hook_fixture(mesh, geom, store, store_wl, pairs, xp, error)
+    if (allocated(error)) return
+    allocate(t(6, 2), phi_field(4, 2))
+    call direct_at_omega(mesh, geom, w1 - w2, store, store_wl, pairs, t, field_points=xp, phi_field=phi_field)
+    rel = maxval(abs(phi_field(:, 2) - conjg(phi_field(:, 1))))/maxval(abs(phi_field(:, 1)))
+    write(line, '(a,es10.2,a,es10.2)') "phi_field of (2, 1) against conj of (1, 2), relative ", rel, &
+      "; largest |phi_field| ", maxval(abs(phi_field(:, 1)))
+    print '(4x,a)', trim(line)
+    call check(error, rel <= conjugate_limit .and. maxval(abs(phi_field(:, 1))) > 0d0, line)
+  end subroutine test_negative_omega
+
+  !> Without field_points and phi_field, tdir and parts are those of the call with them, to the bit: the hook adds
+  !> nothing to the solve. (The values themselves are those pinned by the tests of test_qtf_direct, which run the routine
+  !> without the arguments.)
+  subroutine test_hook_absent(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: mesh
+    type(surface_geom) :: geom
+    type(first_order_state), allocatable :: store(:, :)
+    complex(8), allocatable :: store_wl(:, :, :), t0(:, :), t1(:, :), parts0(:, :, :), parts1(:, :, :), phi_field(:, :)
+    integer, allocatable :: pairs(:, :)
+    real(8) :: xp(3, 4)
+    character(len=200) :: line
+
+    call hook_fixture(mesh, geom, store, store_wl, pairs, xp, error)
+    if (allocated(error)) return
+    allocate(t0(6, 2), t1(6, 2), parts0(6, 2, 2), parts1(6, 2, 2), phi_field(4, 2))
+    call direct_at_omega(mesh, geom, w1 - w2, store, store_wl, pairs, t0, parts=parts0)
+    call direct_at_omega(mesh, geom, w1 - w2, store, store_wl, pairs, t1, parts=parts1, field_points=xp, phi_field=phi_field)
+    write(line, '(a,es10.2,a,es10.2)') "without the hook against with it, largest difference in tdir ", &
+      maxval(abs(t0 - t1)), " and in parts ", maxval(abs(parts0 - parts1))
+    print '(4x,a)', trim(line)
+    call check(error, all(t0 == t1) .and. all(parts0 == parts1) .and. maxval(abs(t0)) > 0d0, line)
+  end subroutine test_hook_absent
 
 end module test_qtf_direct_field
