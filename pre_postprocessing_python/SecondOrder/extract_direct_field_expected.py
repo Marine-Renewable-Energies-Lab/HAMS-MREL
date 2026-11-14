@@ -5,8 +5,8 @@ Usage:
     python -I extract_direct_field_expected.py QTF_Field.txt [expected_direct.txt]
 
 The file holds the rows the direct solve covers (has_direct = 1) with the columns PER1 PER2 BETA1 BETA2 K IPT Re_dir Im_dir,
-the tokens copied as the run wrote them. The columns are read by the names of the "# Columns:" line. The integration test
-qtf_direct_field_six_values compares a new run with this file to a relative 1e-6. Regenerate it only when the direct part
+the tokens copied as the run wrote them (7 significant digits, all the file holds). The columns are read by the names of the "# Columns:" line. The integration test
+qtf_direct_field_six_values compares a new run with this file to a relative 1e-5 (the run writes 7 digits). Regenerate it only when the direct part
 is meant to change: run the integration tests, then this script on
 <build>/output_qtf_direct_field_six/Wamit_format/QTF_Field.txt.
 """

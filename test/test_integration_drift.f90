@@ -5210,14 +5210,14 @@ contains
     !> every row are the text of the row of QTF_FieldPartial.txt of the run without qtf_direct (an independent run) and of that
     !> of the same run, a row with has_direct = 0 has no direct part, at least one row on a z = 0 point is solved, and the direct
     !> parts of the solved rows equal the stored expected_direct.txt (the values of this build, extract_direct_field_expected.py)
-    !> to a relative 1e-6 of their modulus
+    !> to a relative 1e-5 of their modulus (the file has 7 digits), and at each point the live (2,1) part is the conjugate of the (1,2) one
     subroutine qtf_direct_field_six_values(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=:), allocatable :: full(:), part(:), ref(:), exp(:)
         character(len=512), allocatable :: frow(:), prow(:), rrow(:), erow(:)
         character(len=32) :: names(32)
-        real(8) :: v(32), e(8), dmod
-        integer :: nf, np, nr, ne, nn, r, c, k, ios, icol_re, icol_im, icol_has, icol_ipt, n_solved, n_surface
+        real(8) :: v(32), e(8), dmod, live(2, 6, 2)
+        integer :: ipt, nf, np, nr, ne, nn, r, c, k, ios, icol_re, icol_im, icol_has, icol_ipt, n_solved, n_surface
         logical :: have
 
         call read_lines(output_dir("qtf_direct_field_six")//"Wamit_format/QTF_Field.txt", full, error)
@@ -5307,6 +5307,9 @@ contains
             if (have) then
                 n_solved = n_solved + 1
                 if (nint(v(icol_ipt)) <= 3) n_surface = n_surface + 1
+                ! live(Re/Im, point, pair): pair 1 is (omega_1 < omega_2), pair 2 its transposed (2,1)
+                live(1, nint(v(icol_ipt)), merge(1, 2, v(1) < v(2))) = v(icol_re)
+                live(2, nint(v(icol_ipt)), merge(1, 2, v(1) < v(2))) = v(icol_im)
                 call check(error, abs(v(icol_re)) + abs(v(icol_im)) > 0d0, "A solved row has a zero direct part")
             else
                 call check(error, nint(v(icol_has)) == 0 .and. v(icol_re) == 0d0 .and. v(icol_im) == 0d0, &
@@ -5319,6 +5322,15 @@ contains
         end do
         call check(error, n_solved == 12 .and. n_surface >= 1, "Not 12 solved rows (2 pairs at 6 points) with a z = 0 point")
         if (allocated(error)) return
+        ! The live output, not the stored file: at each point the direct part of the pair (2,1) is the complex conjugate of
+        ! that of (1,2) (phi_D of Omega < 0 is the conjugate), Re equal and Im opposite, to 1e-6 of the modulus
+        do ipt = 1, 6
+            dmod = hypot(live(1, ipt, 1), live(2, ipt, 1))
+            call check(error, dmod > 0d0 .and. abs(live(1, ipt, 2) - live(1, ipt, 1)) <= 1d-6*dmod .and. &
+                       abs(live(2, ipt, 2) + live(2, ipt, 1)) <= 1d-6*dmod, &
+                       "The direct part of the pair (2,1) is not the conjugate of that of (1,2) at a field point")
+            if (allocated(error)) return
+        end do
         ! The stored direct parts, in the order of the rows: PER1 PER2 BETA1 BETA2 K IPT Re_dir Im_dir
         call check(error, ne == n_solved, "expected_direct.txt does not have a row for each solved row")
         if (allocated(error)) return
@@ -5333,8 +5345,8 @@ contains
                        "A solved row is not the row of expected_direct.txt")
             if (allocated(error)) return
             dmod = hypot(e(7), e(8))
-            call check(error, hypot(v(icol_re) - e(7), v(icol_im) - e(8)) <= 1d-6*dmod, &
-                       "The direct part of a solved row differs from expected_direct.txt by more than 1e-6 of its modulus")
+            call check(error, hypot(v(icol_re) - e(7), v(icol_im) - e(8)) <= 1d-5*dmod, &
+                       "The direct part of a solved row differs from expected_direct.txt by more than 1e-5 of its modulus")
             if (allocated(error)) return
         end do
     end subroutine qtf_direct_field_six_values
