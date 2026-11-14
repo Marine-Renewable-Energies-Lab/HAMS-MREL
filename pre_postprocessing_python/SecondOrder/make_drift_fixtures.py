@@ -100,6 +100,15 @@ QTF_FS_TWO_SPACING = 4.0   # point spacing of FSInnerMesh.pnl away from the wate
 # IRSP = 1 against IRSP = 0 on a finer mesh of the same hull (960 panels): the lid changes the first-order solution at the
 # discretisation level, and the free-surface terms with it (measured 3.0e-3 at 220 panels, 9.6e-4 at 512, 6.3e-4 at 960)
 QTF_FS_IRSP_MESH = dict(TWO_ROUND_MESH, ntheta=48, nz=10, narc=5, nr=5)
+# The direct method with the free-surface forcing (qtf_direct = 1, qtf_terms = full), Phase 7b Task 5: the rounded hull of
+# qtf_round_body (480 panels) at 0.70, 0.95 and 1.10 rad/s, whose pairs within 0.3 rad/s are Omega = 0.25 and 0.15 rad/s,
+# the same on its half mesh, with IRSP = 1 (the lid of qtf_round_body_irsp, 0.95 and 1.10 rad/s), and the two hulls of
+# qtf_fs_two with FSInnerMesh.pnl. 8 threads. In 20 m of water instead of the 100 m of qtf_round_body: at 100 m the run took
+# 330 s (6136 samples on the circle for the fields and psi of the indirect free-surface terms, 50 to 70 s per frequency) and
+# 160 s in 30 m (1976 samples); deep water is not available with qtf_terms = full
+QTF_DIRECTFS_FREQUENCIES = (0.70, 0.95, 1.10)
+QTF_DIRECTFS_THREADS = 8
+QTF_DIRECTFS_DEPTH = 20.0
 
 
 def real12(value):
@@ -428,6 +437,7 @@ def main():
     write_qtf_body_fixtures(data, both)
     write_qtf_field_fixtures(data, both)
     write_qtf_fs_fixtures(data, both)
+    write_qtf_directfs_fixtures(data, both)
 
     # The control-surface method on the hull of drift_cyl: held fixed, and with the limit frequencies and all heading pairs
     for name, control, options in (("control_cyl", dict(), dict(mean_drift=1, drift_methods="far control", write_terms=1,
@@ -691,6 +701,39 @@ def write_qtf_fs_fixtures(data, both):
                   headings=(0.0,), body_origins=[(0.0, QTF_FS_TWO_OFFSET), (0.0, -QTF_FS_TWO_OFFSET)],
                   threads=CONTROL_THREADS)
     write_second_order(os.path.join(target, "SecondOrder.in"), **dict(full, qtf_fs_radius=QTF_FS_TWO_RADIUS))
+
+
+def write_qtf_directfs_fixtures(data, both):
+    """Fixtures of the direct method with the free-surface forcing (qtf_direct = 1, qtf_terms = full): qtf_directfs_round,
+    qtf_directfs_half, qtf_directfs_irsp and qtf_directfs_two. Velocity by differencing in all (the source solve does not
+    take IRSP = 1), the generated inner mesh of the hull and FSInnerMesh.pnl of the two hulls."""
+    full = dict(mean_drift=1, drift_methods=both, motion_state="free", write_terms=1, qtf_terms="full", qtf=1,
+                qtf_max_dw=0.3, qtf_b2="body", qtf_edge_weights="off", qtf_direct=1)
+    for name, irsp, half, frequencies in (("qtf_directfs_round", 0, False, QTF_DIRECTFS_FREQUENCIES),
+                                          ("qtf_directfs_half", 0, True, QTF_DIRECTFS_FREQUENCIES),
+                                          ("qtf_directfs_irsp", 1, False, QTF_BODY_FREQUENCIES)):
+        target = case_dir(data, name)
+        make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
+                                         half_y=half, **ROUND_MESH)
+        if irsp == 1:
+            make_mesh.write_waterplane(os.path.join(target, "WaterPlaneMesh.pnl"), ROUND_MESH["radius"],
+                                       ROUND_MESH["ntheta"], ROUND_MESH["nr"])
+        write_control(os.path.join(target, "ControlFile.in"), depth=QTF_DIRECTFS_DEPTH, frequencies=frequencies,
+                      headings=DRIFT_CYL_HEADINGS, irsp=irsp, threads=QTF_DIRECTFS_THREADS)
+        write_second_order(os.path.join(target, "SecondOrder.in"), **full)
+    # Two hulls with FSInnerMesh.pnl, the layout of qtf_fs_two: the layout is its own mirror image about y = 0
+    target = case_dir(data, "qtf_directfs_two")
+    for b in (1, 2):
+        make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh_%d.pnl" % b),
+                                         os.path.join(target, "Hydrostatic_%d.in" % b), **TWO_ROUND_MESH)
+    free = two_body_free_surface(QTF_FS_TWO_OFFSET, TWO_ROUND_MESH["radius"], TWO_ROUND_MESH["ntheta"], QTF_FS_TWO_RADIUS,
+                                 QTF_FS_TWO_SPACING)
+    make_mesh.write_mesh(os.path.join(target, "FSInnerMesh.pnl"), free, title="Free Surface Mesh File")
+    write_control(os.path.join(target, "ControlFile.in"), depth=QTF_FS_DEPTH, frequencies=QTF_FS_FREQUENCIES,
+                  headings=(0.0,), body_origins=[(0.0, QTF_FS_TWO_OFFSET), (0.0, -QTF_FS_TWO_OFFSET)],
+                  threads=QTF_DIRECTFS_THREADS)
+    write_second_order(os.path.join(target, "SecondOrder.in"),
+                       **dict(full, qtf_fs_radius=QTF_FS_TWO_RADIUS))
 
 
 def two_body_free_surface(offset, wl_radius, ntheta, radius, spacing):
