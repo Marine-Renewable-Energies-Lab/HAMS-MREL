@@ -14,7 +14,8 @@ module test_qtf_direct_fs
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use ControlSurfaceMesh, only : build_fs_inner
   use FinGreen3D_Open, only : FINGREEN3D
-  use PartialWaves, only : pw_bessel_k, pw_green_mmax
+  use PartialWaves, only : pw_set, pw_bessel_k, pw_green_mmax, pw_eval_surface
+  use QTFFreeSurface, only : fs_point_field, fs_forcing_diff, fs_outer_moments
   use QTFDirectFS, only : direct_fs_data, direct_fs_setup, direct_fs_rhs, direct_fs_rfar, DIRECT_FS_SIGN, DIRECT_FS_TOL
   use second_order_fixtures, only : make_cylinder
   use test_waterline_field, only : set_wave, load_panels
@@ -43,6 +44,7 @@ subroutine collect_qtf_direct_fs(testsuite)
     new_unittest("fs_rhs_symmetry", test_rhs_symmetry), &
     new_unittest("fs_amplitudes_match_green", test_amplitudes_match_green), &
     new_unittest("fs_rhs_order_cut_finite", test_order_cut_finite), &
+    new_unittest("fs_rhs_outer_contraction", test_outer_contraction), &
     new_unittest("fs_rfar_evanescent", test_rfar) &
     ]
 end subroutine collect_qtf_direct_fs
@@ -567,15 +569,17 @@ end subroutine test_amplitudes_match_green
 
 !> A long wave on a circle close to the hull: Omega = 0.05 rad/s, R = 11 m about the cylinder of radius 10 (coarse,
 !> 16 x 4 wall panels), so that H_m(k0 R) overflows below the order the waterline rows need (mcut < mg). The amplitudes
-!> above mcut are zero, the warning measure cut_error is set, and with moments that are Inf and NaN above mcut (as
-!> fs_outer_moments gives there) and finite below, the right side stays finite (no Inf x 0).
+!> above mcut are zero; cut_error is the bound q^(mcut+1) / ((mcut+1)(1 - q)), q = r_max / R, of the dropped tail
+!> sum_{m > mcut} q^m / m, and lies above that sum (here q = 10 cos(pi/16) / 11 = 0.8916, mcut 93: 2.037e-6, the sum
+!> 1.88e-6); with moments that are Inf and NaN above mcut (as fs_outer_moments gives there) and finite below, the right
+!> side stays finite (no Inf x 0).
 subroutine test_order_cut_finite(error)
   type(error_type), allocatable, intent(out) :: error
   type(panel_mesh) :: mesh, fm
   type(cs_points) :: pts
   type(direct_fs_data) :: fs
   complex(8), allocatable :: q(:, :), mom(:, :, :), rhs(:, :, :)
-  real(8) :: centre(2), radius, inf, nan
+  real(8) :: centre(2), radius, inf, nan, qr, tail
   integer :: m, n, j
   character(len=200) :: info
   real(8), parameter :: om = 0.05d0
@@ -588,6 +592,16 @@ subroutine test_order_cut_finite(error)
     fs%mcut, ", nev ", fs%nev, ", cut_error ", fs%cut_error
   print '(4x,a)', trim(info)
   call check(error, fs%mcut < fs%mg .and. fs%cut_error > 0d0, "the order is not cut: "//trim(info))
+  if (allocated(error)) return
+  qr = fs%r_max / radius
+  tail = 0d0
+  do m = fs%mcut + 1, 100000
+    tail = tail + qr**m / m
+  end do
+  write (info, '(a,es12.5,a,es12.5,a,i0)') "cut_error ", fs%cut_error, ", dropped tail sum ", tail, ", mcut ", fs%mcut
+  print '(4x,a)', trim(info)
+  call check(error, fs%mcut == 93 .and. abs(fs%cut_error / 2.0369d-6 - 1d0) <= 1d-3 .and. tail <= fs%cut_error, &
+             "cut_error is not the bound of the dropped tail: "//trim(info))
   if (allocated(error)) return
   call check(error, all(fs%a(fs%mcut + 1:, :, :) == (0d0, 0d0)) .and. all(fs%a(:-fs%mcut - 1, :, :) == (0d0, 0d0)), &
              "amplitudes above mcut are not zero")
@@ -614,6 +628,151 @@ subroutine test_order_cut_finite(error)
   call check(error, all(ieee_is_finite(real(rhs))) .and. all(ieee_is_finite(aimag(rhs))) .and. maxval(abs(rhs)) > 0d0, &
              "the right side is not finite with moments that are not finite above mcut")
 end subroutine test_order_cut_finite
+
+!> The outer term of direct_fs_rhs against an independent reference (Task 3 review, Important 2). Two first-order states of
+!> purely evanescent partial waves on the circle of the inner mesh (omega 1.0 and 0.7, so Omega = 0.3; one evanescent
+!> mode, |m| <= 3 with amplitudes that differ between +m and -m), no incident waves: their Q_D decays like
+!> e^{-(k1 + k2)(r - R)} outside R and has angular orders of both signs. mom from fs_outer_moments (no sliver), q = 0
+!> inside; the right side at three hull rows (waterline, mid wall, bottom centre) against
+!>    DIRECT_FS_SIGN / g int_R^{R + 60} int_0^{2 pi} G(x_i, xi) Q_D(xi) r dtheta dr
+!> by Gauss-Legendre in r (8 points per metre) and the trapezoidal rule in theta (128 points, exact for the orders of
+!> Q_D times those of G that are above 1e-10), with G from FINGREEN3D and Q_D from fs_forcing_diff of the fields of
+!> pw_eval_surface. Gate 1e-5, the level of FINGREEN3D (ledger ruling F5). The contraction with a(-m) in place of a(m)
+!> (the pairing of ruling F11 swapped) and with conj(a) (ZGEMM 'C') are printed and must fail by far more. Also the
+!> cheap check: random finite mom, rhs against DIRECT_FS_SIGN / g sum_mn a(m, n, i) mom(m, n) by explicit loops, 1e-12.
+subroutine test_outer_contraction(error)
+  type(error_type), allocatable, intent(out) :: error
+  integer, parameter :: nth = 128, nint = 60, ngl = 8
+  real(8), parameter :: w1s = 1d0, w2s = 0.7d0
+  type(panel_mesh) :: mesh, fm
+  type(cs_points) :: pts
+  type(direct_fs_data) :: fs
+  type(pw_set) :: pw(2)
+  type(fs_point_field) :: t(2), zero
+  complex(8), allocatable :: q(:, :), mom(:, :, :), rhs(:, :, :), qd(:, :)
+  real(8), allocatable :: rr(:), wr(:)
+  real(8) :: centre(2), radius, wv(2), x(3), xi(3), gx(ngl), gw(ngl), th, worst, worst_swap, worst_conj, rfar
+  real(8) :: kk(2), kvr(0:3)
+  complex(8) :: ref, sw, sc, e
+  integer :: rows(3), k, m, n, i, ir, it, nr, col
+  character(len=250) :: info
+  external :: DISPERSION
+
+  call fixture(32, 8, 6, 0, 0d0, mesh, pts, fm, centre, radius, error)
+  if (allocated(error)) return
+  call set_omega(fx_omega, fx_depth)
+  call direct_fs_setup(mesh, pts, fm, centre, radius, fx_depth, fx_omega, .false., fs)
+  ! The two states: one evanescent mode each, a(m, 1) K_m(k1 R) = c_m with c_{+m} /= c_{-m}
+  wv = [w1s, w2s]
+  do k = 1, 2
+    call DISPERSION(kk, 2, wv(k), fx_depth)
+    pw(k)%mmax = 3
+    pw(k)%nev = 1
+    pw(k)%k0 = kk(1)
+    pw(k)%h = fx_depth
+    pw(k)%radius = radius
+    pw(k)%centre = centre
+    allocate(pw(k)%kev(1), pw(k)%a(-3:3, 0:1))
+    pw(k)%kev = kk(2)
+    pw(k)%a = (0d0, 0d0)
+    call pw_bessel_k(3, kk(2) * radius, kvr)
+    do m = -3, 3
+      pw(k)%a(m, 1) = cmplx(1d0 + 0.3d0 * m + 0.1d0 * k, 0.5d0 - 0.2d0 * m * k, 8) / kvr(abs(m))
+    end do
+  end do
+  rfar = direct_fs_rfar(fs, radius + nint)
+  allocate(mom(-fs%mg:fs%mg, 0:fs%nev, 1), q(pts%n, 1), rhs(mesh%nbase, 1, 1))
+  call fs_outer_moments(w1s, pw(1), 0d0, 0d0, w2s, pw(2), 0d0, 0d0, fs%k0, fs%kev, fx_depth, centre, radius, fs%mg, &
+                        fs%nev, fx_omega, fs%g, 0, rfar, mom)
+  q = (0d0, 0d0)
+  rhs = (0d0, 0d0)
+  call direct_fs_rhs(fs, q, mom, rhs)
+
+  ! Q_D on the polar grid of the reference, once for all rows
+  call gauss(ngl, gx, gw)
+  nr = nint * ngl
+  allocate(rr(nr), wr(nr), qd(nr, nth))
+  do i = 1, nint
+    do k = 1, ngl
+      rr((i - 1) * ngl + k) = radius + (i - 1) + 0.5d0 * (gx(k) + 1d0)
+      wr((i - 1) * ngl + k) = 0.5d0 * gw(k)
+    end do
+  end do
+  do ir = 1, nr
+    do it = 1, nth
+      th = 2d0 * pi * (it - 1) / nth
+      xi = [centre(1) + rr(ir) * cos(th), centre(2) + rr(ir) * sin(th), 0d0]
+      do k = 1, 2
+        call pw_eval_surface(pw(k), xi, t(k)%phi, t(k)%grad, t(k)%phizz)
+      end do
+      qd(ir, it) = fs_forcing_diff(w1s, t(1), zero, w2s, t(2), zero, fs%g) * wr(ir) * rr(ir) * (2d0 * pi / nth)
+    end do
+  end do
+
+  rows(1) = maxloc(mesh%xc(3, :), 1)
+  rows(2) = minloc(abs(mesh%xc(3, :) + 5.625d0) + 0.01d0 * mesh%xc(1, :), 1)
+  rows(3) = minloc(mesh%xc(3, :) + 0.01d0 * norm2(mesh%xc(1:2, :), dim=1), 1)
+  worst = 0d0
+  worst_swap = 0d0
+  worst_conj = 0d0
+  do k = 1, 3
+    i = rows(k)
+    x = mesh%xc(:, i)
+    ref = (0d0, 0d0)
+    do ir = 1, nr
+      do it = 1, nth
+        th = 2d0 * pi * (it - 1) / nth
+        xi = [centre(1) + rr(ir) * cos(th), centre(2) + rr(ir) * sin(th), 0d0]
+        ref = ref + green_point(x, xi) * qd(ir, it)
+      end do
+    end do
+    ref = DIRECT_FS_SIGN / fs%g * ref
+    sw = (0d0, 0d0)
+    sc = (0d0, 0d0)
+    do n = 0, fs%nev
+      do m = -fs%mcut, fs%mcut
+        sw = sw + fs%a(-m, n, i) * mom(m, n, 1)
+        sc = sc + conjg(fs%a(m, n, i)) * mom(m, n, 1)
+      end do
+    end do
+    sw = DIRECT_FS_SIGN / fs%g * sw
+    sc = DIRECT_FS_SIGN / fs%g * sc
+    worst = max(worst, abs(rhs(i, 1, 1) - ref) / abs(ref))
+    worst_swap = max(worst_swap, abs(sw - ref) / abs(ref))
+    worst_conj = max(worst_conj, abs(sc - ref) / abs(ref))
+    print '(4x,a,3f8.3,a,2es12.4,a,es10.3)', "row at", x, ": reference ", ref, ", relative ", abs(rhs(i, 1, 1) - ref) / abs(ref)
+  end do
+  write (info, '(a,es10.3,a,es10.3,a,es10.3)') "outer contraction against quadrature of G Q_D: ", worst, &
+    "; with a(-m): ", worst_swap, "; with conj(a): ", worst_conj
+  print '(4x,a)', trim(info)
+  call check(error, worst <= 1d-5 .and. worst_swap > 1d-2 .and. worst_conj > 1d-2, trim(info))
+  if (allocated(error)) return
+
+  ! The cheap check: random finite moments, explicit loops
+  do n = 0, fs%nev
+    do m = -fs%mg, fs%mg
+      mom(m, n, 1) = pseudo(11 * m + 3 * n) / (1d0 + abs(m) + n)
+    end do
+  end do
+  rhs = (0d0, 0d0)
+  call direct_fs_rhs(fs, q, mom, rhs)
+  worst = 0d0
+  do col = 1, 1
+    do i = 1, mesh%nbase
+      e = (0d0, 0d0)
+      do n = 0, fs%nev
+        do m = -fs%mcut, fs%mcut
+          e = e + fs%a(m, n, i) * mom(m, n, col)
+        end do
+      end do
+      e = DIRECT_FS_SIGN / fs%g * e
+      worst = max(worst, abs(rhs(i, col, 1) - e) / abs(e))
+    end do
+  end do
+  write (info, '(a,es10.3)') "outer contraction against explicit loops, random moments: ", worst
+  print '(4x,a)', trim(info)
+  call check(error, worst <= 1d-12, trim(info))
+end subroutine test_outer_contraction
 
 !> direct_fs_rfar raises r_far to R + 40 / kev(1), where the slowest evanescent basis function has decayed by e^-40,
 !> and keeps a larger r_far

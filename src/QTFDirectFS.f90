@@ -77,9 +77,12 @@ MODULE QTFDirectFS
    ! pw_green_modes zeroes the orders whose H_{m+1}(k0 R) or K_{m+1}(kn R) overflow (long waves on small circles) and
    ! returns the highest order kept, mcut (the same for all rows: it depends on k0, kn and R only). fs_outer_moments is
    ! not finite at those orders, so only |m| <= mcut is contracted (never Inf x 0). If mcut < mg, the outer part drops
-   ! terms of order (r_max / R)^(mcut + 1) / (mcut + 1) (fs%cut_error); above DIRECT_FS_TOL a warning is written and the
-   ! run goes on: the dropped part is bounded and small for any circle that clears the hull (r_max / R <= 0.9 and
-   ! mcut >= 100 give 3e-7), and a stop at one low Omega would end a long run for a loss the warning states.
+   ! terms m > mcut, each at most q^m / m, q = r_max / R, so at most sum_{m > mcut} q^m / m <= q^(mcut + 1) /
+   ! ((mcut + 1) (1 - q)) (geometric bound) of the leading terms (fs%cut_error). Above DIRECT_FS_TOL a warning states
+   ! that bound and the run goes on (ledger ruling F14): the loss is bounded and stated, and a stop at one low Omega would
+   ! end a long run. The bound is not small for every input: R close to the hull (q near 1) with a long wave (small
+   ! k0 R, low mcut) raises it (the review of Task 3 gives 3.4e-3 for R = 1.05 r_x, Omega = 0.01 rad/s in 15 m of
+   ! water); the warning names the cure, a larger qtf_fs_radius.
    ! The sliver of fs_outer_moments lies between R cos(pi / np) and R, where the Graf series still converges for
    ! r_max < R cos(pi / np) at the slower rate (r_max / (R cos(pi / np)))^m; it covers a small fraction of the free
    ! surface, so the order is kept at that of R.
@@ -133,7 +136,7 @@ MODULE QTFDirectFS
       !                           |m| > mcut
       !   w(nfs)                  the inner panel areas
       !   kev(nev)                the evanescent wave numbers at Omega, k0 the propagating one
-      !   cut_error               (r_max / R)^(mcut + 1) / (mcut + 1) when mcut < mg, else 0
+      !   cut_error               q^(mcut + 1) / ((mcut + 1) (1 - q)), q = r_max / R, when mcut < mg, else 0
       INTEGER :: nrow = 0, nfs = 0, nbase = 0, nl = 0, nsys = 1, n = 0, mg = 0, nev = 0, mcut = -1
       LOGICAL :: multi = .FALSE.
       REAL(8) :: omega = 0D0, g = 0D0, h = 0D0, radius = 0D0, centre(2) = 0D0, k0 = 0D0, r_max = 0D0, cut_error = 0D0
@@ -279,7 +282,8 @@ CONTAINS
       fs%a(fs%mcut + 1:fs%mg, :, :) = (0D0, 0D0)
       fs%cut_error = 0D0
       IF (fs%mcut < fs%mg) THEN
-         fs%cut_error = (fs%r_max/radius)**(fs%mcut + 1)/REAL(fs%mcut + 1, 8)
+         ! The bound of the dropped tail (header): the first dropped term times 1 / (1 - q)
+         fs%cut_error = (fs%r_max/radius)**(fs%mcut + 1)/(REAL(fs%mcut + 1, 8)*(1D0 - fs%r_max/radius))
          IF (fs%cut_error > DIRECT_FS_TOL) THEN
             WRITE (line, '(a,ES12.4,a,i0,a,i0,a,ES9.2,a)') ' QTF direct FS: warning: at Omega =', omega, &
                ' rad/s the partial waves of G keep the orders up to ', fs%mcut, ' (H_m(k0 R) or K_m(kn R) overflow '// &
