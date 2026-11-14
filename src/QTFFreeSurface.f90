@@ -52,7 +52,7 @@ MODULE QTFFreeSurface
    PUBLIC :: FS_MODE_TOL, fs_mode_scales, fs_auto_evanescent
    PUBLIC :: FS_SIGN, fs_inner_pair, fs_outer_pair, fs_outer_annulus, fs_outer_tail, fs_outer_ring, fs_outer_rfar
    PUBLIC :: fs_outer_sliver, fs_radius_message, fs_pair_order_message
-   PUBLIC :: fs_pair_terms, fs_coverage_check
+   PUBLIC :: fs_pair_terms, fs_coverage_check, fs_local_rankine
 
    ! The mode check: the partial waves must give the samples on the circle to this fraction of their largest value
    REAL(8), PARAMETER :: FS_MODE_TOL = 1D-3
@@ -1450,5 +1450,71 @@ CONTAINS
          w(i) = z(1, i)**2
       END DO
    END SUBROUTINE gauss_laguerre
+
+   PURE SUBROUTINE fs_local_rankine(x, ncn, xv, q0, qg, val)
+      ! The integral over a flat free-surface panel of (1/r + 1/r1) q dS for a field point x ON the plane z = 0, inside the
+      ! panel or on its boundary (an edge or a vertex), with q(xi) = q0 + qg . (xi - x) linear (only the x and y components of
+      ! qg act, xi - x lies in the plane). r = |xi - x| and r1 = |xi - x_image|; on z = 0 the image point is x itself, so
+      ! r1 = r and the kernel is 2/r. Used for the panel that holds the point in the inner integral at field points; the
+      ! rest of the Green function, G - 2/r, is smooth there and keeps the panel rule. The panel must be convex or at least
+      ! star-shaped about x (a triangle or a quadrilateral with x inside it); xv(:, 1:ncn) are its vertices in order, either
+      ! winding, with z = 0.
+      !
+      ! Derivation (Newman 1986, J. Eng. Math. 20, 113-126, sec. 2: the same edge sum, there for the point off the plane).
+      ! Polar coordinates about x: xi - x = rho u(theta), dS = rho drho dtheta, and the boundary is rho = rho_e(theta). Then
+      !    I0 = INT 1/r dS = INT dtheta INT_0^rho_e (1/rho) rho drho = INT rho_e(theta) dtheta,
+      !    M  = INT (xi - x)/r dS = INT dtheta u(theta) INT_0^rho_e rho drho = (1/2) INT rho_e(theta)^2 u(theta) dtheta.
+      ! Edge e (P1 to P2, unit tangent t, length L) lies on a line at distance d from x, with m the unit vector from x to the
+      ! foot of the perpendicular, so that rho_e = d / cos(phi), phi = the angle from m (u = cos(phi) m + sin(phi) t). With s
+      ! the coordinate along t from the foot (tan(phi) = s/d) and R = sqrt(s^2 + d^2) = |P - x| at an end point:
+      !    I0_e = d INT sec(phi) dphi = d [asinh(tan phi)]       = d [asinh(s2/d) - asinh(s1/d)]
+      !    M_e  = (d^2/2) INT sec^2(phi) (cos(phi) m + sin(phi) t) dphi
+      !         = (d^2/2) [ m asinh(tan phi) + t sec(phi) ]      = (1/2) { d^2 m [asinh(s2/d) - asinh(s1/d)] + d t (R2 - R1) }.
+      ! (asinh(tan phi) = ln(sec phi + tan phi).) The sum over the edges is I0 = sum d_e [asinh-type log terms], M likewise,
+      ! and val = 2 (q0 I0 + qg . M). d is signed with the winding: positive when x is on the inner side of the edge (the
+      ! left of a counter-clockwise polygon, found from the sign of the shoelace area), so that every edge adds its
+      ! triangle (x, P1, P2) with the sign of its winding. When x is on the line of an edge (on the edge or at its vertex)
+      ! d = 0: the triangle has zero angle at x and the edge adds 0 to I0 and M, and the term is skipped, not evaluated
+      ! (asinh(s/d) would divide by zero; d asinh(s/d) -> 0 as d -> 0). Checks: the centre of a regular N-gon of
+      ! circumradius a (d = a cos(pi/N), s2 = -s1 = d tan(pi/N)) gives I0 = 2 N d ln[(1 + sin(pi/N))/cos(pi/N)], and M = 0.
+      REAL(8), INTENT(IN) :: x(3)
+      INTEGER, INTENT(IN) :: ncn
+      REAL(8), INTENT(IN) :: xv(3, ncn)
+      COMPLEX(8), INTENT(IN) :: q0, qg(3)
+      COMPLEX(8), INTENT(OUT) :: val
+      REAL(8) :: p1(2), p2(2), t(2), nl(2), m(2), el, area2, sgn, d, s1, s2, r1, r2, asd, i0, mom(2)
+      INTEGER :: e, e2
+
+      area2 = 0D0
+      DO e = 1, ncn
+         e2 = MERGE(1, e + 1, e == ncn)
+         area2 = area2 + (xv(1, e) - x(1))*(xv(2, e2) - x(2)) - (xv(2, e) - x(2))*(xv(1, e2) - x(1))
+      END DO
+      sgn = SIGN(1D0, area2)
+
+      i0 = 0D0
+      mom = 0D0
+      DO e = 1, ncn
+         e2 = MERGE(1, e + 1, e == ncn)
+         p1 = xv(1:2, e) - x(1:2)
+         p2 = xv(1:2, e2) - x(1:2)
+         el = SQRT(SUM((p2 - p1)**2))
+         IF (el == 0D0) CYCLE
+         t = (p2 - p1)/el
+         nl = [-t(2), t(1)]                  ! the left normal of the edge
+         d = -sgn*(p1(1)*nl(1) + p1(2)*nl(2))   ! (x - P1) . nl, positive on the inner side of a counter-clockwise polygon
+         IF (d <= 0D0) CYCLE                 ! x on the line of the edge: zero angle, nothing to add
+         m = -sgn*nl                         ! from x to the foot of the perpendicular on the edge line
+         s1 = p1(1)*t(1) + p1(2)*t(2)
+         s2 = p2(1)*t(1) + p2(2)*t(2)
+         r1 = SQRT(SUM(p1**2))
+         r2 = SQRT(SUM(p2**2))
+         asd = ASINH(s2/d) - ASINH(s1/d)
+         i0 = i0 + d*asd
+         mom = mom + 0.5D0*(d*d*asd*m + d*(r2 - r1)*t)
+      END DO
+
+      val = 2D0*(q0*i0 + qg(1)*mom(1) + qg(2)*mom(2))
+   END SUBROUTINE fs_local_rankine
 
 END MODULE QTFFreeSurface
