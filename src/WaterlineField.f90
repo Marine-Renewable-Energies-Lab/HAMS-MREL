@@ -61,7 +61,8 @@ CONTAINS
       ! difference, divided by the step (fields_green in FieldVelocity.f90). For the same reason they also take the series that
       ! FINGREEN3D picks at the centre (RR_DECIDE): the series do not agree exactly at the switches (FINGREEN3D_R).
       ! field_mode, if present and true, passes FIELD to FINGREEN3D: its Limes returns isolated outliers, which a difference
-      ! takes over 2 delta. Only fields_green passes it, so the waterline rows (waterline_rows) keep the default route.
+      ! takes over 2 delta. fields_green, fs_sample_phi (QTFFreeSurface) and direct_field_at_points (QTFDirectField) pass
+      ! it; the waterline rows (waterline_rows) keep the default route.
       ! near_panel, if present and false, gives every panel its centroid value, near or not: the row is then a pure sum of
       ! Green functions at the centroids, so a field made from it is a sum of the free-surface modes outside the hull. The
       ! panel integrals of 1/r and of its image near the point satisfy phi_z = 0 on z = 0, not the free-surface condition,

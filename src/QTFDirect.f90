@@ -809,7 +809,7 @@ CONTAINS
 
    END SUBROUTINE direct_rhs_b2_block
 
-   SUBROUTINE b2_stokes_at_point(mesh, geom, x, a, c, e, is_multi, out, cl, row, lid_row)
+   SUBROUTINE b2_stokes_at_point(mesh, geom, x, a, c, e, is_multi, out, cl, row, lid_row, field_mode)
       ! int_S G(x, .) n.[(X.grad)u] dS for each column of the densities, at the field point x (full coordinates):
       !   out = sum_p [ int_p G a_p + (int_p grad_xi G).c_p ] - sum_w (int_w G dl) e_w
       ! With cl (3, 4, n, ncol), on the near panels also sum_ab cl(a, b, p) int_p d_a(1/r + 1/r1) (xi - xi_p)_b dS and
@@ -817,6 +817,9 @@ CONTAINS
       ! With row (a full panel index, whose centroid x must be), int_p G and int_p grad G come from the stored arrays
       ! (stored_panel_integrals); with lid_row (a full lid row of direct_rhs_b2_block, whose point x must be) from the
       ! stored lid integrals (stored_lid_integrals); otherwise from green_panel_integrals.
+      ! field_mode, optional (default .false.): the fresh integrals (green_panel_integrals, green_line_integral) pass FIELD
+      ! to FINGREEN3D, the route of the field rows (field_mode of field_influence_row), for field points off the hull
+      ! (QTFDirectField). Absent, every caller of Phase 7a keeps the default route bit for bit.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       REAL(8), INTENT(IN) :: x(3)
@@ -825,6 +828,7 @@ CONTAINS
       COMPLEX(8), INTENT(OUT) :: out(:)
       COMPLEX(8), INTENT(IN), OPTIONAL :: cl(:, :, :, :)
       INTEGER, INTENT(IN), OPTIONAL :: row, lid_row
+      LOGICAL, INTENT(IN), OPTIONAL :: field_mode
       COMPLEX(8) :: g_int, grad_int(3), g_line, acc
       REAL(8) :: xv(3, 4), m0, g0(3), m1(3, 3), m1i(3, 3), mg(3), mgi(3), xim(3)
       INTEGER :: p, iw, k, nv, m, ia, ib
@@ -842,7 +846,7 @@ CONTAINS
          ELSE IF (PRESENT(lid_row)) THEN
             CALL stored_lid_integrals(mesh, lid_row, p, is_multi, g_int, grad_int)
          ELSE
-            CALL green_panel_integrals(mesh, x, p, is_multi, g_int, grad_int)
+            CALL green_panel_integrals(mesh, x, p, is_multi, g_int, grad_int, field_mode)
          END IF
          DO k = 1, SIZE(out)
             out(k) = out(k) + g_int*a(p, k) + (grad_int(1)*c(1, p, k) + grad_int(2)*c(2, p, k) + grad_int(3)*c(3, p, k))
@@ -870,7 +874,8 @@ CONTAINS
          END DO
       END DO
       DO iw = 1, geom%nwl
-         CALL green_line_integral(x, geom%wl_x1(:, iw), geom%wl_x2(:, iw), mesh%psize(geom%wl_panel(iw)), g_line)
+         CALL green_line_integral(x, geom%wl_x1(:, iw), geom%wl_x2(:, iw), mesh%psize(geom%wl_panel(iw)), g_line, &
+                                  field_mode)
          DO k = 1, SIZE(out)
             out(k) = out(k) - g_line*e(iw, k)
          END DO
@@ -1056,15 +1061,17 @@ CONTAINS
       END DO
    END SUBROUTINE sharp_edge_panels
 
-   SUBROUTINE green_panel_integrals(mesh, x, p, is_multi, g_int, grad_int)
+   SUBROUTINE green_panel_integrals(mesh, x, p, is_multi, g_int, grad_int, field_mode)
       ! int_p G(x, xi) dS_xi and int_p grad_xi G(x, xi) dS_xi over full panel p (image b of base panel j), x in full
       ! coordinates. Near panels (within NEAR_PANEL_SIZES panel sizes, as CALGREEN) take 1/r and 1/r1 as panel integrals,
       ! far ones the centroid value. On the own panel the 1/r part of the gradient is the principal value (in-plane part).
+      ! field_mode, optional (default .false.): FIELD of FINGREEN3D (see b2_stokes_at_point); no effect in deep water.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       REAL(8), INTENT(IN) :: x(3)
       INTEGER, INTENT(IN) :: p
       LOGICAL, INTENT(IN) :: is_multi
       COMPLEX(8), INTENT(OUT) :: g_int, grad_int(3)
+      LOGICAL, INTENT(IN), OPTIONAL :: field_mode
       REAL(8) :: f(3), xf(3), xq(3), d(3), r1, area, rk(4), rk_image(4)
       COMPLEX(8) :: grn(4)
       INTEGER :: j, flag
@@ -1079,7 +1086,8 @@ CONTAINS
       IF (H < 0D0) THEN
          CALL INFGREEN3D(xq(1), xf(1), xq(2), xf(2), xq(3), xf(3), V, grn, flag)
       ELSE
-         CALL FINGREEN3D(xq(1), xf(1), xq(2), xf(2), xq(3), xf(3), V, WVN, NK, H, grn, flag)
+         ! An absent field_mode passes on as an absent FIELD: the default route
+         CALL FINGREEN3D(xq(1), xf(1), xq(2), xf(2), xq(3), xf(3), V, WVN, NK, H, grn, flag, FIELD=field_mode)
       END IF
       IF (flag /= 1) THEN
          g_int = grn(1)*area
@@ -1097,12 +1105,14 @@ CONTAINS
       grad_int = f*(rk(2:4) + rk_image(2:4) + (grn(2:4) + d/r1**3)*area)
    END SUBROUTINE green_panel_integrals
 
-   SUBROUTINE green_line_integral(x, x1, x2, psize, g_line)
+   SUBROUTINE green_line_integral(x, x1, x2, psize, g_line, field_mode)
       ! int G(x, xi) dl over the straight segment from x1 to x2 on z = 0 (the z of x1 and x2 is set to 0, where the
       ! waterline midpoints are). 1/r and 1/r1 in closed form, int dl/r = ln((R1 + R2 + L)/(R1 + R2 - L)), the rest at the
       ! midpoint. psize decides near and far as for the panels. x must not lie on the segment.
+      ! field_mode, optional (default .false.): FIELD of FINGREEN3D, as green_panel_integrals.
       REAL(8), INTENT(IN) :: x(3), x1(3), x2(3), psize
       COMPLEX(8), INTENT(OUT) :: g_line
+      LOGICAL, INTENT(IN), OPTIONAL :: field_mode
       REAL(8) :: a1(3), a2(3), xm(3), xi(3), d(3), len, r1
       COMPLEX(8) :: grn(4)
       INTEGER :: flag
@@ -1115,7 +1125,7 @@ CONTAINS
       IF (H < 0D0) THEN
          CALL INFGREEN3D(xm(1), x(1), xm(2), x(2), xm(3), x(3), V, grn, flag)
       ELSE
-         CALL FINGREEN3D(xm(1), x(1), xm(2), x(2), xm(3), x(3), V, WVN, NK, H, grn, flag)
+         CALL FINGREEN3D(xm(1), x(1), xm(2), x(2), xm(3), x(3), V, WVN, NK, H, grn, flag, FIELD=field_mode)
       END IF
       IF (flag /= 1) THEN
          g_line = grn(1)*len

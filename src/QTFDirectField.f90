@@ -54,12 +54,14 @@ MODULE QTFDirectField
    !    4 pi phi_D(x) = sum_is sum_j [ row_g(j, is) vf(j, col, is) - row_dg(j, is) phi_D((is - 1) nbase + j) ] - r_B2(x)
    ! written below over the full panels with mesh%base and mesh%image, as field_potential of WaterlineField.
    !
-   ! The rows are taken in field mode (field_mode of field_influence_row): in finite depth FINGREEN3D then sums its series
-   ! without Limes, whose isolated outliers (FinGreen3D.f90, FINGREEN3D_R) would otherwise land on single field points.
-   ! The first-order field at the same points (fields_green, as QTFField and SecondOrderDriver take it) uses the same
-   ! route, so the two fields of QTF_Field.txt share one Green function. The two routes differ by 1.1e-5 relative on the
-   ! truncated cylinder at depth 10 (measured, test direct_field_radiation_identity before this choice); in deep water
-   ! they are the same.
+   ! Both parts are taken in field mode: the rows (field_mode of field_influence_row) and the B2 part (field_mode of
+   ! b2_stokes_at_point, which passes it to green_panel_integrals and green_line_integral). In finite depth FINGREEN3D then
+   ! sums its series without Limes, whose isolated outliers (FinGreen3D.f90, FINGREEN3D_R) would otherwise land on single
+   ! field points. The first-order field at the same points (fields_green, as SecondOrderDriver takes it for the field
+   ! points) uses the same route, so phi_D and the first-order field share one Green function. The hull solve (CALGREEN,
+   ! and the B2 right side of direct_at_omega) keeps the default route; at depth 10 on the truncated cylinder the routes
+   ! differ by 1.1e-5 relative in the rows and 2.1e-7 in the B2 part (measured, tests direct_field_radiation_identity and
+   ! direct_field_b2_field_route), far below the mesh error. In deep water the routes are the same.
    !
    ! The lid of irregular frequency removal (IRSP = 1) is inside the body: Green's formula over S alone holds at a point
    ! outside, so the lid takes no part here.
@@ -121,7 +123,7 @@ CONTAINS
       !$OMP DO SCHEDULE(DYNAMIC, 1)
       DO ip = 1, npt
          CALL field_influence_row(mesh, xp(:, ip), is_multi, row_g, row_dg, field_mode=.TRUE.)
-         CALL b2_stokes_at_point(mesh, geom, xp(:, ip), a, c, e, is_multi, r, cl)
+         CALL b2_stokes_at_point(mesh, geom, xp(:, ip), a, c, e, is_multi, r, cl, field_mode=.TRUE.)
          DO col = 1, nc
             acc = (0D0, 0D0)
             DO f = 1, mesh%n

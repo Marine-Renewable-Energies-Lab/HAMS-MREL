@@ -14,7 +14,8 @@ module test_qtf_direct_field
   use FirstOrderState, only : radiation_psi
   use FieldVelocity, only : fields_green
   use NearFieldDrift, only : pair_product, rigid_displacement, KERNEL_DIFF
-  use QTFDirect, only : b2_stokes_densities, direct_rhs_b2_block, direct_solve, rankine_moments, sharp_edge_panels
+  use QTFDirect, only : b2_stokes_densities, b2_stokes_at_point, direct_rhs_b2_block, direct_solve, rankine_moments, &
+                        sharp_edge_panels
   use QTFDirectField, only : direct_field_at_points
   use SharpEdge, only : DEFAULT_EDGE_DEG
   use INFG3D_Open, only : INFGREEN3D
@@ -38,6 +39,10 @@ module test_qtf_direct_field
   ! Stokes form against the plain form, on fields for which both are integrated exactly (test_b2_identity); 9.8e-8
   ! measured
   real(8), parameter :: b2_limit = 1d-6
+  ! The B2 part of direct_field_at_points against b2_stokes_at_point in field mode: the same sums, so to rounding; and the
+  ! default route must differ from it by more than route_min_diff at these points, so that the test sees the route
+  ! (ruling C7 of the 7c-1 ledger). Measured: the default route differs by 2.1e-7; route_min_diff is a tenth of it
+  real(8), parameter :: route_limit = 1d-12, route_min_diff = 2d-8
   ! The field 0.25 panel sizes off a panel centroid against the panel value (spec, Phase 7 item 2); 1.5e-3 measured
   real(8), parameter :: approach_limit = 2d-2
   ! Half mesh against whole: the same sums in another order, and the Green function at mirrored points; 1.7e-14 measured
@@ -50,6 +55,7 @@ contains
     testsuite = [ &
       new_unittest("direct_field_radiation_identity", test_radiation_identity), &
       new_unittest("direct_field_b2_identity", test_b2_identity), &
+      new_unittest("direct_field_b2_field_route", test_b2_field_route), &
       new_unittest("direct_field_approaches_panel", test_approaches_panel), &
       new_unittest("direct_field_symmetry", test_symmetry) &
       ]
@@ -324,6 +330,58 @@ contains
     real(8) :: y(3)
     y = (1 - uu)*(1 - vv)*xv(:, 1) + uu*(1 - vv)*xv(:, 2) + uu*vv*xv(:, 3) + (1 - uu)*vv*xv(:, 4)
   end function bilinear
+
+  ! ------------------------------------------------------------------------------------------------ B2 route
+
+  !> The B2 part of direct_field_at_points (vf = 0, phi_D = 0, so phi = -r_B2/(4 pi)) takes the field-mode route of
+  !> FINGREEN3D, as the rows do: at depth 10, where the routes differ, on the truncated cylinder with its waterline (so
+  !> the line integral is in), with the densities of pair_densities, at the 6 points of the radiation identity. It equals
+  !> -b2_stokes_at_point(field_mode = .true.)/(4 pi) to rounding, and differs from the default route (field_mode absent,
+  !> as Phase 7a calls it) by more than route_min_diff, so a B2 part on the default route fails the first check.
+  subroutine test_b2_field_route(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: full, mesh
+    type(surface_geom) :: geom
+    complex(8), allocatable :: vf(:, :, :), a(:, :), c(:, :, :), e(:, :), cl(:, :, :, :), phi_d(:, :), phi_field(:, :)
+    complex(8) :: r_field(1), r_default(1), ref_field(6), ref_default(6)
+    real(8) :: xp(3, 6), rel_field, rel_default
+    integer :: ia, ib, ipt
+    character(len=250) :: line
+
+    call make_cylinder(cyl_radius, cyl_draft, 16, 4, 3, full, .true.)
+    call set_wave(cyl_depth)
+    call SetWaveFromOmega(om)
+    NTHREAD = 4
+    call load_panels(full, 0, 0, mesh)
+    call geometry(mesh, geom, error)
+    if (allocated(error)) return
+    if (geom%nwl == 0) error stop 'test_b2_field_route: the cylinder has no waterline segments'
+    call pair_densities(mesh, geom, cyl_depth, a, c, e, cl)
+    allocate(vf(mesh%nbase, 1, mesh%nsys), phi_d(mesh%n, 1), phi_field(6, 1))
+    vf = (0d0, 0d0)
+    phi_d = (0d0, 0d0)
+    ia = side_panel(mesh, -0.5d0*cyl_draft)
+    ib = minloc(mesh%xc(3, :), 1)
+    xp(:, 1) = [12d0, 3d0, -2d0]
+    xp(:, 2) = [-4d0, -9d0, -7d0]
+    xp(:, 3) = [8d0, -2d0, 0d0]
+    xp(:, 4) = [-3d0, 11d0, 0d0]
+    xp(:, 5) = mesh%xc(:, ia) - 0.5d0*mesh%psize(ia)*mesh%nrm(:, ia)
+    xp(:, 6) = mesh%xc(:, ib) - 0.5d0*mesh%psize(ib)*mesh%nrm(:, ib)
+    call direct_field_at_points(mesh, geom, xp, phi_d, vf, a, c, e, cl, .false., phi_field)
+    do ipt = 1, 6
+      call b2_stokes_at_point(mesh, geom, xp(:, ipt), a, c, e, .false., r_field, cl, field_mode=.true.)
+      call b2_stokes_at_point(mesh, geom, xp(:, ipt), a, c, e, .false., r_default, cl)
+      ref_field(ipt) = -r_field(1)/(4d0*pi)
+      ref_default(ipt) = -r_default(1)/(4d0*pi)
+    end do
+    rel_field = maxval(abs(phi_field(:, 1) - ref_field))/maxval(abs(ref_field))
+    rel_default = maxval(abs(phi_field(:, 1) - ref_default))/maxval(abs(ref_field))
+    write(line, '(a,es10.2,a,es10.2,a,es10.2)') "B2 part against the field route ", rel_field, &
+      ", against the default route ", rel_default, "; largest |phi| ", maxval(abs(ref_field))
+    print '(4x,a)', trim(line)
+    call check(error, rel_field <= route_limit .and. rel_default >= route_min_diff, line)
+  end subroutine test_b2_field_route
 
   ! ------------------------------------------------------------------------------------------------ approach
 
