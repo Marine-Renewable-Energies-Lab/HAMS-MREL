@@ -8,7 +8,7 @@ module test_qtf_direct_field
   use WaveDyn_mod, only : VWAVE => V, WK
   use ImplementSubs, only : SetWaveFromOmega
   use PanelMesh_mod, only : ISX, ISY, NSYS
-  use Potentials_mod, only : MXPOT
+  use Potentials_mod, only : MXPOT, MXPOT_MULTI_COMB
   use AssbMatx, only : ASSB_RHS_FIELD, ASSB_RHS_FIELD_IRR
   use SecondOrderTypes, only : panel_mesh, surface_geom, first_order_state, cs_points, cs_fields, CS_LINE
   use FirstOrderState, only : radiation_psi
@@ -20,9 +20,9 @@ module test_qtf_direct_field
   use SharpEdge, only : DEFAULT_EDGE_DEG
   use INFG3D_Open, only : INFGREEN3D
   use second_order_fixtures, only : make_cylinder
-  use test_waterline_field, only : set_wave, load_panels
+  use test_waterline_field, only : set_wave, load_panels, load_multi
   use test_qtf_potential, only : motions, make_state, geometry
-  use test_qtf_direct, only : radiation_at
+  use test_qtf_direct, only : radiation_at, append_lid, set_lid, clear_lid, radiation_at_irr
   use test_sharp_edge, only : make_closed_box
   implicit none
   private
@@ -49,6 +49,14 @@ module test_qtf_direct_field
   real(8), parameter :: symmetry_limit = 1d-9
   ! The pair (2, 1) against the conjugate of the pair (1, 2): the same sums conjugated, so to rounding (Review Focus 1)
   real(8), parameter :: conjugate_limit = 1d-12
+  ! Two cylinders in the multi-body arrays (load_multi): phi_field against fields_green, as radiation_limit
+  ! (3.6e-16 measured; the limit is 2.8e3 times it, and with is_multi = .false. the difference is 0.75)
+  real(8), parameter :: two_body_limit = 1d-12
+  ! The hook with the lid (IRSP = 1) against without it, at Omega = w1 - w2, far from an irregular frequency: the lid rows
+  ! change phi_D by the mesh-level amount, so the field differs by that order; it must differ (lid_min_diff: the lid solve
+  ! is not the plain one) and at most lid_limit. Measured: 8.75e-3 in phi_field (1.05e-3 in T_dir, the mesh-level change of
+  ! irr_regular_limit of test_qtf_direct); lid_limit is 2.3 times it, lid_min_diff 1e-4 times it
+  real(8), parameter :: lid_limit = 2d-2, lid_min_diff = 1d-6
 
 contains
 
@@ -62,7 +70,9 @@ contains
       new_unittest("direct_field_symmetry", test_symmetry), &
       new_unittest("direct_field_hook_matches", test_hook_matches), &
       new_unittest("direct_field_negative_omega", test_negative_omega), &
-      new_unittest("direct_field_hook_absent", test_hook_absent) &
+      new_unittest("direct_field_hook_absent", test_hook_absent), &
+      new_unittest("direct_field_two_bodies", test_two_bodies), &
+      new_unittest("direct_field_lid", test_lid) &
       ]
   end subroutine collect_qtf_direct_field
 
@@ -657,5 +667,138 @@ contains
     print '(4x,a)', trim(line)
     call check(error, all(t0 == t1) .and. all(parts0 == parts1) .and. maxval(abs(t0)) > 0d0, line)
   end subroutine test_hook_absent
+
+  ! ------------------------------------------------------------------------------------------------ two bodies
+
+  !> The radiation identity of test_radiation_identity for two cylinders in the combined multi-body arrays (load_multi,
+  !> is_multi = .true.): with vf = n_3 on the panels of body ib (0 on the other) and phi_D = psi of the heave mode of body
+  !> ib from the multi-body radiation solve, Green's formula of direct_field_at_points is that of fields_green with
+  !> multi = .true. (phi_p = psi, dphi_p/dn = vf, no incident wave). Heave of both bodies, depth 10 and deep water, 6 points
+  !> off the hulls: between the bodies, beside each, one on z = 0, and half a panel size off a side panel of each body.
+  subroutine test_two_bodies(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: mesh
+    type(surface_geom) :: geom
+    type(first_order_state) :: states(1)
+    type(cs_points) :: pts
+    type(cs_fields) :: fields(1)
+    complex(8), allocatable :: psi(:, :), vf(:, :, :), a(:, :), c(:, :, :), e(:, :), cl(:, :, :, :), phi_field(:, :), vn(:)
+    real(8) :: xp(3, 6), worst, rel
+    real(8), parameter :: depths(2) = [cyl_depth, -1d0]
+    integer :: icase, ib, k, ia(2), f
+    character(len=200) :: line
+
+    worst = 0d0
+    do icase = 1, 2
+      call set_wave(depths(icase))
+      NTHREAD = 4
+      ISOLV = 1
+      call load_multi(0, mesh)
+      call geometry(mesh, geom, error)
+      if (allocated(error)) return
+      call radiation_at(om, .true., mesh%nbase)
+      allocate(psi(mesh%n, 6*mesh%nbody), vn(mesh%n))
+      call radiation_psi(mesh, om, MXPOT_MULTI_COMB, psi)
+      do ib = 1, 2
+        ia(ib) = side_panel_of_body(mesh, ib, -0.5d0*cyl_draft)
+      end do
+      xp(:, 1) = [15d0, 3d0, -2d0]                 ! between the bodies (centres at x = 0 and 30)
+      xp(:, 2) = [-9d0, -4d0, -7d0]                ! beside body 1
+      xp(:, 3) = [40d0, 2d0, -3d0]                 ! beside body 2
+      xp(:, 4) = [17d0, -6d0, 0d0]                 ! on z = 0
+      xp(:, 5) = mesh%xc(:, ia(1)) - 0.5d0*mesh%psize(ia(1))*mesh%nrm(:, ia(1))
+      xp(:, 6) = mesh%xc(:, ia(2)) - 0.5d0*mesh%psize(ia(2))*mesh%nrm(:, ia(2))
+      do ib = 1, 2
+        k = 6*(ib - 1) + 3
+        ! b = n_3 on the panels of body ib, 0 on the other (the layout of the multi-body unit normal fields)
+        vn = (0d0, 0d0)
+        do f = 1, mesh%n
+          if (mesh%body(f) == ib) vn(f) = cmplx(mesh%nj(3, f), 0d0, kind=8)
+        end do
+        call panel_forcing(mesh, vn, vf)
+        call zero_densities(mesh, geom, a, c, e, cl)
+        allocate(phi_field(6, 1))
+        call direct_field_at_points(mesh, geom, xp, psi(:, k:k), vf, a, c, e, cl, .true., phi_field)
+        states(1)%omega = om
+        states(1)%k = WK
+        states(1)%h = depths(icase)
+        states(1)%nu = VWAVE
+        states(1)%amp = 0d0
+        states(1)%phi_p = psi(:, k)
+        states(1)%dphi_p_dn = vn
+        pts%n = 6
+        pts%x = xp
+        allocate(pts%nrm(3, 6), pts%w(6), pts%psize(6), pts%kind(6), pts%body(6))
+        pts%nrm = 0d0
+        pts%w = 1d0
+        pts%psize = 1d0
+        pts%kind = CS_LINE
+        pts%body = 1
+        call fields_green(mesh, pts, states, 0.01d0, .true., fields)
+        rel = maxval(abs(phi_field(:, 1) - fields(1)%phi))/maxval(abs(fields(1)%phi))
+        write(line, '(a,f6.1,a,i0,a,es10.2,a,es10.2)') "depth ", depths(icase), ", heave of body ", ib, &
+          ": phi_field against fields_green, relative ", rel, "; largest |phi| ", maxval(abs(fields(1)%phi))
+        print '(4x,a)', trim(line)
+        worst = max(worst, rel)
+        deallocate(phi_field, vf, a, c, e, cl, pts%x, pts%nrm, pts%w, pts%psize, pts%kind, pts%body)
+      end do
+      deallocate(psi, vn)
+    end do
+    write(line, '(a,es10.2)') "two bodies, radiation identity, worst relative difference ", worst
+    call check(error, worst <= two_body_limit, line)
+  end subroutine test_two_bodies
+
+  !> The index of a panel of body ib on the side wall (horizontal normal) in the row nearest z = z0.
+  integer function side_panel_of_body(mesh, ib, z0) result(ip)
+    type(panel_mesh), intent(in) :: mesh
+    integer, intent(in) :: ib
+    real(8), intent(in) :: z0
+    real(8) :: best
+    integer :: i
+    ip = 0
+    best = huge(1d0)
+    do i = 1, mesh%n
+      if (mesh%body(i) /= ib .or. abs(mesh%nrm(3, i)) > 0.1d0) cycle
+      if (abs(mesh%xc(3, i) - z0) < best) then
+        best = abs(mesh%xc(3, i) - z0)
+        ip = i
+      end if
+    end do
+  end function side_panel_of_body
+
+  ! ------------------------------------------------------------------------------------------------ the lid
+
+  !> The hook with irregular frequency removal (IRSP = 1, the lid points of the cylinder waterplane) against the same call
+  !> without it (IRSP = 0): the lid is inside the body, so it takes no part in Green's formula over S, and only the solved
+  !> phi_D differs (the least-squares solve with the lid rows against the plain one; mesh-level, far from an irregular
+  !> frequency). The pairs (1, 2) and (2, 1) at Omega = w1 - w2, the real phi_I2, 4 points off the hull. The difference
+  !> must be non-zero (the lid solve really ran) and at most lid_limit.
+  subroutine test_lid(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: mesh
+    type(surface_geom) :: geom
+    type(first_order_state), allocatable :: store(:, :)
+    complex(8), allocatable :: store_wl(:, :, :), t0(:, :), t1(:, :), phi0(:, :), phi1(:, :)
+    integer, allocatable :: pairs(:, :)
+    real(8), allocatable :: lid(:, :)
+    real(8) :: xp(3, 4), rel, tdiff
+    character(len=200) :: line
+
+    call hook_fixture(mesh, geom, store, store_wl, pairs, xp, error)
+    if (allocated(error)) return
+    allocate(t0(6, 2), t1(6, 2), phi0(4, 2), phi1(4, 2))
+    call direct_at_omega(mesh, geom, w1 - w2, store, store_wl, pairs, t0, field_points=xp, phi_field=phi0)
+    call append_lid(cyl_radius, 16, 3, 0d0, 0, lid)
+    call set_lid(lid, .false.)
+    call radiation_at_irr(w1 - w2, .false., mesh%nbase, size(lid, 2))
+    call direct_at_omega(mesh, geom, w1 - w2, store, store_wl, pairs, t1, field_points=xp, phi_field=phi1)
+    call clear_lid()
+    rel = maxval(abs(phi1 - phi0))/maxval(abs(phi0))
+    tdiff = maxval(abs(t1 - t0))/maxval(abs(t0))
+    write(line, '(a,i0,a,es10.2,a,es10.2,a,es10.2)') "IRSP = 1 (", size(lid, 2), " lid points) against IRSP = 0: phi_field ", &
+      rel, ", T_dir ", tdiff, "; largest |phi_field| ", maxval(abs(phi0))
+    print '(4x,a)', trim(line)
+    call check(error, rel >= lid_min_diff .and. rel <= lid_limit .and. maxval(abs(phi0)) > 0d0, line)
+  end subroutine test_lid
 
 end module test_qtf_direct_field
