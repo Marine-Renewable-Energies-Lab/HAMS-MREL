@@ -30,7 +30,7 @@ program unit_tester
     use test_second_order_incident, only : collect_so_incident
     use test_qtf_potential, only : collect_qtf_potential
     use test_sharp_edge, only : collect_sharp_edge
-    use test_qtf_field, only : collect_qtf_field
+    use test_qtf_field, only : collect_qtf_field, collect_qtf_field_serial
     use test_qtf_free_surface, only : collect_qtf_free_surface
     use test_partial_waves, only : collect_partial_waves
     use test_qtf_direct, only : collect_qtf_direct
@@ -74,6 +74,7 @@ program unit_tester
         new_testsuite("qtf_potential", collect_qtf_potential), &
         new_testsuite("sharp_edge", collect_sharp_edge), &
         new_testsuite("qtf_field", collect_qtf_field), &
+        new_testsuite("qtf_field_serial", collect_qtf_field_serial), &
         new_testsuite("qtf_free_surface", collect_qtf_free_surface), &
         new_testsuite("partial_waves", collect_partial_waves), &
         new_testsuite("qtf_direct", collect_qtf_direct), &
@@ -100,6 +101,7 @@ program unit_tester
                                      .and. testsuites(is)%name /= "qtf_free_surface" &
                                      .and. testsuites(is)%name /= "partial_waves" &
                                      .and. testsuites(is)%name /= "qtf_direct" &
+                                     .and. testsuites(is)%name /= "qtf_field_serial" &
                                      .and. testsuites(is)%name /= "qtf_direct_field"))
     end do
 

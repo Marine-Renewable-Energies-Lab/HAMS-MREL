@@ -313,7 +313,8 @@ CONTAINS
       END IF
       WRITE (*, '(a,I0,a,I0,a,I0,a,F10.1,a)') ' QTF field points: ', COUNT(.NOT. surface), ' pressure points and ', &
          COUNT(surface), ' elevation points, ', nqtf, ' frequencies; the store takes', &
-         qfield_stored_mb(fp_pts%n, nqtf, NBETA), ' MB'
+         qfield_stored_mb(fp_pts%n, nqtf, NBETA, direct_pairs=MERGE(NBETA*NBETA, NBETA, opts%mean_drift == 2)*opts%qtf_direct), &
+         ' MB'
       CALL qfield_init(opts, nqtf, WVHD(1:NBETA), fp_pts, surface, outputdir)
    END SUBROUTINE field_setup
 

@@ -44,6 +44,18 @@ MODULE QTFField
    ! heading. After the frequency loop qfield_finish forms every pair of the QTFs of QTFDriver, with the same kernels
    ! (qtf = 1 difference, 2 sum, 3 both), heading pairs (mean_drift = 2: all, else beta_1 = beta_2) and qtf_max_dw on the
    ! difference pairs, so that its rows are those of QTF_Quadratic.10d and .10s at each point.
+   !
+   ! The direct part (qtf_field = 1 with qtf_direct = 1, Phase 7c-1). The direct solve of QTFDriver (qtf_direct_at_omega)
+   ! gives phi_D of every difference-frequency pair at the field points (direct_at_omega, field_points), and the driver hands
+   ! them to qfield_keep_direct. The second-order potential enters the pressure and the elevation as the second-order incident
+   ! potential does (pot_p, pot_eta above), so with e^{-i Omega t} and Omega = omega_i - omega_j signed:
+   !   p_D = -rho d(phi_D)/dt = i rho Omega phi_D,   eta_D = -(1/g) d(phi_D)/dt = (i Omega/g) phi_D   (field_direct)
+   ! per unit amplitudes, like quad and pot; the amplitude 2 a_i a_j* (i /= j) of the file header multiplies it as well.
+   ! direct_at_omega returns phi_D of a pair with Omega < 0 conjugated, i.e. as the pair (j, i) with Omega > 0 would give it
+   ! conjugated, and the signed Omega here is the one that goes with it: p_D of the pair (j, i) is the conjugate of that of
+   ! (i, j). Rows the direct solve does not cover (mean rows, i = j, and sum rows) have no direct part: 0 and has_direct = 0.
+   ! The value with the direct part is the sum of the Re Im of QTF_FieldPartial.txt and Re_dir Im_dir of QTF_Field.txt; the
+   ! first file is written as without qtf_direct, to the byte.
 
    USE Const_mod, ONLY: G
    USE SecondOrderIncident, ONLY: incident2, incident2_pair, incident2_phi
@@ -56,6 +68,7 @@ MODULE QTFField
 
    PUBLIC :: field_pair, build_field_points, body_winding
    PUBLIC :: qfield_init, qfield_keep, qfield_finish, qfield_stored_mb, FIELD_FD_STEP
+   PUBLIC :: field_direct, qfield_keep_direct, qfield_direct_active, qfield_direct_points
 
    ! Central-difference step of the first-order gradient at the field points, as a fraction of the size of the nearest hull
    ! panel: the default of cs_fd_step, which fields_green takes for the control surface
@@ -71,6 +84,10 @@ MODULE QTFField
    COMPLEX(8), ALLOCATABLE :: grad_store(:, :, :, :)    ! (3, npt, nfreq, nbeta), its gradient
    REAL(8), ALLOCATABLE :: w_store(:, :), k_store(:, :), h_store(:, :), b_store(:, :), rho_store(:, :)   ! (nfreq, nbeta)
    REAL(8), ALLOCATABLE :: oufr_store(:), beta_deg(:)   ! (nfreq), (nbeta)
+   ! The direct part: phi_D of the pair (i, j) at the points, heading pair as in QTFDriver (b1 = b2 unless mean_drift = 2)
+   LOGICAL :: direct_on = .FALSE.
+   COMPLEX(8), ALLOCATABLE :: dir_store(:, :, :, :)     ! (npt, nfreq, nfreq, nheading pairs), phi_D, 0 if not kept
+   LOGICAL, ALLOCATABLE :: dir_have(:, :, :)            ! (nfreq, nfreq, nheading pairs), phi_D of the pair was kept
 
 CONTAINS
 
@@ -103,6 +120,23 @@ CONTAINS
          pot = CI*rho*inc%omega*p2
       END IF
    END SUBROUTINE field_pair
+
+   PURE COMPLEX(8) FUNCTION field_direct(omega, phi_d, rho, g, surface)
+      ! The direct part of the pressure (surface = .FALSE.) or the elevation (surface = .TRUE.) of a pair with the signed
+      ! difference frequency omega = omega_1 - omega_2, from phi_D of the pair at the point (header: the same forms as the
+      ! second-order incident part, with phi_D for phi2). The time factor is e^{-i omega t}, so d(phi_D)/dt = -i omega phi_D
+      ! and p = -rho d(phi_D)/dt = i rho omega phi_D, eta = -(1/g) d(phi_D)/dt = (i omega/g) phi_D. Per unit amplitudes.
+      REAL(8), INTENT(IN) :: omega, rho, g
+      COMPLEX(8), INTENT(IN) :: phi_d
+      LOGICAL, INTENT(IN) :: surface
+      COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
+
+      IF (surface) THEN
+         field_direct = CI*omega/g*phi_d
+      ELSE
+         field_direct = CI*rho*omega*phi_d
+      END IF
+   END FUNCTION field_direct
 
    SUBROUTINE build_field_points(mesh, xfp, pts, surface, ok, msg)
       ! Field points xfp(3,:) as a cs_points set (kind CS_FREE, nrm = 0, w = 0). Type as PressureElevation: |z| <= 1e-6 is
@@ -248,6 +282,8 @@ CONTAINS
       kind_qtf = opts%qtf
       max_dw = opts%qtf_max_dw
       all_headings_pairs = MERGE(1, 0, opts%mean_drift == 2)
+      ! The direct solve runs only for the difference QTF (SecondOrderInput stops qtf_direct = 1 without it)
+      direct_on = opts%qtf_direct == 1 .AND. (opts%qtf == 1 .OR. opts%qtf == 3)
       nbeta = SIZE(beta_in_deg)
       npt = pts%n
       nkept = 0
@@ -256,6 +292,7 @@ CONTAINS
       is_surface = surface
       beta_deg = beta_in_deg
       IF (ALLOCATED(phi_store)) DEALLOCATE (phi_store, grad_store, w_store, k_store, h_store, b_store, rho_store, oufr_store)
+      IF (ALLOCATED(dir_store)) DEALLOCATE (dir_store, dir_have)
       ALLOCATE (phi_store(npt, nfreq, nbeta), grad_store(3, npt, nfreq, nbeta), w_store(nfreq, nbeta), k_store(nfreq, nbeta), &
                 h_store(nfreq, nbeta), b_store(nfreq, nbeta), rho_store(nfreq, nbeta), oufr_store(nfreq), STAT=st)
       IF (st /= 0) THEN
@@ -272,14 +309,75 @@ CONTAINS
       b_store = 0D0
       rho_store = 0D0
       oufr_store = 0D0
+      IF (direct_on) THEN
+         ALLOCATE (dir_store(npt, nfreq, nfreq, MERGE(nbeta*nbeta, nbeta, all_headings_pairs == 1)), STAT=st)
+         IF (st == 0) ALLOCATE (dir_have(nfreq, nfreq, SIZE(dir_store, 4)), STAT=st)
+         IF (st /= 0) THEN
+            WRITE (*, '(a)') ' QTF field: not enough memory for phi_D of the direct solve at the field points. Use fewer'
+            WRITE (*, '(a)') ' frequencies, headings or field points, or qtf_direct = 0.'
+            ERROR STOP 1
+         END IF
+         dir_store = (0D0, 0D0)
+         dir_have = .FALSE.
+      END IF
    END SUBROUTINE qfield_init
 
-   REAL(8) FUNCTION qfield_stored_mb(npoints, nfreq, nb)
-      ! Size of the store in MB: 4 complex values per point, frequency and heading
+   REAL(8) FUNCTION qfield_stored_mb(npoints, nfreq, nb, direct_pairs)
+      ! Size of the store in MB: 4 complex values per point, frequency and heading, and with direct_pairs (the number of
+      ! heading pairs of the direct part, when it is kept) one complex value per point, frequency pair and heading pair
       INTEGER, INTENT(IN) :: npoints, nfreq, nb
+      INTEGER, INTENT(IN), OPTIONAL :: direct_pairs
 
       qfield_stored_mb = 64D0*REAL(npoints, 8)*REAL(nfreq, 8)*REAL(nb, 8)/1D6
+      IF (PRESENT(direct_pairs)) qfield_stored_mb = qfield_stored_mb + &
+         16D0*REAL(npoints, 8)*REAL(nfreq, 8)**2*REAL(direct_pairs, 8)/1D6
    END FUNCTION qfield_stored_mb
+
+   LOGICAL FUNCTION qfield_direct_active()
+      ! The store keeps the direct part: qtf_field = 1 with qtf_direct = 1 (and the difference QTF), set up by qfield_init
+      qfield_direct_active = active .AND. direct_on
+   END FUNCTION qfield_direct_active
+
+   SUBROUTINE qfield_direct_points(x)
+      ! The field points (3, npt) of the store, for direct_at_omega. Stops if the direct part is not kept.
+      REAL(8), ALLOCATABLE, INTENT(OUT) :: x(:, :)
+
+      IF (.NOT. qfield_direct_active()) THEN
+         WRITE (*, '(a)') ' QTF field: qfield_direct_points called without qtf_field = 1 and qtf_direct = 1.'
+         ERROR STOP 1
+      END IF
+      x = px
+   END SUBROUTINE qfield_direct_points
+
+   SUBROUTINE qfield_keep_direct(i, b1, j, b2, phi_d)
+      ! Keeps phi_D at the points (npt) of the pair of frequencies i, j (in the order of qfield_keep) and headings b1, b2:
+      ! as direct_at_omega returns it, e^{-i omega t}, conjugated for omega_i < omega_j (header). No-op unless the direct part
+      ! is kept. The heading pair must be one of the QTFs (b1 = b2 unless mean_drift = 2).
+      INTEGER, INTENT(IN) :: i, b1, j, b2
+      COMPLEX(8), INTENT(IN) :: phi_d(:)
+      INTEGER :: h
+
+      IF (.NOT. qfield_direct_active()) RETURN
+      IF (i < 1 .OR. j < 1 .OR. i > SIZE(dir_store, 2) .OR. j > SIZE(dir_store, 3) .OR. b1 < 1 .OR. b2 < 1 .OR. &
+          b1 > nbeta .OR. b2 > nbeta .OR. SIZE(phi_d) /= npt) THEN
+         WRITE (*, '(a)') ' QTF field: qfield_keep_direct called with a pair or a size that is not in the store.'
+         ERROR STOP 1
+      END IF
+      IF (all_headings_pairs == 0 .AND. b1 /= b2) THEN
+         WRITE (*, '(a)') ' QTF field: qfield_keep_direct called for a heading pair that mean_drift does not take.'
+         ERROR STOP 1
+      END IF
+      h = heading_pair_index(b1, b2)
+      dir_store(:, i, j, h) = phi_d
+      dir_have(i, j, h) = .TRUE.
+   END SUBROUTINE qfield_keep_direct
+
+   PURE INTEGER FUNCTION heading_pair_index(b1, b2)
+      ! The heading pair of the direct store: all pairs with mean_drift = 2, else only b1 = b2
+      INTEGER, INTENT(IN) :: b1, b2
+
+      heading_pair_index = MERGE((b1 - 1)*nbeta + b2, b1, all_headings_pairs == 1)
+   END FUNCTION heading_pair_index
 
    SUBROUTINE qfield_keep(states, fields, oufr)
       ! Keeps the first-order fields at the points of every heading of the current frequency: states(:) and fields(:) in
@@ -316,13 +414,20 @@ CONTAINS
       ! then K = 2 sum), heading pair, frequency pair, then point. No-op when inactive.
       REAL(8), INTENT(IN) :: refl
       TYPE(incident2) :: inc
-      COMPLEX(8) :: quad, pot
+      COMPLEX(8) :: quad, pot, d
       REAL(8) :: g_wave
-      INTEGER :: unit, kern, kn, b1, b2, i, j, ip, nrows
+      INTEGER :: unit, unit_full, kern, kn, b1, b2, i, j, ip, nrows, h
+      LOGICAL :: have
 
       IF (.NOT. active) RETURN
       OPEN (NEWUNIT=unit, FILE=outdir//'/Wamit_format/QTF_FieldPartial.txt', STATUS='REPLACE', ACTION='WRITE')
-      CALL write_header(unit)
+      CALL write_header(unit, .FALSE.)
+      ! With the direct part the same rows go to QTF_Field.txt as well, with the columns of the direct part after theirs
+      unit_full = 0
+      IF (direct_on) THEN
+         OPEN (NEWUNIT=unit_full, FILE=outdir//'/Wamit_format/QTF_Field.txt', STATUS='REPLACE', ACTION='WRITE')
+         CALL write_header(unit_full, .TRUE.)
+      END IF
       nrows = 0
       DO kern = 1, 2
          IF (kern == 1 .AND. .NOT. (kind_qtf == 1 .OR. kind_qtf == 3)) CYCLE
@@ -347,6 +452,17 @@ CONTAINS
                                         is_surface(ip), rho_store(i, b1), G, quad, pot)
                         CALL write_field_row(unit, oufr_store(i), oufr_store(j), beta_deg(b1), beta_deg(b2), kern, ip, &
                                              is_surface(ip), quad, pot, refl)
+                        IF (direct_on) THEN
+                           ! Only the difference rows of pairs the direct solve gave; the mean rows (i = j), the sum rows
+                           ! and the pairs outside qtf_max_dw have none (header)
+                           h = heading_pair_index(b1, b2)
+                           have = kn == KERNEL_DIFF .AND. i /= j .AND. dir_have(i, j, h)
+                           d = (0D0, 0D0)
+                           IF (have) d = field_direct(w_store(i, b1) - w_store(j, b2), dir_store(ip, i, j, h), &
+                                                      rho_store(i, b1), G, is_surface(ip))
+                           CALL write_field_row(unit_full, oufr_store(i), oufr_store(j), beta_deg(b1), beta_deg(b2), kern, &
+                                                ip, is_surface(ip), quad, pot, refl, d, have)
+                        END IF
                         nrows = nrows + 1
                      END DO
                   END DO
@@ -355,15 +471,43 @@ CONTAINS
          END DO
       END DO
       CLOSE (unit)
+      IF (direct_on) CLOSE (unit_full)
       WRITE (*, '(a,I0,a,I0,a,I0,a)') ' QTF field points: ', nrows, ' rows at ', npt, ' points, ', nkept, ' frequencies'
       DEALLOCATE (phi_store, grad_store, w_store, k_store, h_store, b_store, rho_store, oufr_store, px, is_surface, beta_deg)
+      IF (direct_on) DEALLOCATE (dir_store, dir_have)
       active = .FALSE.
+      direct_on = .FALSE.
    END SUBROUTINE qfield_finish
 
-   SUBROUTINE write_header(unit)
+   SUBROUTINE write_header(unit, complete)
+      ! The header of QTF_FieldPartial.txt (complete = .FALSE.), unchanged by the direct part, or of QTF_Field.txt
+      ! (.TRUE.): the columns of the partial file and of the direct part, and what the direct part holds and leaves out
       INTEGER, INTENT(IN) :: unit
+      LOGICAL, INTENT(IN) :: complete
       INTEGER :: ip
 
+      IF (complete) THEN
+         WRITE (unit, '(a)') '# QTF_Field.txt: second-order pressure and elevation at the field points of ControlFile.in: '// &
+            'the rows of QTF_FieldPartial.txt and the direct part'
+         WRITE (unit, '(a)') '# Re Im, Re_quad Im_quad and Re_inc Im_inc: as in QTF_FieldPartial.txt, the partial value (the'// &
+            ' quadratic part and the second-order incident wave).'
+         WRITE (unit, '(a)') '# Re_dir Im_dir: the direct part, i rho Omega phi_D (pressure) and (i Omega/g) phi_D (elevation),'// &
+            ' Omega = omega_1 - omega_2, per unit amplitude pair, conjugated and scaled as Re Im. Add it to Re Im.'
+         WRITE (unit, '(a)') '# phi_D of the direct solve with body forcing; free-surface forcing not included (Phase 7b);'// &
+            ' radiated wave of the second-order motion not included (Phase 6c)'
+         WRITE (unit, '(a)') '# has_direct: 1 where the direct solve covers the row (difference frequency, omega_1 /='// &
+            ' omega_2), else 0 with Re_dir = Im_dir = 0 (mean rows and sum rows).'
+         WRITE (unit, '(a)') '# Columns: PER1 PER2 BETA1 BETA2 K IPT TYPE Mod Pha Re Im Re_quad Im_quad Re_inc Im_inc'// &
+            ' Re_dir Im_dir has_direct'
+         WRITE (unit, '(a)') '# K: 1 difference frequency (T-), 2 sum frequency (T+). TYPE: 1 pressure, 2 elevation.'
+         WRITE (unit, '(a)') '# e^{+i omega t} as the other WAMIT-format files; pressure / (rho g A^2 / L), elevation / (A^2 /'// &
+            ' L), L = Reference_body_length.'
+         WRITE (unit, '(a)') '# POINT IPT X Y Z TYPE'
+         DO ip = 1, npt
+            WRITE (unit, '(a,I6,3ES14.6,I6)') '# POINT', ip, px(:, ip), MERGE(2, 1, is_surface(ip))
+         END DO
+         RETURN
+      END IF
       WRITE (unit, '(a)') '# QTF_FieldPartial.txt: PARTIAL second-order pressure and elevation at the field points of '// &
          'ControlFile.in'
       WRITE (unit, '(a)') '# OMITTED: the second-order diffracted and radiated waves. Near the bodies the omitted part is'// &

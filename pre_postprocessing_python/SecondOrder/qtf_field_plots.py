@@ -1,16 +1,19 @@
 """
-Maps and field-point grids for QTF_FieldPartial.txt of HAMS-MREL (the partial second-order field).
+Maps and field-point grids for QTF_FieldPartial.txt and QTF_Field.txt of HAMS-MREL (the second-order field).
 
 Usage:
-    python -I qtf_field_plots.py plot <QTF_FieldPartial.txt> --out <folder> [--kernel diff|sum|both]
+    python -I qtf_field_plots.py plot <QTF_FieldPartial.txt or QTF_Field.txt> --out <folder> [--kernel diff|sum|both]
                                       [--type pressure|elevation|both]
     python -I qtf_field_plots.py grid --x <x0> <x1> <nx> --y <y0> <y1> <ny> [--z 0] [--exclude <xc> <yc> <r>]...
     python -I qtf_field_plots.py check
 
 plot: for every kernel, frequency pair, heading pair, type and depth level (pressure points are grouped by z), one PNG
 with two panels, the modulus and the phase (degrees, cyclic colour map, at the points) over x, y. The values are those of the file:
-pressure / (rho g A^2 / L) and elevation / (A^2 / L), e^{+i omega t} as the other WAMIT-format files. The field is
-PARTIAL: the second-order diffracted and radiated waves are omitted, so the maps are for the far field and for checks.
+pressure / (rho g A^2 / L) and elevation / (A^2 / L), e^{+i omega t} as the other WAMIT-format files. The field of
+QTF_FieldPartial.txt is PARTIAL: the second-order diffracted and radiated waves are omitted, so the maps are for the far
+field and for checks. QTF_Field.txt (qtf_field = 1 with qtf_direct = 1) has the columns Re_dir Im_dir has_direct after those
+of the partial file, read by the names of its "# Columns:" line; its PNGs have the modulus of the partial value beside that
+of the complete value (partial + direct, where has_direct = 1) and the phase of the complete value.
 grid: prints the field-point block of ControlFile.in (Number_of_field_points and one "x y z" line per point) for a
 rectangular grid, leaving out the points inside discs around the bodies.
 check: a synthetic file is written, read back, plotted and gridded; exits 1 on any failure.
@@ -31,8 +34,11 @@ import matplotlib.pyplot as plt  # noqa: E402
 COLUMNS = ["per1", "per2", "beta1", "beta2", "k", "ipt", "typ", "mod", "pha", "re", "im",
            "re_quad", "im_quad", "re_inc", "im_inc"]
 INTEGER = ("k", "ipt", "typ")
-DTYPE = np.dtype([(c, "i8" if c in INTEGER else "f8") for c in COLUMNS])
+DIRECT_COLUMNS = ["re_dir", "im_dir", "has_direct"]
+INTEGER_ALL = INTEGER + ("has_direct",)
 TITLE = "PARTIAL second-order field (no second-order diffracted or radiated waves)"
+TITLE_COMPLETE = ("second-order field with the direct part (body forcing; no free-surface forcing, no radiated wave of "
+                  "the second-order motion)")
 KERNELS = {1: "diff", 2: "sum"}
 TYPES = {1: "pressure", 2: "elevation"}
 KERNEL_LABEL = {"diff": "difference frequency T-", "sum": "sum frequency T+"}
@@ -40,8 +46,11 @@ QUANTITY = {"pressure": "pressure / (rho g A^2 / L)", "elevation": "elevation / 
 
 
 def read_field_partial(path):
-    """(points, rows): points {ipt: (x, y, z, type)}; rows a structured array of the 15 columns of the file."""
+    """(points, rows): points {ipt: (x, y, z, type)}; rows a structured array of the columns of the file, named by its
+    "# Columns:" line (lower case): the 15 columns of QTF_FieldPartial.txt, and with the direct part re_dir, im_dir and
+    has_direct after them. Without such a line, the 15 columns."""
     points, rows = {}, []
+    names = list(COLUMNS)
     with open(path) as f:
         for line in f:
             s = line.strip()
@@ -49,14 +58,20 @@ def read_field_partial(path):
                 continue
             if s.startswith("#"):
                 w = s[1:].split()
+                if len(w) > 2 and w[0] == "Columns:":
+                    names = [{"type": "typ"}.get(c.lower(), c.lower()) for c in w[1:]]
+                    unknown = [c for c in names if c not in COLUMNS + DIRECT_COLUMNS]
+                    if unknown:
+                        raise ValueError("%s: unknown column(s) %s" % (path, unknown))
                 if len(w) == 6 and w[0] == "POINT" and w[1] != "IPT":
                     points[int(w[1])] = (float(w[2]), float(w[3]), float(w[4]), int(w[5]))
                 continue
             w = s.split()
-            if len(w) != 15:
-                raise ValueError("%s: expected 15 columns, got %d: %s" % (path, len(w), s))
-            rows.append(tuple(int(v) if COLUMNS[i] in INTEGER else float(v) for i, v in enumerate(w)))
-    return points, np.array(rows, dtype=DTYPE)
+            if len(w) != len(names):
+                raise ValueError("%s: expected %d columns, got %d: %s" % (path, len(names), len(w), s))
+            rows.append(tuple(int(v) if names[i] in INTEGER_ALL else float(v) for i, v in enumerate(w)))
+    dtype = np.dtype([(c, "i8" if c in INTEGER_ALL else "f8") for c in names])
+    return points, np.array(rows, dtype=dtype)
 
 
 def _num(v):
@@ -97,6 +112,8 @@ def _panel(fig, ax, x, y, v, label, cmap, vmin=None, vmax=None, points_only=Fals
 def plot(path, out, kernel="both", kind="both"):
     """Write the PNGs; returns the list of file names."""
     points, rows = read_field_partial(path)
+    complete = "re_dir" in rows.dtype.names
+    title = TITLE_COMPLETE if complete else TITLE
     os.makedirs(out, exist_ok=True)
     written = []
     keys = sorted({(r["k"], r["per1"], r["per2"], r["beta1"], r["beta2"], r["typ"]) for r in rows})
@@ -109,16 +126,26 @@ def plot(path, out, kernel="both", kind="both"):
         levels = {}
         for r in sel:
             x, y, z, _ = points[int(r["ipt"])]
-            levels.setdefault(round(z, 9) if typ == 1 else 0.0, []).append((x, y, r["mod"], r["pha"]))
+            # The complete value: the partial one plus the direct part, which a row without it (has_direct = 0) has as 0
+            re, im = r["re"], r["im"]
+            if complete:
+                re, im = re + r["re_dir"], im + r["im_dir"]
+            levels.setdefault(round(z, 9) if typ == 1 else 0.0, []).append(
+                (x, y, r["mod"], r["pha"], np.hypot(re, im), np.degrees(np.arctan2(im, re))))
         for z, pts in sorted(levels.items()):
-            x, y, mod, pha = (np.array(c) for c in zip(*pts))
-            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+            x, y, mod, pha, cmod, cpha = (np.array(c) for c in zip(*pts))
+            ncol = 3 if complete else 2
+            fig, axes = plt.subplots(1, ncol, figsize=(6 * ncol, 5))
             _panel(fig, axes[0], x, y, mod, "modulus, " + QUANTITY[kd], "viridis")
-            _panel(fig, axes[1], x, y, pha, "phase (deg)", "twilight", -180.0, 180.0, points_only=True)
-            axes[0].set_title("modulus")
-            axes[1].set_title("phase at the points (not interpolated)")
+            axes[0].set_title("modulus, partial" if complete else "modulus")
+            if complete:
+                _panel(fig, axes[1], x, y, cmod, "modulus, " + QUANTITY[kd], "viridis")
+                axes[1].set_title("modulus, complete (with the direct part)")
+            _panel(fig, axes[-1], x, y, cpha if complete else pha, "phase (deg)", "twilight", -180.0, 180.0,
+                   points_only=True)
+            axes[-1].set_title("phase at the points (not interpolated)" + (", complete" if complete else ""))
             fig.suptitle("%s\n%s, %s%s, PER1 = %.4g, PER2 = %.4g, beta1 = %g, beta2 = %g deg"
-                         % (TITLE, KERNEL_LABEL[kern], kd, " at z = %g m" % z if typ == 1 else "",
+                         % (title, KERNEL_LABEL[kern], kd, " at z = %g m" % z if typ == 1 else "",
                             per1, per2, beta1, beta2), fontsize=10)
             fig.tight_layout(rect=(0, 0, 1, 0.9))
             name = png_name(kern, per1, per2, beta1, beta2, kd, z)
@@ -165,6 +192,25 @@ def _write_synthetic(path):
     return pts
 
 
+def _write_synthetic_complete(path):
+    """The file of _write_synthetic as QTF_Field.txt: Re_dir Im_dir has_direct after each row (half the partial value for
+    the difference rows, k = 1, and 0 for the sum rows), and the "# Columns:" line that names them."""
+    _write_synthetic(path)
+    with open(path) as f:
+        lines = f.readlines()
+    header = ("# Columns: PER1 PER2 BETA1 BETA2 K IPT TYPE Mod Pha Re Im Re_quad Im_quad Re_inc Im_inc Re_dir Im_dir "
+              "has_direct\n")
+    out = [lines[0], header]
+    for line in lines[1:]:
+        if not line.startswith("#") and line.strip():
+            w = line.split()
+            has = int(w[4] == "1")
+            line = line.rstrip("\n") + "%14.6E%14.6E%6d\n" % (0.5 * float(w[9]) * has, 0.5 * float(w[10]) * has, has)
+        out.append(line)
+    with open(path, "w") as f:
+        f.writelines(out)
+
+
 def check():
     failed = 0
 
@@ -191,6 +237,18 @@ def check():
         test("png files exist", all(os.path.getsize(os.path.join(out, n)) > 0 for n in names))
         test("kernel/type filter", plot(path, os.path.join(tmp, "f"), "diff", "elevation")
              == ["field_diff_8.0000_9.0000_0_30_elevation.png"])
+        # The file with the direct part, read by column name
+        cpath = os.path.join(tmp, "QTF_Field.txt")
+        _write_synthetic_complete(cpath)
+        cpoints, crows = read_field_partial(cpath)
+        test("read direct columns", cpoints == pts and crows.dtype.names == tuple(COLUMNS + DIRECT_COLUMNS)
+             and len(crows) == 72)
+        r = crows[(crows["k"] == 1) & (crows["ipt"] == 5)][0]
+        test("direct values", abs(r["re_dir"] - 0.5 * r["re"]) < 1e-12 and r["has_direct"] == 1
+             and crows[(crows["k"] == 2)]["has_direct"].max() == 0)
+        cnames = sorted(plot(cpath, os.path.join(tmp, "c")))
+        test("complete png names", cnames == want, "" if cnames == want else "%s != %s" % (cnames, want))
+        test("complete png files exist", all(os.path.getsize(os.path.join(tmp, "c", n)) > 0 for n in cnames))
         g = grid((0, 30, 4), (0, 30, 4))
         test("duplicates -> markers", _markers_only(np.array([0., 1, 0, 1, 0]), np.array([0., 0, 1, 1, 0]),
                                                     np.arange(5.)) and not _markers_only(

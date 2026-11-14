@@ -91,6 +91,7 @@ MODULE QTFDriver
    USE SecondOrderOutput, ONLY: write_qtf_row, write_qtf_terms_row, write_qtf_terms_header
    USE QTFPotential, ONLY: potential_pair, psi_surface_gradient, psi_waterline, NPOT_TERMS
    USE QTFDirect, ONLY: direct_at_omega
+   USE QTFField, ONLY: qfield_direct_active, qfield_direct_points, qfield_keep_direct
    USE FirstOrderState, ONLY: wave_gravity
    USE, INTRINSIC :: IEEE_ARITHMETIC, ONLY: IEEE_IS_FINITE
    IMPLICIT NONE
@@ -856,7 +857,8 @@ CONTAINS
       REAL(8), INTENT(OUT), OPTIONAL :: seconds(3)
       REAL(8) :: sec(3)
       INTEGER, ALLOCATABLE :: pairs(:, :)
-      COMPLEX(8), ALLOCATABLE :: t(:, :), parts(:, :, :)
+      COMPLEX(8), ALLOCATABLE :: t(:, :), parts(:, :, :), phi_field(:, :)
+      REAL(8), ALLOCATABLE :: xfield(:, :)
       INTEGER :: m, p, nbad, h
 
       IF (PRESENT(npair)) npair = 0
@@ -875,7 +877,18 @@ CONTAINS
       CALL qtf_direct_pairs(omega, pairs)
       ALLOCATE (t(6*mesh%nbody, SIZE(pairs, 2)))
       ALLOCATE (parts(6*mesh%nbody, SIZE(pairs, 2), 2))
-      CALL direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, omega_tol=psi_tol, seconds=sec, parts=parts)
+      IF (qfield_direct_active()) THEN
+         ! qtf_field = 1 with qtf_direct = 1: phi_D of every pair at the field points, for QTF_Field.txt (QTFField)
+         CALL qfield_direct_points(xfield)
+         ALLOCATE (phi_field(SIZE(xfield, 2), SIZE(pairs, 2)))
+         CALL direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, omega_tol=psi_tol, seconds=sec, parts=parts, &
+                              field_points=xfield, phi_field=phi_field)
+         DO p = 1, SIZE(pairs, 2)
+            CALL qfield_keep_direct(pairs(1, p), pairs(2, p), pairs(3, p), pairs(4, p), phi_field(:, p))
+         END DO
+      ELSE
+         CALL direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, omega_tol=psi_tol, seconds=sec, parts=parts)
+      END IF
       IF (PRESENT(npair)) npair = SIZE(pairs, 2)
       IF (PRESENT(seconds)) seconds = sec
       nbad = 0

@@ -305,6 +305,7 @@ contains
             new_unittest("run_qtf_b2_routes", run_qtf_b2_routes), &
             new_unittest("run_qtf_b2_defaults", run_qtf_b2_defaults), &
             new_unittest("run_qtf_field_cases", run_qtf_field_cases), &
+            new_unittest("run_qtf_direct_field", run_qtf_direct_field), &
             new_unittest("run_qtf_fs_cases", run_qtf_fs_cases), &
             new_unittest("run_control_cyl", run_control_cyl), &
             new_unittest("run_control_cyl_sybo", run_control_cyl_sybo), &
@@ -426,6 +427,7 @@ contains
             new_unittest("qtf_field_inside_stops", qtf_field_inside_stops), &
             new_unittest("qtf_field_no_points_stops", qtf_field_no_points_stops), &
             new_unittest("qtf_field_off", qtf_field_off), &
+            new_unittest("qtf_direct_field_rows", qtf_direct_field_rows), &
             new_unittest("qtf_fs_columns", qtf_fs_columns), &
             new_unittest("qtf_fs_off_unchanged", qtf_fs_off_unchanged), &
             new_unittest("fs_half_matches_full", fs_half_matches_full), &
@@ -787,6 +789,13 @@ contains
             end if
         end do
     end subroutine run_qtf_field_cases
+
+    !> qtf_field = 1 with qtf_direct = 1 (Phase 7c-1): the direct part at two field points of a rounded hull, difference QTF
+    subroutine run_qtf_direct_field(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("qtf_direct_field", [character(len=40) :: qtf_diff_file, qtf_direct_file, qtf_field_file, &
+                                           "Wamit_format/QTF_Field.txt"], error)
+    end subroutine run_qtf_direct_field
 
     subroutine run_control_cyl(error)
         type(error_type), allocatable, intent(out) :: error
@@ -5125,6 +5134,65 @@ contains
         type(error_type), allocatable, intent(out) :: error
         call run_expecting_stop("qtf_field_no_points", "Number_of_field_points", error)
     end subroutine qtf_field_no_points_stops
+
+    !> QTF_Field.txt of qtf_direct_field: the 15 columns of QTF_FieldPartial.txt to the byte, then Re_dir, Im_dir and has_direct.
+    !> The pairs (1, 2) and (2, 1) of the two frequencies are solved (has_direct 1, a finite direct part that is not zero, the
+    !> conjugate one of the other as the files are conjugated once: Re_dir equal, Im_dir opposite, which pins the Omega < 0
+    !> conjugation of the direct solve through the whole chain), the mean rows (i = j) have 0 and has_direct = 0. The values are
+    !> pinned by the unit tests field_direct_*; here the chain from the solve to the file.
+    subroutine qtf_direct_field_rows(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=:), allocatable :: full(:), part(:)
+        character(len=512), allocatable :: frow(:), prow(:)
+        real(8) :: dd(8, 2)
+        integer :: hh(8), r, nf, np, p, q, ipt, found
+
+        call read_lines(output_dir("qtf_direct_field")//"Wamit_format/QTF_Field.txt", full, error)
+        if (allocated(error)) return
+        call read_lines(output_dir("qtf_direct_field")//qtf_field_file, part, error)
+        if (allocated(error)) return
+        allocate (frow(size(full)), prow(size(part)))
+        nf = 0
+        do r = 1, size(full)
+            if (len_trim(full(r)) == 0 .or. full(r)(1:1) == '#') cycle
+            nf = nf + 1
+            frow(nf) = full(r)
+        end do
+        np = 0
+        do r = 1, size(part)
+            if (len_trim(part(r)) == 0 .or. part(r)(1:1) == '#') cycle
+            np = np + 1
+            prow(np) = part(r)
+        end do
+        ! Two frequencies: the four ordered pairs at two points, the difference QTF only (qtf = 1), one heading
+        call check(error, nf == 8 .and. np == 8, "QTF_Field.txt and QTF_FieldPartial.txt do not have 8 rows each")
+        if (allocated(error)) return
+        found = 0
+        do p = 1, 8
+            call check(error, frow(p)(1:len_trim(prow(p))) == trim(prow(p)), &
+                       "The first 15 columns of QTF_Field.txt are not the row of QTF_FieldPartial.txt")
+            if (allocated(error)) return
+            read (frow(p)(len_trim(prow(p)) + 1:), '(2ES14.6,I6)') dd(p, :), hh(p)
+            ! Rows by pair (1,1), (1,2), (2,1), (2,2), each at points 1, 2: the mean rows have no direct part
+            if (p <= 2 .or. p >= 7) then
+                call check(error, hh(p) == 0 .and. dd(p, 1) == 0d0 .and. dd(p, 2) == 0d0, "A mean row has a direct part")
+            else
+                found = found + 1
+                call check(error, hh(p) == 1 .and. abs(dd(p, 1)) + abs(dd(p, 2)) > 0d0 .and. all(abs(dd(p, :)) < huge(1d0)), &
+                           "The direct part of a solved pair is missing, zero or not finite")
+            end if
+            if (allocated(error)) return
+        end do
+        ! Both files are conjugated once, so phi_D of the pair (2,1), the conjugate of that of (1,2) (Omega < 0), and its
+        ! signed Omega make the part of (2,1) the conjugate of the part of (1,2): the same Re_dir and the opposite Im_dir
+        do ipt = 1, 2
+            p = 2 + ipt
+            q = 4 + ipt
+            call check(error, abs(dd(p, 1) - dd(q, 1)) <= 1d-5*abs(dd(p, 1)) .and. abs(dd(p, 2) + dd(q, 2)) <= 1d-5*abs(dd(p, 2)), &
+                       "The direct part of the pair (2,1) is not the conjugate of that of (1,2)")
+            if (allocated(error)) return
+        end do
+    end subroutine qtf_direct_field_rows
 
     !> Without qtf_field no field file is written
     subroutine qtf_field_off(error)
