@@ -595,19 +595,20 @@ CONTAINS
       ! after SetWaveFromOmega(omega) and the radiation solve there (CALGREEN and ASSB_LEFT, or their multi-body forms),
       ! and nothing in between changes CGRN, RKBN, DS or AMAT (nor DGRN, PKBN and CMAT with IRSP = 1), so the stored Green
       ! integrals and the matrix are those of omega. direct_at_omega checks W1. The log gives the time of the pair forcing
-      ! with its field integral, of the B2 part (densities and right side) and of the factorisation, solve and load.
+      ! with its field integral, of the B2 part (densities and right side), of the factorisation, solve and load, and
+      ! of the field evaluation at the field points (qtf_field = 1; 0 without).
       TYPE(so_options), INTENT(IN) :: opts
       REAL(8), INTENT(IN) :: omega
       INTEGER(8) :: t0, t1, rate
-      REAL(8) :: sec(3)
+      REAL(8) :: sec(4)
       INTEGER :: npair
 
       IF (opts%qtf_direct /= 1 .OR. .NOT. (omega > 0D0)) RETURN
       CALL SYSTEM_CLOCK(t0, rate)
       CALL qtf_direct_at_omega(mesh, geom, omega, npair, sec)
       CALL SYSTEM_CLOCK(t1)
-      WRITE (*, '(a,F10.5,a,I0,a,F9.2,a,3F9.2,a)') ' QTF direct: omega = ', omega, ' rad/s, ', npair, ' pairs, ', &
-         REAL(t1 - t0, 8)/REAL(rate, 8), ' s (forcing, B2, solve:', sec, ' s)'
+      WRITE (*, '(a,F10.5,a,I0,a,F9.2,a,4F9.2,a)') ' QTF direct: omega = ', omega, ' rad/s, ', npair, ' pairs, ', &
+         REAL(t1 - t0, 8)/REAL(rate, 8), ' s (forcing, B2, solve, field:', sec, ' s)'
    END SUBROUTINE so_direct_solve
 
    SUBROUTINE keep_radiation_only_psi(opts, omega)

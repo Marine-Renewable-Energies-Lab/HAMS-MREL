@@ -1471,11 +1471,14 @@ CONTAINS
       !    M_e  = (d^2/2) INT sec^2(phi) (cos(phi) m + sin(phi) t) dphi
       !         = (d^2/2) [ m asinh(tan phi) + t sec(phi) ]      = (1/2) { d^2 m [asinh(s2/d) - asinh(s1/d)] + d t (R2 - R1) }.
       ! (asinh(tan phi) = ln(sec phi + tan phi).) The sum over the edges is I0 = sum d_e [asinh-type log terms], M likewise,
-      ! and val = 2 (q0 I0 + qg . M). d is signed with the winding: positive when x is on the inner side of the edge (the
-      ! left of a counter-clockwise polygon, found from the sign of the shoelace area), so that every edge adds its
-      ! triangle (x, P1, P2) with the sign of its winding. When x is on the line of an edge (on the edge or at its vertex)
-      ! d = 0: the triangle has zero angle at x and the edge adds 0 to I0 and M, and the term is skipped, not evaluated
-      ! (asinh(s/d) would divide by zero; d asinh(s/d) -> 0 as d -> 0). Checks: the centre of a regular N-gon of
+      ! and val = 2 (q0 I0 + qg . M). d is positive when x is on the inner side of the edge (the left of a counter-clockwise
+      ! polygon, found from the sign of the shoelace area). The routine requires x inside the polygon, or on its boundary,
+      ! and the polygon star-shaped about x (ruling C12 of the 7c-1 ledger): then d >= 0 for every edge and every edge adds
+      ! its triangle (x, P1, P2). An edge with d <= 0 is skipped (CYCLE): for d = 0 (x on the line of the edge, on the edge
+      ! or at its vertex) the triangle has zero angle at x and the edge adds 0 to I0 and M, and the term must not be
+      ! evaluated (asinh(s/d) would divide by zero; d asinh(s/d) -> 0 as d -> 0). For d < 0 (x outside the polygon, outside
+      ! the precondition) skipping gives a wrong value, not an error: there is no guard yet, so a caller must keep x inside.
+      ! Checks: the centre of a regular N-gon of
       ! circumradius a (d = a cos(pi/N), s2 = -s1 = d tan(pi/N)) gives I0 = 2 N d ln[(1 + sin(pi/N))/cos(pi/N)], and M = 0.
       REAL(8), INTENT(IN) :: x(3)
       INTEGER, INTENT(IN) :: ncn
@@ -1503,7 +1506,7 @@ CONTAINS
          t = (p2 - p1)/el
          nl = [-t(2), t(1)]                  ! the left normal of the edge
          d = -sgn*(p1(1)*nl(1) + p1(2)*nl(2))   ! (x - P1) . nl, positive on the inner side of a counter-clockwise polygon
-         IF (d <= 0D0) CYCLE                 ! x on the line of the edge: zero angle, nothing to add
+         IF (d <= 0D0) CYCLE                 ! d = 0: x on the edge line, zero angle, nothing to add (d < 0: outside, see above)
          m = -sgn*nl                         ! from x to the foot of the perpendicular on the edge line
          s1 = p1(1)*t(1) + p1(2)*t(2)
          s2 = p2(1)*t(1) + p2(2)*t(2)

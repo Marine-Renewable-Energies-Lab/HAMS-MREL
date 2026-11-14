@@ -365,9 +365,9 @@ CONTAINS
       !   phi2_constant    optional test hook, as potential_pair: phi_I2 replaced by this constant (dphi_I2/dn = 0)
       !   parts            optional (6 nbody, npair, 2): the part of tdir from phi_I2 (:, :, 1) and from phi_D (:, :, 2);
       !                    their sum is tdir
-      !   seconds          optional (3): wall time of the pair forcing with ASSB_RHS_FIELD_IRR, of the B2 part (the
-      !                    densities of b2_stokes_densities and direct_rhs_b2_block) and of the factorisation, solve and
-      !                    load, for the log
+      !   seconds          optional (4): wall time of the pair forcing with ASSB_RHS_FIELD_IRR, of the B2 part (the
+      !                    densities of b2_stokes_densities and direct_rhs_b2_block), of the factorisation, solve and
+      !                    load, and of the field evaluation (the hook below; 0 without it), for the log
       !   field_points     optional (3, npt), with phi_field (npt, npair) out, both or neither: phi_D of every pair at the
       !                    points off the hull by Green's formula (direct_field_at_points), e^{-i omega t}
       ! The solver globals must be at omega, with CALGREEN (CALGREEN_MULTI) and ASSB_LEFT (ASSB_LEFT_MULTI) run there, as
@@ -385,7 +385,7 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL :: is_multi
       REAL(8), INTENT(IN), OPTIONAL :: omega_tol
       COMPLEX(8), INTENT(IN), OPTIONAL :: phi2_constant
-      REAL(8), INTENT(OUT), OPTIONAL :: seconds(3)
+      REAL(8), INTENT(OUT), OPTIONAL :: seconds(4)
       COMPLEX(8), INTENT(OUT), OPTIONAL :: parts(:, :, :)
       REAL(8), INTENT(IN), OPTIONAL :: field_points(:, :)
       COMPLEX(8), INTENT(OUT), OPTIONAL :: phi_field(:, :)
@@ -393,8 +393,8 @@ CONTAINS
                                  phi(:, :), p2(:, :)
       REAL(8), ALLOCATABLE :: dws(:)
       INTEGER :: npair, nb, nt, nl, ns, n, nmode, first, last, nc, col, ncol_max
-      INTEGER(8) :: c0, c1, rate
-      REAL(8) :: sec(3)
+      INTEGER(8) :: c0, c1, c2, rate
+      REAL(8) :: sec(4)
       LOGICAL :: multi
 
       npair = SIZE(pairs, 2)
@@ -482,10 +482,15 @@ CONTAINS
             ! Omega < 0 the solved phi is conj(phi_D), since G(-|Omega|) = conj(G(|Omega|)) and the data are conjugated.
             ! Green's formula is linear in (b, phi_D) with the kernel rows of the solver at |Omega|, so the field of the
             ! solved columns is conj(phi_D at the point); the columns with dws < 0 are conjugated, as phi_D below.
+            CALL SYSTEM_CLOCK(c1)
             CALL direct_field_at_points(mesh, geom, field_points, phi, vf, a, c, e, cl, multi, phi_field(:, first:last))
             DO col = 1, nc
                IF (dws(col) < 0D0) phi_field(:, first + col - 1) = CONJG(phi_field(:, first + col - 1))
             END DO
+            ! The field time is logged apart (sec(4)) and is not in the solve and load time (sec(3)): c0 moves past it.
+            CALL SYSTEM_CLOCK(c2)
+            sec(4) = sec(4) + REAL(c2 - c1, 8)/REAL(rate, 8)
+            c0 = c0 + (c2 - c1)
          END IF
          DO col = 1, nc
             IF (dws(col) < 0D0) phi(:, col) = CONJG(phi(:, col))

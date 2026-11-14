@@ -140,10 +140,10 @@ def plot(path, out, kernel="both", kind="both"):
             axes[0].set_title("modulus, partial" if complete else "modulus")
             if complete:
                 _panel(fig, axes[1], x, y, cmod, "modulus, " + QUANTITY[kd], "viridis")
-                axes[1].set_title("modulus, complete (with the direct part)")
+                axes[1].set_title("modulus, partial + direct")
             _panel(fig, axes[-1], x, y, cpha if complete else pha, "phase (deg)", "twilight", -180.0, 180.0,
                    points_only=True)
-            axes[-1].set_title("phase at the points (not interpolated)" + (", complete" if complete else ""))
+            axes[-1].set_title("phase at the points (not interpolated)" + (", partial + direct" if complete else ""))
             fig.suptitle("%s\n%s, %s%s, PER1 = %.4g, PER2 = %.4g, beta1 = %g, beta2 = %g deg"
                          % (title, KERNEL_LABEL[kern], kd, " at z = %g m" % z if typ == 1 else "",
                             per1, per2, beta1, beta2), fontsize=10)

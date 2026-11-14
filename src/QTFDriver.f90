@@ -849,13 +849,13 @@ CONTAINS
       ! (qtf_direct_pairs), by direct_at_omega, into tdir. Call after the frequency loop, when every frequency is kept,
       ! with the solver at omega after its radiation solve (RadiationOnlySolves). Pairs with NaN or Inf are counted in
       ! qtf_nonfinite_pairs() and logged. npair and seconds (optional): the number of pairs, and the times of
-      ! direct_at_omega, for the log.
+      ! direct_at_omega (4: forcing, B2, solve and load, field evaluation), for the log.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       REAL(8), INTENT(IN) :: omega
       INTEGER, INTENT(OUT), OPTIONAL :: npair
-      REAL(8), INTENT(OUT), OPTIONAL :: seconds(3)
-      REAL(8) :: sec(3)
+      REAL(8), INTENT(OUT), OPTIONAL :: seconds(4)
+      REAL(8) :: sec(4)
       INTEGER, ALLOCATABLE :: pairs(:, :)
       COMPLEX(8), ALLOCATABLE :: t(:, :), parts(:, :, :), phi_field(:, :)
       REAL(8), ALLOCATABLE :: xfield(:, :)
