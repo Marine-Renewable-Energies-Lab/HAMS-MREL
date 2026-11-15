@@ -264,8 +264,10 @@ module test_integration_drift
     ! qtf_directfs_irsp, 5.0e-3 at qtf_directfs_two (the unit test at depth 100 gave 2.3e-3 and 2.8e-3 over max |T_pot|); the
     ! limit is 1.3x the largest, for all three
     real(8), parameter :: directfs_round_limit = 5.1d-2, directfs_fs_limit = 1.2d-2
-    ! The half mesh against the whole mesh: 2.8e-8 measured (2.9e-7 at 30 m and 6.1e-7 at 100 m of water), 2x measured
-    real(8), parameter :: directfs_half_limit = 6d-8
+    ! The half mesh against the whole mesh: 2.8e-8 measured (2.9e-7 at 30 m and 6.1e-7 at 100 m of water). The limit is
+    ! 1e-6: other compilers and libraries move the two meshes' bits apart by this much, and it is still about 1e5 below
+    ! the free-surface part
+    real(8), parameter :: directfs_half_limit = 1d-6
     ! qtf_directfs_irsp (IRSP = 1, 0.95 and 1.10 rad/s, depth 20): 1.45e-3 measured, without D_FS 1.29e-1. 1.3x measured
     real(8), parameter :: directfs_irsp_limit = 1.9d-3
     ! qtf_directfs_two (two hulls of 220 panels, depth 20): 4.36e-1 measured, without D_FS 1.83. The gap is the moments of the
@@ -5610,10 +5612,11 @@ contains
                                 error)
     end subroutine direct_full_gap
 
-    !> qtf_directfs_round (the rounded hull of qtf_round_body, 480 panels, depth 100, Omega = 0.25 and 0.15 rad/s, two
+    !> qtf_directfs_round (the rounded hull of qtf_round_body, 480 panels, depth 20, Omega = 0.25 and 0.15 rad/s, two
     !> headings): the direct solve with the free-surface forcing against the complete indirect QTF, qtf_direct = 1 with
     !> qtf_terms = full: .12d - .10d against .11d - .10d, and the same from the terms files. The terms file names D_FS. Not
-    !> vacuous: without D_FS the gap is the free-surface part of T_pot, 0.3 to 0.4 of it, more than ten times the limit
+    !> vacuous: without D_FS the gap is the free-surface part of T_pot, 0.3 to 0.4 of it, about
+    !> twice the limit (1.12e-1 against 5.1e-2)
     subroutine direct_fs_vs_indirect_full(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=*), parameter :: name = "qtf_directfs_round"

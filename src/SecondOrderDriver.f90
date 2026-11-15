@@ -89,7 +89,7 @@ MODULE SecondOrderDriver
                              fs_auto_modes, fs_auto_evanescent, fs_radius_message, fs_coverage_check
    USE PartialWaves, ONLY: pw_set, pw_sample_points, pw_evanescent_from_wvn, PW_KR_MAX
    USE QTFDirect, ONLY: direct_setup, direct_fs_data
-   USE QTFDirectFS, ONLY: direct_fs_setup
+   USE QTFDirectFS, ONLY: direct_fs_setup, direct_fs_array_mb, direct_fs_estimate
    USE QTFPotential, ONLY: b2_control_check
    USE SharpEdge, ONLY: sharp_edge_weights
    USE QTFField, ONLY: build_field_points, qfield_init, qfield_keep, qfield_finish, qfield_stored_mb, FIELD_FD_STEP
@@ -326,7 +326,8 @@ CONTAINS
       TYPE(so_options), INTENT(IN) :: opts
       INTEGER, INTENT(IN) :: nqtf
       CHARACTER(LEN=*), INTENT(IN) :: inputdir, outputdir
-      REAL(8) :: omegas(nqtf), mb, mb_cs, mb_fs
+      REAL(8) :: omegas(nqtf), mb, mb_cs, mb_fs, mb_dfs
+      INTEGER :: dmg, dnev
       REAL(8), ALLOCATABLE :: need(:)
       INTEGER, ALLOCATABLE :: reuse(:)
       INTEGER :: i, first, nneed, nreuse, npairs, nmask
@@ -347,20 +348,28 @@ CONTAINS
       IF (opts%qtf_direct == 1) npairs = 2*npairs
       mb = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs)
       fs_terms = uses_fs(opts)
+      mb_dfs = 0D0
       IF (fs_terms) THEN
          CALL fs_setup(opts, inputdir, omegas)
          mb_fs = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs, nfs=fs_pts%n, &
                                npw=(2*fs_mmax + 1)*(fs_nev + 1)) - mb
          WRITE (*, '(a,F10.1,a,I0,a)') ' QTF free surface: the store takes', mb_fs, ' MB more for the fields at the ', &
             fs_pts%n, ' inner points and the partial waves (qtf_terms = full)'
+         IF (opts%qtf_direct == 1) THEN
+            ! The per-Omega arrays of direct_fs_setup (the inner Green matrix and the Graf amplitudes of every row); the
+            ! orders do not depend on Omega, so the size is known before the frequency loop and is part of the estimate
+            CALL direct_fs_estimate(mesh, fs_pts%n, fs_centre, fs_radius, H, multi_arrays, dmg, dnev, mb_dfs)
+            WRITE (*, '(a,I0,a,I0,a,F10.1,a)') ' QTF direct free surface: orders M = ', dmg, ', N_ev up to ', dnev, &
+               ', about', mb_dfs, ' MB per Omega, counted in the estimate below (a larger qtf_fs_radius lowers them)'
+         END IF
       END IF
       IF (b2_control) THEN
          ! The share of C and F is what the points add to the store, so qtf_stored_mb is the one formula
          mb_cs = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs, ncs=b2_pts%n) - mb
-         WRITE (*, '(a,F10.1,a,F10.1,a,I0,a)') ' QTF: with psi and the potential part the store takes', mb + mb_cs, &
+         WRITE (*, '(a,F10.1,a,F10.1,a,I0,a)') ' QTF: with psi and the potential part the store takes', mb + mb_dfs + mb_cs, &
             ' MB, of which', mb_cs, ' MB for the fields at the ', b2_pts%n, ' points of C and F (qtf_b2 = control)'
       ELSE
-         WRITE (*, '(a,F10.1,a)') ' QTF: with psi and the potential part the store takes', mb, ' MB'
+         WRITE (*, '(a,F10.1,a)') ' QTF: with psi and the potential part the store takes', mb + mb_dfs, ' MB'
       END IF
       IF (fs_terms) THEN
          CALL qtf_init(opts, nqtf, WVHD(1:NBETA), geom%nwl, mesh%n, mesh%nbody, outputdir, omegas_main=omegas, fs_pts=fs_pts, &
@@ -615,7 +624,7 @@ CONTAINS
          WRITE (*, '(a,F10.5,a,F9.2,a,I0,a,I0,a,I0,a,I0,a,I0,a,F10.1,a)') ' QTF direct free surface: Omega =', omega, &
             ' rad/s, set-up', REAL(t1 - t0, 8)/REAL(rate, 8), ' s (', dfs%nrow, ' rows, ', dfs%nfs, &
             ' inner panels, orders ', dfs%mg, ' (cut at ', dfs%mcut, '), ', dfs%nev, ' evanescent modes,', &
-            16D0*REAL(dfs%nrow, 8)*(REAL(dfs%nfs, 8) + REAL((2*dfs%mg + 1)*(dfs%nev + 1), 8))/1D6, ' MB)'
+            direct_fs_array_mb(dfs%nrow, dfs%nfs, dfs%mg, dfs%nev), ' MB)'
          CALL qtf_direct_at_omega(mesh, geom, omega, npair, sec, fs=dfs)
       ELSE
          CALL qtf_direct_at_omega(mesh, geom, omega, npair, sec)

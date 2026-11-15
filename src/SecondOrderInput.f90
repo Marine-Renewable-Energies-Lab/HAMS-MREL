@@ -140,7 +140,8 @@ CONTAINS
       ELSE IF (opts%qtf_direct < 0 .OR. opts%qtf_direct > 1) THEN
          ok = .FALSE.
          msg = 'qtf_direct must be 0 or 1 in SecondOrder.in.'
-      ELSE IF (opts%qtf_direct == 1 .AND. opts%qtf_terms < QTF_TERMS_BODY) THEN
+      ELSE IF (opts%qtf_direct == 1 .AND. &
+               .NOT. (opts%qtf_terms == QTF_TERMS_BODY .OR. opts%qtf_terms == QTF_TERMS_FULL)) THEN
          ! body or full: with full the direct solve takes the free-surface forcing too (Phase 7b)
          ok = .FALSE.
          msg = 'qtf_direct = 1 needs qtf_terms = body or full in SecondOrder.in.'

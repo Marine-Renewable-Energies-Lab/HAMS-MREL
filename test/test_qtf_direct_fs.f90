@@ -16,7 +16,8 @@ module test_qtf_direct_fs
   use FinGreen3D_Open, only : FINGREEN3D
   use PartialWaves, only : pw_set, pw_bessel_k, pw_green_mmax, pw_eval_surface
   use QTFFreeSurface, only : fs_point_field, fs_forcing_diff, fs_outer_moments
-  use QTFDirectFS, only : direct_fs_data, direct_fs_setup, direct_fs_rhs, direct_fs_rfar, DIRECT_FS_SIGN, DIRECT_FS_TOL
+  use QTFDirectFS, only : direct_fs_data, direct_fs_setup, direct_fs_rhs, direct_fs_rfar, DIRECT_FS_SIGN, DIRECT_FS_TOL, &
+    direct_fs_estimate, direct_fs_array_mb
   use second_order_fixtures, only : make_cylinder, set_panel, maccamy_fuchs_state
   use test_waterline_field, only : set_wave, load_panels
   ! The direct solve with the free-surface forcing (Task 4)
@@ -80,6 +81,7 @@ subroutine collect_qtf_direct_fs(testsuite)
     new_unittest("fs_rhs_order_cut_finite", test_order_cut_finite), &
     new_unittest("fs_rhs_outer_contraction", test_outer_contraction), &
     new_unittest("fs_rfar_evanescent", test_rfar), &
+    new_unittest("fs_memory_estimate", test_memory_estimate), &
     new_unittest("direct_fs_pair_order", test_direct_fs_pair_order), &
     new_unittest("direct_fs_equals_indirect_full", test_direct_fs_equals_indirect) &
     ]
@@ -831,6 +833,40 @@ subroutine test_rfar(error)
   print '(4x,a)', trim(info)
   call check(error, abs(fs%kev(1) * (r1 - radius) - 40d0) <= 1d-12 .and. r2 == radius + 1d3, trim(info))
 end subroutine test_rfar
+
+!> The estimate of direct_fs_estimate, made before the frequency loop, against what direct_fs_setup allocates: the same
+!> orders (the evanescent count of the setup is the same or lower, by the kn R cut) and the size of gfs and a to the byte
+subroutine test_memory_estimate(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh, fm
+  type(cs_points) :: pts
+  type(direct_fs_data) :: fs
+  real(8) :: centre(2), radius, mb, mb_set
+  integer :: mg, nev
+  character(len=200) :: info
+
+  call fixture(16, 4, 3, 0, 0d0, mesh, pts, fm, centre, radius, error)
+  if (allocated(error)) return
+  call set_omega(fx_omega, fx_depth)
+  call direct_fs_setup(mesh, pts, fm, centre, radius, fx_depth, fx_omega, .false., fs)
+  call direct_fs_estimate(mesh, pts%n, centre, radius, fx_depth, .false., mg, nev, mb)
+  mb_set = 16d0 * (real(size(fs%gfs), 8) + real(size(fs%a), 8)) / 1d6
+  write (info, '(a,2i5,a,2i5,a,es12.5,a,es12.5)') "estimate M, N_ev ", mg, nev, "; setup ", fs%mg, fs%nev, &
+    "; MB ", mb, " against ", mb_set
+  print '(4x,a)', trim(info)
+  call check(error, mg == fs%mg .and. nev >= fs%nev, trim(info))
+  if (allocated(error)) return
+  ! with nev equal the sizes agree exactly; otherwise the estimate is the upper bound
+  if (nev == fs%nev) then
+    call check(error, abs(mb - mb_set) <= 1d-12 * mb_set, trim(info))
+  else
+    call check(error, mb >= mb_set, trim(info))
+  end if
+  if (allocated(error)) return
+  ! the formula by hand: 16 B x nrow x (nfs + (2 mg + 1)(nev + 1))
+  call check(error, abs(direct_fs_array_mb(10, 7, 3, 4) - 16d0 * 10d0 * (7d0 + 7d0 * 5d0) / 1d6) <= 1d-15, &
+    "direct_fs_array_mb formula")
+end subroutine test_memory_estimate
 
 ! ------------------------------------------------------------------------------------ the direct solve (Task 4)
 

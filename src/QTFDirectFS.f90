@@ -114,6 +114,7 @@ MODULE QTFDirectFS
    PRIVATE
 
    PUBLIC :: direct_fs_data, direct_fs_setup, direct_fs_rhs, direct_fs_rfar, fs_remainder_order
+   PUBLIC :: direct_fs_orders, direct_fs_array_mb, direct_fs_estimate
    PUBLIC :: DIRECT_FS_SIGN, DIRECT_FS_TOL
 
    ! The sign s_D of r_FS = s_D / g int G Q_D dS (header)
@@ -146,8 +147,8 @@ CONTAINS
       TYPE(direct_fs_data), INTENT(OUT) :: fs
       REAL(8), ALLOCATABLE :: xr(:, :), xv(:, :, :), prad(:), wvn_l(:), kr(:, :)
       INTEGER, ALLOCATABLE :: nv(:)
-      REAL(8) :: d, el, rr
-      INTEGER :: i, j, k, nfs, nrow, mcut_all, nev_rule, n
+      REAL(8) :: d, rr
+      INTEGER :: i, j, k, nfs, nrow, mcut_all, nev_rule, n, ierr
       CHARACTER(LEN=300) :: line
       EXTERNAL :: DISPERSION
 
@@ -213,7 +214,8 @@ CONTAINS
       fs%w = fs_pts%w
 
       ! The inner Green matrix, OpenMP over the rows
-      ALLOCATE (fs%gfs(nrow, nfs))
+      ALLOCATE (fs%gfs(nrow, nfs), STAT=ierr)
+      IF (ierr /= 0) CALL alloc_stop('the inner Green matrix', 16D0*REAL(nrow, 8)*REAL(nfs, 8)/1D6)
       !$OMP PARALLEL DO NUM_THREADS(NTHREAD) SCHEDULE(DYNAMIC, 4) PRIVATE(j)
       DO i = 1, nrow
          DO j = 1, nfs
@@ -225,9 +227,7 @@ CONTAINS
 
       ! The orders (header)
       d = radius - fs%r_max
-      fs%mg = pw_green_mmax(fs%r_max, radius, DIRECT_FS_TOL)
-      el = LOG(1D0/(DIRECT_FS_TOL*(1D0 - EXP(-PI*d/h_in))))
-      nev_rule = MAX(1, CEILING(el*h_in/(PI*d) + 0.5D0))
+      CALL direct_fs_orders(fs%r_max, radius, h_in, fs%mg, nev_rule)
       ALLOCATE (wvn_l(nev_rule + 1))
       CALL DISPERSION(wvn_l, nev_rule + 1, omega, h_in)
       fs%k0 = wvn_l(1)
@@ -255,7 +255,8 @@ CONTAINS
          CALL pw_bessel_k(fs%mg, fs%kev(n)*radius, kr(:, n))
       END DO
 
-      ALLOCATE (fs%a(-fs%mg:fs%mg, 0:fs%nev, nrow))
+      ALLOCATE (fs%a(-fs%mg:fs%mg, 0:fs%nev, nrow), STAT=ierr)
+      IF (ierr /= 0) CALL alloc_stop('the Graf amplitudes', direct_fs_array_mb(nrow, 0, fs%mg, fs%nev))
       mcut_all = fs%mg
       !$OMP PARALLEL DO NUM_THREADS(NTHREAD) SCHEDULE(DYNAMIC, 4) REDUCTION(MIN:mcut_all)
       DO i = 1, nrow
@@ -280,6 +281,16 @@ CONTAINS
       END IF
 
    CONTAINS
+
+      SUBROUTINE alloc_stop(what, mb)
+         CHARACTER(LEN=*), INTENT(IN) :: what
+         REAL(8), INTENT(IN) :: mb
+
+         WRITE (*, '(a,a,a,F0.1,a,i0,a,i0,a,F0.3,a)') ' direct_fs_setup: not enough memory for ', what, ' (', mb, ' MB; ', &
+            nrow, ' rows, orders ', fs%mg, ', R =', radius, ' m). A larger qtf_fs_radius lowers the orders and the '// &
+            'evanescent modes; so does a coarser hull mesh.'
+         ERROR STOP 1
+      END SUBROUTINE alloc_stop
 
       SUBROUTINE row_amplitudes(row, mc)
          ! a(:, :, row) in the contraction form, and the cut of pw_green_modes into mc
@@ -365,6 +376,58 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE direct_fs_rhs
+
+   SUBROUTINE direct_fs_orders(r_max, radius, h_in, mg, nev)
+      ! The Graf order M and the number of evanescent modes of the direct free-surface set-up for the row points up to
+      ! r_max from the centre and the circle R (header): M from pw_green_mmax, N_ev = ceil(L h / (pi d) + 1/2) with
+      ! d = R - r_max and L = ln(1 / (tol (1 - e^(-pi d / h)))). Neither depends on Omega; the cut at kn R > PW_KR_MAX
+      ! of direct_fs_setup can only lower N_ev, so this is the upper bound.
+      REAL(8), INTENT(IN) :: r_max, radius, h_in
+      INTEGER, INTENT(OUT) :: mg, nev
+      REAL(8) :: d, el
+
+      d = radius - r_max
+      mg = pw_green_mmax(r_max, radius, DIRECT_FS_TOL)
+      el = LOG(1D0/(DIRECT_FS_TOL*(1D0 - EXP(-PI*d/h_in))))
+      nev = MAX(1, CEILING(el*h_in/(PI*d) + 0.5D0))
+   END SUBROUTINE direct_fs_orders
+
+   PURE REAL(8) FUNCTION direct_fs_array_mb(nrow, nfs, mg, nev)
+      ! The size in MB of the per-Omega arrays: gfs(nrow, nfs) and a(-mg:mg, 0:nev, nrow), both complex(8)
+      INTEGER, INTENT(IN) :: nrow, nfs, mg, nev
+
+      direct_fs_array_mb = 16D0*REAL(nrow, 8)*(REAL(nfs, 8) + REAL(2*mg + 1, 8)*REAL(nev + 1, 8))/1D6
+   END FUNCTION direct_fs_array_mb
+
+   SUBROUTINE direct_fs_estimate(mesh, nfs, centre, radius, h_in, is_multi, mg, nev, mb)
+      ! The orders and the size of the per-Omega arrays of direct_fs_setup before the frequency loop (they do not depend
+      ! on Omega): the rows are the hull panel centres and the lid points, as in direct_fs_setup.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      INTEGER, INTENT(IN) :: nfs
+      REAL(8), INTENT(IN) :: centre(2), radius, h_in
+      LOGICAL, INTENT(IN) :: is_multi
+      INTEGER, INTENT(OUT) :: mg, nev
+      REAL(8), INTENT(OUT) :: mb
+      REAL(8) :: r_max, xl(3)
+      INTEGER :: i, nl
+
+      nl = direct_lid_points(is_multi)
+      r_max = 0D0
+      DO i = 1, mesh%n
+         r_max = MAX(r_max, HYPOT(mesh%xc(1, i) - centre(1), mesh%xc(2, i) - centre(2)))
+      END DO
+      DO i = 1, mesh%nsys*nl
+         xl = lid_point(i, nl, is_multi)
+         r_max = MAX(r_max, HYPOT(xl(1) - centre(1), xl(2) - centre(2)))
+      END DO
+      IF (.NOT. r_max < radius) THEN
+         WRITE (*, '(a,f0.4,a,f0.4,a)') ' direct_fs_estimate: a row point lies ', r_max, &
+            ' m from the centre, not inside the circle R = ', radius, ' m.'
+         ERROR STOP 1
+      END IF
+      CALL direct_fs_orders(r_max, radius, h_in, mg, nev)
+      mb = direct_fs_array_mb(mesh%n + mesh%nsys*nl, nfs, mg, nev)
+   END SUBROUTINE direct_fs_estimate
 
    REAL(8) FUNCTION direct_fs_rfar(fs, r_far)
       ! r_far raised, if needed, so that the slowest evanescent basis function has decayed by e^-40 there (header):

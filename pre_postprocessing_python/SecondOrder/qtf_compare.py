@@ -322,6 +322,17 @@ def read_part_sums(path, parts):
     return out
 
 
+def file_parts(path, default):
+    """The number of complex columns after the five keys in the first data row of a terms file (QTF_DirectTerms.txt: 2 or 3),
+    `default` if the file is missing or has no data row."""
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                if line.strip() and not line.lstrip().startswith("#"):
+                    return (len(line.split()) - 5) // 2
+    return default
+
+
 def _is_force(key):
     return (key[4] - 1) % 6 < 3
 
@@ -362,7 +373,12 @@ def compare_direct(results, path, max_dw, exclude=None, by_omega=False):
         # qtf_terms = full (q_*_directfs_*): three parts of T_dir (D_I2, D_D, D_FS) and seven of T_pot (the five terms, FS_inner,
         # FS_outer)
         full = "_directfs_" in case
-        t_dir = read_part_sums(os.path.join(folder, "QTF_DirectTerms.txt"), 3 if full else 2)
+        # The number of parts of T_dir is that of the file (11 columns with D_FS, 9 without), not the case name
+        dir_parts = file_parts(os.path.join(folder, "QTF_DirectTerms.txt"), 3 if full else 2)
+        if dir_parts != (3 if full else 2):
+            print("%-26s note: QTF_DirectTerms.txt has %d parts, read as such (the case name suggests %d)"
+                  % (case, dir_parts, 3 if full else 2))
+        t_dir = read_part_sums(os.path.join(folder, "QTF_DirectTerms.txt"), dir_parts)
         t_pot = read_part_sums(os.path.join(folder, "QTF_PotentialTerms.txt"), len(POTENTIAL_TERMS) + (2 if full else 0))
         source = "terms"
         if not t_dir or not t_pot:

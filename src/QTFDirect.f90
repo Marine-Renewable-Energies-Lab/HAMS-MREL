@@ -441,7 +441,7 @@ CONTAINS
       INTEGER :: npair, nb, nt, nl, ns, n, nmode, first, last, nc, col, ncol_max
       INTEGER(8) :: c0, c1, rate
       REAL(8) :: sec(3), fsec(2), per_col
-      LOGICAL :: multi, fs_apart
+      LOGICAL :: multi, fs_apart, fs_slice
 
       npair = SIZE(pairs, 2)
       nb = mesh%nbase
@@ -475,13 +475,15 @@ CONTAINS
       sec = 0D0
       IF (PRESENT(seconds)) seconds = 0D0
       fs_apart = .FALSE.
+      fs_slice = .FALSE.
       IF (PRESENT(parts)) THEN
          IF (SIZE(parts, 1) /= nmode .OR. SIZE(parts, 2) /= npair .OR. SIZE(parts, 3) < 2 .OR. SIZE(parts, 3) > 3) THEN
             WRITE (*, '(a)') ' direct_at_omega: parts must be (6 nbody, npair, 2) or (6 nbody, npair, 3).'
             ERROR STOP 1
          END IF
          parts = (0D0, 0D0)
-         fs_apart = PRESENT(fs) .AND. SIZE(parts, 3) == 3
+         fs_slice = SIZE(parts, 3) == 3
+         fs_apart = PRESENT(fs) .AND. fs_slice
       END IF
       IF (PRESENT(fs)) CALL check_fs()
       fsec = 0D0
@@ -652,7 +654,7 @@ CONTAINS
                END DO
             END DO
             tdir(:, p) = fac*(t2 + td + tf)
-            parts(:, p, 3) = fac*tf
+            IF (fs_slice) parts(:, p, 3) = fac*tf     ! parts has the third slice only with write_terms >= 1
          ELSE
             tdir(:, p) = fac*(t2 + td)
          END IF

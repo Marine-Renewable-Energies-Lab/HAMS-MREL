@@ -757,7 +757,7 @@ Four fixtures, all with `qtf_direct = 1`, `qtf_terms = full`, `qtf = 1`, `qtf_ma
 | `direct_fs_vs_indirect_full` (round): T_dir against T_pot | 3.9e-2 (1.1e-1 without D_FS) | 5.1e-2 |
 | the same from the files, (`.12d` − `.10d`) against (`.11d` − `.10d`) | 3.9e-2 | 5.1e-2 |
 | D_FS against FS_inner + FS_outer, over max \|FS\|: round / irsp / two bodies | 8.2e-3 / 8.7e-3 / 5.0e-3 | 1.2e-2 |
-| `direct_fs_half_matches_full`: half mesh against whole mesh | 2.8e-8 | 6e-8 |
+| `direct_fs_half_matches_full`: half mesh against whole mesh | 2.8e-8 | 1e-6 |
 | the half mesh, T_dir against T_pot | 3.9e-2 | 5.1e-2 |
 | `direct_fs_irsp_lid`: T_dir against T_pot (1.3e-1 without D_FS) | 1.4e-3 | 1.9e-3 |
 | `direct_fs_two_bodies_file`: body 2 against body 1 mirrored | 1.4e-8 | 1e-5 |
@@ -802,6 +802,21 @@ The gap below is |T_dir − T_pot| / max |T_pot| over all modes and heading pair
 | m3 | 7.95 h | 3.54 GB | 7.17 h, 2.37 GB |
 
 The direct free-surface forcing adds 2000–2800 s to the indirect full run: 56 % at m1, 23 % at m2 and 11 % at m3. The free-surface set-up that both methods share dominates the cost. The rounded hull took 32 s, 150 s and 553 s. All six cases took about 313 core-hours.
+
+**Cost per Ω (measured, 24 threads).** The lines `QTF direct free surface:` of the HAMS logs give, per difference frequency Ω, the set-up (the inner Green matrix and the Graf amplitudes of every row) and the pair work (Q_D with the outer moments, then the contraction):
+
+| Case | Rows | Inner panels | Set-up per Ω | Memory per Ω | Pairs per Ω | Q_D and outer moments per Ω | Contraction per Ω |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| sharp m1 | 448 | 186 | 1.3–1.4 s | 82 MB | 142–200 | 50–220 s | 0.03–0.04 s |
+| sharp m2 | 1792 | 276 | 6.0–6.4 s | 357 MB | 142–200 | 51–219 s | 0.06–0.10 s |
+| sharp m3 | 4032 | 360 | 16.7–17.9 s | 809 MB | 142–200 | 51–219 s | 0.15–0.20 s |
+| rounded m1 | 480 | 100 | 1.0 s | 92 MB | 4 | 1.0–1.1 s | 0.00 s |
+| rounded m2 | 1920 | 164 | 5.3 s | 379 MB | 4 | 1.0–1.1 s | 0.01 s |
+| rounded m3 | 4320 | 228 | 15.5 s | 858 MB | 4 | 1.0–1.1 s | 0.02 s |
+
+The set-up grows with the rows (4 to 5 s per 1000 rows at 360 inner panels) and takes under 20 s even at 4032 rows; the memory is 16 bytes times rows times (inner panels + (2M + 1)(N_ev + 1)), with M = 44–46 and N_ev = 125–130 here. The pair work does not depend on the hull mesh: the outer moments of Q_D are 0.44 s per pair on average (50–220 s for the 142–200 pairs of one Ω, 24 threads), and the contraction with the rows adds under 0.2 s. So at 4032 rows the set-up is about 10 % of the cost of one Ω, and the moments are the rest. The earlier estimate of minutes per Ω for the set-up (near-panel rule, ledger F12) was too high by an order of magnitude.
+
+**Warnings.** None of the six logs has a `QTF direct FS: warning` line (neither the cut of the evanescent modes nor the cut of the Graf orders: every Ω ran with the orders and mode counts of the rule, `orders M (cut at M)`). The only warning-class line is the note about the generated inner mesh (2 or 3 radial rows), which asks for a finer hull mesh.
 
 The results, the scripts and a figure are in `validation-runs/snellius-qtf-directfs` (`findings.md`, `split_gap.py`) of the working folder, which is outside the repository.
 
