@@ -315,7 +315,8 @@ CONTAINS
       END IF
       WRITE (*, '(a,I0,a,I0,a,I0,a,F10.1,a)') ' QTF field points: ', COUNT(.NOT. surface), ' pressure points and ', &
          COUNT(surface), ' elevation points, ', nqtf, ' frequencies; the store takes', &
-         qfield_stored_mb(fp_pts%n, nqtf, NBETA), ' MB'
+         qfield_stored_mb(fp_pts%n, nqtf, NBETA, direct_pairs=MERGE(NBETA*NBETA, NBETA, opts%mean_drift == 2)*opts%qtf_direct), &
+         ' MB'
       CALL qfield_init(opts, nqtf, WVHD(1:NBETA), fp_pts, surface, outputdir)
    END SUBROUTINE field_setup
 
@@ -605,14 +606,15 @@ CONTAINS
       ! after SetWaveFromOmega(omega) and the radiation solve there (CALGREEN and ASSB_LEFT, or their multi-body forms),
       ! and nothing in between changes CGRN, RKBN, DS or AMAT (nor DGRN, PKBN and CMAT with IRSP = 1), so the stored Green
       ! integrals and the matrix are those of omega. direct_at_omega checks W1. The log gives the time of the pair forcing
-      ! with its field integral, of the B2 part (densities and right side) and of the factorisation, solve and load.
+      ! with its field integral, of the B2 part (densities and right side), of the factorisation, solve and load, and
+      ! of the field evaluation at the field points (qtf_field = 1; 0 without).
       ! With qtf_terms = full the free-surface forcing (Phase 7b): direct_fs_setup at omega (the inner Green matrix and the
       ! Graf amplitudes of every row), whose time and size go to the log (the near-panel rule costs up to n^2 Green
       ! function calls per near pair, ledger ruling F12), then direct_at_omega with it, which logs the time of the moments.
       TYPE(so_options), INTENT(IN) :: opts
       REAL(8), INTENT(IN) :: omega
       INTEGER(8) :: t0, t1, rate
-      REAL(8) :: sec(3)
+      REAL(8) :: sec(4)
       INTEGER :: npair
       TYPE(direct_fs_data) :: dfs
 
@@ -630,8 +632,8 @@ CONTAINS
          CALL qtf_direct_at_omega(mesh, geom, omega, npair, sec)
       END IF
       CALL SYSTEM_CLOCK(t1)
-      WRITE (*, '(a,F10.5,a,I0,a,F9.2,a,3F9.2,a)') ' QTF direct: omega = ', omega, ' rad/s, ', npair, ' pairs, ', &
-         REAL(t1 - t0, 8)/REAL(rate, 8), ' s (forcing, B2, solve:', sec, ' s)'
+      WRITE (*, '(a,F10.5,a,I0,a,F9.2,a,4F9.2,a)') ' QTF direct: omega = ', omega, ' rad/s, ', npair, ' pairs, ', &
+         REAL(t1 - t0, 8)/REAL(rate, 8), ' s (forcing, B2, solve, field:', sec, ' s)'
    END SUBROUTINE so_direct_solve
 
    SUBROUTINE keep_radiation_only_psi(opts, omega)

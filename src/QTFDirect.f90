@@ -155,7 +155,8 @@ MODULE QTFDirect
 
    PUBLIC :: direct_rhs_b2, direct_rhs_b2_block, b2_stokes_densities, b2_stokes_at_point
    PUBLIC :: green_panel_integrals, stored_panel_integrals, green_line_integral, rankine_moments, sharp_edge_panels
-   PUBLIC :: direct_setup, direct_edge_mask, direct_factor, direct_solve, direct_at_omega, direct_lid_points
+   PUBLIC :: direct_setup, direct_edge_mask, direct_factor, direct_solve, direct_at_omega, direct_lid_points, &
+             direct_field_at_points
    PUBLIC :: direct_fs_data
 
    TYPE :: direct_fs_data
@@ -212,6 +213,19 @@ MODULE QTFDirect
    ! factors (direct_factor). A second factorisation of the same factors would give a wrong phi_D with no error.
    REAL(8) :: factored_omega = -1D0
    COMPLEX(8) :: factored_entry = (0D0, 0D0)
+
+   INTERFACE
+      MODULE SUBROUTINE direct_field_at_points(mesh, geom, xp, phi_d, vf, a, c, e, cl, is_multi, phi_field)
+         ! phi_D at field points off the hull by Green's formula (QTFDirectField.f90, a submodule of this module, which it
+         ! needs for b2_stokes_at_point); the hook of direct_at_omega
+         TYPE(panel_mesh), INTENT(IN) :: mesh
+         TYPE(surface_geom), INTENT(IN) :: geom
+         REAL(8), INTENT(IN) :: xp(:, :)
+         COMPLEX(8), INTENT(IN) :: phi_d(:, :), vf(:, :, :), a(:, :), c(:, :, :), e(:, :), cl(:, :, :, :)
+         LOGICAL, INTENT(IN) :: is_multi
+         COMPLEX(8), INTENT(OUT) :: phi_field(:, :)
+      END SUBROUTINE direct_field_at_points
+   END INTERFACE
 
 CONTAINS
 
@@ -399,7 +413,7 @@ CONTAINS
    END SUBROUTINE direct_solve
 
    SUBROUTINE direct_at_omega(mesh, geom, omega, store, store_wl, pairs, tdir, is_multi, omega_tol, phi2_constant, seconds, parts, &
-                              fs)
+                              fs, field_points, phi_field)
       ! The direct load T_dir of every pair of the difference frequency omega (> 0), per unit amplitudes (header):
       !   store, store_wl  the first-order states (nfreq, nbeta) and their waterline potentials (nwl, nfreq, nbeta), as
       !                    QTFDriver keeps them
@@ -411,12 +425,17 @@ CONTAINS
       !                    their sum is tdir. (6 nbody, npair, 3): the part from phi_D is split into the part of the body
       !                    forcing (:, :, 2) and that of the free-surface forcing (:, :, 3, zero without fs); the three
       !                    sum to tdir. For that split the free-surface right sides are solved as their own columns.
-      !   seconds          optional (3): wall time of the pair forcing with ASSB_RHS_FIELD_IRR, of the B2 part (the
-      !                    densities of b2_stokes_densities and direct_rhs_b2_block) and of the factorisation, solve and
-      !                    load, for the log
+      !   seconds          optional (4): wall time of the pair forcing with ASSB_RHS_FIELD_IRR, of the B2 part (the
+      !                    densities of b2_stokes_densities and direct_rhs_b2_block), of the factorisation, solve and
+      !                    load, and of the field evaluation (the hook below; 0 without it), for the log
       !   fs               optional: the free-surface forcing (qtf_terms = full, header), direct_fs_setup at omega with
       !                    the pointers to the 6a store set; its time (Q_D and the outer moments, the contraction) is
       !                    written to the log per call
+      !   field_points     optional (3, npt), with phi_field (npt, npair) out, both or neither: phi_D of every pair at the
+      !                    points off the hull by Green's formula (direct_field_at_points), e^{-i omega t}. phi_field is
+      !                    the phi_D of the body forcing only: with fs the free-surface columns are then solved apart
+      !                    (as for the third slice of parts), since Green's formula over the hull alone holds only for
+      !                    the body-forced phi_D. tdir and parts still have the whole load.
       ! The solver globals must be at omega, with CALGREEN (CALGREEN_MULTI) and ASSB_LEFT (ASSB_LEFT_MULTI) run there, as
       ! RadiationOnlySolves leaves them after the radiation solve at omega; W1 is checked. direct_setup must have been
       ! called for this mesh. With IRSP = 1 the right sides have the lid rows too (header), and the radiation solve must
@@ -432,15 +451,17 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL :: is_multi
       REAL(8), INTENT(IN), OPTIONAL :: omega_tol
       COMPLEX(8), INTENT(IN), OPTIONAL :: phi2_constant
-      REAL(8), INTENT(OUT), OPTIONAL :: seconds(3)
+      REAL(8), INTENT(OUT), OPTIONAL :: seconds(4)
       COMPLEX(8), INTENT(OUT), OPTIONAL :: parts(:, :, :)
       TYPE(direct_fs_data), INTENT(IN), OPTIONAL :: fs
+      REAL(8), INTENT(IN), OPTIONAL :: field_points(:, :)
+      COMPLEX(8), INTENT(OUT), OPTIONAL :: phi_field(:, :)
       COMPLEX(8), ALLOCATABLE :: vf(:, :, :), rf(:, :, :), r2(:, :, :), a(:, :), c(:, :, :), cl(:, :, :, :), e(:, :), &
                                  phi(:, :), p2(:, :), rfs(:, :, :), phis(:, :)
       REAL(8), ALLOCATABLE :: dws(:)
       INTEGER :: npair, nb, nt, nl, ns, n, nmode, first, last, nc, col, ncol_max
-      INTEGER(8) :: c0, c1, rate
-      REAL(8) :: sec(3), fsec(2), per_col
+      INTEGER(8) :: c0, c1, c2, rate
+      REAL(8) :: sec(4), fsec(2), per_col
       LOGICAL :: multi, fs_apart, fs_slice
 
       npair = SIZE(pairs, 2)
@@ -487,6 +508,19 @@ CONTAINS
       END IF
       IF (PRESENT(fs)) CALL check_fs()
       fsec = 0D0
+      IF (PRESENT(field_points) .NEQV. PRESENT(phi_field)) THEN
+         WRITE (*, '(a)') ' direct_at_omega: field_points and phi_field must be given together.'
+         ERROR STOP 1
+      END IF
+      IF (PRESENT(phi_field)) THEN
+         IF (SIZE(field_points, 1) /= 3 .OR. SIZE(phi_field, 1) /= SIZE(field_points, 2) .OR. SIZE(phi_field, 2) /= npair) THEN
+            WRITE (*, '(a)') ' direct_at_omega: field_points must be (3, npt) and phi_field (npt, npair).'
+            ERROR STOP 1
+         END IF
+         phi_field = (0D0, 0D0)
+         ! The field hook takes the body-forced phi_D only, so the free-surface columns are solved apart (header)
+         IF (PRESENT(fs)) fs_apart = .TRUE.
+      END IF
       IF (npair == 0) RETURN
 
       CALL SYSTEM_CLOCK(c0, rate)
@@ -534,6 +568,21 @@ CONTAINS
          CALL SYSTEM_CLOCK(c0)
          CALL direct_solve(mesh, rf, phi, multi)
          IF (fs_apart) CALL direct_solve(mesh, rfs, phis, multi)
+         IF (PRESENT(phi_field)) THEN
+            ! phi_D at the field points from the columns as solved (vf, a, c, e, cl, phi are those of |Omega|). For
+            ! Omega < 0 the solved phi is conj(phi_D), since G(-|Omega|) = conj(G(|Omega|)) and the data are conjugated.
+            ! Green's formula is linear in (b, phi_D) with the kernel rows of the solver at |Omega|, so the field of the
+            ! solved columns is conj(phi_D at the point); the columns with dws < 0 are conjugated, as phi_D below.
+            CALL SYSTEM_CLOCK(c1)
+            CALL direct_field_at_points(mesh, geom, field_points, phi, vf, a, c, e, cl, multi, phi_field(:, first:last))
+            DO col = 1, nc
+               IF (dws(col) < 0D0) phi_field(:, first + col - 1) = CONJG(phi_field(:, first + col - 1))
+            END DO
+            ! The field time is logged apart (sec(4)) and is not in the solve and load time (sec(3)): c0 moves past it.
+            CALL SYSTEM_CLOCK(c2)
+            sec(4) = sec(4) + REAL(c2 - c1, 8)/REAL(rate, 8)
+            c0 = c0 + (c2 - c1)
+         END IF
          DO col = 1, nc
             IF (dws(col) < 0D0) phi(:, col) = CONJG(phi(:, col))
             IF (fs_apart) THEN
@@ -940,7 +989,7 @@ CONTAINS
 
    END SUBROUTINE direct_rhs_b2_block
 
-   SUBROUTINE b2_stokes_at_point(mesh, geom, x, a, c, e, is_multi, out, cl, row, lid_row)
+   SUBROUTINE b2_stokes_at_point(mesh, geom, x, a, c, e, is_multi, out, cl, row, lid_row, field_mode)
       ! int_S G(x, .) n.[(X.grad)u] dS for each column of the densities, at the field point x (full coordinates):
       !   out = sum_p [ int_p G a_p + (int_p grad_xi G).c_p ] - sum_w (int_w G dl) e_w
       ! With cl (3, 4, n, ncol), on the near panels also sum_ab cl(a, b, p) int_p d_a(1/r + 1/r1) (xi - xi_p)_b dS and
@@ -948,6 +997,9 @@ CONTAINS
       ! With row (a full panel index, whose centroid x must be), int_p G and int_p grad G come from the stored arrays
       ! (stored_panel_integrals); with lid_row (a full lid row of direct_rhs_b2_block, whose point x must be) from the
       ! stored lid integrals (stored_lid_integrals); otherwise from green_panel_integrals.
+      ! field_mode, optional (default .false.): the fresh integrals (green_panel_integrals, green_line_integral) pass FIELD
+      ! to FINGREEN3D, the route of the field rows (field_mode of field_influence_row), for field points off the hull
+      ! (QTFDirectField). Absent, every caller of Phase 7a keeps the default route bit for bit.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       REAL(8), INTENT(IN) :: x(3)
@@ -956,6 +1008,7 @@ CONTAINS
       COMPLEX(8), INTENT(OUT) :: out(:)
       COMPLEX(8), INTENT(IN), OPTIONAL :: cl(:, :, :, :)
       INTEGER, INTENT(IN), OPTIONAL :: row, lid_row
+      LOGICAL, INTENT(IN), OPTIONAL :: field_mode
       COMPLEX(8) :: g_int, grad_int(3), g_line, acc
       REAL(8) :: xv(3, 4), m0, g0(3), m1(3, 3), m1i(3, 3), mg(3), mgi(3), xim(3)
       INTEGER :: p, iw, k, nv, m, ia, ib
@@ -973,7 +1026,7 @@ CONTAINS
          ELSE IF (PRESENT(lid_row)) THEN
             CALL stored_lid_integrals(mesh, lid_row, p, is_multi, g_int, grad_int)
          ELSE
-            CALL green_panel_integrals(mesh, x, p, is_multi, g_int, grad_int)
+            CALL green_panel_integrals(mesh, x, p, is_multi, g_int, grad_int, field_mode)
          END IF
          DO k = 1, SIZE(out)
             out(k) = out(k) + g_int*a(p, k) + (grad_int(1)*c(1, p, k) + grad_int(2)*c(2, p, k) + grad_int(3)*c(3, p, k))
@@ -1001,7 +1054,8 @@ CONTAINS
          END DO
       END DO
       DO iw = 1, geom%nwl
-         CALL green_line_integral(x, geom%wl_x1(:, iw), geom%wl_x2(:, iw), mesh%psize(geom%wl_panel(iw)), g_line)
+         CALL green_line_integral(x, geom%wl_x1(:, iw), geom%wl_x2(:, iw), mesh%psize(geom%wl_panel(iw)), g_line, &
+                                  field_mode)
          DO k = 1, SIZE(out)
             out(k) = out(k) - g_line*e(iw, k)
          END DO
@@ -1187,15 +1241,17 @@ CONTAINS
       END DO
    END SUBROUTINE sharp_edge_panels
 
-   SUBROUTINE green_panel_integrals(mesh, x, p, is_multi, g_int, grad_int)
+   SUBROUTINE green_panel_integrals(mesh, x, p, is_multi, g_int, grad_int, field_mode)
       ! int_p G(x, xi) dS_xi and int_p grad_xi G(x, xi) dS_xi over full panel p (image b of base panel j), x in full
       ! coordinates. Near panels (within NEAR_PANEL_SIZES panel sizes, as CALGREEN) take 1/r and 1/r1 as panel integrals,
       ! far ones the centroid value. On the own panel the 1/r part of the gradient is the principal value (in-plane part).
+      ! field_mode, optional (default .false.): FIELD of FINGREEN3D (see b2_stokes_at_point); no effect in deep water.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       REAL(8), INTENT(IN) :: x(3)
       INTEGER, INTENT(IN) :: p
       LOGICAL, INTENT(IN) :: is_multi
       COMPLEX(8), INTENT(OUT) :: g_int, grad_int(3)
+      LOGICAL, INTENT(IN), OPTIONAL :: field_mode
       REAL(8) :: f(3), xf(3), xq(3), d(3), r1, area, rk(4), rk_image(4)
       COMPLEX(8) :: grn(4)
       INTEGER :: j, flag
@@ -1210,7 +1266,8 @@ CONTAINS
       IF (H < 0D0) THEN
          CALL INFGREEN3D(xq(1), xf(1), xq(2), xf(2), xq(3), xf(3), V, grn, flag)
       ELSE
-         CALL FINGREEN3D(xq(1), xf(1), xq(2), xf(2), xq(3), xf(3), V, WVN, NK, H, grn, flag)
+         ! An absent field_mode passes on as an absent FIELD: the default route
+         CALL FINGREEN3D(xq(1), xf(1), xq(2), xf(2), xq(3), xf(3), V, WVN, NK, H, grn, flag, FIELD=field_mode)
       END IF
       IF (flag /= 1) THEN
          g_int = grn(1)*area
@@ -1228,12 +1285,14 @@ CONTAINS
       grad_int = f*(rk(2:4) + rk_image(2:4) + (grn(2:4) + d/r1**3)*area)
    END SUBROUTINE green_panel_integrals
 
-   SUBROUTINE green_line_integral(x, x1, x2, psize, g_line)
+   SUBROUTINE green_line_integral(x, x1, x2, psize, g_line, field_mode)
       ! int G(x, xi) dl over the straight segment from x1 to x2 on z = 0 (the z of x1 and x2 is set to 0, where the
       ! waterline midpoints are). 1/r and 1/r1 in closed form, int dl/r = ln((R1 + R2 + L)/(R1 + R2 - L)), the rest at the
       ! midpoint. psize decides near and far as for the panels. x must not lie on the segment.
+      ! field_mode, optional (default .false.): FIELD of FINGREEN3D, as green_panel_integrals.
       REAL(8), INTENT(IN) :: x(3), x1(3), x2(3), psize
       COMPLEX(8), INTENT(OUT) :: g_line
+      LOGICAL, INTENT(IN), OPTIONAL :: field_mode
       REAL(8) :: a1(3), a2(3), xm(3), xi(3), d(3), len, r1
       COMPLEX(8) :: grn(4)
       INTEGER :: flag
@@ -1246,7 +1305,7 @@ CONTAINS
       IF (H < 0D0) THEN
          CALL INFGREEN3D(xm(1), x(1), xm(2), x(2), xm(3), x(3), V, grn, flag)
       ELSE
-         CALL FINGREEN3D(xm(1), x(1), xm(2), x(2), xm(3), x(3), V, WVN, NK, H, grn, flag)
+         CALL FINGREEN3D(xm(1), x(1), xm(2), x(2), xm(3), x(3), V, WVN, NK, H, grn, flag, FIELD=field_mode)
       END IF
       IF (flag /= 1) THEN
          g_line = grn(1)*len

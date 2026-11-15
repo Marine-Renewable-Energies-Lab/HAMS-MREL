@@ -83,7 +83,8 @@ subroutine collect_qtf_direct_fs(testsuite)
     new_unittest("fs_rfar_evanescent", test_rfar), &
     new_unittest("fs_memory_estimate", test_memory_estimate), &
     new_unittest("direct_fs_pair_order", test_direct_fs_pair_order), &
-    new_unittest("direct_fs_equals_indirect_full", test_direct_fs_equals_indirect) &
+    new_unittest("direct_fs_equals_indirect_full", test_direct_fs_equals_indirect), &
+    new_unittest("direct_fs_field_body_only", test_direct_fs_field_body_only) &
     ]
 end subroutine collect_qtf_direct_fs
 
@@ -1150,6 +1151,59 @@ subroutine test_direct_fs_pair_order(error)
   call check(error, e_fs <= pair_order_limit .and. e_all <= pair_order_limit .and. e_sum <= pair_order_limit .and. &
              fs_share > 1d-3, trim(info))
 end subroutine test_direct_fs_pair_order
+
+!> With field points and the free-surface forcing (the 7b and 7c-1 merge, ledger ruling C15): direct_at_omega solves the
+!> free-surface columns apart, so phi_field is the phi_D of the body forcing only. The setup of test_direct_fs_pair_order
+!> (448-panel cylinder in depth 15, Omega = 0.3, a pair and its swap), three points off the hull. phi_field with fs must
+!> equal phi_field without fs bit for bit, and the load with fs and field points must equal the load with fs and the
+!> three parts (the same apart solve) bit for bit, with a free-surface share above 1e-3 so that the check is not empty.
+subroutine test_direct_fs_field_body_only(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om(2) = [1.1d0, 0.8d0], be(2) = [0.6d0, 0.2d0]
+  real(8), parameter :: xp(3, 3) = reshape([14d0, 0d0, -2d0, 0d0, 13d0, -5d0, -12d0, 3d0, -0.5d0], [3, 3])
+  type(panel_mesh) :: full, mesh, fm
+  type(surface_geom) :: geom
+  type(cs_points) :: pts, circle
+  type(direct_fs_data) :: dfs
+  type(first_order_state), allocatable :: store(:, :)
+  complex(8), allocatable :: store_wl(:, :, :)
+  type(fs_point_field), allocatable, target :: fa(:, :, :), ia(:, :, :)
+  type(pw_set), allocatable, target :: pwa(:, :)
+  real(8), allocatable :: delta(:)
+  complex(8) :: t0(6, 2), t1(6, 2), t2(6, 2), parts(6, 2, 3), xis(6, 2), f0(3, 2), f1(3, 2)
+  integer :: pairs(4, 2), npc, mmax, nev
+  real(8) :: centre(2), radius, omega, fs_share
+  character(len=300) :: info
+
+  call make_cylinder(10d0, 10d0, 32, 8, 6, full, .true.)
+  call set_omega(fx_omega, fx_depth)
+  call load_panels(full, 0, 0, mesh)
+  call fs_common(mesh, fx_depth, fx_omax, geom, pts, fm, centre, radius, npc, delta, circle, mmax, nev, error)
+  if (allocated(error)) return
+  xis = rd_motions_two()
+  call fs_states(mesh, geom, pts, delta, circle, centre, radius, fx_depth, mmax, nev, om, be, xis, 8, store, store_wl, &
+                 fa, ia, pwa)
+  omega = om(1) - om(2)
+  pairs(:, 1) = [2, 1, 1, 1]
+  pairs(:, 2) = [1, 1, 2, 1]
+  call radiation_at(omega, mesh%nbase)
+  NTHREAD = 8
+  call direct_setup(mesh, DEFAULT_EDGE_DEG)
+  call direct_fs_setup(mesh, pts, fm, centre, radius, fx_depth, omega, .false., dfs)
+  dfs%f => fa
+  dfs%inc => ia
+  dfs%pw => pwa
+  dfs%np = npc
+  call direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t0, field_points=xp, phi_field=f0)
+  call direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t1, fs=dfs, field_points=xp, phi_field=f1)
+  call direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t2, parts=parts, fs=dfs)
+  NTHREAD = 1
+  fs_share = maxval(abs(parts(:, :, 3))) / maxval(abs(t2))
+  write (info, '(a,es10.2,a,es10.2,a,es10.2)') "phi_field with fs minus without ", maxval(abs(f1 - f0)), &
+    "; load with fs and field points minus with fs and parts ", maxval(abs(t1 - t2)), "; free-surface share ", fs_share
+  print '(4x,a)', trim(info)
+  call check(error, all(f1 == f0) .and. all(t1 == t2) .and. maxval(abs(f0)) > 0d0 .and. fs_share > 1d-3, trim(info))
+end subroutine test_direct_fs_field_body_only
 
 !> Rigid motions of two states (6, 2), the first two of rd_motions
 function rd_motions_two() result(x)

@@ -873,6 +873,39 @@ For the quadratic part (the incident part does not depend on the mesh), d12 = |v
 
 The largest d12 is 1.427e-3 and the largest d23 8.17e-4, a ratio of 0.573. The panel size goes as 1/ntheta, so an error of first order in the panel size gives (1/24 − 1/32)/(1/16 − 1/24) = 0.5 [derived]; 0.573 is consistent with the first-order convergence of constant panels. The test needs d23 ≤ 0.6 d12 and d23 ≤ 2e-3; the measured ratio is 0.027 below the first bound, a thin margin. The ratio depends on the refinement path: with a finest mesh of 576 panels (narc = nr = 5, not scaled with ntheta) it was 1.07 at (0, 15, 0). The changes are at most 1.4e-3 of the largest value of a point, a level at which a ratio of two changes is easily moved, so this is a weak check of the order.
 
+### Direct part of the field
+
+`QTF_Field.txt` (`qtf_field = 1` with `qtf_direct = 1`) adds to the partial field the second-order potential φ_D of the direct solve at the field points, by Green's second identity over the hull: 4π φ_D(x) = ∫_S [G ∂φ_D/∂n − φ_D ∂G/∂n] dS, with the B2 part of ∂φ_D/∂n in the Stokes form ([usage](input_files.md#partial-second-order-field-at-the-field-points)). The direct part has the body forcing only. Its free-surface forcing (Phase 7b) is not in it, so the physical check that the complete field satisfies the second-order free-surface condition on z = 0 is not possible yet. It moves to the plan after Phase 7b. The checks below test the formula, the sign and the conjugation, and the chain from the solve to the file, against exact identities and against the first-order field. None of them compares φ_D with an independent value of the second-order field.
+
+**The formula** (unit tests `direct_field_*`, `test_qtf_direct_field.f90`). Truncated cylinder, radius 5 m, draft 5 m, 112 panels, depth 10 m, unless stated. The limits are set in the test file, and the measured values are those it records.
+
+| Test | Check | Measured | Limit |
+| :--- | :---- | ---: | ---: |
+| `direct_field_radiation_identity` | with the forcing of a heave radiation solve and its solution as φ_D, the formula equals `fields_green`, the first-order field of the same rows, at 6 points (two below z = 0, two on z = 0, two half a panel size off the hull); this fixes the 4π and the sign of the ∂G/∂n term. Depth 10 m and deep water | 1.8e-16 | 1e-10 |
+| `direct_field_b2_identity` | the B2 part (forcing 0, φ_D = 0) against the plain form −(1/4π) ∫ G n·[(X·∇)u] dS by 8 × 8 sub-panels, at 3 points off a submerged closed box, with fields that both forms integrate exactly on flat panels, in deep water at 0.005 rad/s. With the sign of B2 flipped the difference is 2 | 9.8e-8 | 1e-6 |
+| `direct_field_b2_field_route` | the B2 part takes the field-mode route of the Green function, as the rows do: it equals `b2_stokes_at_point` in field mode, and differs from the default route by more than 2e-8, so the test sees the route (the default route differs by 2.1e-7 at depth 10 m) | rounding | 1e-12 |
+| `direct_field_approaches_panel` | the field at 2, 1, 0.5 and 0.25 panel sizes from a side-panel centroid, along the normal into the fluid, tends to the panel value of the direct solution: the difference decreases and is below the limit at 0.25 | 1.5e-3 | 2e-2 |
+| `direct_field_symmetry` | half meshes (`ISY = 1`, then `ISX = 1`) against the whole mesh, at 4 points off the symmetry planes, one on z = 0 | 1.7e-14 | 1e-9 |
+| `direct_field_hook_matches` | the field points of `direct_at_omega` equal the same columns built step by step (forcing, B2 densities, one block solve, the formula, the conjugation of the column with Ω < 0), for Ω > 0 and Ω < 0 | equal to the bit | |
+| `direct_field_negative_omega` | the pair (2, 1) is the complex conjugate of the pair (1, 2) | rounding | 1e-12 |
+| `direct_field_hook_absent` | without the field points the direct solve returns the same loads as with them, to the bit | equal to the bit | |
+
+The relative differences are over the largest value at the points. The radiation identity is an identity of the code against the first-order field, so it checks the signs, the factor and the indexing of the images, but not that the second-order forcing is the right one: that rests on the direct-method checks above ([direct against indirect](#direct-method-against-indirect-method)).
+
+**Pressure and elevation** (unit tests `field_direct_*`). The direct part enters as the second-order incident part does: i ρ Ω φ_D for the pressure and (i Ω/g) φ_D for the elevation. With φ_D replaced by the second-order incident potential, the form equals the incident part of `field_pair` to 1e-12 (relative), for the difference kernel at (0.5, 0.7) rad/s in both orders and for i = j, at a pressure point and an elevation point; the values by hand, the conjugate of the pair (j, i) and zero at Ω = 0 pass. `field_direct_columns` (`test_second_order_output.f90`) checks the columns Re_dir, Im_dir and has_direct of a row: the first 15 columns are those of the row without them, to the byte, the direct part is conjugated and scaled as the other parts (pressure by L/(ρ g), elevation by L), to 1e-5, and a row marked `has_direct = .false.` has 0 0 0. `field_direct_file` and `field_direct_off` check that without `qtf_direct` `QTF_Field.txt` is not written and `QTF_FieldPartial.txt` has the same 16 rows as the run with the direct part, to the byte, with no mention of a direct part in its header.
+
+**The file** (integration tests `run_qtf_direct_field*`, `qtf_direct_field_rows`, `qtf_direct_field_six_values`). Two small cases on rounded hulls of the `qtf_direct` tests, two frequencies, one heading, difference QTF only:
+
+| Test | Check | Limit |
+| :--- | :---- | ---: |
+| `qtf_direct_field_rows` | 2 points, 8 rows in each file; the first 15 columns of `QTF_Field.txt` are the row of `QTF_FieldPartial.txt` to the byte; the mean rows have `has_direct` 0 and a zero direct part; the pairs (1, 2) and (2, 1) are solved, finite and not zero, with the same Re_dir and opposite Im_dir | 1e-5 relative |
+| `qtf_direct_field_six_values` | 6 points (3 on z = 0), 24 rows per file; the columns are named in the `# Columns:` line (18, Re_dir 16, Im_dir 17, has_direct 18); the first 15 columns are the text of an independent run without `qtf_direct`; `has_direct` is 1 for the pairs with ω_i ≠ ω_j alone (12 rows) and a solved row is not zero; at each point the (2, 1) part is the conjugate of the (1, 2) part | 1e-6 of the modulus |
+| `qtf_direct_field_six_values`, stored values | the direct parts of the 12 solved rows against `test/data/qtf_direct_field_six/expected_direct.txt` | 1e-5 of the modulus |
+
+`expected_direct.txt` holds the values of this build, written by `extract_direct_field_expected.py` (7 digits). It pins the file against later changes. It is not an independent reference.
+
+**Not checked.** φ_D at the field points against an independent second-order field (the WAMIT or Nemoh field, or the free-surface condition on z = 0, which needs Phase 7b); the sum-frequency rows, which have no direct part; the points close to the waterline of a sharp hull; multi-body runs; and no Snellius run was made for this part.
+
 ## Open items
 
 - A free sharp body at low frequency has no good near-field result from HAMS. Far-field is the number to use for F_x, and the control-surface method for F_z. For the sharp cylinder, the [semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder) gives near-field F_x, F_z and M_y, with stated uncertainties.

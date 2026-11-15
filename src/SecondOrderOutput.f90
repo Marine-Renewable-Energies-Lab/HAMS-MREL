@@ -144,25 +144,45 @@ CONTAINS
          (REAL(scaled(t), 8), AIMAG(scaled(t)), t = 1, SIZE(values))
    END SUBROUTINE write_qtf_terms_row
 
-   SUBROUTINE write_field_row(unit, oufr1, oufr2, beta1_deg, beta2_deg, kernel, ipt, surface, quad, pot, refl)
+   SUBROUTINE write_field_row(unit, oufr1, oufr2, beta1_deg, beta2_deg, kernel, ipt, surface, quad, pot, refl, direct, &
+                              has_direct)
       ! Writes one row PER1 PER2 BETA1 BETA2 K IPT TYPE Mod Pha Re Im Re_quad Im_quad Re_inc Im_inc of QTF_FieldPartial.txt.
       ! quad and pot are the quadratic part and the second-order incident part, per unit amplitude pair, e^{-i omega t}, of
       ! the pressure (surface false, TYPE 1) or the elevation (surface true, TYPE 2). The row holds their sum and each part,
       ! conjugated, the pressure scaled by refl/(rho g) and the elevation by refl, so that they are pressure/(rho g A^2/L)
       ! and elevation/(A^2/L). kernel is 1 for the difference frequency and 2 for the sum frequency; oufr1, beta1 belong to
       ! the first component of the pair, oufr2, beta2 to the second.
+      ! With direct (QTF_Field.txt), the row goes on with Re_dir Im_dir has_direct after those 15 columns, which are the
+      ! columns of the row without direct to the byte: direct is the direct part (phi_D of the direct solve, per unit
+      ! amplitude pair, e^{-i omega t}, as quad and pot), conjugated and scaled as they are, and not added to the sum
+      ! columns. has_direct (default .TRUE.) = .FALSE. marks a row the direct solve does not cover (mean row, sum row): it
+      ! gets 0 0 0 whatever direct holds.
       INTEGER, INTENT(IN) :: unit, kernel, ipt
       REAL(8), INTENT(IN) :: oufr1, oufr2, beta1_deg, beta2_deg, refl
       LOGICAL, INTENT(IN) :: surface
       COMPLEX(8), INTENT(IN) :: quad, pot
+      COMPLEX(8), INTENT(IN), OPTIONAL :: direct
+      LOGICAL, INTENT(IN), OPTIONAL :: has_direct
       REAL(8), PARAMETER :: RAD_TO_DEG = 180D0/3.141592653589793D0
-      COMPLEX(8) :: total, q, p
+      COMPLEX(8) :: total, q, p, d
+      LOGICAL :: have
 
       q = field_value(quad, refl, surface)
       p = field_value(pot, refl, surface)
       total = q + p
-      WRITE (unit, '(4ES14.6,3I6,8ES14.6)') oufr1, oufr2, beta1_deg, beta2_deg, kernel, ipt, MERGE(2, 1, surface), ABS(total), &
-         ATAN2(AIMAG(total), REAL(total, 8))*RAD_TO_DEG, REAL(total, 8), AIMAG(total), REAL(q, 8), AIMAG(q), REAL(p, 8), AIMAG(p)
+      IF (.NOT. PRESENT(direct)) THEN
+         WRITE (unit, '(4ES14.6,3I6,8ES14.6)') oufr1, oufr2, beta1_deg, beta2_deg, kernel, ipt, MERGE(2, 1, surface), &
+            ABS(total), ATAN2(AIMAG(total), REAL(total, 8))*RAD_TO_DEG, REAL(total, 8), AIMAG(total), REAL(q, 8), AIMAG(q), &
+            REAL(p, 8), AIMAG(p)
+         RETURN
+      END IF
+      have = .TRUE.
+      IF (PRESENT(has_direct)) have = has_direct
+      d = (0D0, 0D0)
+      IF (have) d = field_value(direct, refl, surface)
+      WRITE (unit, '(4ES14.6,3I6,10ES14.6,I6)') oufr1, oufr2, beta1_deg, beta2_deg, kernel, ipt, MERGE(2, 1, surface), &
+         ABS(total), ATAN2(AIMAG(total), REAL(total, 8))*RAD_TO_DEG, REAL(total, 8), AIMAG(total), REAL(q, 8), AIMAG(q), &
+         REAL(p, 8), AIMAG(p), REAL(d, 8), AIMAG(d), MERGE(1, 0, have)
    END SUBROUTINE write_field_row
 
    PURE COMPLEX(8) FUNCTION field_value(value, refl, surface)

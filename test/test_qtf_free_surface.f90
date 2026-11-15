@@ -9,7 +9,7 @@ module test_qtf_free_surface
                              fs_mode_warning, fs_auto_modes, FS_MODE_TOL, fs_sample_phi, fs_mode_scales, fs_auto_evanescent, &
                              fs_inner_pair, fs_outer_pair, fs_outer_annulus, fs_outer_tail, fs_outer_ring, fs_outer_rfar, &
                              fs_outer_sliver, fs_radius_message, FS_SIGN, fs_pair_order_message, fs_pair_terms, &
-                             fs_coverage_check, fs_outer_moments, fs_forcing_points
+                             fs_coverage_check, fs_outer_moments, fs_forcing_points, fs_local_rankine
   use HAMS_mod, only : NTHREAD, ISOL, IRSP
   use WaveDyn_mod, only : AMP, BETA, H, NK, TP, V, W1, WK, WVN
   use Body_mod, only : XW
@@ -25,6 +25,8 @@ module test_qtf_free_surface
   use test_waterline_field, only : set_wave, load_panels
   use Const_mod, only : g_const => G
   use, intrinsic :: ieee_arithmetic, only : ieee_is_finite
+  use PanelMesh_mod, only : pm_xyz => XYZ, pm_ncn => NCN, pm_ncon => NCON
+  use SingularIntgr, only : SGLINTBD_TRI2, SGLINTBD_QUAD2
   implicit none
   private
 
@@ -68,7 +70,11 @@ subroutine collect_qtf_free_surface(testsuite)
     new_unittest("fs_coverage_check", test_coverage_check), &
     new_unittest("outer_moments_contract_psi", test_moments_contract_psi), &
     new_unittest("outer_moments_contract_green", test_moments_contract_green), &
-    new_unittest("outer_moments_cost", test_moments_cost) &
+    new_unittest("outer_moments_cost", test_moments_cost), &
+    new_unittest("fs_local_polygon_centre", test_local_polygon_centre), &
+    new_unittest("fs_local_corner_and_edge", test_local_corner_and_edge), &
+    new_unittest("fs_local_linear", test_local_linear), &
+    new_unittest("fs_local_limit", test_local_limit) &
     ]
 end subroutine collect_qtf_free_surface
 
@@ -1515,5 +1521,243 @@ subroutine test_moments_cost(error)
   if (allocated(error)) return
   call check(error, t_mom <= 5d0 * t_pair, trim(info))
 end subroutine test_moments_cost
+
+!> Reference for fs_local_rankine, by quadrature in polar coordinates about x: the polygon is the union of the triangles
+!> (x, P_e, P_e+1), and in each the integral of (2/sqrt(rho^2 + eps^2)) (q0 + qg . rho u) rho drho dtheta is done over rho in
+!> closed form (the kernel at the elevation eps below x, where 1/r1 = 1/r) and over theta by composite 4-point Gauss-Legendre
+!> (nint intervals per edge). eps = 0 is the kernel 2/r on z = 0. Edges whose line passes through x add nothing (zero angle).
+subroutine polar_gl(x, xv, ncn, q0, qg, eps, nint, val)
+  real(8), intent(in) :: x(3), xv(3, *), eps
+  integer, intent(in) :: ncn, nint
+  complex(8), intent(in) :: q0, qg(3)
+  complex(8), intent(out) :: val
+  real(8), parameter :: gx(4) = [-0.8611363115940526d0, -0.3399810435848563d0, 0.3399810435848563d0, 0.8611363115940526d0]
+  real(8), parameter :: gw(4) = [0.3478548451374538d0, 0.6521451548625461d0, 0.6521451548625461d0, 0.3478548451374538d0]
+  real(8) :: p1(2), p2(2), nrm(2), cr, th1, dth, th, u(2), rho_e, sq, i0, i1, h
+  integer :: e, e2, k, j
+
+  val = (0d0, 0d0)
+  do e = 1, ncn
+    e2 = merge(1, e + 1, e == ncn)
+    p1 = xv(1:2, e) - x(1:2)
+    p2 = xv(1:2, e2) - x(1:2)
+    cr = p1(1) * p2(2) - p1(2) * p2(1)
+    if (abs(cr) < 1d-13) cycle
+    th1 = atan2(p1(2), p1(1))
+    dth = atan2(cr, p1(1) * p2(1) + p1(2) * p2(2))
+    nrm = [-(p2(2) - p1(2)), p2(1) - p1(1)]
+    h = dth / nint
+    do k = 1, nint
+      do j = 1, 4
+        th = th1 + (k - 1 + 0.5d0 * (1d0 + gx(j))) * h
+        u = [cos(th), sin(th)]
+        rho_e = (nrm(1) * p1(1) + nrm(2) * p1(2)) / (nrm(1) * u(1) + nrm(2) * u(2))
+        sq = sqrt(rho_e**2 + eps**2)
+        i0 = sq - eps
+        i1 = 0.5d0 * rho_e**2
+        if (eps > 0d0) i1 = 0.5d0 * (rho_e * sq - eps**2 * asinh(rho_e / eps))
+        val = val + 2d0 * (q0 * i0 + (qg(1) * u(1) + qg(2) * u(2)) * i1) * (0.5d0 * h * gw(j))
+      end do
+    end do
+  end do
+end subroutine polar_gl
+
+!> The integral of 2/r over the polygon on z = 0 for q = 1 by midpoint quadrature in polar coordinates about x: nth angles per
+!> edge and nr radii per angle, the radial integral of 2 drho summed over the radial midpoints up to rho_e(theta).
+subroutine polar_midpoint(x, xv, ncn, nth, nr, val)
+  real(8), intent(in) :: x(3), xv(3, *)
+  integer, intent(in) :: ncn, nth, nr
+  real(8), intent(out) :: val
+  real(8) :: p1(2), p2(2), nrm(2), cr, th1, dth, th, u(2), rho_e
+  integer :: e, e2, k
+
+  val = 0d0
+  do e = 1, ncn
+    e2 = merge(1, e + 1, e == ncn)
+    p1 = xv(1:2, e) - x(1:2)
+    p2 = xv(1:2, e2) - x(1:2)
+    cr = p1(1) * p2(2) - p1(2) * p2(1)
+    if (abs(cr) < 1d-13) cycle
+    th1 = atan2(p1(2), p1(1))
+    dth = atan2(cr, p1(1) * p2(1) + p1(2) * p2(2))
+    nrm = [-(p2(2) - p1(2)), p2(1) - p1(1)]
+    do k = 1, nth
+      th = th1 + (k - 0.5d0) * dth / nth
+      u = [cos(th), sin(th)]
+      rho_e = (nrm(1) * p1(1) + nrm(2) * p1(2)) / (nrm(1) * u(1) + nrm(2) * u(2))
+      val = val + 2d0 * rho_e * (dth / nth) * (real(nr, 8) / nr)
+    end do
+  end do
+end subroutine polar_midpoint
+
+!> A regular N-gon of circumradius a about c, first vertex at angle phase, counter-clockwise (or clockwise if cw).
+subroutine regular_polygon(n, a, c, phase, cw, xv)
+  integer, intent(in) :: n
+  real(8), intent(in) :: a, c(2), phase
+  logical, intent(in) :: cw
+  real(8), intent(out) :: xv(3, 4)
+  integer :: k
+  real(8) :: ang
+  xv = 0d0
+  do k = 1, n
+    ang = phase + 2d0 * pi * (k - 1) / n
+    if (cw) ang = phase - 2d0 * pi * (k - 1) / n
+    xv(:, k) = [c(1) + a * cos(ang), c(2) + a * sin(ang), 0d0]
+  end do
+end subroutine regular_polygon
+
+!> At the centre of a regular N-gon (N = 3, 4) of circumradius a, with q = 1: the kernel 2/r integrates to
+!> 4 N d ln[(1 + sin(pi/N)) / cos(pi/N)], d = a cos(pi/N), to 1e-12; the same with the vertices in clockwise order; and with a
+!> linear q the same value (the first moment vanishes by symmetry), the edge sum of the moment being a different formula.
+subroutine test_local_polygon_centre(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8) :: xv(3, 4), x(3), exact, d, errmax
+  complex(8) :: val
+  integer :: n, icw
+
+  errmax = 0d0
+  do n = 3, 4
+    d = 1.3d0 * cos(pi / n)
+    exact = 4d0 * n * d * log((1d0 + sin(pi / n)) / cos(pi / n))
+    do icw = 0, 1
+      call regular_polygon(n, 1.3d0, [0.2d0, -0.1d0], 0.3d0, icw == 1, xv)
+      x = [0.2d0, -0.1d0, 0d0]
+      call fs_local_rankine(x, n, xv, (1d0, 0d0), [(0d0, 0d0), (0d0, 0d0), (0d0, 0d0)], val)
+      errmax = max(errmax, abs(val - exact) / exact)
+      call check(error, abs(val - exact) <= 1d-12 * exact, "N-gon centre value")
+      if (allocated(error)) return
+      call fs_local_rankine(x, n, xv, (1d0, 0d0), [(5d0, -1d0), (7d0, 2d0), (0d0, 0d0)], val)
+      errmax = max(errmax, abs(val - exact) / exact)
+      call check(error, abs(val - exact) <= 1d-12 * exact, "N-gon centre value with a linear q (first moment zero)")
+      if (allocated(error)) return
+    end do
+  end do
+  print '(4x,a,es10.2)', "fs_local_polygon_centre: largest relative error ", errmax
+end subroutine test_local_polygon_centre
+
+!> x at a vertex and at an edge midpoint of a unit square, q = 1, against 2000 x 2000 midpoint quadrature in polar coordinates
+!> about x to 1e-6 (the vertex also to 1e-12 against the exact 4 ln(1 + sqrt 2); the zero-distance edges give no NaN).
+subroutine test_local_corner_and_edge(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: xv(3, 4) = reshape([0d0, 0d0, 0d0, 1d0, 0d0, 0d0, 1d0, 1d0, 0d0, 0d0, 1d0, 0d0], [3, 4])
+  real(8), parameter :: pts(2, 4) = reshape([0d0, 0d0, 0.5d0, 0d0, 1d0, 0.5d0, 0d0, 1d0], [2, 4])
+  real(8) :: ref, x(3), exact
+  complex(8) :: val
+  integer :: ic
+
+  exact = 4d0 * log(1d0 + sqrt(2d0))
+  do ic = 1, 4
+    x = [pts(1, ic), pts(2, ic), 0d0]
+    call fs_local_rankine(x, 4, xv, (1d0, 0d0), [(0d0, 0d0), (0d0, 0d0), (0d0, 0d0)], val)
+    call polar_midpoint(x, xv, 4, 2000, 2000, ref)
+    call check(error, val == val .and. aimag(val) == 0d0, "finite and real")
+    if (allocated(error)) return
+    call check(error, abs(real(val, 8) - ref) <= 1d-6 * ref, "against the midpoint quadrature")
+    if (allocated(error)) return
+    print '(4x,a,i0,a,es10.2)', "fs_local_corner_and_edge, point ", ic, ": relative error ", abs(real(val, 8) - ref) / ref
+  end do
+  x = [0d0, 0d0, 0d0]
+  call fs_local_rankine(x, 4, xv, (1d0, 0d0), [(0d0, 0d0), (0d0, 0d0), (0d0, 0d0)], val)
+  call check(error, abs(real(val, 8) - exact) <= 1d-12 * exact, "corner against 4 ln(1 + sqrt 2)")
+end subroutine test_local_corner_and_edge
+
+!> A linear q (complex coefficients) with x inside a triangle, and at a vertex and an edge midpoint of a quadrilateral, against
+!> composite Gauss quadrature in polar coordinates (400 intervals per edge), to 1e-8.
+subroutine test_local_linear(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: tri(3, 4) = reshape([0d0, 0d0, 0d0, 1d0, 0d0, 0d0, 0.2d0, 0.9d0, 0d0, 0d0, 0d0, 0d0], [3, 4])
+  real(8), parameter :: quad(3, 4) = &
+    reshape([0d0, 0d0, 0d0, 1.4d0, 0.1d0, 0d0, 1.2d0, 1.1d0, 0d0, -0.1d0, 0.8d0, 0d0], [3, 4])
+  complex(8), parameter :: q0 = (0.7d0, -0.2d0), qg(3) = [(1.3d0, 0.4d0), (-0.6d0, 2d0), (0d0, 0d0)]
+  real(8) :: x(3, 3), errmax
+  complex(8) :: val, ref
+  integer :: i
+
+  errmax = 0d0
+  x(:, 1) = [0.4d0, 0.3d0, 0d0]
+  call fs_local_rankine(x(:, 1), 3, tri, q0, qg, val)
+  call polar_gl(x(:, 1), tri, 3, q0, qg, 0d0, 400, ref)
+  errmax = max(errmax, abs(val - ref) / abs(ref))
+  call check(error, abs(val - ref) <= 1d-8 * abs(ref), "triangle, x inside")
+  if (allocated(error)) return
+  x(:, 2) = quad(:, 1)
+  x(:, 3) = 0.5d0 * (quad(:, 2) + quad(:, 3))
+  do i = 2, 3
+    call fs_local_rankine(x(:, i), 4, quad, q0, qg, val)
+    call polar_gl(x(:, i), quad, 4, q0, qg, 0d0, 400, ref)
+    errmax = max(errmax, abs(val - ref) / abs(ref))
+    call check(error, abs(val - ref) <= 1d-8 * abs(ref), "quadrilateral, x on a vertex and on an edge")
+    if (allocated(error)) return
+  end do
+  print '(4x,a,es10.2)', "fs_local_linear: largest relative error ", errmax
+end subroutine test_local_linear
+
+!> The elevation limit: the integral of G q over the panel at x - (0, 0, eps), eps = 1e-2, 1e-3, 1e-4 panel sizes, tends to
+!> the value at x. For q = 1 the off-plane value is the integral of 1/r + 1/r1 = 2 (1/r over the panel at x - eps z) with
+!> SGLINTBD_TRI2/QUAD2, the Newman off-plane integral of the code; the difference to the value on z = 0 is -4 pi eps (each
+!> direction of the polar integral loses eps: sqrt(rho_e^2 + eps^2) - eps - rho_e = -eps + O(eps^2)), so it falls like eps,
+!> to 1 % at eps = 1e-4. For the linear q the polar quadrature of the same integral at eps (closed form in rho) is the reference.
+subroutine test_local_limit(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: tri(3, 4) = reshape([0d0, 0d0, 0d0, 1d0, 0d0, 0d0, 0.2d0, 0.9d0, 0d0, 0d0, 0d0, 0d0], [3, 4])
+  real(8), parameter :: quad(3, 4) = &
+    reshape([0d0, 0d0, 0d0, 1.4d0, 0.1d0, 0d0, 1.2d0, 1.1d0, 0d0, -0.1d0, 0.8d0, 0d0], [3, 4])
+  real(8), parameter :: eps(3) = [1d-2, 1d-3, 1d-4]
+  complex(8), parameter :: q0 = (0.7d0, -0.2d0), qg(3) = [(1.3d0, 0.4d0), (-0.6d0, 2d0), (0d0, 0d0)]
+  real(8), allocatable :: sxyz(:, :)
+  integer, allocatable :: sncn(:), sncon(:, :)
+  real(8) :: x(3), xf(3), rk(4), xvv(3, 4), err(3)
+  complex(8) :: val0, valq, off, offq
+  integer :: ip, ie, ncn, k
+
+  if (allocated(pm_xyz)) call move_alloc(pm_xyz, sxyz)
+  if (allocated(pm_ncn)) call move_alloc(pm_ncn, sncn)
+  if (allocated(pm_ncon)) call move_alloc(pm_ncon, sncon)
+
+  do ip = 1, 2
+    ncn = 2 + ip
+    xvv = merge(tri, quad, ip == 1)
+    allocate (pm_xyz(ncn, 3), pm_ncn(1), pm_ncon(1, 4))
+    do k = 1, ncn
+      pm_xyz(k, :) = xvv(:, k)
+    end do
+    pm_ncn(1) = ncn
+    pm_ncon = 0
+    pm_ncon(1, 1:ncn) = [(k, k = 1, ncn)]
+    x = [0.4d0, 0.3d0, 0d0]
+    call fs_local_rankine(x, ncn, xvv, (1d0, 0d0), [(0d0, 0d0), (0d0, 0d0), (0d0, 0d0)], val0)
+    call fs_local_rankine(x, ncn, xvv, q0, qg, valq)
+    do ie = 1, 3
+      xf = [x(1), x(2), -eps(ie)]
+      if (ncn == 3) then
+        call SGLINTBD_TRI2(xf, 1, rk, 1)
+      else
+        call SGLINTBD_QUAD2(xf, 1, rk, 1)
+      end if
+      off = cmplx(2d0 * rk(1), 0d0, 8)
+      err(ie) = abs(real(val0, 8) - real(off, 8))
+      call polar_gl(x, xvv, ncn, (1d0, 0d0), [(0d0, 0d0), (0d0, 0d0), (0d0, 0d0)], eps(ie), 400, offq)
+      call check(error, abs(off - offq) <= 1d-9 * abs(off), "the polar reference at eps agrees with SGLINTBD")
+      if (allocated(error)) exit
+      call polar_gl(x, xvv, ncn, q0, qg, eps(ie), 400, offq)
+      call check(error, abs(valq - offq) / (4d0 * pi * eps(ie) * abs(q0)) < 1.5d0, "linear q: the difference falls like eps")
+      if (allocated(error)) exit
+    end do
+    if (.not. allocated(error)) then
+      call check(error, abs(err(1) / err(2) - 10d0) < 1.5d0 .and. abs(err(2) / err(3) - 10d0) < 0.2d0, &
+                 "off-plane differences fall like eps")
+    end if
+    if (.not. allocated(error)) then
+      call check(error, abs(err(3) / (4d0 * pi * eps(3)) - 1d0) < 1d-2, "the difference is -4 pi eps")
+    end if
+    print '(4x,a,i0,a,3es11.3)', "fs_local_limit, ncn = ", ncn, ": |value(eps) - value(0)| / eps = ", err / eps
+    deallocate (pm_xyz, pm_ncn, pm_ncon)
+    if (allocated(error)) exit
+  end do
+
+  if (allocated(sxyz)) call move_alloc(sxyz, pm_xyz)
+  if (allocated(sncn)) call move_alloc(sncn, pm_ncn)
+  if (allocated(sncon)) call move_alloc(sncon, pm_ncon)
+end subroutine test_local_limit
 
 end module test_qtf_free_surface

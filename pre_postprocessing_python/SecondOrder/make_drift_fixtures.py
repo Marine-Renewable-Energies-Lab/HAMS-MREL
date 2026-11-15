@@ -54,6 +54,9 @@ QTF_LOW_FREQUENCIES = (0.40, 0.45, 0.50, 0.55, 0.60)
 QTF_BODY_FREQUENCIES = (0.95, 1.10)
 QTF_DISTANT_FREQUENCIES = (0.80, 1.00)
 QTF_DISTANT_SEPARATION = 2000.0
+# qtf_direct_field_six: three points on the free surface (elevation) and three below it (pressure), all off the hull
+QTF_DIRECT_FIELD_POINTS = ((15.0, 0.0, 0.0), (0.0, 15.0, 0.0), (-12.0, 9.0, 0.0),
+                           (15.0, 0.0, -3.0), (0.0, 15.0, -3.0), (10.0, 10.0, -6.0))
 # B2 by the control surface (qtf_b2 = control) and by the hull on the sharp cylinder of drift_cyl, free, against the exact
 # reference: (0.47, 0.77) is where the hull form is worst (the heave resonance at 0.77 rad/s), Omega = 0.07, 0.23, 0.30
 QTF_SHARP_FREQUENCIES = (0.47, 0.70, 0.77)
@@ -538,6 +541,26 @@ def write_qtf_direct_fixtures(data, body):
     write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=QTF_DISTANT_FREQUENCIES,
                   headings=DRIFT_CYL_HEADINGS)
     write_second_order(os.path.join(target, "SecondOrder.in"), **dict(direct, mean_drift=2, velocity_method="source"))
+    # qtf_direct = 1 with qtf_field = 1 (QTF_Field.txt, Phase 7c-1): the hull of qtf_direct_one, the difference QTF, a pressure
+    # point and an elevation point off the hull
+    target = case_dir(data, "qtf_direct_field")
+    make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
+                                     **TWO_ROUND_MESH)
+    write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=QTF_DISTANT_FREQUENCIES,
+                  headings=(0.0,), field_points=((15.0, 0.0, 0.0), (0.0, 15.0, -3.0)))
+    write_second_order(os.path.join(target, "SecondOrder.in"),
+                       **dict(direct, mean_drift=1, velocity_method="source", qtf_field=1))
+    # The same hull, six field points (three on z = 0, so elevation points) and the difference QTF, with qtf_direct = 1 and
+    # with qtf_direct = 0 (Phase 7c-1 Task 5): the second run is the independent reference of the partial columns, and
+    # qtf_direct_field_six/expected_direct.txt holds the direct part of the solved rows (extract_direct_field_expected.py)
+    for name, mode in (("qtf_direct_field_six", 1), ("qtf_direct_field_six_off", 0)):
+        target = case_dir(data, name)
+        make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
+                                         **TWO_ROUND_MESH)
+        write_control(os.path.join(target, "ControlFile.in"), depth=50.0, frequencies=QTF_DISTANT_FREQUENCIES,
+                      headings=(0.0,), field_points=QTF_DIRECT_FIELD_POINTS)
+        write_second_order(os.path.join(target, "SecondOrder.in"),
+                           **dict(body, qtf_direct=mode, mean_drift=1, velocity_method="source", qtf_field=1))
     # The sharp cylinder of qtf_sharp_b2_body (m1, the mesh of drift_cyl) and the same at half the panel size (m2)
     for name, mesh in (("qtf_direct_sharp_m1", DRIFT_CYL_MESH), ("qtf_direct_sharp_m2", QTF_DIRECT_SHARP_M2)):
         target = case_dir(data, name)

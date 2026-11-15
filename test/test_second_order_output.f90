@@ -16,7 +16,8 @@ subroutine collect_second_order_output(testsuite)
     new_unittest("drift_row_force", drift_row_force), &
     new_unittest("drift_row_moment", drift_row_moment), &
     new_unittest("terms_row", terms_row), &
-    new_unittest("field_row", field_row) &
+    new_unittest("field_row", field_row), &
+    new_unittest("field_direct_columns", field_direct_columns) &
   ]
 end subroutine collect_second_order_output
 
@@ -106,6 +107,44 @@ subroutine field_row(error)
   end do
   close (unit, status='delete')
 end subroutine field_row
+
+!> With direct, a field row gets Re and Im of the direct part and has_direct after the 15 columns of the row without it,
+!> conjugated and scaled as the other parts (pressure by L/(rho g), elevation by L), and the first 15 columns are those of the
+!> row without direct, to the byte. has_direct = .false. writes a zero direct part and 0.
+subroutine field_direct_columns(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: path = "second_order_output_field_direct.tmp"
+  complex(8), parameter :: quad = (3d0, 4d0), pot = (-1d0, 2d0), dir = (0.5d0, -1.5d0)
+  character(len=400) :: plain, with, without
+  real(8) :: b(2)
+  integer :: unit, ih
+
+  open (newunit=unit, file=path, status='replace', action='readwrite')
+  call write_field_row(unit, 0.5d0, 0.7d0, 10d0, 20d0, 1, 4, .true., quad, pot, 2d0)
+  call write_field_row(unit, 0.5d0, 0.7d0, 10d0, 20d0, 1, 4, .true., quad, pot, 2d0, dir)
+  call write_field_row(unit, 0.5d0, 0.7d0, 10d0, 20d0, 1, 4, .true., quad, pot, 2d0, dir, .false.)
+  call write_field_row(unit, 0.5d0, 0.7d0, 10d0, 20d0, 2, 3, .false., quad*RHO*G, pot*RHO*G, 2d0, dir*RHO*G)
+  rewind (unit)
+  read (unit, '(a)') plain
+  read (unit, '(a)') with
+  read (unit, '(a)') without
+  call check(error, with(1:len_trim(plain)) == trim(plain), "The row with direct does not start with the row without it")
+  if (allocated(error)) return
+  call check(error, len_trim(with) == len_trim(plain) + 2*14 + 6, "The row with direct has not two reals and an integer more")
+  if (allocated(error)) return
+  ! L = 2: conj(dir) * 2 = (1, 3)
+  read (with(len_trim(plain) + 1:), '(2ES14.6,I6)') b, ih
+  call check(error, abs(b(1) - 1d0) < 1d-5 .and. abs(b(2) - 3d0) < 1d-5 .and. ih == 1, "Re_dir, Im_dir, has_direct")
+  if (allocated(error)) return
+  read (without(len_trim(plain) + 1:), '(2ES14.6,I6)') b, ih
+  call check(error, abs(b(1)) < 1d-30 .and. abs(b(2)) < 1d-30 .and. ih == 0, "A row without a direct part is not zero and 0")
+  if (allocated(error)) return
+  ! The pressure row: dir given as rho g times the unit value, scaled as quad and pot by L/(rho g)
+  read (unit, '(a)') with
+  read (with(len_trim(plain) + 1:), '(2ES14.6,I6)') b, ih
+  call check(error, abs(b(1) - 1d0) < 1d-5 .and. abs(b(2) - 3d0) < 1d-5 .and. ih == 1, "Pressure row: Re_dir, Im_dir")
+  close (unit, status='delete')
+end subroutine field_direct_columns
 
 subroutine write_and_read(path, value, moment, row, index)
   character(len=*), intent(in) :: path

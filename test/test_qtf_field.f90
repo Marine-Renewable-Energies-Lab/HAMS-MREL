@@ -2,8 +2,11 @@
 !> second-order incident potential).
 module test_qtf_field
   use testdrive, only : new_unittest, unittest_type, error_type, check
-  use QTFField, only : field_pair, build_field_points
-  use SecondOrderTypes, only : panel_mesh, cs_points
+  use QTFField, only : field_pair, build_field_points, field_direct, qfield_init, qfield_keep, qfield_keep_direct, &
+                       qfield_direct_active, qfield_finish
+  use Const_mod, only : G_SOLVER => G, RHO_SOLVER => RHO
+  use IO, only : CreateDirectory
+  use SecondOrderTypes, only : panel_mesh, cs_points, so_options, first_order_state, cs_fields
   use second_order_fixtures, only : make_cylinder, make_two_bodies, set_panel
   use SecondOrderIncident, only : incident2, incident2_pair, incident2_phi
   use FirstOrderState, only : incident_phi, incident_grad
@@ -11,7 +14,7 @@ module test_qtf_field
   implicit none
   private
 
-  public :: collect_qtf_field
+  public :: collect_qtf_field, collect_qtf_field_serial
 
   real(8), parameter :: g = 9.81d0, rho = 1025d0, pi = 3.14159265358979323846d0, deg = pi / 180d0
   complex(8), parameter :: ci = (0d0, 1d0)
@@ -35,9 +38,20 @@ subroutine collect_qtf_field(testsuite)
     new_unittest("points_inside_rejected", test_points_inside), &
     new_unittest("points_inside_waterplane_rejected", test_points_waterplane), &
     new_unittest("points_two_bodies", test_points_two_bodies), &
-    new_unittest("points_mixed_panel_sizes", test_points_mixed_sizes) &
+    new_unittest("points_mixed_panel_sizes", test_points_mixed_sizes), &
+    new_unittest("field_direct_pressure_elevation", test_direct_pressure_elevation) &
     ]
 end subroutine collect_qtf_field
+
+!> The tests that run the store of QTFField (module state) and write test folders: serial, one suite
+subroutine collect_qtf_field_serial(testsuite)
+  type(unittest_type), allocatable, intent(out) :: testsuite(:)
+
+  testsuite = [ &
+    new_unittest("field_direct_file", test_direct_file), &
+    new_unittest("field_direct_off", test_direct_off) &
+    ]
+end subroutine collect_qtf_field_serial
 
 !> Wave number of omega, from omega^2 = g k tanh(k h) (h < 0: deep water).
 real(8) function wave_number(omega, h)
@@ -433,5 +447,223 @@ subroutine test_points_mixed_sizes(error)
   call build_field_points(mesh, reshape([10d0, 5d0, 0d0], [3, 1]), pts, surface, ok, msg)
   call check(error, .not. ok .and. index(msg, "inside body 1") > 0, "waterplane point not rejected")
 end subroutine test_points_mixed_sizes
+
+!> The direct part of the pressure and of the elevation of a pair, from phi_D of the pair, is i rho Omega phi_D and
+!> (i Omega / g) phi_D, with Omega = omega_1 - omega_2 signed: the same forms as the second-order incident part of field_pair
+!> (pot = i rho Omega phi_2, i Omega/g phi_2), so with phi_D replaced by phi_2 the two are equal, for i /= j in both orders
+!> (Omega of either sign) and for i = j (Omega = 0). Per unit amplitudes; the amplitude 2 a_i a_j* (i /= j) or |a_i|^2
+!> (i = j) multiplies the row afterwards, as for quad and pot.
+subroutine test_direct_pressure_elevation(error)
+  type(error_type), allocatable, intent(out) :: error
+  complex(8), parameter :: phi = (0.7d0, -0.2d0)
+  complex(8), parameter :: unit_grad(3) = [(1d0, 0d0), (0d0, 0d0), (0d0, 0d0)]
+  real(8), parameter :: x(3) = [2d0, -1d0, -3d0], xs(3) = [2d0, -1d0, 0d0]
+  type(incident2) :: inc
+  complex(8) :: p2, quad, pot, d
+  real(8) :: w(2), om
+  integer :: i, j, ks
+
+  ! The values by hand: Omega = 0.3, phi = 0.7 - 0.2 i, i phi = 0.2 + 0.7 i
+  d = field_direct(0.3d0, phi, rho, g, .false.)
+  call check(error, abs(d - rho*0.3d0*(0.2d0, 0.7d0)) < 1d-9*rho, "pressure part is not i rho Omega phi_D")
+  if (allocated(error)) return
+  d = field_direct(0.3d0, phi, rho, g, .true.)
+  call check(error, abs(d - 0.3d0/g*(0.2d0, 0.7d0)) < 1d-12, "elevation part is not (i Omega/g) phi_D")
+  if (allocated(error)) return
+  d = field_direct(-0.3d0, conjg(phi), rho, g, .false.)
+  call check(error, abs(d - conjg(field_direct(0.3d0, phi, rho, g, .false.))) < 1d-9*rho, "pair (j,i) is not the conjugate")
+  if (allocated(error)) return
+  call check(error, abs(field_direct(0d0, phi, rho, g, .false.)) == 0d0, "Omega = 0 does not give 0")
+  if (allocated(error)) return
+
+  ! The forms of field_pair, with phi_D = phi_2, for the pairs of (0.5, 0.7) in both orders and for i = j
+  w = [0.5d0, 0.7d0]
+  do ks = 1, 2
+    do i = 1, 2
+      do j = 1, 2
+        call incident2_pair(w(i), wave_number(w(i), -1d0), 0d0, w(j), wave_number(w(j), -1d0), 20d0*deg, -1d0, g, inc, &
+                            KERNEL_DIFF)
+        p2 = incident2_phi(inc, merge(xs, x, ks == 2))
+        call field_pair(KERNEL_DIFF, w(i), (1d0, 0d0), unit_grad, w(j), (1d0, 0d0), unit_grad, inc, &
+                        merge(xs, x, ks == 2), ks == 2, rho, g, quad, pot)
+        om = w(i) - w(j)
+        d = field_direct(om, p2, rho, g, ks == 2)
+        call check(error, abs(d - pot) <= 1d-12*abs(pot), "direct form differs from the incident part with phi_D = phi_2")
+        if (allocated(error)) return
+        call check(error, abs(inc%omega - om) < 1d-14, "Omega of the pair is not omega_i - omega_j")
+        if (allocated(error)) return
+      end do
+    end do
+  end do
+end subroutine test_direct_pressure_elevation
+
+!> Runs the field store for two frequencies (0.5, 0.7), one heading and two points (pressure at z = -1, elevation at z = 0),
+!> qtf = 3, with the first-order fields set by hand. With direct, phi_D of the pair (1, 2) is phi12(ip) and that of (2, 1) its
+!> conjugate, as direct_at_omega gives them (Omega < 0 conjugated); the pairs (1, 1), (2, 2) are not given (Omega = 0).
+subroutine run_field_store(root, direct, phi12)
+  character(len=*), intent(in) :: root
+  logical, intent(in) :: direct
+  complex(8), intent(in) :: phi12(2)
+  type(so_options) :: opts
+  type(cs_points) :: pts
+  type(first_order_state) :: st(1)
+  type(cs_fields) :: fl(1)
+  logical :: ok, surface(2)
+  integer :: i
+  real(8), parameter :: w(2) = [0.5d0, 0.7d0]
+
+  call remove_dir(root)
+  call CreateDirectory(root // "/Wamit_format", ok)
+  opts%qtf = 3
+  opts%qtf_field = 1
+  opts%qtf_direct = merge(1, 0, direct)
+  opts%mean_drift = 1
+  pts%n = 2
+  allocate (pts%x(3, 2), pts%nrm(3, 2), pts%w(2), pts%psize(2), pts%kind(2), pts%body(2))
+  pts%x = reshape([2d0, -1d0, -1d0, 2d0, -1d0, 0d0], [3, 2])
+  surface = [.false., .true.]
+  call qfield_init(opts, 2, [0d0], pts, surface, root)
+  do i = 1, 2
+    st(1)%omega = w(i)
+    st(1)%k = w(i)**2 / G_SOLVER
+    st(1)%h = -1d0
+    st(1)%beta = 0d0
+    st(1)%rho = RHO_SOLVER
+    allocate (fl(1)%phi(2), fl(1)%grad(3, 2))
+    fl(1)%phi = [cmplx(0.3d0, 0.1d0*i, 8), cmplx(-0.2d0, 0.4d0, 8)]
+    fl(1)%grad = reshape([cmplx(0.1d0*i, 0d0, 8), cmplx(0d0, 0.2d0, 8), cmplx(0.3d0, 0.1d0, 8), &
+                          cmplx(0.2d0, 0d0, 8), cmplx(0d0, 0.1d0*i, 8), cmplx(0.1d0, 0.2d0, 8)], [3, 2])
+    call qfield_keep(st, fl, 0.1d0*i)
+    deallocate (fl(1)%phi, fl(1)%grad)
+  end do
+  if (direct) then
+    call qfield_keep_direct(1, 1, 2, 1, phi12)
+    call qfield_keep_direct(2, 1, 1, 1, conjg(phi12))
+  end if
+  call qfield_finish(1d0)
+end subroutine run_field_store
+
+!> Removes a test folder (Windows, as test_qtf), if it is there
+subroutine remove_dir(root)
+  character(len=*), intent(in) :: root
+  integer :: estat
+  call execute_command_line("if exist " // root // " rmdir /s /q " // root, exitstat=estat)
+end subroutine remove_dir
+
+!> Reads the data rows of a field file into a character array
+subroutine read_rows(path, rows, n)
+  character(len=*), intent(in) :: path
+  character(len=600), intent(out) :: rows(:)
+  integer, intent(out) :: n
+  character(len=600) :: line
+  integer :: unit, ios
+
+  n = 0
+  open (newunit=unit, file=path, status='old', action='read')
+  do
+    read (unit, '(a)', iostat=ios) line
+    if (ios /= 0) exit
+    if (line(1:1) == '#' .or. len_trim(line) == 0) cycle
+    n = n + 1
+    rows(n) = line
+  end do
+  close (unit)
+end subroutine read_rows
+
+!> QTF_Field.txt of the store with direct parts: the columns of QTF_FieldPartial.txt first (unchanged), then Re_dir, Im_dir and
+!> has_direct. A solved pair (1, 2) or (2, 1) has the part of field_direct (i rho Omega phi_D, (i Omega/g) phi_D, Omega signed,
+!> conjugated and scaled as the other columns) and has_direct = 1, the pair (2, 1) with the conjugate phi_D of the pair (1, 2);
+!> the mean rows (i = j) and the sum rows have 0 and has_direct = 0.
+subroutine test_direct_file(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "qtf_field_direct_tmp"
+  complex(8), parameter :: phi12(2) = [(0.4d0, -0.3d0), (-0.1d0, 0.6d0)]
+  real(8), parameter :: w(2) = [0.5d0, 0.7d0]
+  character(len=600) :: rows(32), prows(32)
+  real(8) :: dv(2)
+  complex(8) :: e
+  integer :: n, np, r, ih, kk, ii, jj, pp
+
+  call run_field_store(root, .true., phi12)
+  call check(error, .not. qfield_direct_active(), "The store is still active after qfield_finish")
+  if (allocated(error)) return
+  call read_rows(root // "/Wamit_format/QTF_Field.txt", rows, n)
+  call read_rows(root // "/Wamit_format/QTF_FieldPartial.txt", prows, np)
+  call check(error, n == 16 .and. np == 16, "2 kernels, 4 frequency pairs, 2 points are 16 rows in both files")
+  if (allocated(error)) return
+  ! Order: kernel (1 difference, 2 sum), heading pair, frequency pair (i, j), point
+  r = 0
+  do kk = 1, 2
+    do ii = 1, 2
+      do jj = 1, 2
+        do pp = 1, 2
+          r = r + 1
+          call check(error, rows(r)(1:len_trim(prows(r))) == trim(prows(r)), &
+                     "The 5b columns of QTF_Field.txt are not those of QTF_FieldPartial.txt")
+          if (allocated(error)) return
+          read (rows(r)(len_trim(prows(r)) + 1:), '(2ES14.6,I6)') dv, ih
+          if (kk == 1 .and. ii /= jj) then
+            ! Unit amplitudes, e^{-i Omega t}: i rho Omega phi_D or (i Omega/g) phi_D, then conjugated, scaled as the others
+            e = merge(phi12(pp), conjg(phi12(pp)), ii == 1)
+            if (pp == 1) then
+              e = (0d0, 1d0) * RHO_SOLVER * (w(ii) - w(jj)) * e
+              e = conjg(e) / (RHO_SOLVER * G_SOLVER)
+            else
+              e = (0d0, 1d0) * (w(ii) - w(jj)) / G_SOLVER * e
+              e = conjg(e)
+            end if
+            call check(error, ih == 1, "has_direct of a solved pair is not 1")
+            if (allocated(error)) return
+            call check(error, abs(cmplx(dv(1), dv(2), 8) - e) < 1d-5 * abs(e), "direct part of a solved pair")
+            if (allocated(error)) return
+          else
+            call check(error, ih == 0 .and. dv(1) == 0d0 .and. dv(2) == 0d0, "mean and sum rows have 0 and has_direct = 0")
+            if (allocated(error)) return
+          end if
+        end do
+      end do
+    end do
+  end do
+  call remove_dir(root)
+end subroutine test_direct_file
+
+!> qtf_field = 1 with qtf_direct = 0: the store is the one of 5b. QTF_Field.txt is not written, and QTF_FieldPartial.txt is
+!> the file of the run with direct parts, to the byte (the direct parts are in QTF_Field.txt only), whose header names no
+!> direct part. The integration tests qtf_field_* pin that file against the Phase 5b rows.
+subroutine test_direct_off(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "qtf_field_off_tmp", root2 = "qtf_field_direct_tmp"
+  complex(8), parameter :: phi12(2) = [(0.4d0, -0.3d0), (-0.1d0, 0.6d0)]
+  character(len=600) :: a(32), b(32), line
+  logical :: exists
+  integer :: n, m, r, unit, ios
+
+  call run_field_store(root, .false., phi12)
+  call run_field_store(root2, .true., phi12)
+  inquire (file=root // "/Wamit_format/QTF_Field.txt", exist=exists)
+  call check(error, .not. exists, "qtf_direct = 0 wrote QTF_Field.txt")
+  if (allocated(error)) return
+  call read_rows(root // "/Wamit_format/QTF_FieldPartial.txt", a, n)
+  call read_rows(root2 // "/Wamit_format/QTF_FieldPartial.txt", b, m)
+  call check(error, n == m .and. n == 16, "rows of QTF_FieldPartial.txt")
+  if (allocated(error)) return
+  do r = 1, n
+    call check(error, a(r) == b(r), "QTF_FieldPartial.txt differs with direct parts on")
+    if (allocated(error)) return
+  end do
+  ! The header lines too: none names a direct part
+  open (newunit=unit, file=root // "/Wamit_format/QTF_FieldPartial.txt", status='old', action='read')
+  do
+    read (unit, '(a)', iostat=ios) line
+    if (ios /= 0) exit
+    if (index(line, "direct") > 0 .or. index(line, "Re_dir") > 0) then
+      call check(error, .false., "The header of QTF_FieldPartial.txt names a direct part")
+      exit
+    end if
+  end do
+  close (unit)
+  call remove_dir(root)
+  call remove_dir(root2)
+end subroutine test_direct_off
 
 end module test_qtf_field

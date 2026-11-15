@@ -92,6 +92,7 @@ MODULE QTFDriver
    USE SecondOrderOutput, ONLY: write_qtf_row, write_qtf_terms_row, write_qtf_terms_header, write_direct_terms_header
    USE QTFPotential, ONLY: potential_pair, psi_surface_gradient, psi_waterline, NPOT_TERMS
    USE QTFDirect, ONLY: direct_at_omega, direct_fs_data
+   USE QTFField, ONLY: qfield_direct_active, qfield_direct_points, qfield_keep_direct
    USE FirstOrderState, ONLY: wave_gravity
    USE, INTRINSIC :: IEEE_ARITHMETIC, ONLY: IEEE_IS_FINITE
    IMPLICIT NONE
@@ -862,19 +863,22 @@ CONTAINS
       ! (qtf_direct_pairs), by direct_at_omega, into tdir. Call after the frequency loop, when every frequency is kept,
       ! with the solver at omega after its radiation solve (RadiationOnlySolves). Pairs with NaN or Inf are counted in
       ! qtf_nonfinite_pairs() and logged. npair and seconds (optional): the number of pairs, and the times of
-      ! direct_at_omega, for the log.
+      ! direct_at_omega (4: forcing, B2, solve and load, field evaluation), for the log.
       ! fs (optional, qtf_terms = full): the free-surface data of direct_fs_setup at omega; its pointers are set here to
       ! the free-surface store (fields and incident fields at the inner points, partial waves) and the sliver chords, so
       ! that T_dir has the free-surface forcing. Stops if a free-surface field was not stored.
+      ! With qtf_field = 1 the field points get phi_D of the body forcing only (direct_at_omega solves the free-surface
+      ! part apart when both are present), as the header of QTF_Field.txt says.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       REAL(8), INTENT(IN) :: omega
       INTEGER, INTENT(OUT), OPTIONAL :: npair
-      REAL(8), INTENT(OUT), OPTIONAL :: seconds(3)
+      REAL(8), INTENT(OUT), OPTIONAL :: seconds(4)
       TYPE(direct_fs_data), INTENT(INOUT), OPTIONAL :: fs
-      REAL(8) :: sec(3)
+      REAL(8) :: sec(4)
       INTEGER, ALLOCATABLE :: pairs(:, :)
-      COMPLEX(8), ALLOCATABLE :: t(:, :), parts(:, :, :)
+      COMPLEX(8), ALLOCATABLE :: t(:, :), parts(:, :, :), phi_field(:, :)
+      REAL(8), ALLOCATABLE :: xfield(:, :)
       INTEGER :: m, p, nbad, h
 
       IF (PRESENT(npair)) npair = 0
@@ -900,7 +904,18 @@ CONTAINS
          ALLOCATE (parts(6*mesh%nbody, SIZE(pairs, 2), 2))
       END IF
       ! An absent fs is passed on as absent: the direct solve of Phase 7a
-      CALL direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, omega_tol=psi_tol, seconds=sec, parts=parts, fs=fs)
+      IF (qfield_direct_active()) THEN
+         ! qtf_field = 1 with qtf_direct = 1: phi_D of every pair at the field points, for QTF_Field.txt (QTFField)
+         CALL qfield_direct_points(xfield)
+         ALLOCATE (phi_field(SIZE(xfield, 2), SIZE(pairs, 2)))
+         CALL direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, omega_tol=psi_tol, seconds=sec, parts=parts, &
+                              fs=fs, field_points=xfield, phi_field=phi_field)
+         DO p = 1, SIZE(pairs, 2)
+            CALL qfield_keep_direct(pairs(1, p), pairs(2, p), pairs(3, p), pairs(4, p), phi_field(:, p))
+         END DO
+      ELSE
+         CALL direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, omega_tol=psi_tol, seconds=sec, parts=parts, fs=fs)
+      END IF
       IF (PRESENT(npair)) npair = SIZE(pairs, 2)
       IF (PRESENT(seconds)) seconds = sec
       nbad = 0

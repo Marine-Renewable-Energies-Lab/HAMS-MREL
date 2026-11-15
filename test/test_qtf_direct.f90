@@ -41,6 +41,9 @@ module test_qtf_direct
   private
 
   public :: collect_qtf_direct
+  public :: radiation_at
+  ! The lid helpers of irregular frequency removal, for test_qtf_direct_field
+  public :: append_lid, set_lid, clear_lid, radiation_at_irr
 
   ! The first-order states of the pair, as test_qtf_potential: frequency and heading
   real(8), parameter :: w1 = 0.8d0, b1 = 0d0, w2 = 0.7d0, b2 = 0.3d0
