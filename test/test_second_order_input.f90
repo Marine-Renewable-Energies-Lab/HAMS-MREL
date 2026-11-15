@@ -44,6 +44,7 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("qtf_direct_sum_accepted", test_qtf_direct_sum_accepted), &
     new_unittest("qtf_sum_indirect_stops", test_qtf_sum_indirect_stops), &
     new_unittest("qtf_max_sw_negative", test_qtf_max_sw_negative), &
+    new_unittest("qtf_sum_full_deep_stops", test_qtf_sum_full_deep_stops), &
     new_unittest("qtf_edge_keys", test_qtf_edge_keys), &
     new_unittest("qtf_field_key", test_qtf_field_key) &
     ]
@@ -888,6 +889,31 @@ subroutine test_qtf_sum_indirect_stops(error)
   call check(error, ok, "qtf = 3, body, qtf_direct = 0 rejected: "//trim(msg))
   call remove_directory(root)
 end subroutine test_qtf_sum_indirect_stops
+
+!> qtf = 2 with qtf_terms = full and qtf_direct = 1 needs a finite depth as the difference QTF does
+subroutine test_qtf_sum_full_deep_stops(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_sum_full_deep"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 2", &
+                          "qtf_terms = full", "qtf_direct = 1"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "qtf = 2, full, qtf_direct = 1 rejected at reading: "//trim(msg))
+  if (allocated(error)) return
+  call validate_second_order(opts, 1, -1d0, 1, 0, .false., ok, msg)
+  call check(error, .not. ok, "deep water accepted with qtf = 2, full, qtf_direct = 1")
+  if (allocated(error)) return
+  call check(error, index(msg, "qtf_terms = full needs a finite water depth") == 1, "message: "//trim(msg))
+  if (allocated(error)) return
+  call validate_second_order(opts, 1, 20d0, 1, 0, .false., ok, msg)
+  call check(error, ok, "finite depth rejected: "//trim(msg))
+  call remove_directory(root)
+end subroutine test_qtf_sum_full_deep_stops
 
 !> qtf_max_sw is 0 by default and must not be negative
 subroutine test_qtf_max_sw_negative(error)

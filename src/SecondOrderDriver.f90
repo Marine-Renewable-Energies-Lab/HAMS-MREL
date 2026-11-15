@@ -197,15 +197,17 @@ CONTAINS
 
       b2_control = uses_b2_control(opts)
       IF (opts%qtf_b2_given .AND. .NOT. (opts%qtf_terms >= QTF_TERMS_BODY .AND. (opts%qtf == 1 .OR. opts%qtf == 3))) THEN
-         WRITE (*, '(a)') ' QTF note: qtf_b2 is ignored; it applies with qtf_terms = body or full and the difference QTF only.'
+         ! qtf = 2 with qtf_direct = 1 gives the sum through the direct method, which has no indirect B2 to move
+         WRITE (*, '(a)') ' QTF note: qtf_b2 is ignored; it applies with qtf_terms = body or full and the indirect difference'// &
+            ' QTF (qtf = 1 or 3) only.'
       END IF
       IF (opts%qtf_edge_given .AND. .NOT. (b2_control .OR. opts%qtf_direct == 1)) THEN
          WRITE (*, '(a)') ' QTF note: qtf_edge_weights and qtf_edge_angle are ignored; they apply with qtf_terms = body or'// &
             ' full, the difference QTF and qtf_b2 = control (qtf_edge_angle also with qtf_direct = 1) only.'
       END IF
-      IF (opts%qtf_fs_given .AND. .NOT. (opts%qtf_terms == QTF_TERMS_FULL .AND. (opts%qtf == 1 .OR. opts%qtf == 3))) THEN
+      IF (opts%qtf_fs_given .AND. .NOT. uses_fs(opts)) THEN
          WRITE (*, '(a)') ' QTF note: qtf_fs_radius, qtf_fs_rows, qtf_fs_panel, qtf_fs_modes and qtf_fs_evanescent are ignored;'// &
-            ' they apply with qtf_terms = full and the difference QTF only.'
+            ' they apply with qtf_terms = full and qtf = 1 or 3, or qtf = 2 with qtf_direct = 1, only.'
       END IF
       ALLOCATE (states(MERGE(NBETA, 1, keep_all_headings(opts))))
       ! Only the near-field and control-surface methods use the surface geometry (the control surface takes the waterplane
@@ -793,10 +795,12 @@ CONTAINS
    END FUNCTION keep_all_headings
 
    LOGICAL FUNCTION uses_fs(opts)
-      ! qtf_terms = full applies: the free-surface integral of the difference QTF is computed
+      ! qtf_terms = full applies: the free-surface integral is computed, for the difference QTF (qtf = 1 or 3) and, with
+      ! the direct method, for the sum QTF (qtf = 2; with qtf_direct = 0 that stops at input)
       TYPE(so_options), INTENT(IN) :: opts
 
-      uses_fs = opts%qtf_terms == QTF_TERMS_FULL .AND. (opts%qtf == 1 .OR. opts%qtf == 3)
+      uses_fs = opts%qtf_terms == QTF_TERMS_FULL .AND. &
+                (opts%qtf == 1 .OR. opts%qtf == 3 .OR. (opts%qtf == 2 .AND. opts%qtf_direct == 1))
    END FUNCTION uses_fs
 
    LOGICAL FUNCTION uses_b2_control(opts)

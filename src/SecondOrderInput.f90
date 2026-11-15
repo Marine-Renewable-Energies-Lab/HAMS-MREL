@@ -371,7 +371,7 @@ CONTAINS
          msg = 'cs_fd_step must be above 0 and at most 0.5 in SecondOrder.in.'
       ELSE IF (opts%cs_fs_rows < 0) THEN
          msg = 'cs_fs_rows must not be negative in SecondOrder.in.'
-      ELSE IF (opts%qtf_terms == QTF_TERMS_FULL .AND. (opts%qtf == 1 .OR. opts%qtf == 3) .AND. h < 0D0) THEN
+      ELSE IF (opts%qtf_terms == QTF_TERMS_FULL .AND. opts%qtf > 0 .AND. h < 0D0) THEN
          msg = 'qtf_terms = full needs a finite water depth (the outer free-surface integral uses the finite-depth modes); '// &
                'set a large finite depth instead.'
       ELSE IF (opts%qtf > 0 .AND. .NOT. opts%do_near) THEN
