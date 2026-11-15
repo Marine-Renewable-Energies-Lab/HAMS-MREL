@@ -99,9 +99,10 @@ MODULE QTFDriver
    PRIVATE
 
    PUBLIC :: qtf_init, qtf_keep, qtf_pair_load, qtf_finish, qtf_stored_mb, qtf_kept
+   PUBLIC :: qtf_omega_list, irregular_frequency_estimate, sum_pair_index, qtf_sum_limits
    PUBLIC :: qtf_radiation_list, qtf_radiation_omegas, qtf_direct_omegas, qtf_omega_on_grid, qtf_keep_psi, qtf_psi_index, qtf_psi_count, qtf_psi_tolerance
    PUBLIC :: qtf_nonfinite_psi, qtf_nonfinite_pairs
-   PUBLIC :: qtf_direct_at_omega, qtf_direct_pairs, qtf_direct_missing
+   PUBLIC :: qtf_direct_at_omega, qtf_direct_pairs, qtf_direct_missing, qtf_diff_omega
    PUBLIC :: qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, qtf_set_edge_weights
    PUBLIC :: qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active
 
@@ -119,6 +120,12 @@ MODULE QTFDriver
    ! Relative tolerance of the difference frequencies: rounding only. Differences of distinct grid values that are closer
    ! than this are not merged into one psi (a period grid has many that differ by 1e-6 and more)
    REAL(8), PARAMETER :: PSI_REL_TOL = 1D-9
+   ! Phase 7c-2: the list is the union of the difference frequencies (is_diff) and, with the sum on, of the sum frequencies
+   ! omega_i + omega_j (is_sum). sum_cut_irr is the estimate of the lowest irregular frequency (HUGE: none applies): sums at
+   ! or above it are left out. max_sw is qtf_max_sw (0: all).
+   LOGICAL, ALLOCATABLE :: psi_is_diff(:), psi_is_sum(:) ! (nneed)
+   LOGICAL :: diff_on = .FALSE., sum_on = .FALSE.        ! the difference and the sum kernel of the direct solve
+   REAL(8) :: sum_cut_irr = HUGE(1D0), max_sw = 0D0
    COMPLEX(8), ALLOCATABLE :: psi_store(:, :, :)         ! (n_panels, 6*nbody, nneed)
    LOGICAL, ALLOCATABLE :: psi_kept(:)                   ! (nneed)
    ! Potential part of the difference QTF (qtf_terms = body)
@@ -168,7 +175,7 @@ MODULE QTFDriver
 CONTAINS
 
    SUBROUTINE qtf_init(opts, nfreq, beta_in_deg, nwl, n_panels, nbody, outputdir, omegas_main, fs_pts, fs_centre, fs_radius, &
-                       fs_depth, fs_mmax, fs_nev, fs_np_circle)
+                       fs_depth, fs_mmax, fs_nev, fs_np_circle, geom, g, irsp)
       ! Allocates the whole store for up to nfreq frequencies, the headings beta_in_deg, n_panels panels and nbody bodies,
       ! so that a run that does not fit stops here, before the first-order solves. outputdir holds Wamit_format.
       ! omegas_main (rad/s), the nfreq frequencies of the QTF grid, is needed for qtf_terms = body: the store then also holds
@@ -176,6 +183,9 @@ CONTAINS
       ! (fs_centre, fs_radius), the depth fs_depth and the mode counts fs_mmax, fs_nev of the partial waves, for the
       ! free-surface store, and fs_np_circle, the chords of the polygon a generated inner mesh ends on (build_fs_inner; 0 or
       ! absent for a mesh from FSInnerMesh.pnl, which gets no sliver).
+      ! geom, g and irsp (Phase 7c-2, the sum frequency of the direct solve): with irsp = 0 the sum pairs at or above the
+      ! estimate of the lowest irregular frequency (irregular_frequency_estimate) are left out of the list and of the pairs,
+      ! with a warning. Without them no such cutoff applies.
       TYPE(so_options), INTENT(IN) :: opts
       INTEGER, INTENT(IN) :: nfreq, nwl, n_panels, nbody
       REAL(8), INTENT(IN) :: beta_in_deg(:)
@@ -184,11 +194,19 @@ CONTAINS
       TYPE(cs_points), INTENT(IN), OPTIONAL :: fs_pts
       REAL(8), INTENT(IN), OPTIONAL :: fs_centre(2), fs_radius, fs_depth
       INTEGER, INTENT(IN), OPTIONAL :: fs_mmax, fs_nev, fs_np_circle
+      TYPE(surface_geom), INTENT(IN), OPTIONAL :: geom
+      REAL(8), INTENT(IN), OPTIONAL :: g
+      INTEGER, INTENT(IN), OPTIONAL :: irsp
       INTEGER :: st, i, b
+      REAL(8) :: sum_top
 
       active = opts%qtf > 0
       IF (.NOT. active) RETURN
-      body_active = opts%qtf_terms >= QTF_TERMS_BODY .AND. (opts%qtf == 1 .OR. opts%qtf == 3)
+      ! The sum is on for qtf = 2 or 3 with the direct solve; with qtf_direct = 0 the sum has no potential part in this phase
+      ! (the indirect one is Phase 6b) and nothing changes
+      diff_on = opts%qtf == 1 .OR. opts%qtf == 3
+      sum_on = opts%qtf >= 2 .AND. opts%qtf_direct == 1 .AND. opts%qtf_terms >= QTF_TERMS_BODY
+      body_active = opts%qtf_terms >= QTF_TERMS_BODY .AND. (diff_on .OR. sum_on)
       IF (body_active) THEN
          IF (.NOT. PRESENT(omegas_main)) THEN
             WRITE (*, '(a)') ' QTF: qtf_init needs the main-grid frequencies for qtf_terms = body.'
@@ -199,7 +217,16 @@ CONTAINS
          IF (ALLOCATED(psi_reuse)) DEALLOCATE (psi_reuse)
          psi_tol = qtf_psi_tolerance(omegas_main)
          CALL check_grid(omegas_main)
-         CALL qtf_radiation_list(omegas_main, opts%qtf_max_dw, psi_tol, psi_need, psi_reuse)
+         max_sw = opts%qtf_max_sw
+         sum_cut_irr = HUGE(1D0)
+         sum_top = 0D0
+         IF (sum_on) THEN
+            CALL qtf_sum_limits(opts, geom, g, irsp, sum_cut_irr, sum_top)
+            CALL sum_warnings(omegas_main)
+         END IF
+         IF (ALLOCATED(psi_is_diff)) DEALLOCATE (psi_is_diff, psi_is_sum)
+         CALL qtf_omega_list(omegas_main, opts%qtf_max_dw, sum_top, psi_tol, diff_on, sum_on, psi_need, psi_reuse, &
+                             psi_is_diff, psi_is_sum)
          CALL check_pairs(omegas_main)
       END IF
       kind_qtf = opts%qtf
@@ -234,6 +261,7 @@ CONTAINS
       IF (.NOT. body_active) THEN
          IF (ALLOCATED(psi_need)) DEALLOCATE (psi_need)
          IF (ALLOCATED(psi_reuse)) DEALLOCATE (psi_reuse)
+         IF (ALLOCATED(psi_is_diff)) DEALLOCATE (psi_is_diff, psi_is_sum)
       END IF
       IF (ALLOCATED(psi_store)) DEALLOCATE (psi_store)
       IF (ALLOCATED(psi_kept)) DEALLOCATE (psi_kept)
@@ -360,6 +388,17 @@ CONTAINS
 
          DO i = 1, SIZE(w)
             DO j = 1, SIZE(w)
+               IF (sum_on .AND. j >= i) THEN
+                  IF (sum_pair_kept(w(i) + w(j))) THEN
+                     IF (qtf_psi_index(w(i) + w(j)) == 0) THEN
+                        WRITE (*, '(a,ES22.14,a,ES14.6,a,ES14.6,a)') ' QTF: Omega =', w(i) + w(j), ' rad/s of the pair', w(i), &
+                           ',', w(j), ' rad/s is not among the frequencies of psi.'
+                        WRITE (*, '(a)') ' This is a bug: please report it with the frequency list.'
+                        ERROR STOP 1
+                     END IF
+                  END IF
+               END IF
+               IF (.NOT. diff_on) CYCLE
                dw = w(i) - w(j)
                IF (dw <= 0D0) CYCLE
                IF (opts%qtf_max_dw > 0D0 .AND. dw > opts%qtf_max_dw*(1D0 + 1D-9)) CYCLE
@@ -373,7 +412,132 @@ CONTAINS
          END DO
       END SUBROUTINE check_pairs
 
+      SUBROUTINE sum_warnings(w)
+         ! The log of what the sum leaves out (spec 4.1, rulings R2 and R5 of the Phase 7c-2 plan)
+         REAL(8), INTENT(IN) :: w(:)
+         INTEGER :: i, j, nleft, ntot
+
+         IF (opts%qtf_terms == QTF_TERMS_BODY) THEN
+            WRITE (*, '(a)') ' QTF warning: qtf_terms = body with the sum frequency leaves out the free-surface integral. The'
+            WRITE (*, '(a)') ' sum QTF without it is not usable (WAMIT advises against it); use qtf_terms = full.'
+         END IF
+         IF (sum_cut_irr < HUGE(1D0)) THEN
+            nleft = 0
+            ntot = 0
+            DO i = 1, SIZE(w)
+               DO j = i, SIZE(w)
+                  ntot = ntot + 1
+                  IF (w(i) + w(j) >= sum_cut_irr) nleft = nleft + 1
+               END DO
+            END DO
+            IF (nleft > 0) THEN
+               WRITE (*, '(a,F8.4,a,I0,a,I0,a)') ' QTF warning: the sum frequencies at or above', sum_cut_irr, &
+                  ' rad/s, the estimate of the lowest irregular frequency, are left out of QTF_Direct.12s: ', nleft, ' of ', &
+                  ntot, ' pairs (i <= j).'
+               WRITE (*, '(a)') ' Set If_remove_irr_freq = 1 to keep them. The estimate is a lower bound for a wall-sided hull'// &
+                  ' only; near the true irregular frequency a row can still show a spike.'
+            END IF
+         END IF
+      END SUBROUTINE sum_warnings
+
    END SUBROUTINE qtf_init
+
+   LOGICAL FUNCTION sum_pair_kept(omega)
+      ! The sum Omega = omega_i + omega_j is inside the cutoff of the sum: not above qtf_max_sw (inclusive, to rounding, as
+      ! qtf_max_dw) and below the estimate of the lowest irregular frequency
+      REAL(8), INTENT(IN) :: omega
+
+      sum_pair_kept = omega < sum_cut_irr
+      IF (max_sw > 0D0 .AND. omega > max_sw*(1D0 + 1D-9)) sum_pair_kept = .FALSE.
+   END FUNCTION sum_pair_kept
+
+   SUBROUTINE qtf_sum_limits(opts, geom, g, irsp, cut_irr, sum_top)
+      ! The cutoffs of the sum frequencies (Phase 7c-2): cut_irr, the estimate of the lowest irregular frequency, when
+      ! irsp = 0 and geom and g are given (HUGE otherwise: no cutoff); sum_top, the largest sum Omega that has a psi, for
+      ! qtf_omega_list: the smaller of qtf_max_sw (when above 0) and cut_irr (a hair below it, as sums at it are left out),
+      ! 0 when neither applies. qtf_init and the driver log call it, so that the list is one.
+      TYPE(so_options), INTENT(IN) :: opts
+      TYPE(surface_geom), INTENT(IN), OPTIONAL :: geom
+      REAL(8), INTENT(IN), OPTIONAL :: g
+      INTEGER, INTENT(IN), OPTIONAL :: irsp
+      REAL(8), INTENT(OUT) :: cut_irr, sum_top
+
+      cut_irr = HUGE(1D0)
+      sum_top = 0D0
+      IF (PRESENT(geom) .AND. PRESENT(g) .AND. PRESENT(irsp)) THEN
+         IF (irsp == 0) cut_irr = irregular_frequency_estimate(geom, g)
+      END IF
+      IF (opts%qtf_max_sw > 0D0) sum_top = opts%qtf_max_sw
+      IF (cut_irr < HUGE(1D0)) THEN
+         IF (sum_top > 0D0) THEN
+            sum_top = MIN(sum_top, cut_irr*(1D0 - 1D-9))
+         ELSE
+            sum_top = cut_irr*(1D0 - 1D-9)
+         END IF
+      END IF
+   END SUBROUTINE qtf_sum_limits
+
+   REAL(8) FUNCTION irregular_frequency_estimate(geom, g)
+      ! Estimate of the lowest irregular frequency (rad/s) of the closed waterline loops of geom, for the cutoff of the sum
+      ! frequencies (ruling R2): the minimum over the loops of every body of sqrt(g j01 / a_eq), with j01 = 2.404826 the first
+      ! zero of J_0 and a_eq = sqrt(A / pi), A the shoelace area of the loop. Why: for a wall-sided hull the interior
+      ! eigenfunction J_m(kr) sinh k(z + d) has omega^2 = g k coth(k d) with coth >= 1 [derived], so omega^2 >= g k;
+      ! by Faber-Krahn the disc of equal area has the smallest first Dirichlet eigenvalue (Polya and Szego, 1951), so
+      ! k >= j01 / a_eq and the value is a lower bound. A hull that is not wall-sided (flare, rounded bilge) is not covered.
+      ! It gives 1.536 rad/s for a cylinder of radius 10 m (exact 1.548) and 1.983 for the OC4 hull. HUGE(1D0) if there is
+      ! no closed loop. A loop is closed when wl_next leads back to its first segment; open chains are skipped.
+      TYPE(surface_geom), INTENT(IN) :: geom
+      REAL(8), INTENT(IN) :: g
+      REAL(8), PARAMETER :: J01 = 2.404826D0
+      LOGICAL, ALLOCATABLE :: seen(:)
+      REAL(8) :: area, a_eq
+      INTEGER :: iw, j, nseg
+
+      irregular_frequency_estimate = HUGE(1D0)
+      IF (.NOT. ALLOCATED(geom%wl_next) .OR. geom%nwl < 1) RETURN
+      ALLOCATE (seen(geom%nwl))
+      seen = .FALSE.
+      DO iw = 1, geom%nwl
+         IF (seen(iw)) CYCLE
+         ! Walk wl_next from iw: a closed loop returns to iw, a chain ends at 0 or runs into a segment already seen
+         area = 0D0
+         nseg = 0
+         j = iw
+         DO
+            seen(j) = .TRUE.
+            area = area + geom%wl_x1(1, j)*geom%wl_x2(2, j) - geom%wl_x2(1, j)*geom%wl_x1(2, j)
+            nseg = nseg + 1
+            j = geom%wl_next(j)
+            IF (j == 0 .OR. nseg > geom%nwl) EXIT
+            IF (j == iw) EXIT
+            IF (seen(j)) THEN
+               j = 0
+               EXIT
+            END IF
+         END DO
+         IF (j /= iw) CYCLE
+         area = 0.5D0*ABS(area)
+         IF (area <= 0D0) CYCLE
+         a_eq = SQRT(area/ACOS(-1D0))
+         irregular_frequency_estimate = MIN(irregular_frequency_estimate, SQRT(g*J01/a_eq))
+      END DO
+   END FUNCTION irregular_frequency_estimate
+
+   INTEGER FUNCTION sum_pair_index(i, j)
+      ! The pair rule of the sum QTF, as difference_pair_index is that of the difference QTF: 0 when omega_i + omega_j is
+      ! beyond the cutoff of the sum (qtf_max_sw, inclusive to rounding, or the estimate of the lowest irregular frequency
+      ! with IRSP = 0, exclusive: sums at or above it are left out), else the index of omega_i + omega_j in psi_need
+      ! (qtf_psi_index), or -1 if it is not there. 0 as well when the sum is not on.
+      INTEGER, INTENT(IN) :: i, j
+      REAL(8) :: w
+
+      sum_pair_index = 0
+      IF (.NOT. sum_on) RETURN
+      w = store(i, 1)%omega + store(j, 1)%omega
+      IF (.NOT. sum_pair_kept(w)) RETURN
+      sum_pair_index = qtf_psi_index(w)
+      IF (sum_pair_index == 0) sum_pair_index = -1
+   END FUNCTION sum_pair_index
 
    REAL(8) PURE FUNCTION qtf_psi_tolerance(omegas_main)
       ! The tolerance of the difference frequencies of the grid omegas_main (rad/s): qtf_radiation_list puts every Omega
@@ -600,30 +764,63 @@ CONTAINS
    END FUNCTION heading_pair
 
    SUBROUTINE qtf_radiation_list(omegas_main, max_dw_in, tol, need, reuse_index)
-      ! The distinct difference frequencies Omega = omega_i - omega_j > 0 of the grid omegas_main, ascending, with
-      ! Omega <= max_dw_in (all of them for max_dw_in = 0), as in qtf_finish. Every difference is within tol of its need(m):
-      ! the differences within tol/2 of the smallest of them are one, and reuse_index(m) is the main-grid index whose
-      ! frequency is need(m) within tol/2, else 0; need(m) is then that frequency exactly, so that the radiation solve of the
-      ! main grid finds it. qtf_init passes qtf_psi_tolerance, which merges rounding only.
+      ! The difference frequencies only: qtf_omega_list without the sum, which returns exactly this
       REAL(8), INTENT(IN) :: omegas_main(:), max_dw_in, tol
       REAL(8), ALLOCATABLE, INTENT(OUT) :: need(:)
       INTEGER, ALLOCATABLE, INTENT(OUT) :: reuse_index(:)
-      REAL(8), ALLOCATABLE :: d(:)
+      LOGICAL, ALLOCATABLE :: is_diff(:), is_sum(:)
+
+      CALL qtf_omega_list(omegas_main, max_dw_in, 0D0, tol, .TRUE., .FALSE., need, reuse_index, is_diff, is_sum)
+   END SUBROUTINE qtf_radiation_list
+
+   SUBROUTINE qtf_omega_list(omegas_main, max_dw_in, sum_top, tol, want_diff, want_sum, need, reuse_index, is_diff, is_sum)
+      ! The distinct frequencies Omega at which psi is needed, ascending: with want_diff the differences
+      ! Omega = omega_i - omega_j > 0 of the grid omegas_main with Omega <= max_dw_in (all of them for max_dw_in = 0), as in
+      ! qtf_finish; with want_sum the sums omega_i + omega_j (i <= j) with Omega <= sum_top (all of them for sum_top = 0).
+      ! Every one is within tol of its need(m): the values within tol/2 of the smallest of a cluster are one, and
+      ! reuse_index(m) is the main-grid index whose frequency is need(m) within tol/2, else 0; need(m) is then that frequency
+      ! exactly, so that the radiation solve of the main grid finds it. is_diff(m) and is_sum(m) say which kernels use
+      ! need(m): a frequency that is both a difference and a sum (0.6 from 0.9 - 0.3 and 0.3 + 0.3) has one solve.
+      ! qtf_init passes qtf_psi_tolerance, which merges rounding only. With want_sum = .FALSE. the list is the one of the
+      ! Phases 6 and 7a to the bit.
+      REAL(8), INTENT(IN) :: omegas_main(:), max_dw_in, sum_top, tol
+      LOGICAL, INTENT(IN) :: want_diff, want_sum
+      REAL(8), ALLOCATABLE, INTENT(OUT) :: need(:)
+      INTEGER, ALLOCATABLE, INTENT(OUT) :: reuse_index(:)
+      LOGICAL, ALLOCATABLE, INTENT(OUT) :: is_diff(:), is_sum(:)
+      REAL(8), ALLOCATABLE :: d(:), first(:), raw(:)
       REAL(8) :: dw
-      INTEGER :: n, i, j, m, nd
+      INTEGER :: n, i, j, m, nd, ns, lo, hi, mid
 
       n = SIZE(omegas_main)
-      ALLOCATE (d(n*n))
+      ALLOCATE (d(n*n + n*(n + 1)/2))
       nd = 0
-      DO i = 1, n
-         DO j = 1, n
-            dw = omegas_main(i) - omegas_main(j)
-            IF (dw <= tol) CYCLE
-            IF (max_dw_in > 0D0 .AND. dw > max_dw_in*(1D0 + 1D-9)) CYCLE
-            nd = nd + 1
-            d(nd) = dw
+      IF (want_diff) THEN
+         DO i = 1, n
+            DO j = 1, n
+               dw = omegas_main(i) - omegas_main(j)
+               IF (dw <= tol) CYCLE
+               IF (max_dw_in > 0D0 .AND. dw > max_dw_in*(1D0 + 1D-9)) CYCLE
+               nd = nd + 1
+               d(nd) = dw
+            END DO
          END DO
-      END DO
+      END IF
+      ns = nd
+      IF (want_sum) THEN
+         DO i = 1, n
+            DO j = i, n
+               dw = omegas_main(i) + omegas_main(j)
+               IF (sum_top > 0D0 .AND. dw > sum_top*(1D0 + 1D-9)) CYCLE
+               nd = nd + 1
+               d(nd) = dw
+            END DO
+         END DO
+      END IF
+      ! raw keeps the values in the order of d, the differences first (d(1:ns)) and the sums after them; the flags of a
+      ! cluster come from the values that fall in it
+      ALLOCATE (raw(nd))
+      raw = d(1:nd)
       CALL heap_sort(d(1:nd))
       ALLOCATE (need(nd))
       m = 0
@@ -635,6 +832,28 @@ CONTAINS
          need(m) = d(i)
       END DO
       need = need(1:m)
+      first = need
+      ALLOCATE (is_diff(m), is_sum(m))
+      is_diff = .FALSE.
+      is_sum = .FALSE.
+      DO i = 1, nd
+         ! The cluster of a value is the last one whose first value is at or below it (bisection)
+         lo = 1
+         hi = m
+         DO WHILE (lo < hi)
+            mid = (lo + hi + 1)/2
+            IF (first(mid) <= raw(i)) THEN
+               lo = mid
+            ELSE
+               hi = mid - 1
+            END IF
+         END DO
+         IF (i <= ns) THEN
+            is_diff(lo) = .TRUE.
+         ELSE
+            is_sum(lo) = .TRUE.
+         END IF
+      END DO
       ALLOCATE (reuse_index(m))
       reuse_index = 0
       DO i = 1, m
@@ -646,7 +865,7 @@ CONTAINS
             END IF
          END DO
       END DO
-   END SUBROUTINE qtf_radiation_list
+   END SUBROUTINE qtf_omega_list
 
    PURE SUBROUTINE heap_sort(a)
       ! Ascending, in place
@@ -821,7 +1040,7 @@ CONTAINS
       INTEGER :: m, i, j, b1, b2, np
 
       ALLOCATE (pairs(4, 0))
-      IF (.NOT. direct_active) RETURN
+      IF (.NOT. direct_active .OR. .NOT. diff_on) RETURN
       m = qtf_psi_index(omega)
       IF (m == 0) RETURN
       ALLOCATE (tmp(4, nkept*nkept*heading_pairs(nbeta)))
@@ -858,6 +1077,18 @@ CONTAINS
       IF (difference_pair_index == 0) difference_pair_index = -1
    END FUNCTION difference_pair_index
 
+   LOGICAL FUNCTION qtf_diff_omega(omega)
+      ! The frequency omega of the list is a difference frequency that the difference kernel of the direct solve uses. False
+      ! for a sum-only frequency (Phase 7c-2), and when qtf_init has not built the list.
+      REAL(8), INTENT(IN) :: omega
+      INTEGER :: m
+
+      qtf_diff_omega = .FALSE.
+      IF (.NOT. ALLOCATED(psi_is_diff)) RETURN
+      m = qtf_psi_index(omega)
+      IF (m > 0) qtf_diff_omega = diff_on .AND. psi_is_diff(m)
+   END FUNCTION qtf_diff_omega
+
    SUBROUTINE qtf_direct_at_omega(mesh, geom, omega, npair, seconds, fs)
       ! The direct method at the difference frequency omega (qtf_direct = 1): T_dir of every pair with that Omega
       ! (qtf_direct_pairs), by direct_at_omega, into tdir. Call after the frequency loop, when every frequency is kept,
@@ -888,6 +1119,12 @@ CONTAINS
       IF (m == 0) THEN
          WRITE (*, '(a,ES14.6,a)') ' QTF direct: omega =', omega, ' rad/s is not a difference frequency of the grid.'
          ERROR STOP 1
+      END IF
+      IF (.NOT. qtf_diff_omega(omega)) THEN
+         ! A sum frequency that is no difference: the difference kernel has no pair here (the sum kernel comes with the
+         ! sum solve of Phase 7c-2), so there is nothing to solve
+         tdir_kept(m) = .TRUE.
+         RETURN
       END IF
       IF (nkept /= SIZE(store, 1)) THEN
          WRITE (*, '(a,I0,a,I0,a)') ' QTF direct: ', nkept, ' of ', SIZE(store, 1), &
@@ -1087,7 +1324,7 @@ CONTAINS
       REAL(8), INTENT(IN) :: refl
 
       IF (.NOT. active) RETURN
-      IF (body_active) CALL potential_part(mesh, geom, refl)
+      IF (body_active .AND. diff_on) CALL potential_part(mesh, geom, refl)
       IF (direct_active) THEN
          CALL check_direct_kept()
          IF (direct_terms) CALL write_direct_terms(refl)
@@ -1097,6 +1334,7 @@ CONTAINS
       WRITE (*, '(a,I0,a,I0,a)') ' QTF quadratic part: ', nkept, ' frequencies and ', nbeta, ' headings'
       DEALLOCATE (store, store_wl, store_oufr)
       IF (ALLOCATED(psi_store)) DEALLOCATE (psi_store, psi_kept, psi_need, psi_reuse)
+      IF (ALLOCATED(psi_is_diff)) DEALLOCATE (psi_is_diff, psi_is_sum)
       IF (ALLOCATED(tpot)) DEALLOCATE (tpot)
       IF (ALLOCATED(tdir)) DEALLOCATE (tdir, tdir_kept)
       IF (ALLOCATED(tdir_i2)) DEALLOCATE (tdir_i2, tdir_d)
@@ -1107,6 +1345,10 @@ CONTAINS
       body_active = .FALSE.
       direct_active = .FALSE.
       direct_terms = .FALSE.
+      diff_on = .FALSE.
+      sum_on = .FALSE.
+      sum_cut_irr = HUGE(1D0)
+      max_sw = 0D0
 
    CONTAINS
 

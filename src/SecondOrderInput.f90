@@ -103,6 +103,9 @@ CONTAINS
       ELSE IF (opts%qtf_max_dw < 0D0) THEN
          ok = .FALSE.
          msg = 'qtf_max_dw must not be negative in SecondOrder.in.'
+      ELSE IF (opts%qtf_max_sw < 0D0) THEN
+         ok = .FALSE.
+         msg = 'qtf_max_sw must not be negative in SecondOrder.in.'
       ELSE IF (.NOT. (opts%qtf_edge_angle > 0D0 .AND. opts%qtf_edge_angle < 180D0)) THEN
          ok = .FALSE.
          msg = 'qtf_edge_angle must be between 0 and 180 degrees in SecondOrder.in.'
@@ -130,13 +133,10 @@ CONTAINS
       ELSE IF (opts%qtf_fs_evanescent < 0) THEN
          ok = .FALSE.
          msg = 'qtf_fs_evanescent must not be negative in SecondOrder.in.'
-      ELSE IF (opts%qtf_terms == QTF_TERMS_FULL .AND. opts%qtf == 2) THEN
+      ELSE IF (opts%qtf_terms >= QTF_TERMS_BODY .AND. opts%qtf == 2 .AND. opts%qtf_direct == 0) THEN
+         ! The sum-frequency potential part comes from the direct solve (Phase 7c-2); the indirect one is Phase 6b
          ok = .FALSE.
-         msg = 'qtf_terms = full needs the difference QTF (qtf = 1 or 3); the sum frequency is Phase 6b.'
-      ELSE IF (opts%qtf_terms == QTF_TERMS_BODY .AND. opts%qtf == 2) THEN
-         ok = .FALSE.
-         msg = 'qtf_terms = body needs the difference QTF (qtf = 1 or 3); sum-frequency body forcing needs the free-surface'// &
-               ' integrals (Phase 6).'
+         msg = 'qtf = 2 with qtf_terms = body or full needs qtf_direct = 1: the indirect sum-frequency QTF is Phase 6b.'
       ELSE IF (opts%qtf_direct < 0 .OR. opts%qtf_direct > 1) THEN
          ok = .FALSE.
          msg = 'qtf_direct must be 0 or 1 in SecondOrder.in.'
@@ -145,9 +145,9 @@ CONTAINS
          ! body or full: with full the direct solve takes the free-surface forcing too (Phase 7b)
          ok = .FALSE.
          msg = 'qtf_direct = 1 needs qtf_terms = body or full in SecondOrder.in.'
-      ELSE IF (opts%qtf_direct == 1 .AND. .NOT. (opts%qtf == 1 .OR. opts%qtf == 3)) THEN
+      ELSE IF (opts%qtf_direct == 1 .AND. opts%qtf == 0) THEN
          ok = .FALSE.
-         msg = 'qtf_direct = 1 needs the difference QTF (qtf = 1 or 3) in SecondOrder.in.'
+         msg = 'qtf_direct = 1 needs qtf = 1, 2 or 3 in SecondOrder.in.'
       END IF
       IF (.NOT. ok) RETURN
 
@@ -222,6 +222,8 @@ CONTAINS
          READ(value, *, IOSTAT=ios) opts%qtf_field
       CASE ('qtf_max_dw')
          READ(value, *, IOSTAT=ios) opts%qtf_max_dw
+      CASE ('qtf_max_sw')
+         READ(value, *, IOSTAT=ios) opts%qtf_max_sw
       CASE ('qtf_terms')
          IF (value == 'quadratic') THEN
             opts%qtf_terms = QTF_TERMS_QUADRATIC

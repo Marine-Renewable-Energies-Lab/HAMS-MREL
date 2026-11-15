@@ -56,7 +56,7 @@ MODULE SecondOrderDriver
    ! QTF store, whose size the log gives before qtf_init allocates it.
 
    USE Const_mod, ONLY: G, RHO
-   USE HAMS_mod, ONLY: SYBO
+   USE HAMS_mod, ONLY: SYBO, IRSP
    USE WaveDyn_mod, ONLY: AMP, BETA, BLNR, H, NBETA, NBODY, NK, NPER, OUFR, TP, V, W1, WK, WVFQ, WVHD, WVNB, AMAS, BDMP, EXFC, &
                           DSPL, AMAS_MULTI_COMB, BDMP_MULTI_COMB, BLNR_MULTI, EXFC_MULTI_COMB, DSPL_MULTI_COMB
    USE Body_mod, ONLY: CRS, KSTF, MATX, REFL, XR, XR_MULTI, CRS_MULTI, KSTF_MULTI, MATX_MULTI
@@ -82,9 +82,10 @@ MODULE SecondOrderDriver
    USE ControlSurfaceDrift, ONLY: control_surface_pair, CS_T_LINE, CS_T_PRESSURE, CS_T_HYDROSTATIC
    USE SecondOrderOutput, ONLY: write_drift_row, write_terms_row
    USE QTFDriver, ONLY: qtf_init, qtf_keep, qtf_finish, qtf_stored_mb, qtf_keep_psi, qtf_psi_index, qtf_psi_count, &
-                        qtf_radiation_list, qtf_psi_tolerance, &
+                        qtf_radiation_list, qtf_omega_list, qtf_sum_limits, qtf_psi_tolerance, &
                         qtf_radiation_omegas, qtf_omega_on_grid, qtf_set_control_surface, qtf_keep_cs_velocity, &
-                        qtf_keep_cs_psi, qtf_set_edge_weights, qtf_keep_fs_state, qtf_keep_fs_psi, qtf_direct_at_omega
+                        qtf_keep_cs_psi, qtf_set_edge_weights, qtf_keep_fs_state, qtf_keep_fs_psi, qtf_direct_at_omega, &
+                        qtf_diff_omega
    USE QTFFreeSurface, ONLY: fs_point_field, fs_inner_fields, fs_inner_steps, fs_sample_phi, fs_circle_modes, fs_mode_warning, &
                              fs_auto_modes, fs_auto_evanescent, fs_radius_message, fs_coverage_check
    USE PartialWaves, ONLY: pw_set, pw_sample_points, pw_evanescent_from_wvn, PW_KR_MAX
@@ -249,7 +250,9 @@ CONTAINS
          nqtf = NPER - MERGE(2, 0, SYBO == 1)
          WRITE (*, '(a,F10.1,a,I0,a,I0,a)') ' QTF: the first-order states take', &
             qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA), ' MB for ', nqtf, ' frequencies and ', NBETA, ' headings'
-         body_terms = opts%qtf_terms >= QTF_TERMS_BODY .AND. (opts%qtf == 1 .OR. opts%qtf == 3)
+         ! The body forcing of the difference QTF, and with qtf_direct = 1 also that of the sum (Phase 7c-2)
+         body_terms = opts%qtf_terms >= QTF_TERMS_BODY .AND. &
+                      (opts%qtf == 1 .OR. opts%qtf == 3 .OR. (opts%qtf == 2 .AND. opts%qtf_direct == 1))
          IF (body_terms) THEN
             CALL body_terms_setup(opts, nqtf, inputdir, outputdir)
          ELSE
@@ -331,6 +334,9 @@ CONTAINS
       INTEGER :: dmg, dnev
       REAL(8), ALLOCATABLE :: need(:)
       INTEGER, ALLOCATABLE :: reuse(:)
+      LOGICAL, ALLOCATABLE :: is_diff(:), is_sum(:)
+      REAL(8) :: cut_irr, sum_top
+      LOGICAL :: want_sum
       INTEGER :: i, first, nneed, nreuse, npairs, nmask
 
       first = MERGE(2, 0, SYBO == 1)
@@ -339,11 +345,20 @@ CONTAINS
       END DO
       ! The counts and the size go to the log before qtf_init allocates, so that a run that does not fit has them; qtf_init
       ! builds the same list
-      CALL qtf_radiation_list(omegas, opts%qtf_max_dw, qtf_psi_tolerance(omegas), need, reuse)
+      want_sum = opts%qtf >= 2 .AND. opts%qtf_direct == 1
+      CALL qtf_sum_limits(opts, geom, G, IRSP, cut_irr, sum_top)
+      CALL qtf_omega_list(omegas, opts%qtf_max_dw, sum_top, qtf_psi_tolerance(omegas), opts%qtf == 1 .OR. opts%qtf == 3, &
+                          want_sum, need, reuse, is_diff, is_sum)
       nneed = SIZE(need)
       nreuse = COUNT(reuse > 0)
-      WRITE (*, '(a,I0,a,I0,a,I0,a)') ' QTF body forcing: psi at ', nneed, ' difference frequencies, ', nreuse, &
-         ' from the main grid and ', nneed - nreuse, ' radiation-only solves (each costs about one radiation solve)'
+      IF (want_sum) THEN
+         WRITE (*, '(a,I0,a,I0,a,I0,a,I0,a,I0,a)') ' QTF body forcing: psi at ', nneed, ' frequencies (', COUNT(is_diff), &
+            ' differences, ', COUNT(is_sum), ' sums), ', nreuse, ' from the main grid and ', nneed - nreuse, &
+            ' radiation-only solves (each costs about one radiation solve)'
+      ELSE
+         WRITE (*, '(a,I0,a,I0,a,I0,a)') ' QTF body forcing: psi at ', nneed, ' difference frequencies, ', nreuse, &
+            ' from the main grid and ', nneed - nreuse, ' radiation-only solves (each costs about one radiation solve)'
+      END IF
       npairs = MERGE(NBETA*NBETA, NBETA, opts%mean_drift == 2)
       ! qtf_direct = 1 keeps T_dir beside T_pot, of the same size
       IF (opts%qtf_direct == 1) npairs = 2*npairs
@@ -375,9 +390,10 @@ CONTAINS
       IF (fs_terms) THEN
          CALL qtf_init(opts, nqtf, WVHD(1:NBETA), geom%nwl, mesh%n, mesh%nbody, outputdir, omegas_main=omegas, fs_pts=fs_pts, &
                        fs_centre=fs_centre, fs_radius=fs_radius, fs_depth=H, fs_mmax=fs_mmax, fs_nev=fs_nev, &
-                       fs_np_circle=fs_np)
+                       fs_np_circle=fs_np, geom=geom, g=G, irsp=IRSP)
       ELSE
-         CALL qtf_init(opts, nqtf, WVHD(1:NBETA), geom%nwl, mesh%n, mesh%nbody, outputdir, omegas_main=omegas)
+         CALL qtf_init(opts, nqtf, WVHD(1:NBETA), geom%nwl, mesh%n, mesh%nbody, outputdir, omegas_main=omegas, geom=geom, g=G, &
+                       irsp=IRSP)
       END IF
       IF (qtf_psi_count() /= nneed .OR. qtf_psi_count(reused=.TRUE.) /= nreuse) THEN
          WRITE (*, '(a)') ' QTF: qtf_init found other difference frequencies than the log above.'
@@ -619,6 +635,11 @@ CONTAINS
       TYPE(direct_fs_data) :: dfs
 
       IF (opts%qtf_direct /= 1 .OR. .NOT. (omega > 0D0)) RETURN
+      IF (.NOT. qtf_diff_omega(omega)) THEN
+         ! A sum-only frequency: no difference pair, so no set-up and no log line of a solve
+         CALL qtf_direct_at_omega(mesh, geom, omega)
+         RETURN
+      END IF
       CALL SYSTEM_CLOCK(t0, rate)
       IF (fs_terms) THEN
          CALL direct_fs_setup(mesh, fs_pts, fs_panels, fs_centre, fs_radius, H, omega, multi_arrays, dfs)

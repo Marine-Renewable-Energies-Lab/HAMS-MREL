@@ -10,7 +10,7 @@ module test_qtf
   use NearFieldDrift, only : near_field_pair, KERNEL_DIFF, KERNEL_SUM
   use QTFDriver, only : qtf_init, qtf_keep, qtf_pair_load, qtf_finish, qtf_kept, qtf_radiation_list, qtf_radiation_omegas, &
                         qtf_direct_omegas, qtf_keep_psi, qtf_nonfinite_psi, qtf_nonfinite_pairs, qtf_psi_tolerance, &
-                        qtf_psi_index, qtf_direct_missing, &
+                        qtf_psi_index, qtf_direct_missing, qtf_omega_list, irregular_frequency_estimate, sum_pair_index, &
                         qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active, qtf_stored_mb
   use QTFFreeSurface, only : fs_point_field
   use PartialWaves, only : pw_set
@@ -42,6 +42,12 @@ subroutine collect_qtf(testsuite)
     new_unittest("radiation_list_uniform", test_radiation_list_uniform), &
     new_unittest("radiation_list_nonuniform", test_radiation_list_nonuniform), &
     new_unittest("radiation_list_period_grid", test_radiation_list_period_grid), &
+    new_unittest("omega_list_union", test_omega_list_union), &
+    new_unittest("omega_list_diff_unchanged", test_omega_list_diff_unchanged), &
+    new_unittest("omega_list_sum_top", test_omega_list_sum_top), &
+    new_unittest("irregular_estimate_cylinder", test_irregular_estimate_cylinder), &
+    new_unittest("irregular_estimate_two_loops", test_irregular_estimate_two_loops), &
+    new_unittest("irregular_cutoff_applies", test_irregular_cutoff_applies), &
     new_unittest("potential_part_period_grid", test_potential_part_period_grid), &
     new_unittest("psi_store_order", test_psi_store_order), &
     new_unittest("qtf_direct_omegas_all", test_qtf_direct_omegas_all), &
@@ -244,6 +250,221 @@ subroutine test_radiation_list_nonuniform(error)
   if (allocated(error)) return
   call check(error, all(reuse == 0), "a difference is reused")
 end subroutine test_radiation_list_nonuniform
+
+!> Phase 7c-2: the union of the difference and the sum frequencies of the grid 0.3, 0.6, 0.9. 0.6 is a difference (0.9 - 0.3,
+!> 0.6 - 0.3) and a sum (0.3 + 0.3) and is solved once; 0.9 is a grid frequency, a sum (0.3 + 0.6) and is reused.
+subroutine test_omega_list_union(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: grid(3) = [0.3d0, 0.6d0, 0.9d0]
+  real(8), allocatable :: need(:)
+  integer, allocatable :: reuse(:)
+  logical, allocatable :: is_diff(:), is_sum(:)
+
+  call qtf_omega_list(grid, 0d0, 0d0, qtf_psi_tolerance(grid), .true., .true., need, reuse, is_diff, is_sum)
+  call check(error, size(need), 6, "frequencies")
+  if (allocated(error)) return
+  call check(error, maxval(abs(need - [0.3d0, 0.6d0, 0.9d0, 1.2d0, 1.5d0, 1.8d0])) <= 1d-12, "values")
+  if (allocated(error)) return
+  call check(error, all(is_diff .eqv. [.true., .true., .false., .false., .false., .false.]), "is_diff")
+  if (allocated(error)) return
+  call check(error, all(is_sum .eqv. [.false., .true., .true., .true., .true., .true.]), "is_sum")
+  if (allocated(error)) return
+  call check(error, all(reuse == [1, 2, 3, 0, 0, 0]), "reuse")
+  if (allocated(error)) return
+  ! The sum alone: the differences are not wanted
+  call qtf_omega_list(grid, 0d0, 0d0, qtf_psi_tolerance(grid), .false., .true., need, reuse, is_diff, is_sum)
+  call check(error, size(need), 5, "sums only")
+  if (allocated(error)) return
+  call check(error, .not. any(is_diff) .and. all(is_sum), "flags of the sums only")
+end subroutine test_omega_list_union
+
+!> Without the sum, qtf_omega_list is qtf_radiation_list to the bit, on the three grids of the tests above (uniform,
+!> non-uniform, period grid), with qtf_max_dw 0 and 0.3.
+subroutine test_omega_list_diff_unchanged(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: two_pi = 6.283185307179586d0
+  real(8) :: g1(101), g2(3), g3(105), max_dw(2)
+  real(8), allocatable :: need(:), need0(:)
+  integer, allocatable :: reuse(:), reuse0(:)
+  logical, allocatable :: is_diff(:), is_sum(:)
+  integer :: i, ig, im
+
+  do i = 1, 101
+    g1(i) = 0.40d0 + 0.01d0 * real(i - 1, 8)
+  end do
+  g2 = [0.5d0, 0.7d0, 1.3d0]
+  do i = 1, 105
+    g3(i) = two_pi / (4d0 + 0.25d0 * real(i - 1, 8))
+  end do
+  max_dw = [0d0, 0.3d0]
+  do ig = 1, 3
+    do im = 1, 2
+      select case (ig)
+      case (1)
+        call qtf_radiation_list(g1, max_dw(im), qtf_psi_tolerance(g1), need0, reuse0)
+        call qtf_omega_list(g1, max_dw(im), 7d0, qtf_psi_tolerance(g1), .true., .false., need, reuse, is_diff, is_sum)
+      case (2)
+        call qtf_radiation_list(g2, max_dw(im), qtf_psi_tolerance(g2), need0, reuse0)
+        call qtf_omega_list(g2, max_dw(im), 7d0, qtf_psi_tolerance(g2), .true., .false., need, reuse, is_diff, is_sum)
+      case default
+        call qtf_radiation_list(g3, max_dw(im), qtf_psi_tolerance(g3), need0, reuse0)
+        call qtf_omega_list(g3, max_dw(im), 7d0, qtf_psi_tolerance(g3), .true., .false., need, reuse, is_diff, is_sum)
+      end select
+      call check(error, size(need) == size(need0), "size")
+      if (allocated(error)) return
+      call check(error, all(need == need0) .and. all(reuse == reuse0), "values or reuse differ")
+      if (allocated(error)) return
+      call check(error, all(is_diff) .and. .not. any(is_sum), "flags")
+      if (allocated(error)) return
+    end do
+  end do
+end subroutine test_omega_list_diff_unchanged
+
+!> sum_top cuts the sums: the grid 0.3, 0.6, 0.9 with sum_top = 1.2 keeps the sums up to 1.2 (rounding allowed)
+subroutine test_omega_list_sum_top(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: grid(3) = [0.3d0, 0.6d0, 0.9d0]
+  real(8), allocatable :: need(:)
+  integer, allocatable :: reuse(:)
+  logical, allocatable :: is_diff(:), is_sum(:)
+
+  call qtf_omega_list(grid, 0d0, 1.2d0, qtf_psi_tolerance(grid), .true., .true., need, reuse, is_diff, is_sum)
+  call check(error, size(need), 4, "frequencies")
+  if (allocated(error)) return
+  call check(error, maxval(abs(need - [0.3d0, 0.6d0, 0.9d0, 1.2d0])) <= 1d-12, "values")
+end subroutine test_omega_list_sum_top
+
+!> The estimate of the lowest irregular frequency of the cylinder of radius 10 m with 32 waterline segments: sqrt(g j01 /
+!> a_eq) with a_eq from the area of the polygon, and 1.536 rad/s within 0.5 %.
+subroutine test_irregular_estimate_cylinder(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: pi = 3.141592653589793d0, j01 = 2.404826d0, r = 10d0
+  integer, parameter :: n = 32
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  real(8) :: area, expected, est
+  logical :: ok
+  character(len=:), allocatable :: msg
+
+  call make_cylinder(r, 10d0, n, 4, 2, mesh, .true.)
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call check(error, ok, "build_surface_geom stopped")
+  if (allocated(error)) return
+  call check(error, geom%nwl, n, "waterline segments")
+  if (allocated(error)) return
+  area = 0.5d0 * real(n, 8) * r**2 * sin(2d0 * pi / real(n, 8))
+  expected = sqrt(g * j01 / sqrt(area / pi))
+  est = irregular_frequency_estimate(geom, g)
+  call check(error, abs(est - expected) <= 1d-12 * expected, "value against the polygon area")
+  if (allocated(error)) return
+  call check(error, abs(est - 1.536d0) <= 0.005d0 * 1.536d0, "within 0.5 % of 1.536")
+end subroutine test_irregular_estimate_cylinder
+
+!> One body with two closed loops, radii 6 and 3.25 m (the second one clockwise): the minimum is the 6 m loop, 1.983 rad/s
+!> within 0.5 %. A third, open chain of two segments is skipped.
+subroutine test_irregular_estimate_two_loops(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: pi = 3.141592653589793d0, j01 = 2.404826d0
+  integer, parameter :: n = 64
+  type(surface_geom) :: geom
+  real(8) :: radius(2), a, b, area, expected
+  integer :: l, k, iw
+
+  geom%nwl = 2 * n + 2
+  allocate(geom%wl_x1(3, geom%nwl), geom%wl_x2(3, geom%nwl), geom%wl_next(geom%nwl), geom%wl_body(geom%nwl))
+  geom%wl_x1 = 0d0
+  geom%wl_x2 = 0d0
+  geom%wl_body = 1
+  radius = [6d0, 3.25d0]
+  do l = 1, 2
+    do k = 1, n
+      iw = (l - 1) * n + k
+      a = 2d0 * pi * real(k - 1, 8) / real(n, 8)
+      b = 2d0 * pi * real(k, 8) / real(n, 8)
+      if (l == 2) then
+        a = -a
+        b = -b
+      end if
+      geom%wl_x1(1:2, iw) = radius(l) * [cos(a), sin(a)]
+      geom%wl_x2(1:2, iw) = radius(l) * [cos(b), sin(b)]
+      geom%wl_next(iw) = (l - 1) * n + mod(k, n) + 1
+    end do
+  end do
+  ! The open chain: a 1 m square corner of two segments, whose "area" would give a far higher value anyway
+  geom%wl_x1(:, 2*n + 1) = [0d0, 0d0, 0d0]
+  geom%wl_x2(:, 2*n + 1) = [1d0, 0d0, 0d0]
+  geom%wl_x1(:, 2*n + 2) = [1d0, 0d0, 0d0]
+  geom%wl_x2(:, 2*n + 2) = [1d0, 1d0, 0d0]
+  geom%wl_next(2*n + 1) = 2*n + 2
+  geom%wl_next(2*n + 2) = 0
+  area = 0.5d0 * real(n, 8) * radius(1)**2 * sin(2d0 * pi / real(n, 8))
+  expected = sqrt(g * j01 / sqrt(area / pi))
+  call check(error, abs(irregular_frequency_estimate(geom, g) - expected) <= 1d-12 * expected, "the 6 m loop")
+  if (allocated(error)) return
+  call check(error, abs(irregular_frequency_estimate(geom, g) - 1.983d0) <= 0.005d0 * 1.983d0, "within 0.5 % of 1.983")
+  if (allocated(error)) return
+  ! No closed loop: no cutoff
+  geom%wl_next = 0
+  call check(error, irregular_frequency_estimate(geom, g) == huge(1d0), "no closed loop")
+end subroutine test_irregular_estimate_two_loops
+
+!> IRSP = 0 with the estimate 1.536 rad/s of the cylinder of radius 10 m: the sum 0.8 + 0.8 = 1.6 is left out (0) and
+!> 0.7 + 0.8 = 1.5 is kept (positive index); with IRSP = 1 both are kept. qtf_max_sw cuts the same way, inclusively.
+subroutine test_irregular_cutoff_applies(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: w(2) = [0.7d0, 0.8d0]
+  type(so_options) :: opts
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: state
+  complex(8), allocatable :: wl(:)
+  real(8) :: k, c(2)
+  logical :: ok, made
+  character(len=:), allocatable :: msg
+  integer :: irsp, i
+
+  call CreateDirectory(root//"/Wamit_format", made)
+  call check(error, made, "could not create the test folder")
+  if (allocated(error)) return
+  call make_cylinder(10d0, depth, 32, 4, 2, mesh, .true.)
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call check(error, ok, "build_surface_geom stopped")
+  if (allocated(error)) return
+  opts%mean_drift = 1; opts%qtf = 2; opts%qtf_terms = QTF_TERMS_BODY; opts%qtf_direct = 1
+  allocate(wl(geom%nwl))
+  wl = (0d0, 0d0)
+  do irsp = 0, 1
+    call qtf_init(opts, 2, [0d0], geom%nwl, mesh%n, mesh%nbody, root, omegas_main=w, geom=geom, g=g, irsp=irsp)
+    do i = 1, 2
+      k = wave_number(w(i), depth)
+      call maccamy_fuchs_state(mesh, 10d0, depth, k, w(i), 1d0, 0d0, g, rho, state)
+      call qtf_keep(1, state, wl, w(i))
+    end do
+    if (irsp == 0) then
+      call check(error, sum_pair_index(2, 2), 0, "0.8 + 0.8 above the estimate is not left out")
+      if (allocated(error)) return
+      call check(error, sum_pair_index(1, 2) > 0, "0.7 + 0.8 below the estimate is not kept")
+      if (allocated(error)) return
+      call check(error, size(qtf_direct_omegas()), 2, "the list stops below the estimate: 1.4 and 1.5, not 1.6")
+    else
+      call check(error, sum_pair_index(2, 2) > 0 .and. sum_pair_index(1, 2) > 0, "IRSP = 1 leaves a sum out")
+      if (allocated(error)) return
+      call check(error, size(qtf_direct_omegas()), 3, "IRSP = 1: 1.4, 1.5 and 1.6")
+    end if
+    if (allocated(error)) return
+  end do
+  ! qtf_max_sw = 1.5 keeps 0.7 + 0.8 (inclusive) and leaves 0.8 + 0.8 out, with IRSP = 1 too
+  opts%qtf_max_sw = 1.5d0
+  call qtf_init(opts, 2, [0d0], geom%nwl, mesh%n, mesh%nbody, root, omegas_main=w, geom=geom, g=g, irsp=1)
+  do i = 1, 2
+    k = wave_number(w(i), depth)
+    call maccamy_fuchs_state(mesh, 10d0, depth, k, w(i), 1d0, 0d0, g, rho, state)
+    call qtf_keep(1, state, wl, w(i))
+  end do
+  c = [real(sum_pair_index(1, 2), 8), real(sum_pair_index(2, 2), 8)]
+  call check(error, c(1) > 0d0 .and. c(2) == 0d0, "qtf_max_sw = 1.5")
+  call remove_files()
+end subroutine test_irregular_cutoff_applies
 
 !> The period grid of the final review (T = 4 to 30 s in 0.25 s steps, qtf_max_dw = 0.3): every pair finds a difference
 !> frequency within qtf_psi_tolerance, the tolerance potential_pair is given, and within the 1e-6 max(omega_i, omega_j) of
