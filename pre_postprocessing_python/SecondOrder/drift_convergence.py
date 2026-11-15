@@ -480,6 +480,7 @@ def qtf_potential_cases():
                        frequencies=DIRECT_IRSP_FREQUENCIES, headings=(0.0,), irsp=0, qtf=1, qtf_terms="body",
                        extra_options=dict(DIRECT_OPTIONS, qtf_max_dw=0)))
     chosen += qtf_full_cases(grid)
+    chosen += qtf_directfs_cases(grid)
     return chosen
 
 
@@ -528,6 +529,27 @@ def qtf_full_cases(grid):
         chosen.append(case("q_sharp_full_free_%s_m1" % label, "free", 1, **keys))
     for radius in FS_RADII:
         chosen.append(case("q_sharp_full_free_R%d_m1" % radius, "free", 1, qtf_fs_radius=radius))
+    return chosen
+
+
+def qtf_directfs_cases(grid):
+    """The cases of the direct solve with the free-surface forcing (Phase 7b, qtf_direct = 1 with qtf_terms = full):
+    QTF_Direct.12d beside QTF_Indirect.11d with the free-surface integral.
+    q_round_directfs_free_m{1,2,3}: the rounded hull of q_round_direct_free_* (DIRECT_OPTIONS, DIRECT_ROUND_FREQUENCIES, headings
+    0 and 30) with qtf_terms = full; the indirect full method is the reference (second-order convergence of the direct one, as
+    7a). q_sharp_directfs_free_m{1,2,3}: the cases of q_sharp_full_free_m{1,2,3} (default qtf_b2 = control, the fixed control
+    surface CS_FIXED_M1 at m2 and m3) with qtf_direct = 1; qtf_compare.py --direct compares both .12d and .11d with the exact
+    reference of truncated_cylinder_reference.py qtf-potential --free-surface, the FS columns included. The cost is that of the
+    6a case plus the direct solve; the job table prices them as body (FS not modelled), so the Slurm limit is set by --limit."""
+    chosen = []
+    for m in (1, 2, 3):
+        chosen.append(Case("q_round_directfs_free_%s" % tag(m), "D", "7b", "round", m, "free", "source",
+                           frequencies=DIRECT_ROUND_FREQUENCIES, headings=(0.0, 30.0), qtf=1, qtf_terms="full",
+                           qtf_max_dw=QTF_POTENTIAL_MAX_DW, extra_options=DIRECT_OPTIONS))
+    for m in (1, 2, 3):
+        chosen.append(Case("q_sharp_directfs_free_%s" % tag(m), "D", "7b", "sharp", m, "free", "source", frequencies=grid,
+                           headings=(0.0,), qtf=1, qtf_terms="full", qtf_max_dw=QTF_POTENTIAL_MAX_DW,
+                           extra_options=dict(CS_FIXED_M1 if m > 1 else {}, qtf_direct=1)))
     return chosen
 
 

@@ -76,7 +76,8 @@ MODULE QTFDriver
    ! With qtf_direct = 1 (Phase 7a) the potential part is also found by the direct method: phi_D is solved on the body at
    ! each difference frequency (QTFDirect), in the loop of radiation-only solves after the frequency loop, where the store
    ! is complete and the solver is at Omega. qtf_direct_at_omega puts T_dir of every pair of that Omega into tdir, which
-   ! has the slots of tpot.
+   ! has the slots of tpot. With qtf_terms = full (Phase 7b) the caller passes the free-surface data of direct_fs_setup,
+   ! which qtf_direct_at_omega points to the free-surface store, so that T_dir has the free-surface forcing too.
    !
    ! A psi with NaN or Inf (a radiation solve that failed) is kept, but counted and logged by qtf_keep_psi, and every pair
    ! whose terms are not finite is counted by potential_part. The files are still written (.10d does not use psi); the main
@@ -88,9 +89,9 @@ MODULE QTFDriver
    USE FieldVelocity, ONLY: incident_at
    USE PartialWaves, ONLY: pw_set
    USE NearFieldDrift, ONLY: near_field_pair, KERNEL_DIFF, KERNEL_SUM
-   USE SecondOrderOutput, ONLY: write_qtf_row, write_qtf_terms_row, write_qtf_terms_header
+   USE SecondOrderOutput, ONLY: write_qtf_row, write_qtf_terms_row, write_qtf_terms_header, write_direct_terms_header
    USE QTFPotential, ONLY: potential_pair, psi_surface_gradient, psi_waterline, NPOT_TERMS
-   USE QTFDirect, ONLY: direct_at_omega
+   USE QTFDirect, ONLY: direct_at_omega, direct_fs_data
    USE FirstOrderState, ONLY: wave_gravity
    USE, INTRINSIC :: IEEE_ARITHMETIC, ONLY: IEEE_IS_FINITE
    IMPLICIT NONE
@@ -130,6 +131,9 @@ MODULE QTFDriver
    LOGICAL, ALLOCATABLE :: tdir_kept(:)                  ! (nneed), the direct solve has run at psi_need(m)
    ! With write_terms >= 1 (direct_terms), the two parts of tdir, for QTF_DirectTerms.txt: from phi_I2 and from phi_D
    COMPLEX(8), ALLOCATABLE :: tdir_i2(:, :, :, :), tdir_d(:, :, :, :)   ! as tdir
+   ! With qtf_terms = full, the part from phi_D splits into that of the body forcing (tdir_d) and of the free-surface
+   ! forcing (tdir_fs), the third column pair of QTF_DirectTerms.txt
+   COMPLEX(8), ALLOCATABLE :: tdir_fs(:, :, :, :)                       ! as tdir
    LOGICAL :: direct_terms = .FALSE.                     ! QTF_DirectTerms.txt is written
    ! qtf_b2 = control: points of C and F of every body, and the fields there
    LOGICAL :: b2_control = .FALSE.
@@ -147,8 +151,11 @@ MODULE QTFDriver
    REAL(8) :: fs_store_depth = 0D0                       ! the water depth h of the partial waves
    INTEGER :: fs_store_mmax = 0, fs_store_nev = 0        ! M and N_ev of every pw_set of the store
    INTEGER :: fs_store_np = 0                            ! chords of the polygon of a generated inner mesh, 0 for a file mesh
-   TYPE(fs_point_field), ALLOCATABLE :: fs_f(:, :, :)    ! (n_fs, nfreq, nbeta), total first-order fields, as store
-   TYPE(pw_set), ALLOCATABLE :: fs_pw(:, :)              ! (nfreq, nbeta), partial waves of the scattered potential
+   ! fs_f, fs_pw and fs_inc_store are TARGETs: the free-surface data of the direct solve point to them (qtf_direct_at_omega)
+   TYPE(fs_point_field), ALLOCATABLE, TARGET :: fs_f(:, :, :)    ! (n_fs, nfreq, nbeta), total first-order fields, as store
+   TYPE(pw_set), ALLOCATABLE, TARGET :: fs_pw(:, :)              ! (nfreq, nbeta), partial waves of the scattered potential
+   ! (n_fs, nfreq, nbeta), the incident fields at the inner points, for the direct solve with qtf_terms = full
+   TYPE(fs_point_field), ALLOCATABLE, TARGET :: fs_inc_store(:, :, :)
    LOGICAL, ALLOCATABLE :: fs_kept(:, :)                 ! (nfreq, nbeta)
    COMPLEX(8), ALLOCATABLE :: fs_psi(:, :, :)            ! (n_fs, 6*nbody, nneed), psi_k at the inner points, as psi_store
    TYPE(pw_set), ALLOCATABLE :: fs_pw_psi(:, :)          ! (6*nbody, nneed), partial waves of each psi_k
@@ -233,6 +240,7 @@ CONTAINS
       IF (ALLOCATED(tdir)) DEALLOCATE (tdir)
       IF (ALLOCATED(tdir_kept)) DEALLOCATE (tdir_kept)
       IF (ALLOCATED(tdir_i2)) DEALLOCATE (tdir_i2, tdir_d)
+      IF (ALLOCATED(tdir_fs)) DEALLOCATE (tdir_fs)
       CALL free_control_surface()
       CALL free_free_surface()
       n_bad_psi = 0
@@ -262,6 +270,11 @@ CONTAINS
          IF (st /= 0) CALL out_of_memory(body=.TRUE.)
          tdir_i2 = (0D0, 0D0)
          tdir_d = (0D0, 0D0)
+         IF (fs_active) THEN
+            ALLOCATE (tdir_fs(6*nbody, nfreq, nfreq, heading_pairs(nbeta)), STAT=st)
+            IF (st /= 0) CALL out_of_memory(body=.TRUE., fs=.TRUE.)
+            tdir_fs = (0D0, 0D0)
+         END IF
       END IF
 
    CONTAINS
@@ -448,6 +461,7 @@ CONTAINS
       fs_active = .FALSE.
       IF (ALLOCATED(fs_f)) DEALLOCATE (fs_f)
       IF (ALLOCATED(fs_pw)) DEALLOCATE (fs_pw)
+      IF (ALLOCATED(fs_inc_store)) DEALLOCATE (fs_inc_store)
       IF (ALLOCATED(fs_kept)) DEALLOCATE (fs_kept)
       IF (ALLOCATED(fs_psi)) DEALLOCATE (fs_psi)
       IF (ALLOCATED(fs_pw_psi)) DEALLOCATE (fs_pw_psi)
@@ -843,17 +857,21 @@ CONTAINS
       IF (difference_pair_index == 0) difference_pair_index = -1
    END FUNCTION difference_pair_index
 
-   SUBROUTINE qtf_direct_at_omega(mesh, geom, omega, npair, seconds)
+   SUBROUTINE qtf_direct_at_omega(mesh, geom, omega, npair, seconds, fs)
       ! The direct method at the difference frequency omega (qtf_direct = 1): T_dir of every pair with that Omega
       ! (qtf_direct_pairs), by direct_at_omega, into tdir. Call after the frequency loop, when every frequency is kept,
       ! with the solver at omega after its radiation solve (RadiationOnlySolves). Pairs with NaN or Inf are counted in
       ! qtf_nonfinite_pairs() and logged. npair and seconds (optional): the number of pairs, and the times of
       ! direct_at_omega, for the log.
+      ! fs (optional, qtf_terms = full): the free-surface data of direct_fs_setup at omega; its pointers are set here to
+      ! the free-surface store (fields and incident fields at the inner points, partial waves) and the sliver chords, so
+      ! that T_dir has the free-surface forcing. Stops if a free-surface field was not stored.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       REAL(8), INTENT(IN) :: omega
       INTEGER, INTENT(OUT), OPTIONAL :: npair
       REAL(8), INTENT(OUT), OPTIONAL :: seconds(3)
+      TYPE(direct_fs_data), INTENT(INOUT), OPTIONAL :: fs
       REAL(8) :: sec(3)
       INTEGER, ALLOCATABLE :: pairs(:, :)
       COMPLEX(8), ALLOCATABLE :: t(:, :), parts(:, :, :)
@@ -874,8 +892,15 @@ CONTAINS
       END IF
       CALL qtf_direct_pairs(omega, pairs)
       ALLOCATE (t(6*mesh%nbody, SIZE(pairs, 2)))
-      ALLOCATE (parts(6*mesh%nbody, SIZE(pairs, 2), 2))
-      CALL direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, omega_tol=psi_tol, seconds=sec, parts=parts)
+      IF (PRESENT(fs)) THEN
+         CALL direct_fs_store(fs)
+         ! The third slice keeps the free-surface part apart, for QTF_DirectTerms.txt
+         ALLOCATE (parts(6*mesh%nbody, SIZE(pairs, 2), MERGE(3, 2, direct_terms)))
+      ELSE
+         ALLOCATE (parts(6*mesh%nbody, SIZE(pairs, 2), 2))
+      END IF
+      ! An absent fs is passed on as absent: the direct solve of Phase 7a
+      CALL direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, omega_tol=psi_tol, seconds=sec, parts=parts, fs=fs)
       IF (PRESENT(npair)) npair = SIZE(pairs, 2)
       IF (PRESENT(seconds)) seconds = sec
       nbad = 0
@@ -885,6 +910,7 @@ CONTAINS
          IF (direct_terms) THEN
             tdir_i2(:, pairs(1, p), pairs(3, p), h) = parts(:, p, 1)
             tdir_d(:, pairs(1, p), pairs(3, p), h) = parts(:, p, 2)
+            IF (SIZE(parts, 3) == 3) tdir_fs(:, pairs(1, p), pairs(3, p), h) = parts(:, p, 3)
          END IF
          IF (.NOT. ALL(IEEE_IS_FINITE(REAL(t(:, p), 8)) .AND. IEEE_IS_FINITE(AIMAG(t(:, p))))) nbad = nbad + 1
       END DO
@@ -894,7 +920,49 @@ CONTAINS
          WRITE (*, '(a,I0,a,ES14.6,a)') ' QTF error: T_dir has NaN or Inf at ', nbad, ' frequency and heading pairs with'// &
             ' Omega =', psi_need(m), ' rad/s.'
       END IF
+
+   CONTAINS
+
+      SUBROUTINE direct_fs_store(d)
+         ! The pointers of d to the free-surface store, indexed like store; the incident fields at the inner points are
+         ! built once, at the first Omega (fs_incident_all)
+         TYPE(direct_fs_data), INTENT(INOUT) :: d
+
+         IF (.NOT. fs_active) THEN
+            WRITE (*, '(a)') ' QTF direct: the free-surface forcing needs the free-surface store (qtf_terms = full).'
+            ERROR STOP 1
+         END IF
+         IF (.NOT. ALL(fs_kept)) THEN
+            WRITE (*, '(a)') ' QTF direct: the free-surface fields of a kept frequency were not stored.'
+            ERROR STOP 1
+         END IF
+         IF (.NOT. ALLOCATED(fs_inc_store)) CALL fs_incident_all(fs_inc_store)
+         d%f => fs_f
+         d%inc => fs_inc_store
+         d%pw => fs_pw
+         d%np = fs_store_np
+      END SUBROUTINE direct_fs_store
+
    END SUBROUTINE qtf_direct_at_omega
+
+   SUBROUTINE fs_incident_all(inc)
+      ! The incident fields of every kept state at the inner free-surface points, as fs_inner_fields adds them: phi_I,
+      ! grad phi_I and phi_I,zz = k^2 phi_I (incident_at); inc(n_fs, nkept, nbeta)
+      TYPE(fs_point_field), ALLOCATABLE, INTENT(OUT) :: inc(:, :, :)
+      TYPE(fs_point_field) :: f
+      INTEGER :: ip, is, ib
+
+      ALLOCATE (inc(fs_store_pts%n, nkept, nbeta))
+      DO ib = 1, nbeta
+         DO is = 1, nkept
+            DO ip = 1, fs_store_pts%n
+               CALL incident_at(store(is, ib), fs_store_pts%x(:, ip), f%phi, f%grad)
+               f%phizz = store(is, ib)%k**2*f%phi
+               inc(ip, is, ib) = f
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE fs_incident_all
 
    REAL(8) FUNCTION qtf_direct_missing()
       ! The smallest difference frequency of the grid (rad/s) at which the direct solve has not run, or 0 if there is none
@@ -1017,6 +1085,7 @@ CONTAINS
       IF (ALLOCATED(tpot)) DEALLOCATE (tpot)
       IF (ALLOCATED(tdir)) DEALLOCATE (tdir, tdir_kept)
       IF (ALLOCATED(tdir_i2)) DEALLOCATE (tdir_i2, tdir_d)
+      IF (ALLOCATED(tdir_fs)) DEALLOCATE (tdir_fs)
       CALL free_control_surface()
       CALL free_free_surface()
       active = .FALSE.
@@ -1099,18 +1168,13 @@ CONTAINS
 
       SUBROUTINE write_direct_terms(refl)
          ! QTF_DirectTerms.txt: for every pair with omega_i /= omega_j, by ascending |Omega| as QTF_PotentialTerms.txt, the
-         ! parts of T_dir from phi_I2 and from phi_D, scaled and conjugated as .10d
+         ! parts of T_dir from phi_I2 and from phi_D, scaled and conjugated as .10d; with qtf_terms = full the part from
+         ! phi_D of the body forcing (D_D) and that of the free-surface forcing (D_FS), a third column pair
          REAL(8), INTENT(IN) :: refl
-         INTEGER :: unit, m, b1, b2, i, j, b, c, k
+         INTEGER :: unit, m, b1, b2, i, j, b, c, k, hp
 
          OPEN (NEWUNIT=unit, FILE=outdir//'/Wamit_format/QTF_DirectTerms.txt', STATUS='REPLACE', ACTION='WRITE')
-         WRITE (unit, '(a)') '# Parts of the direct load of QTF_Direct.12d (qtf_direct = 1), scaled and conjugated as'// &
-            ' QTF_Quadratic.10d.'
-         WRITE (unit, '(a)') '# PER1 PER2 BETA1 BETA2 I, then Re Im of each part: 1 the second-order incident potential'// &
-            ' phi_I2, 2 the second-order diffracted and radiated potential phi_D.'
-         WRITE (unit, '(a)') '# .12d - .10d is their sum. One row per pair with omega_i /= omega_j, by ascending'// &
-            ' |omega_i - omega_j|.'
-         WRITE (unit, '(a)') '# The rows are not in the order of .12d: match them by PER1 PER2 BETA1 BETA2 I.'
+         CALL write_direct_terms_header(unit, ALLOCATED(tdir_fs))
          DO m = 1, SIZE(psi_need)
             DO b1 = 1, nbeta
                DO b2 = 1, nbeta
@@ -1121,8 +1185,14 @@ CONTAINS
                         DO b = 1, mesh%nbody
                            DO c = 1, 6
                               k = 6*(b - 1) + c
-                              CALL write_qtf_terms_row(unit, store_oufr(i), store_oufr(j), beta_deg(b1), beta_deg(b2), k, &
-                                 [tdir_i2(k, i, j, heading_pair(b1, b2)), tdir_d(k, i, j, heading_pair(b1, b2))], refl, c > 3)
+                              hp = heading_pair(b1, b2)
+                              IF (ALLOCATED(tdir_fs)) THEN
+                                 CALL write_qtf_terms_row(unit, store_oufr(i), store_oufr(j), beta_deg(b1), beta_deg(b2), k, &
+                                    [tdir_i2(k, i, j, hp), tdir_d(k, i, j, hp), tdir_fs(k, i, j, hp)], refl, c > 3)
+                              ELSE
+                                 CALL write_qtf_terms_row(unit, store_oufr(i), store_oufr(j), beta_deg(b1), beta_deg(b2), k, &
+                                    [tdir_i2(k, i, j, hp), tdir_d(k, i, j, hp)], refl, c > 3)
+                              END IF
                            END DO
                         END DO
                      END DO
@@ -1202,7 +1272,7 @@ CONTAINS
       nterms = NPOT_TERMS
       IF (fs_active) THEN
          nterms = NPOT_TERMS + 2
-         CALL fs_incident_fields()
+         CALL fs_incident_all(fs_inc)
       END IF
       ALLOCATE (grad(3, mesh%n, nmode), pwl(geom%nwl, nmode), terms(nmode, nterms))
       fs_seconds = 0D0
@@ -1277,24 +1347,6 @@ CONTAINS
       IF (fs_active) WRITE (*, '(a,F10.2,a)') ' QTF free surface integral: ', fs_seconds, ' s in all (body terms included)'
 
    CONTAINS
-
-      SUBROUTINE fs_incident_fields()
-         ! The incident fields of every kept state at the inner points, as fs_inner_fields adds them: phi_I, grad phi_I and
-         ! phi_I,zz = k^2 phi_I (incident_at)
-         TYPE(fs_point_field) :: f
-         INTEGER :: ip, is, ib
-
-         ALLOCATE (fs_inc(fs_store_pts%n, nkept, nbeta))
-         DO ib = 1, nbeta
-            DO is = 1, nkept
-               DO ip = 1, fs_store_pts%n
-                  CALL incident_at(store(is, ib), fs_store_pts%x(:, ip), f%phi, f%grad)
-                  f%phizz = store(is, ib)%k**2*f%phi
-                  fs_inc(ip, is, ib) = f
-               END DO
-            END DO
-         END DO
-      END SUBROUTINE fs_incident_fields
 
       SUBROUTINE fs_pair(ia, ba, ja, bb, mm, t_in, t_out, r_far)
          ! FS_inner and FS_outer of the stored pair (frequency ia, heading ba; frequency ja, heading bb) with psi_k of the

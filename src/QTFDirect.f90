@@ -101,7 +101,19 @@ MODULE QTFDirect
    ! that T_dir equals T_pot of potential_pair (qtf_b2 = body) by Green's theorem, to the mesh error. A pair with Omega < 0
    ! is treated as potential_pair treats it: its phi_D solves the problem at -|Omega|, whose matrix and Green function are
    ! the conjugates of those at |Omega|, so phi_D = conj(A^-1 r[conj b]), with r[.] the right side at |Omega|.
-   ! The free-surface forcing of phi_D is not included (Phase 7b).
+   !
+   ! The free-surface forcing (qtf_terms = full, Phase 7b). With the optional fs of direct_at_omega the right side gets
+   ! r_FS = (s_D / g) int_{z=0} G Q_D dS (QTFDirectFS: s_D, the inner Green matrix and the Graf amplitudes of G outside the
+   ! circle R) at every row, hull and lid. Per pair: Q_D at the inner points (fs_forcing_points) and the outer moments
+   ! (fs_outer_moments) of QTFFreeSurface, from the 6a store that fs points to (fields at the inner points, incident fields
+   ! there, partial waves of the scattered potentials outside R). Omega < 0: the right side at |Omega| is r[conj b], and
+   ! conj Q_D(1, 2) = Q_D(2, 1) (pair_product of KERNEL_DIFF; fs_pair_terms of QTFFreeSurface has the derivation), so the
+   ! pair is evaluated as (2, 1), which is ordered (omega_2 > omega_1) as fs_outer_moments needs. The moments of (2, 1)
+   ! are the integrals of the B_mn at |Omega| against Q_D(2, 1) = conj Q_D(1, 2): no conjugate of the moments, since the
+   ! B_mn are those of G at |Omega|, not at -|Omega|. direct_fs_block (submodule QTFDirectFSBlock_sm: it calls
+   ! QTFDirectFS, which uses this module) does it. The term T_dir,k = i Omega rho int_S phi_D n_k dS then holds the
+   ! free-surface part, which the indirect method has as FS_inner + FS_outer (fs_pair_terms) by Green's theorem: test
+   ! direct_fs_equals_indirect_full pins s_D with it. Without fs nothing of this runs.
    !
    ! Irregular frequency removal (IRSP = 1, Phase 7a Task 3b). HAMS adds rows at the lid points x_l on the interior
    ! waterplane, where the same integral equation holds with 0 in place of 2 pi phi (ASSB_LEFT_IRR, ASSB_RBC_IRR): the
@@ -136,12 +148,57 @@ MODULE QTFDirect
    USE QTFPotential, ONLY: waterline_velocity
    USE SecondOrderIncident, ONLY: incident2, incident2_pair, incident2_phi, incident2_grad
    USE SurfaceVelocity, ONLY: tangential_fit
+   USE PartialWaves, ONLY: pw_set
+   USE QTFFreeSurface, ONLY: fs_point_field
    IMPLICIT NONE
    PRIVATE
 
    PUBLIC :: direct_rhs_b2, direct_rhs_b2_block, b2_stokes_densities, b2_stokes_at_point
    PUBLIC :: green_panel_integrals, stored_panel_integrals, green_line_integral, rankine_moments, sharp_edge_panels
    PUBLIC :: direct_setup, direct_edge_mask, direct_factor, direct_solve, direct_at_omega, direct_lid_points
+   PUBLIC :: direct_fs_data
+
+   TYPE :: direct_fs_data
+      ! The free-surface part of the direct right side at one Omega (QTFDirectFS: direct_fs_setup fills the first block,
+      ! the caller of direct_at_omega the pointers). Defined here, not in QTFDirectFS, so that direct_at_omega can take it:
+      ! QTFDirectFS uses this module.
+      !   gfs(nrow, nfs)          the inner Green matrix, (1 / w_j) int_{panel j} G(x_i, .) dS; rows the full hull panels,
+      !                           then the full lid points
+      !   a(-mg:mg, 0:nev, nrow)  the Graf amplitudes of G(x_i, .) outside R in the contraction form (QTFDirectFS header);
+      !                           zero for |m| > mcut
+      !   w(nfs)                  the inner panel areas
+      !   kev(nev)                the evanescent wave numbers at Omega, k0 the propagating one
+      !   cut_error               q^(mcut + 1) / ((mcut + 1) (1 - q)), q = r_max / R, when mcut < mg, else 0
+      ! The 6a store of the pairs (QTFDriver), indexed like the store of direct_at_omega (frequency, heading):
+      !   f(nfs, nfreq, nbeta)    the total first-order fields at the inner points (fs_inner_fields)
+      !   inc(nfs, nfreq, nbeta)  the incident fields there (incident_at, phi_zz = k^2 phi)
+      !   pw(nfreq, nbeta)        the partial waves of the scattered potentials outside R (fs_circle_modes)
+      !   np                      the chords of the polygon of a generated inner mesh (the sliver), 0 for a file mesh
+      INTEGER :: nrow = 0, nfs = 0, nbase = 0, nl = 0, nsys = 1, n = 0, mg = 0, nev = 0, mcut = -1
+      LOGICAL :: multi = .FALSE.
+      REAL(8) :: omega = 0D0, g = 0D0, h = 0D0, radius = 0D0, centre(2) = 0D0, k0 = 0D0, r_max = 0D0, cut_error = 0D0
+      REAL(8), ALLOCATABLE :: kev(:), w(:)
+      COMPLEX(8), ALLOCATABLE :: gfs(:, :), a(:, :, :)
+      TYPE(fs_point_field), POINTER :: f(:, :, :) => NULL(), inc(:, :, :) => NULL()
+      TYPE(pw_set), POINTER :: pw(:, :) => NULL()
+      INTEGER :: np = 0
+   END TYPE direct_fs_data
+
+   INTERFACE
+      MODULE SUBROUTINE direct_fs_block(fs, store, pairs, dws, rhs, seconds)
+         ! The free-surface part of the right sides of a block of pairs (QTFDirectFSBlock.f90, a submodule of this module,
+         ! which it needs for direct_fs_rhs of QTFDirectFS): added to rhs (nbase + nl, npair, nsys), the layout of
+         ! ASSB_RHS_FIELD_IRR. pairs (4, npair) and dws (npair), omega_1 - omega_2, as direct_at_omega has them; the
+         ! columns of dws < 0 get the right side at |Omega| of the conjugated forcing (header). seconds(2): the time of
+         ! Q_D and the outer moments, and of the contraction (direct_fs_rhs), added to.
+         TYPE(direct_fs_data), INTENT(IN) :: fs
+         TYPE(first_order_state), INTENT(IN) :: store(:, :)
+         INTEGER, INTENT(IN) :: pairs(:, :)
+         REAL(8), INTENT(IN) :: dws(:)
+         COMPLEX(8), INTENT(INOUT) :: rhs(:, :, :)
+         REAL(8), INTENT(INOUT) :: seconds(2)
+      END SUBROUTINE direct_fs_block
+   END INTERFACE
 
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
    ! As CALGREEN: a panel closer than this many panel sizes gets panel integrals of 1/r and of its image
@@ -341,7 +398,8 @@ CONTAINS
       END DO
    END SUBROUTINE direct_solve
 
-   SUBROUTINE direct_at_omega(mesh, geom, omega, store, store_wl, pairs, tdir, is_multi, omega_tol, phi2_constant, seconds, parts)
+   SUBROUTINE direct_at_omega(mesh, geom, omega, store, store_wl, pairs, tdir, is_multi, omega_tol, phi2_constant, seconds, parts, &
+                              fs)
       ! The direct load T_dir of every pair of the difference frequency omega (> 0), per unit amplitudes (header):
       !   store, store_wl  the first-order states (nfreq, nbeta) and their waterline potentials (nwl, nfreq, nbeta), as
       !                    QTFDriver keeps them
@@ -350,10 +408,15 @@ CONTAINS
       !   tdir             (6 nbody, npair), T_dir,k of each pair, e^{-i omega t}, as the sum of the terms of potential_pair
       !   phi2_constant    optional test hook, as potential_pair: phi_I2 replaced by this constant (dphi_I2/dn = 0)
       !   parts            optional (6 nbody, npair, 2): the part of tdir from phi_I2 (:, :, 1) and from phi_D (:, :, 2);
-      !                    their sum is tdir
+      !                    their sum is tdir. (6 nbody, npair, 3): the part from phi_D is split into the part of the body
+      !                    forcing (:, :, 2) and that of the free-surface forcing (:, :, 3, zero without fs); the three
+      !                    sum to tdir. For that split the free-surface right sides are solved as their own columns.
       !   seconds          optional (3): wall time of the pair forcing with ASSB_RHS_FIELD_IRR, of the B2 part (the
       !                    densities of b2_stokes_densities and direct_rhs_b2_block) and of the factorisation, solve and
       !                    load, for the log
+      !   fs               optional: the free-surface forcing (qtf_terms = full, header), direct_fs_setup at omega with
+      !                    the pointers to the 6a store set; its time (Q_D and the outer moments, the contraction) is
+      !                    written to the log per call
       ! The solver globals must be at omega, with CALGREEN (CALGREEN_MULTI) and ASSB_LEFT (ASSB_LEFT_MULTI) run there, as
       ! RadiationOnlySolves leaves them after the radiation solve at omega; W1 is checked. direct_setup must have been
       ! called for this mesh. With IRSP = 1 the right sides have the lid rows too (header), and the radiation solve must
@@ -371,13 +434,14 @@ CONTAINS
       COMPLEX(8), INTENT(IN), OPTIONAL :: phi2_constant
       REAL(8), INTENT(OUT), OPTIONAL :: seconds(3)
       COMPLEX(8), INTENT(OUT), OPTIONAL :: parts(:, :, :)
+      TYPE(direct_fs_data), INTENT(IN), OPTIONAL :: fs
       COMPLEX(8), ALLOCATABLE :: vf(:, :, :), rf(:, :, :), r2(:, :, :), a(:, :), c(:, :, :), cl(:, :, :, :), e(:, :), &
-                                 phi(:, :), p2(:, :)
+                                 phi(:, :), p2(:, :), rfs(:, :, :), phis(:, :)
       REAL(8), ALLOCATABLE :: dws(:)
       INTEGER :: npair, nb, nt, nl, ns, n, nmode, first, last, nc, col, ncol_max
       INTEGER(8) :: c0, c1, rate
-      REAL(8) :: sec(3)
-      LOGICAL :: multi
+      REAL(8) :: sec(3), fsec(2), per_col
+      LOGICAL :: multi, fs_apart, fs_slice
 
       npair = SIZE(pairs, 2)
       nb = mesh%nbase
@@ -410,13 +474,19 @@ CONTAINS
       tdir = (0D0, 0D0)
       sec = 0D0
       IF (PRESENT(seconds)) seconds = 0D0
+      fs_apart = .FALSE.
+      fs_slice = .FALSE.
       IF (PRESENT(parts)) THEN
-         IF (SIZE(parts, 1) /= nmode .OR. SIZE(parts, 2) /= npair .OR. SIZE(parts, 3) /= 2) THEN
-            WRITE (*, '(a)') ' direct_at_omega: parts must be (6 nbody, npair, 2).'
+         IF (SIZE(parts, 1) /= nmode .OR. SIZE(parts, 2) /= npair .OR. SIZE(parts, 3) < 2 .OR. SIZE(parts, 3) > 3) THEN
+            WRITE (*, '(a)') ' direct_at_omega: parts must be (6 nbody, npair, 2) or (6 nbody, npair, 3).'
             ERROR STOP 1
          END IF
          parts = (0D0, 0D0)
+         fs_slice = SIZE(parts, 3) == 3
+         fs_apart = PRESENT(fs) .AND. fs_slice
       END IF
+      IF (PRESENT(fs)) CALL check_fs()
+      fsec = 0D0
       IF (npair == 0) RETURN
 
       CALL SYSTEM_CLOCK(c0, rate)
@@ -424,11 +494,18 @@ CONTAINS
       CALL SYSTEM_CLOCK(c1)
       sec(3) = sec(3) + REAL(c1 - c0, 8)/REAL(rate, 8)
       ncol_max = MAX(1, INT(DIRECT_BLOCK_BYTES/(16D0*25D0*REAL(n, 8))))
+      IF (PRESENT(fs)) THEN
+         ! The free-surface columns add Q_D at the inner points, the moments and, apart, a right side and phi_D per pair
+         per_col = 25D0*REAL(n, 8) + REAL(fs%nfs, 8) + REAL((2*fs%mg + 1)*(fs%nev + 1), 8)
+         IF (fs_apart) per_col = per_col + REAL(nt*ns + n, 8)
+         ncol_max = MAX(1, INT(DIRECT_BLOCK_BYTES/(16D0*per_col)))
+      END IF
       DO first = 1, npair, ncol_max
          last = MIN(npair, first + ncol_max - 1)
          nc = last - first + 1
          ALLOCATE (vf(nb, nc, ns), rf(nt, nc, ns), r2(nt, nc, ns), a(n, nc), c(3, n, nc), cl(3, 4, n, nc), &
                    e(geom%nwl, nc), phi(n, nc), p2(n, nc), dws(nc))
+         IF (fs_apart) ALLOCATE (rfs(nt, nc, ns), phis(n, nc))
          CALL SYSTEM_CLOCK(c0)
          DO col = 1, nc
             CALL pair_forcing(first + col - 1, col)
@@ -447,16 +524,34 @@ CONTAINS
          CALL SYSTEM_CLOCK(c0)
          sec(2) = sec(2) + REAL(c0 - c1, 8)/REAL(rate, 8)
          rf = rf + r2
+         IF (fs_apart) THEN
+            ! The free-surface right sides as their own columns, so that their part of the load is known (parts slice 3)
+            rfs = (0D0, 0D0)
+            CALL direct_fs_block(fs, store, pairs(:, first:last), dws, rfs, fsec)
+         ELSE IF (PRESENT(fs)) THEN
+            CALL direct_fs_block(fs, store, pairs(:, first:last), dws, rf, fsec)
+         END IF
+         CALL SYSTEM_CLOCK(c0)
          CALL direct_solve(mesh, rf, phi, multi)
+         IF (fs_apart) CALL direct_solve(mesh, rfs, phis, multi)
          DO col = 1, nc
             IF (dws(col) < 0D0) phi(:, col) = CONJG(phi(:, col))
+            IF (fs_apart) THEN
+               IF (dws(col) < 0D0) phis(:, col) = CONJG(phis(:, col))
+            END IF
             CALL pair_load(first + col - 1, col)
          END DO
          CALL SYSTEM_CLOCK(c1)
          sec(3) = sec(3) + REAL(c1 - c0, 8)/REAL(rate, 8)
          DEALLOCATE (vf, rf, r2, a, c, cl, e, phi, p2, dws)
+         IF (fs_apart) DEALLOCATE (rfs, phis)
       END DO
       IF (PRESENT(seconds)) seconds = sec
+      IF (PRESENT(fs)) THEN
+         ! The time of the free-surface forcing per Omega, for the cost of the moments on large runs (ledger ruling F12)
+         WRITE (*, '(a,F10.5,a,I0,a,F9.2,a,F9.2,a)') ' QTF direct free surface: Omega =', omega, ' rad/s, ', npair, &
+            ' pairs, Q_D and outer moments', fsec(1), ' s, contraction', fsec(2), ' s'
+      END IF
 
    CONTAINS
 
@@ -535,9 +630,9 @@ CONTAINS
 
       SUBROUTINE pair_load(p, col)
          ! T_dir,k = i Omega rho int_S (phi_I2 + phi_D) n_k dS over the panels of the body of mode k; with parts, the
-         ! two integrals are kept apart
+         ! two integrals are kept apart, and with three slices the free-surface part of phi_D (phis) too
          INTEGER, INTENT(IN) :: p, col
-         COMPLEX(8) :: t2(6*mesh%nbody), td(6*mesh%nbody), fac
+         COMPLEX(8) :: t2(6*mesh%nbody), td(6*mesh%nbody), tf(6*mesh%nbody), fac
          INTEGER :: f, b, j
 
          t2 = (0D0, 0D0)
@@ -550,12 +645,48 @@ CONTAINS
             END DO
          END DO
          fac = CI*dws(col)*store(pairs(1, p), pairs(2, p))%rho
-         tdir(:, p) = fac*(t2 + td)
+         IF (fs_apart) THEN
+            tf = (0D0, 0D0)
+            DO f = 1, n
+               b = mesh%body(f)
+               DO j = 1, 6
+                  tf(6*(b - 1) + j) = tf(6*(b - 1) + j) + phis(f, col)*mesh%nj(j, f)*mesh%area(f)
+               END DO
+            END DO
+            tdir(:, p) = fac*(t2 + td + tf)
+            IF (fs_slice) parts(:, p, 3) = fac*tf     ! parts has the third slice only with write_terms >= 1
+         ELSE
+            tdir(:, p) = fac*(t2 + td)
+         END IF
          IF (PRESENT(parts)) THEN
             parts(:, p, 1) = fac*t2
             parts(:, p, 2) = fac*td
          END IF
       END SUBROUTINE pair_load
+
+      SUBROUTINE check_fs()
+         ! fs must be set up at omega for this mesh and lid, with the 6a store of the pairs: fields and partial waves for
+         ! every state of store
+         LOGICAL :: ok
+
+         ok = ABS(fs%omega - omega) <= 1D-12*omega .AND. fs%n == n .AND. fs%nbase == nb .AND. fs%nsys == ns .AND. &
+              fs%nl == nl .AND. (fs%multi .EQV. multi)
+         IF (.NOT. ok) THEN
+            WRITE (*, '(a)') ' direct_at_omega: the free-surface data are not those of this Omega, mesh and lid'// &
+               ' (direct_fs_setup).'
+            ERROR STOP 1
+         END IF
+         ok = ASSOCIATED(fs%f) .AND. ASSOCIATED(fs%inc) .AND. ASSOCIATED(fs%pw)
+         IF (ok) ok = SIZE(fs%f, 1) == fs%nfs .AND. SIZE(fs%f, 2) == SIZE(store, 1) .AND. SIZE(fs%f, 3) == SIZE(store, 2) &
+                      .AND. SIZE(fs%inc, 1) == fs%nfs .AND. SIZE(fs%inc, 2) == SIZE(store, 1) .AND. &
+                      SIZE(fs%inc, 3) == SIZE(store, 2) .AND. SIZE(fs%pw, 1) == SIZE(store, 1) .AND. &
+                      SIZE(fs%pw, 2) == SIZE(store, 2)
+         IF (.NOT. ok) THEN
+            WRITE (*, '(a)') ' direct_at_omega: the free-surface data need the fields at the inner points and the partial'// &
+               ' waves of every state of the store.'
+            ERROR STOP 1
+         END IF
+      END SUBROUTINE check_fs
 
    END SUBROUTINE direct_at_omega
 

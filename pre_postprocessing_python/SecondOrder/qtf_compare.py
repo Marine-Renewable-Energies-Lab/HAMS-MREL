@@ -46,7 +46,11 @@ They are read from QTF_DirectTerms.txt and QTF_PotentialTerms.txt (16 digits) wh
 printed files. --by-omega adds the largest error at each difference frequency (an irregular frequency of the Omega problem
 shows there as a spike). Each case line gives the number of difference frequencies kept by --max-dw, of those of the run.
 Given the qtf-potential CSV, the q_sharp_*direct* cases except the IRSP ones (another grid) also get .12d and .11d against the exact
-total and .12d - .10d and .11d - .10d against the exact potential part, as --potential, heading 0.
+total and .12d - .10d and .11d - .10d against the exact potential part, as --potential, heading 0. The q_*_directfs_* cases
+(qtf_direct = 1 with qtf_terms = full, Phase 7b) have three parts in QTF_DirectTerms.txt and seven in QTF_PotentialTerms.txt, and
+the sharp ones are compared with the reference columns that include the free-surface integral (total_fs, pot_fs of
+read_potential_reference: the CSV must be from qtf-potential --free-surface, else the case is noted "no FS reference"), plus a row
+FS, FS_inner + FS_outer of the indirect terms against the reference column FS.
 
 WAMIT (--against-wamit). A WAMIT numeric .12d (difference QTF; one header line, then PER_i PER_j BETA_i BETA_j I Mod Pha Re
 Im, periods in s, nondimensional by rho g L^k with L = 1 m: the layout HAMS writes for .10d and .11d) is read "as written":
@@ -245,8 +249,8 @@ def compare_potential(results, path, nemoh, max_dw, exclude=None):
             print("%-24s no QTF_Indirect.11d" % case)
             continue
         # qtf_terms = full: the total and the potential part have the free-surface integral. The mode is read from the case name
-        # (q_sharp_full_*), not from the files: a full case under another name is compared with the total without FS
-        full = "_full_" in case
+        # (q_sharp_full_*, q_sharp_directfs_*), not from the files: a full case under another name is compared with the total without FS
+        full = "_full_" in case or "_directfs_" in case
         if full and not ref[motion]["FS"]:
             print("%-24s no FS reference (columns Fx_FS_re ... in %s, from qtf-potential --free-surface)" % (case, path))
             continue
@@ -318,6 +322,17 @@ def read_part_sums(path, parts):
     return out
 
 
+def file_parts(path, default):
+    """The number of complex columns after the five keys in the first data row of a terms file (QTF_DirectTerms.txt: 2 or 3),
+    `default` if the file is missing or has no data row."""
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                if line.strip() and not line.lstrip().startswith("#"):
+                    return (len(line.split()) - 5) // 2
+    return default
+
+
 def _is_force(key):
     return (key[4] - 1) % 6 < 3
 
@@ -355,8 +370,16 @@ def compare_direct(results, path, max_dw, exclude=None, by_omega=False):
     for case in sorted(os.path.basename(p) for p in glob.glob(os.path.join(results, "q_*direct*"))):
         folder = os.path.join(results, case, "output", "Wamit_format")
         # The terms files carry 16 digits; without them (write_terms = 0) the printed .12d - .10d and .11d - .10d
-        t_dir = read_part_sums(os.path.join(folder, "QTF_DirectTerms.txt"), 2)
-        t_pot = read_part_sums(os.path.join(folder, "QTF_PotentialTerms.txt"), len(POTENTIAL_TERMS))
+        # qtf_terms = full (q_*_directfs_*): three parts of T_dir (D_I2, D_D, D_FS) and seven of T_pot (the five terms, FS_inner,
+        # FS_outer)
+        full = "_directfs_" in case
+        # The number of parts of T_dir is that of the file (11 columns with D_FS, 9 without), not the case name
+        dir_parts = file_parts(os.path.join(folder, "QTF_DirectTerms.txt"), 3 if full else 2)
+        if dir_parts != (3 if full else 2):
+            print("%-26s note: QTF_DirectTerms.txt has %d parts, read as such (the case name suggests %d)"
+                  % (case, dir_parts, 3 if full else 2))
+        t_dir = read_part_sums(os.path.join(folder, "QTF_DirectTerms.txt"), dir_parts)
+        t_pot = read_part_sums(os.path.join(folder, "QTF_PotentialTerms.txt"), len(POTENTIAL_TERMS) + (2 if full else 0))
         source = "terms"
         if not t_dir or not t_pot:
             files = [os.path.join(folder, name) for name in ("QTF_Quadratic.10d", "QTF_Direct.12d", "QTF_Indirect.11d")]
@@ -390,28 +413,37 @@ def compare_direct(results, path, max_dw, exclude=None, by_omega=False):
                                                                                   100 * worst[1]))
         # The exact reference is on the grid of the q_sharp_free cases; the IRSP cases have another grid and none
         if case.startswith("q_sharp_") and "_irsp" not in case:
-            sharp.append((case, folder))
+            sharp.append((case, folder, full))
     if not ref:
         return rows
     print("\nAgainst the exact sharp cylinder (heading 0): |HAMS - exact| / max |exact| over the pairs, max and median, "
           "percent; .12d and .11d against the exact total, dir (.12d - .10d) and pot (.11d - .10d) against the exact "
           "potential part")
     print("%-26s %-5s %18s %18s %18s" % ("case", "what", "F_x", "F_z", "M_y"))
-    for case, folder in sharp:
+    for case, folder, full in sharp:
         motion = "fixed" if "_fixed_" in case else "free_damped" if "_damp_" in case else "free"
         if motion not in ref:
             print("%-26s no reference for the %s body in %s" % (case, motion, path))
             continue
+        # qtf_terms = full (q_sharp_directfs_*): the reference total and potential part include the free-surface integral, as
+        # --potential does for q_sharp_full_*; a CSV without the FS columns has none
+        if full and not ref[motion]["FS"]:
+            print("%-26s no FS reference (columns Fx_FS_re ... in %s, from qtf-potential --free-surface)" % (case, path))
+            continue
+        total_key, pot_key = ("total_fs", "pot_fs") if full else ("total", "pot")
         direct = read_hams(os.path.join(folder, "QTF_Direct.12d"))
         indirect = read_hams(os.path.join(folder, "QTF_Indirect.11d"))
         quadratic = read_hams(os.path.join(folder, "QTF_Quadratic.10d"))
 
         def of(table):
             return lambda wi, wj, index: lookup(table, wi, wj, index, "diff")
-        sources = [(".12d", of(direct), "total"), (".11d", of(indirect), "total")]
+        sources = [(".12d", of(direct), total_key), (".11d", of(indirect), total_key)]
         if quadratic:
-            sources += [("dir", _difference(of(direct), of(quadratic)), "pot"),
-                        ("pot", _difference(of(indirect), of(quadratic)), "pot")]
+            sources += [("dir", _difference(of(direct), of(quadratic)), pot_key),
+                        ("pot", _difference(of(indirect), of(quadratic)), pot_key)]
+        terms = read_hams_terms(os.path.join(folder, "QTF_PotentialTerms.txt"))
+        if full and terms and all(len(v) == len(POTENTIAL_TERMS) + 2 for v in terms.values()):
+            sources.append(("FS", _term(terms, (5, 6)), "FS"))   # FS_inner + FS_outer of the indirect terms
         for label, source, key in sources:
             cells = []
             for q, index in QUANTITIES:
@@ -1020,6 +1052,93 @@ def check_fs_columns():
     return "exact full fixture max %.1e %%, wrong FS_inner seen, body case without FS row, note without FS reference" % exact
 
 
+def check_compare_direct_fs():
+    """compare_direct on a qtf_terms = full fixture (q_sharp_directfs_free_m1): a reference CSV with the FS column, terms files
+    of 7 (T_pot) and 3 (T_dir) parts, T_dir = T_pot, .11d and .12d the exact total with FS. Every error is 0 (to 1e-4 %) in the
+    direct-indirect table, in .12d, .11d, dir, pot and the FS row; with only the D_FS part scaled by 1.01 (in the terms
+    file and the .12d) the direct-indirect error is 1% of the FS part, small but not zero; against a CSV without the FS columns the case is
+    noted and has no exact rows."""
+    import contextlib
+    import io
+    import tempfile
+    pairs = ((0.7, 0.7), (0.7, 0.95), (0.95, 0.95))
+    rng = np.random.default_rng(7)
+    quad = {p: {q: complex(*rng.normal(size=2)) for q, _ in QUANTITIES} for p in pairs}
+    terms = {p: {q: [complex(*rng.normal(size=2)) if p[0] != p[1] else 0j for _ in range(6)] for q, _ in QUANTITIES}
+             for p in pairs}    # five terms and FS
+
+    def internal(wi, wj, q, what):
+        return what(wi, wj, q) if (wi, wj) in quad else what(wj, wi, q).conjugate()
+
+    def write_reference(path, with_fs):
+        cols = ["motion", "omega_i", "omega_j", "kernel"] + ["%s_%s" % (q, part) for q, _ in QUANTITIES for part in ("re", "im")]
+        names = POTENTIAL_TERMS + (("FS",) if with_fs else ())
+        cols += ["%s_%s_%s" % (q, t, part) for q, _ in QUANTITIES for t in names for part in ("re", "im")]
+        with open(path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(cols)
+            for wi, wj in pairs:
+                row = ["free", wi, wj, "diff"]
+                for q, _ in QUANTITIES:
+                    row += [quad[wi, wj][q].real, quad[wi, wj][q].imag]
+                for q, _ in QUANTITIES:
+                    for t in range(len(names)):
+                        row += [terms[wi, wj][q][t].real, terms[wi, wj][q][t].imag]
+                w.writerow(row)
+
+    def write_case(root, case, factor):
+        folder = os.path.join(root, case, "output", "Wamit_format")
+        os.makedirs(folder)
+        names = ("QTF_Quadratic.10d", "QTF_Indirect.11d", "QTF_Direct.12d", "QTF_PotentialTerms.txt", "QTF_DirectTerms.txt")
+        files = {name: open(os.path.join(folder, name), "w") for name in names}
+        for wi in (0.7, 0.95):
+            for wj in (0.7, 0.95):
+                for q, index in QUANTITIES:
+                    a = internal(wi, wj, q, lambda x, y, z: quad[x, y][z])
+                    tt = [internal(wi, wj, q, lambda x, y, z, t=t: terms[x, y][z][t]) for t in range(6)]
+                    direct = a + sum(tt[:5]) + factor * tt[5]
+                    for name, v in (("QTF_Quadratic.10d", a), ("QTF_Indirect.11d", a + sum(tt)), ("QTF_Direct.12d", direct)):
+                        v = v.conjugate()
+                        files[name].write("%14.6E%14.6E%14.6E%14.6E%6d%14.6E%14.6E%14.6E%14.6E\n" % (
+                            wi, wj, 0.0, 0.0, index, abs(v), 0.0, v.real, v.imag))
+                    if wi != wj:
+                        key = "%14.6E%14.6E%14.6E%14.6E%6d" % (wi, wj, 0.0, 0.0, index)
+                        for name, columns in (("QTF_PotentialTerms.txt", tt[:5] + [0.4 * tt[5], 0.6 * tt[5]]),
+                                              ("QTF_DirectTerms.txt", [tt[0], sum(tt[1:5]), factor * tt[5]])):
+                            files[name].write(key + "".join("%24.15E%24.15E" % (v.real, -v.imag) for v in columns) + "\n")
+        for f in files.values():
+            f.close()
+
+    def run(results, reference):
+        text = io.StringIO()
+        with contextlib.redirect_stdout(text):
+            rows = dict(compare_direct(results, reference, 0.3))
+        return rows, text.getvalue().splitlines()
+    with tempfile.TemporaryDirectory() as d:
+        ref, ref_body = os.path.join(d, "ref.csv"), os.path.join(d, "ref_body.csv")
+        write_reference(ref, True)
+        write_reference(ref_body, False)
+        exact_root, off_root = os.path.join(d, "exact"), os.path.join(d, "off")
+        write_case(exact_root, "q_sharp_directfs_free_m1", 1.0)
+        write_case(off_root, "q_sharp_directfs_free_m1", 1.01)
+        rows, lines = run(exact_root, ref)
+        off_rows, off_lines = run(off_root, ref)
+        _, note = run(exact_root, ref_body)
+    case = "q_sharp_directfs_free_m1"
+    assert all(c[0] < 1e-6 for c in rows[case]), "T_dir = T_pot with FS: %s" % (rows[case],)
+    labels = (".12d", ".11d", "dir", "pot", "FS")
+    found = [l for l in lines if l.startswith(case + " ") and l.split()[1] in labels]
+    assert {l.split()[1] for l in found} == set(labels), "rows of the full case: %s" % found
+    exact = max(float(x) for l in found for x in l.split()[2:])
+    assert exact <= 1e-4, "errors of the exact full fixture: %s" % found
+    assert any(l.startswith(case) and " terms " in l for l in lines), "the case is not read from the 7 and 3 part terms files"
+    assert 1e-4 < off_rows[case][0][0] < 0.01, "D_FS scaled by 1.01 (1%% of its own size): %s" % (off_rows[case],)
+    assert any("no FS reference" in l and l.startswith(case) for l in note), "no note without FS columns"
+    assert not any(l.split()[1:2] == [".12d"] for l in note if l.startswith(case + " ")), "exact rows without FS columns"
+    return "exact fixture max %.1e %%, 7 and 3 part terms read, D_FS scaled by 1.01 seen (%.2f%% of T_pot), note without FS reference" % (
+        exact, 100 * off_rows[case][0][0])
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     if argv is None and sys.argv[1:2] == ["check"]:
@@ -1028,6 +1147,7 @@ def main(argv=None):
         print("against_nemoh        %s" % check_against_nemoh())
         print("against_wamit        %s" % check_against_wamit())
         print("compare_direct       %s" % check_compare_direct())
+        print("compare_direct_fs    %s" % check_compare_direct_fs())
         return 0
     parser.add_argument("results")
     parser.add_argument("--reference", help="CSV of truncated_cylinder_reference.py qtf (needed without --potential)")

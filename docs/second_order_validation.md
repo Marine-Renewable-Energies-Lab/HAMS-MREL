@@ -712,8 +712,122 @@ The direct solves add the right sides and one block solve per Ω. The matrix is 
 - On a sharp hull `.12d` and `.11d` (`qtf_b2 = body`) do not agree to a few percent, because both integrate B2 on the hull with different discretisations of an edge-singular integral; the check there is against the exact potential part.
 - **The default indirect method is more accurate than the direct one on this sharp hull.** With `qtf_b2 = control` (fixed C and F, 4032 panels, the same 2666 pairs) the indirect potential part is 6.9 / 9.1 / 5.8% off the exact one in F_x / F_z / M_y ([the table above](#free-body-the-hull-and-control-surface-forms-of-b2), row "fixed C, 4032"), against 13 / 13 / 28% for the direct method. For accuracy on a sharp hull use `.11d` with the default `qtf_b2 = control`, and `.12d` as an independent check.
 - Validated in finite depth only (depth 100 in every direct case). The 0.46% inconsistency between G and ∇G in deep water (developer documentation) enters the B2 right side there and was not checked end-to-end.
-- The direct method has no free-surface forcing (Phase 7b), so `.12d` is the body forcing only; `.11d` with `qtf_terms = full` has the free-surface integral ([QTF free-surface integral](#qtf-free-surface-integral)).
+- This section covers the direct method with the body forcing only (`qtf_terms = body`). With `qtf_terms = full` it also has the free-surface forcing, checked in [Direct method with the free-surface forcing](#direct-method-with-the-free-surface-forcing).
 - One IRSP mesh (448 panels with the lid) was run, with heading 0 and a free body.
+
+## Direct method with the free-surface forcing
+
+The direct method with `qtf_terms = full` (Phase 7b) adds the free-surface forcing of φ_D to the right side of the solve of [the previous section](#direct-method-against-indirect-method), so that `.12d` has the same content as `.11d` with `qtf_terms = full`. By Green's theorem the two loads are equal to the mesh error ([Developer Documentation](developer_documentation.md#free-surface-forcing-of-the-direct-solve-phase-7b)). The checks below test the pieces (the Green function matrix, the Graf partial waves, the outer moments), the sign, and the whole path against the indirect free-surface terms. Unit and integration tests run on the laptop (ifort 2022.1, Windows); the large cases are on Snellius ([below](#snellius-validation)). The limits are measured values with a margin (mostly 1.3 times the measured value); the printed values are in the test output. Tests in `test/test_partial_waves.f90`, `test/test_qtf_free_surface.f90`, `test/test_qtf_direct_fs.f90` and `test/test_integration_drift.f90`; fixtures `test/data/qtf_directfs_*`, written by `make_drift_fixtures.py`. The unit tester has 334 tests (plus 1 expected failure) and the integration tester 209, all passing [measured at 8a3b1c8].
+
+### Unit tests
+
+| Test | What it compares | Measured | Limit |
+| :--- | :--- | :--- | :--- |
+| `green_modes_match_fingreen` (partial_waves) | Partial waves of G (`pw_green_modes`, 17 orders, 40 evanescent modes) against the direct eigenfunction sum, and against `FINGREEN3D` | 6.6e-10 and 4.3e-7 | 1e-7 and 1e-6 |
+| `green_modes_near_circle` | The same at 0.9 R (219 orders, 200 modes) | 7.8e-9 and 9.8e-6 | 1e-6 and 3e-5 |
+| `green_modes_cut_reported` | The overflow cut of the orders (Ω = 0.2 rad/s, h = 200 m, R = 30 m, source at 0.97 R): `mcut` 109 against 756 asked, dropped tail about 3e-4 | position of the cut against `bessel_yn` and `pw_bessel_k` | exact |
+| `outer_moments_contract_psi` (qtf_free_surface) | Σ a mom against the ψ integral of the indirect method, synthetic fields, with and without incident waves | 2.0e-15 and 6.6e-16 | 1e-10 |
+| `outer_moments_contract_green` | Σ a mom with the amplitudes of G (`pw_green_modes`, 34 orders, 10 modes) against the same | 3.3e-15 | 1e-10 |
+| `fs_green_matrix_matches` (qtf_direct_fs) | The Green matrix to the inner panels against a 20 × 20 Gauss rule of `FINGREEN3D`; the far branch | 2e-14 to 1.0e-7; far 0 | 1e-6; 1e-12 |
+| `fs_green_near_waterline` | The waterline rows against the nearest inner panel; one point instead of the rule | 8.0e-7; one point at least 0.127 | 1e-3; above 1e-2 |
+| `fs_rhs_inner_only` | The inner right side against a 10 × 10 Gauss brute force (448-panel cylinder) | 6.5e-8 (waterline rows), 2.9e-7 (others) | 1e-3; 1e-6 |
+| `fs_rhs_symmetry` | Half mesh against whole mesh, random q and mom | 1.1e-8 | 1e-7 |
+| `fs_amplitudes_match_green` | Σ a B_mn against `FINGREEN3D` at R and 1.4 R (waterline row, bottom row, a lid point) | 1.5e-7 | 1e-5 |
+| `fs_rhs_order_cut_finite` | mcut = 93 < M = 161 at Ω = 0.05 rad/s, R = 11 m about r = 10 m; moments Inf or NaN above mcut; the bound of the dropped tail against the explicit tail sum | the right side stays finite; bound 2.04e-6 against the sum 1.89e-6 | |
+| `fs_rhs_outer_contraction` | Outer right side with evanescent partial waves only against a direct quadrature of G Q_D at three hull rows; and an explicit loop | 5.5e-8, 7.1e-7, 2.2e-8; loop 4.6e-15 | 1e-5; 1e-12 |
+| `fs_rfar_evanescent` | k₁ (r_far − R) | 40 | 1e-12 |
+| `outer_moments_cost` | Moments against the ψ integral of the same pair, one thread, fastest of three | 3.3 times (2.88 s against 0.87 s) | 5 times |
+| `direct_fs_equals_indirect_full` | Whole path: the D_FS slice against FS_inner + FS_outer of the indirect method, 480-panel rounded hull, depth 100 m, 0.70, 0.95, 1.10 rad/s, heading 30°, rigid motions in every mode, both orders of each pair | 2.3e-3 (Ω = 0.25) and 2.8e-3 (Ω = 0.15) of max abs T_pot | 3.7e-3 |
+| `direct_fs_pair_order` | 448-panel cylinder, depth 15 m, Ω = ±0.3: the pair with Ω < 0 against the conjugate of the swapped pair; the load with and without the 3-slice `parts` | 0; 2.8e-16 and 9.9e-16 | 1e-12 |
+| `qtf_direct_full_accepted` (second_order_input) | `qtf_direct = 1` with `qtf_terms = full` is accepted | passes | |
+
+- The limits against `FINGREEN3D` are looser than those against the exact eigenfunction sum, because `FINGREEN3D` is itself 4.3e-7 off the sum in this region (`EIGENE` with `Limes`, rated 1e-5 in its header) and 9.8e-6 near the circle (`LINTON` or `PIDCOCK`).
+- **The sign s_D is pinned by `direct_fs_equals_indirect_full`.** With s_D = +1 the difference is 2.3e-3 and 2.8e-3 of max abs T_pot; with s_D = −1 it is 0.67 and 0.78, over 10 times the limit. The free-surface part is 0.34 and 0.39 of max abs T_pot, so the test is not vacuous.
+- The near rule of the inner Green matrix was changed from one point to the Gauss rule after one point missed the 1e-6 aim by three orders (1.7e-3, see the developer documentation).
+- Run time: `direct_fs_equals_indirect_full` takes about 220 to 320 s on 8 threads, since it solves the first-order fields at the inner points of three states, ψ at two Ω, the radiation solves and two set-ups in 100 m of water (N_ev 129).
+
+### Integration tests
+
+Four fixtures, all with `qtf_direct = 1`, `qtf_terms = full`, `qtf = 1`, `qtf_max_dw = 0.3`, `qtf_b2 = body`, differencing velocity, 8 threads, and a depth of 20 m: `qtf_directfs_round` (the 480-panel rounded hull of `qtf_round_body`, 0.70, 0.95 and 1.10 rad/s, headings 0 and 30°, so Ω = 0.25 and 0.15 rad/s; the generated inner mesh), `qtf_directfs_half` (its half mesh), `qtf_directfs_irsp` (the hull with a waterplane lid, `If_remove_irr_freq = 1`, 0.95 and 1.10 rad/s) and `qtf_directfs_two` (two hulls at y = ±10 m, `FSInnerMesh.pnl`, R = 25 m, heading 0). The depth is 20 m and not 100 m because 100 m took 333 s for the round case on 8 threads, over the run-time limit set for the tests. In 100 m of water `direct_fs_equals_indirect_full` above is the check.
+
+**Measure.** The gap is the largest |T_dir − T_pot| over the largest |T_pot|, over the rows of the forces or of the moments (T_dir = `.12d` − `.10d` and T_pot = `.11d` − `.10d`, from the 16-digit terms files; the same from the printed files agrees to 4 digits).
+
+| Test | Measured | Limit |
+| :--- | :--- | :--- |
+| `direct_fs_vs_indirect_full` (round): T_dir against T_pot | 3.9e-2 (1.1e-1 without D_FS) | 5.1e-2 |
+| the same from the files, (`.12d` − `.10d`) against (`.11d` − `.10d`) | 3.9e-2 | 5.1e-2 |
+| D_FS against FS_inner + FS_outer, over max \|FS\|: round / irsp / two bodies | 8.2e-3 / 8.7e-3 / 5.0e-3 | 1.2e-2 |
+| `direct_fs_half_matches_full`: half mesh against whole mesh | 2.8e-8 | 1e-6 |
+| the half mesh, T_dir against T_pot | 3.9e-2 | 5.1e-2 |
+| `direct_fs_irsp_lid`: T_dir against T_pot (1.3e-1 without D_FS) | 1.4e-3 | 1.9e-3 |
+| `direct_fs_two_bodies_file`: body 2 against body 1 mirrored | 1.4e-8 | 1e-5 |
+| the two bodies, T_dir against T_pot (1.8 without D_FS) | 4.4e-1 | 5.7e-1 |
+| `direct_fs_off_unchanged`: `.12d` and `QTF_DirectTerms.txt` of three cases of the body-forcing direct solve | byte for byte | exact |
+
+- **The round gap is the body-forcing gap, not the free-surface part.** The 3.9e-2 is close to the gate of the direct solve without free-surface forcing on this hull (`direct_round_limit`, 5.2e-2): the mesh error of the B1 and B2 parts at the pairs (0.70, 0.95), where they nearly cancel in M_y. The free-surface part alone agrees with the indirect one to 8.2e-3 of its own maximum, so the free-surface wiring adds no visible error.
+- **Two bodies.** The 4.4e-1 is the body-forcing mesh error of the coarse 220-panel hulls (M_y: error 6.3e-2 against a T_pot of 0.144), the effect seen in `qtf_direct_two` of the body-forcing case. The gate of 5.7e-1 is a regression gate. The free-surface wiring is gated by the D_FS check (5.0e-3 measured; the free-surface part of M_y is 0.20 and agrees to 3e-4) and by the mirror check (1.4e-8).
+- **Not vacuous.** The gap without D_FS is larger than 2 times that with it in each of round (2.85 times), irsp (89) and two bodies (4.2). The factor is 2 and not 10, since the round gap is itself the body-forcing error. The D_FS check is the sharper one.
+- **Lid.** The IRSP hull has a gap of 1.4e-3, smaller than the round one, with the lid rows carrying the same r_FS.
+- **Without `full` nothing changes.** `direct_fs_off_unchanged` compares the outputs of three cases of `qtf_direct` with `qtf_terms = body` (`qtf_direct_round`, `_irsp`, `_two`) with the 7a files stored in their `expected_output` (taken from a build that leaves the direct path as merged in 7a, and checked byte for byte equal to this branch for all 11 `qtf_direct_*` fixtures), and checks that their logs have no free-surface line.
+- Run time of the four cases at 20 m, 8 threads: 71, 71, 35 and 38 s on a quiet laptop (121, 134, 82 and 83 s while other runs were going), about 215 s in all. The round case at 20 m: fields 3.4, 3.6 and 2.9 s, ψ 3.2 and 3.0 s, the set-up of the free-surface forcing 4.9 s, the outer moments 8.6 s (Ω = 0.15) and 6.5 s (Ω = 0.25).
+
+### Snellius validation
+
+Six cases ran on Snellius at 97dd419 (fat_genoa, 24 CPUs, free body):
+- the rounded hull of the 7a direct cases at m1, m2 and m3 (480, 1920 and 4320 panels; `q_round_directfs_free_*`);
+- the sharp cylinder of the 6a free-surface cases at m1, m2 and m3 (448, 1792 and 4032 panels; `q_sharp_directfs_free_*`).
+
+The rounded-hull cases set `qtf_b2 = body`, as in 7a. The sharp cases keep the default `qtf_b2 = control` for the indirect side, as in 6a. The cases come from `drift_convergence.py` (`qtf_directfs_cases`). They are compared with `qtf_compare.py --direct` and `--potential` against the 6a reference with the free-surface columns. The 0.75–0.79 rad/s band is left out, as in 6a: the free sharp cylinder has its undamped surge-pitch resonance there.
+
+The gap below is |T_dir − T_pot| / max |T_pot| over all modes and heading pairs, with 0 < Δω ≤ 0.30 rad/s. Each cell gives the max / median of the forces, in percent. The body part compares D_I2 + D_D with the five body terms. The free-surface part compares D_FS with FS_inner + FS_outer.
+
+| Case | Total gap | Body part | Free-surface part |
+| --- | --- | --- | --- |
+| rounded hull m1 / m2 / m3 | 1.72 / 0.44 / 0.20 (max) | 1.75 / 0.47 / 0.22 | 0.08 / 0.03 / 0.03 |
+| sharp cylinder m1 / m2 / m3 | 20.0 / 11.0 / 7.8 (max) | 20.0 / 11.0 / 7.8 | 0.15 / 0.02 / 0.01 |
+| sharp cylinder, median | 0.04 / 0.01 / 0.01 | 0.03 / 0.01 / 0.01 | 0.003 / 0.000 / 0.000 |
+
+- **The free-surface forcing is right on large hulls.** D_FS equals the indirect free-surface terms to 0.01 % of max |T_pot| at m3, and the difference falls with the mesh.
+- **The rounded hull converges as in Phase 7a.** The factor is 3.9, then 2.2 (7a: 1.88 → 0.48 → 0.23 %).
+- **On the sharp cylinder the gap is the body forcing.** The body part of `.12d` is the same as in the 7a runs to 1e-14. The gap is larger than in 7a (14 → 8 → 6.2 %) because the indirect B2 is now `qtf_b2 = control`. B2 is the only term that differs between the runs. The direct solve keeps the hull form of B2, which converges slowly at the sharp edge ([direct against indirect](#direct-method-against-indirect-method)).
+- **Against the exact answer (F_x, heading 0, max), `.12d` and `.11d` are equal:** 27.2, 10.9 and 6.0 % at m1, m2 and m3. That max is the first-order motion error, as in 6a. The potential part shows the difference between the methods. The direct one gives 18.8 → 9.8 → 6.8 % (F_z 22 → 13 → 7.9 %, M_y 15 → 8.5 → 6.1 %). The indirect one with `qtf_b2 = control` gives 11.8 → 4.4 → 1.6 %. Both converge, and the indirect method stays the more accurate one on sharp edges.
+- **With the resonance band included,** the totals are 99, 41 and 24 % from the exact answer for both files (the 6a values of `.11d`).
+
+**Cost (measured, sharp cylinder):**
+
+| Mesh | Wall time | Peak memory | Indirect full run (6a) |
+| --- | --- | --- | --- |
+| m1 | 1.54 h | 0.38 GB | 0.99 h, 0.15 GB |
+| m2 | 3.36 h | 1.25 GB | 2.74 h, 0.64 GB |
+| m3 | 7.95 h | 3.54 GB | 7.17 h, 2.37 GB |
+
+The direct free-surface forcing adds 2000–2800 s to the indirect full run: 56 % at m1, 23 % at m2 and 11 % at m3. The free-surface set-up that both methods share dominates the cost. The rounded hull took 32 s, 150 s and 553 s. All six cases took about 313 core-hours.
+
+**Cost per Ω (measured, 24 threads).** The lines `QTF direct free surface:` of the HAMS logs give, per difference frequency Ω, the set-up (the inner Green matrix and the Graf amplitudes of every row) and the pair work (Q_D with the outer moments, then the contraction):
+
+| Case | Rows | Inner panels | Set-up per Ω | Memory per Ω | Pairs per Ω | Q_D and outer moments per Ω | Contraction per Ω |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| sharp m1 | 448 | 186 | 1.3–1.4 s | 82 MB | 142–200 | 50–220 s | 0.03–0.04 s |
+| sharp m2 | 1792 | 276 | 6.0–6.4 s | 357 MB | 142–200 | 51–219 s | 0.06–0.10 s |
+| sharp m3 | 4032 | 360 | 16.7–17.9 s | 809 MB | 142–200 | 51–219 s | 0.15–0.20 s |
+| rounded m1 | 480 | 100 | 1.0 s | 92 MB | 4 | 1.0–1.1 s | 0.00 s |
+| rounded m2 | 1920 | 164 | 5.3 s | 379 MB | 4 | 1.0–1.1 s | 0.01 s |
+| rounded m3 | 4320 | 228 | 15.5 s | 858 MB | 4 | 1.0–1.1 s | 0.02 s |
+
+The set-up grows with the rows (4 to 5 s per 1000 rows at 360 inner panels) and takes under 20 s even at 4032 rows; the memory is 16 bytes times rows times (inner panels + (2M + 1)(N_ev + 1)), with M = 44–46 and N_ev = 125–130 here. The pair work does not depend on the hull mesh: the outer moments of Q_D are 0.44 s per pair on average (50–220 s for the 142–200 pairs of one Ω, 24 threads), and the contraction with the rows adds under 0.2 s. So at 4032 rows the set-up is about 10 % of the cost of one Ω, and the moments are the rest. The earlier estimate of minutes per Ω for the set-up (near-panel rule, ledger F12) was too high by an order of magnitude.
+
+**Warnings.** None of the six logs has a `QTF direct FS: warning` line (neither the cut of the evanescent modes nor the cut of the Graf orders: every Ω ran with the orders and mode counts of the rule, `orders M (cut at M)`). The only warning-class line is the note about the generated inner mesh (2 or 3 radial rows), which asks for a finer hull mesh.
+
+The results, the scripts and a figure are in `validation-runs/snellius-qtf-directfs` (`findings.md`, `split_gap.py`) of the working folder, which is outside the repository.
+
+### Limits of this check
+
+- The unit tests of the pieces are exact references (the eigenfunction sum, quadrature); the whole path is checked against the indirect free-surface terms, which have their own error against the exact reference ([QTF free-surface integral](#qtf-free-surface-integral)). Equality with them shows the direct path is consistent, not that it is the exact answer.
+- Finite depth only (`qtf_terms = full` stops in deep water). The integration fixtures are at 20 m; 100 m is covered by `direct_fs_equals_indirect_full` only, on one hull.
+- The two-body case is checked through the mirror symmetry and the free-surface part alone; its total gap is the coarse-hull body-forcing error.
+- The depth-20 fixtures change the first-order physics of the long waves (Ω = 0.15 rad/s is shallow-water-like in 20 m) relative to `qtf_round_body`.
+- The stored 7a files of `direct_fs_off_unchanged` have to be regenerated if the body-forcing direct output is ever changed on purpose.
+- Not compared with a WAMIT run: `.12d` with `qtf_terms = full` has the content of a WAMIT `.12d` [derived], but this was not tested.
 
 ## Partial second-order field
 
@@ -772,6 +886,7 @@ The largest d12 is 1.427e-3 and the largest d23 8.17e-4, a ratio of 0.573. The p
 - Nemoh's HASBO: whether it contains a term like B3 was not checked, and the sharp-cylinder Nemoh maps were made with the hull form of B2 only.
 - The free-surface integral (`qtf_terms = full`) is validated on one hull, single body, heading 0, finite depth; deep water is not supported. At m1 its error is not monotone in the inner mesh, and the cause is not found ([QTF free-surface integral](#qtf-free-surface-integral)). The sum-frequency potential part is not implemented (Phase 6b).
 - Direct method (`QTF_Direct.12d`): validated on a smooth hull to 0.23% / 0.35% (forces / moments) against the indirect method at 4320 panels, and on the sharp cylinder only against the exact potential part (13 / 13 / 28% at 4032 panels, resonance pairs included). The cause of its smaller F_z error than the hull-form indirect result is not tested, and the IRSP case ran at one mesh (448 panels).
+- Direct method with the free-surface forcing (`qtf_terms = full`): checked on the laptop against the indirect free-surface terms (unit and integration tests, depth 20 m and 100 m), finite depth only. On Snellius it was checked on one rounded hull and one sharp cylinder, free body only ([Snellius validation](#snellius-validation)). No fixed, damped or multi-body case was run there.
 - Two unit tests failed under ifx 2024a on Snellius (job of 2026-11-09, the build of the hull-form runs): `control_surface_mesh/separate_bodies_accepted` and `field_velocity/field_green_is_smooth_in_z`, in modules the potential part does not change. Both are fixed on the `second-order-drift` branch by commit 60a972e, which this branch does not contain yet. With ifort 2022.1 on Windows all tests pass ([Developer Documentation](developer_documentation.md#qtf-potential-part)).
 - WAMIT: the OC4 comparison with the public WAMIT run of OpenFAST now exists ([OC4 against WAMIT](#oc4-against-wamit)). A WAMIT licence would still be needed to settle the conjugation and axes of the WAMIT-format output on a hull with a known answer, since the diagonal of that comparison is real. The semi-analytical reference covers the signs of the mean drift values (210 values agree at 7168 panels), not the phases of the complex outputs.
 

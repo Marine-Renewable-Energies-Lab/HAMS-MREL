@@ -29,6 +29,7 @@ MODULE SecondOrderOutput
    PRIVATE
 
    PUBLIC :: write_drift_row, write_terms_row, write_qtf_row, write_qtf_terms_row, write_qtf_terms_header, write_field_row
+   PUBLIC :: write_direct_terms_header
 
 CONTAINS
 
@@ -101,6 +102,28 @@ CONTAINS
       END IF
       WRITE (unit, '(a)') '# The rows are not in the order of .11d: match them by PER1 PER2 BETA1 BETA2 I.'
    END SUBROUTINE write_qtf_terms_header
+
+   SUBROUTINE write_direct_terms_header(unit, full)
+      ! The four comment lines of QTF_DirectTerms.txt: the parts D_I2 and D_D of the direct load (qtf_terms = body), or with
+      ! full (qtf_terms = full) D_I2, D_D and D_FS, the part from phi_D split into that of the body forcing and that of the
+      ! free-surface forcing (Phase 7b)
+      INTEGER, INTENT(IN) :: unit
+      LOGICAL, INTENT(IN) :: full
+
+      WRITE (unit, '(a)') '# Parts of the direct load of QTF_Direct.12d (qtf_direct = 1), scaled and conjugated as'// &
+         ' QTF_Quadratic.10d.'
+      IF (full) THEN
+         WRITE (unit, '(a)') '# PER1 PER2 BETA1 BETA2 I, then Re Im of each part: 1 D_I2, the second-order incident'// &
+            ' potential phi_I2; 2 D_D, the second-order diffracted and radiated potential phi_D of the body forcing;'// &
+            ' 3 D_FS, phi_D of the free-surface forcing (qtf_terms = full).'
+      ELSE
+         WRITE (unit, '(a)') '# PER1 PER2 BETA1 BETA2 I, then Re Im of each part: 1 the second-order incident potential'// &
+            ' phi_I2, 2 the second-order diffracted and radiated potential phi_D.'
+      END IF
+      WRITE (unit, '(a)') '# .12d - .10d is their sum. One row per pair with omega_i /= omega_j, by ascending'// &
+         ' |omega_i - omega_j|.'
+      WRITE (unit, '(a)') '# The rows are not in the order of .12d: match them by PER1 PER2 BETA1 BETA2 I.'
+   END SUBROUTINE write_direct_terms_header
 
    SUBROUTINE write_qtf_terms_row(unit, oufr1, oufr2, beta1_deg, beta2_deg, index, values, refl, moment)
       ! Writes one row PER1 PER2 BETA1 BETA2 I, then Re Im of each of values, of QTF_PotentialTerms.txt. The keys are as in

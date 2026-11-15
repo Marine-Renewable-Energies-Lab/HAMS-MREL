@@ -88,7 +88,8 @@ MODULE SecondOrderDriver
    USE QTFFreeSurface, ONLY: fs_point_field, fs_inner_fields, fs_inner_steps, fs_sample_phi, fs_circle_modes, fs_mode_warning, &
                              fs_auto_modes, fs_auto_evanescent, fs_radius_message, fs_coverage_check
    USE PartialWaves, ONLY: pw_set, pw_sample_points, pw_evanescent_from_wvn, PW_KR_MAX
-   USE QTFDirect, ONLY: direct_setup
+   USE QTFDirect, ONLY: direct_setup, direct_fs_data
+   USE QTFDirectFS, ONLY: direct_fs_setup, direct_fs_array_mb, direct_fs_estimate
    USE QTFPotential, ONLY: b2_control_check
    USE SharpEdge, ONLY: sharp_edge_weights
    USE QTFField, ONLY: build_field_points, qfield_init, qfield_keep, qfield_finish, qfield_stored_mb, FIELD_FD_STEP
@@ -142,6 +143,7 @@ MODULE SecondOrderDriver
    INTEGER :: fs_mmax = 0, fs_nev = 0                  ! angular modes M and evanescent modes N_ev outside R
    INTEGER :: fs_np = 0                                ! chords of the polygon of the generated inner mesh, 0 for a file mesh
    REAL(8), ALLOCATABLE :: fs_delta(:)                 ! (fs_pts%n), offsets of fs_inner_fields, smaller next to a waterline
+   TYPE(panel_mesh) :: fs_panels                       ! the panels of fs_pts (build_fs_inner), for the direct solve with full
 
 CONTAINS
 
@@ -324,7 +326,8 @@ CONTAINS
       TYPE(so_options), INTENT(IN) :: opts
       INTEGER, INTENT(IN) :: nqtf
       CHARACTER(LEN=*), INTENT(IN) :: inputdir, outputdir
-      REAL(8) :: omegas(nqtf), mb, mb_cs, mb_fs
+      REAL(8) :: omegas(nqtf), mb, mb_cs, mb_fs, mb_dfs
+      INTEGER :: dmg, dnev
       REAL(8), ALLOCATABLE :: need(:)
       INTEGER, ALLOCATABLE :: reuse(:)
       INTEGER :: i, first, nneed, nreuse, npairs, nmask
@@ -345,20 +348,28 @@ CONTAINS
       IF (opts%qtf_direct == 1) npairs = 2*npairs
       mb = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs)
       fs_terms = uses_fs(opts)
+      mb_dfs = 0D0
       IF (fs_terms) THEN
          CALL fs_setup(opts, inputdir, omegas)
          mb_fs = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs, nfs=fs_pts%n, &
                                npw=(2*fs_mmax + 1)*(fs_nev + 1)) - mb
          WRITE (*, '(a,F10.1,a,I0,a)') ' QTF free surface: the store takes', mb_fs, ' MB more for the fields at the ', &
             fs_pts%n, ' inner points and the partial waves (qtf_terms = full)'
+         IF (opts%qtf_direct == 1) THEN
+            ! The per-Omega arrays of direct_fs_setup (the inner Green matrix and the Graf amplitudes of every row); the
+            ! orders do not depend on Omega, so the size is known before the frequency loop and is part of the estimate
+            CALL direct_fs_estimate(mesh, fs_pts%n, fs_centre, fs_radius, H, multi_arrays, dmg, dnev, mb_dfs)
+            WRITE (*, '(a,I0,a,I0,a,F10.1,a)') ' QTF direct free surface: orders M = ', dmg, ', N_ev up to ', dnev, &
+               ', about', mb_dfs, ' MB per Omega, counted in the estimate below (a larger qtf_fs_radius lowers them)'
+         END IF
       END IF
       IF (b2_control) THEN
          ! The share of C and F is what the points add to the store, so qtf_stored_mb is the one formula
          mb_cs = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs, ncs=b2_pts%n) - mb
-         WRITE (*, '(a,F10.1,a,F10.1,a,I0,a)') ' QTF: with psi and the potential part the store takes', mb + mb_cs, &
+         WRITE (*, '(a,F10.1,a,F10.1,a,I0,a)') ' QTF: with psi and the potential part the store takes', mb + mb_dfs + mb_cs, &
             ' MB, of which', mb_cs, ' MB for the fields at the ', b2_pts%n, ' points of C and F (qtf_b2 = control)'
       ELSE
-         WRITE (*, '(a,F10.1,a)') ' QTF: with psi and the potential part the store takes', mb, ' MB'
+         WRITE (*, '(a,F10.1,a)') ' QTF: with psi and the potential part the store takes', mb + mb_dfs, ' MB'
       END IF
       IF (fs_terms) THEN
          CALL qtf_init(opts, nqtf, WVHD(1:NBETA), geom%nwl, mesh%n, mesh%nbody, outputdir, omegas_main=omegas, fs_pts=fs_pts, &
@@ -417,7 +428,7 @@ CONTAINS
 
       omega_max = MAXVAL(omegas)
       CALL build_fs_inner(mesh, geom, opts, H, inputdir, fs_pts, fs_centre, fs_radius, ok, msg, omega_max=omega_max, &
-                          np_circle=fs_np, n_rows=nrows)
+                          np_circle=fs_np, n_rows=nrows, fs_panels=fs_panels)
       IF (.NOT. ok) THEN
          WRITE (*, '(a,a)') ' QTF free surface: ', msg
          ERROR STOP 1
@@ -595,15 +606,29 @@ CONTAINS
       ! and nothing in between changes CGRN, RKBN, DS or AMAT (nor DGRN, PKBN and CMAT with IRSP = 1), so the stored Green
       ! integrals and the matrix are those of omega. direct_at_omega checks W1. The log gives the time of the pair forcing
       ! with its field integral, of the B2 part (densities and right side) and of the factorisation, solve and load.
+      ! With qtf_terms = full the free-surface forcing (Phase 7b): direct_fs_setup at omega (the inner Green matrix and the
+      ! Graf amplitudes of every row), whose time and size go to the log (the near-panel rule costs up to n^2 Green
+      ! function calls per near pair, ledger ruling F12), then direct_at_omega with it, which logs the time of the moments.
       TYPE(so_options), INTENT(IN) :: opts
       REAL(8), INTENT(IN) :: omega
       INTEGER(8) :: t0, t1, rate
       REAL(8) :: sec(3)
       INTEGER :: npair
+      TYPE(direct_fs_data) :: dfs
 
       IF (opts%qtf_direct /= 1 .OR. .NOT. (omega > 0D0)) RETURN
       CALL SYSTEM_CLOCK(t0, rate)
-      CALL qtf_direct_at_omega(mesh, geom, omega, npair, sec)
+      IF (fs_terms) THEN
+         CALL direct_fs_setup(mesh, fs_pts, fs_panels, fs_centre, fs_radius, H, omega, multi_arrays, dfs)
+         CALL SYSTEM_CLOCK(t1)
+         WRITE (*, '(a,F10.5,a,F9.2,a,I0,a,I0,a,I0,a,I0,a,I0,a,F10.1,a)') ' QTF direct free surface: Omega =', omega, &
+            ' rad/s, set-up', REAL(t1 - t0, 8)/REAL(rate, 8), ' s (', dfs%nrow, ' rows, ', dfs%nfs, &
+            ' inner panels, orders ', dfs%mg, ' (cut at ', dfs%mcut, '), ', dfs%nev, ' evanescent modes,', &
+            direct_fs_array_mb(dfs%nrow, dfs%nfs, dfs%mg, dfs%nev), ' MB)'
+         CALL qtf_direct_at_omega(mesh, geom, omega, npair, sec, fs=dfs)
+      ELSE
+         CALL qtf_direct_at_omega(mesh, geom, omega, npair, sec)
+      END IF
       CALL SYSTEM_CLOCK(t1)
       WRITE (*, '(a,F10.5,a,I0,a,F9.2,a,3F9.2,a)') ' QTF direct: omega = ', omega, ' rad/s, ', npair, ' pairs, ', &
          REAL(t1 - t0, 8)/REAL(rate, 8), ' s (forcing, B2, solve:', sec, ' s)'

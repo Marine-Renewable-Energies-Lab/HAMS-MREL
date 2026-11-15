@@ -9,7 +9,10 @@ module test_partial_waves
   use FirstOrderState, only : wave_gravity
   use FieldVelocity, only : fields_green
   use PartialWaves, only : pw_set, pw_radial, pw_sample_points, pw_decompose, pw_eval_surface, pw_eval_point, pw_radial_at, &
-                           pw_bessel_k, pw_evanescent_from_wvn, pw_bessel_k_scaled, pw_bessel_k_scaled_c, pw_hankel_scaled
+                           pw_bessel_k, pw_evanescent_from_wvn, pw_bessel_k_scaled, pw_bessel_k_scaled_c, pw_hankel_scaled, &
+                           pw_green_modes, pw_green_mmax
+  use FinGreen3D_Open, only : FINGREEN3D
+  use direct_sum_green_mod, only : direct_sum_green
   use second_order_fixtures, only : make_cylinder, maccamy_fuchs_state
   use test_waterline_field, only : set_wave, load_panels
   implicit none
@@ -221,6 +224,20 @@ module test_partial_waves
   real(8), parameter :: hf_phi_limit = 1d-4, hf_grad_limit = 1d-3
   ! With the near-panel integrals of fields_green (see test_hams_field): measured 4.9e-4, the Task 6 warning level
   real(8), parameter :: hf_stock_limit = 1d-3
+  ! pw_green_modes (Phase 7b, Task 1), the case of the brief: circle R = 15 m about the origin in h = 50 m, omega = 0.3 rad/s,
+  ! source x = (3, -2, -4); nev = 40; gm_nk roots for FINGREEN3D and the modes
+  real(8), parameter :: gm_radius = 15d0, gm_depth = 50d0, gm_omega = 0.3d0, gm_x(3) = [3d0, -2d0, -4d0]
+  integer, parameter :: gm_nev = 40, gm_nk = 240
+  ! Near the circle (r_x = 0.9 R) the source is 1.5 m from it, and the vertical series converges like e^{-kn rho}: with 40
+  ! modes it is 1.2e-3 off (measured). 200 modes (k_200 rho = 19) bring the tail below 1e-8.
+  integer, parameter :: gm_nev_near = 200
+  ! The gates against the full G are on the direct eigen-sum (direct_sum_green plus 1/r and 1/r1, accurate to 3e-11): the
+  ! 1e-7 of the brief at r_x = 0.24 R, 1e-6 at 0.9 R. FINGREEN3D itself is 4.3e-7 off that sum here (EIGENE with Limes, which
+  ! FinGreen3D.f90 rates at 1e-5, and the 1e-6 truncation of EIGEN), so against it the gate is 1e-6.
+  real(8), parameter :: fg_limit = 1d-6
+  ! Near the circle FINGREEN3D takes LINTON / PIDCOCK (rho / h = 0.03), rated at 3e-5 in G h (LINTON_SCALED); measured 9.8e-6
+  ! off the direct eigen-sum, against which pw_green_modes is 7.8e-9
+  real(8), parameter :: fg_near_limit = 3d-5
 
 contains
 
@@ -233,7 +250,11 @@ subroutine collect_partial_waves(testsuite)
     new_unittest("pw_hankel_scaled_values", test_hankel_scaled), &
     new_unittest("pw_round_trip", test_round_trip), &
     new_unittest("pw_eval_point_matches", test_eval_point), &
-    new_unittest("pw_hams_field", test_hams_field) &
+    new_unittest("pw_hams_field", test_hams_field), &
+    new_unittest("green_modes_match_fingreen", test_green_modes_fingreen), &
+    new_unittest("green_modes_near_circle", test_green_modes_near_circle), &
+    new_unittest("green_modes_match_decompose", test_green_modes_decompose), &
+    new_unittest("green_modes_cut_reported", test_green_modes_cut) &
     ]
 end subroutine collect_partial_waves
 
@@ -711,5 +732,209 @@ subroutine hams_field_errors(mesh, states, centroid, err_phi, err_grad, error)
   err_phi = err_phi / max_phi
   err_grad = err_grad / max_grad
 end subroutine hams_field_errors
+
+
+! ---------------------------------------------------------------------------------------------- Green function modes
+!> The partial waves of G(x, .) by Graf's theorem (pw_green_modes) reproduce the full finite-depth G on and outside the
+!> circle: 12 angles on r = R, 18 m and 30 m, z = 0 and -10 m, relative to the largest |G| there, with mmax =
+!> pw_green_mmax(r_x, R, 1e-10) and nev = 40: <= 1e-7 against the direct eigen-sum, <= fg_limit against FINGREEN3D (its
+!> FLAG = 1 value plus 1/r).
+subroutine test_green_modes_fingreen(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8) :: err_fg, err_ds
+  integer :: mmax
+  character(len=160) :: info
+
+  mmax = pw_green_mmax(norm2(gm_x(1:2)), gm_radius, 1d-10)
+  call green_modes_errors(gm_x, mmax, gm_nev, err_fg, err_ds)
+  print '(4x,a,i0,a,2es10.2)', "pw_green_modes (mmax ", mmax, ") against FINGREEN3D and the direct eigen-sum, relative ", &
+    err_fg, err_ds
+  write (info, '(a,es10.3)') "pw_green_modes differs from the direct eigen-sum, relative ", err_ds
+  call check(error, err_ds <= 1d-7, trim(info))
+  if (allocated(error)) return
+  write (info, '(a,es10.3)') "pw_green_modes differs from FINGREEN3D, relative ", err_fg
+  call check(error, err_fg <= fg_limit, trim(info))
+end subroutine test_green_modes_fingreen
+
+!> As green_modes_match_fingreen with the source near the circle, r_x = 0.9 R, nev = gm_nev_near: <= 1e-6 against the
+!> direct eigen-sum, fg_near_limit against FINGREEN3D; and pw_green_mmax(0.9 R, R, 1e-10) is the order of
+!> (0.9)^m <= 1e-10 (219), not capped below 200.
+subroutine test_green_modes_near_circle(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8) :: x(3), err_fg, err_ds
+  integer :: mmax
+  character(len=160) :: info
+
+  mmax = pw_green_mmax(0.9d0 * gm_radius, gm_radius, 1d-10)
+  write (info, '(a,i0)') "pw_green_mmax(0.9 R, R, 1e-10) is below 200: ", mmax
+  call check(error, mmax >= 200, trim(info))
+  if (allocated(error)) return
+  call check(error, pw_green_mmax(0.1d0 * gm_radius, gm_radius, 1d-2) == 4, "pw_green_mmax is not at least 4")
+  if (allocated(error)) return
+  x = [0.9d0 * gm_radius * gm_x(1:2) / norm2(gm_x(1:2)), gm_x(3)]
+  call green_modes_errors(x, mmax, gm_nev_near, err_fg, err_ds)
+  print '(4x,a,i0,a,2es10.2)', "pw_green_modes at r_x = 0.9 R (mmax ", mmax, ") against FINGREEN3D and the direct eigen-sum, " &
+    //"relative ", err_fg, err_ds
+  write (info, '(a,es10.3)') "pw_green_modes at r_x = 0.9 R differs from the direct eigen-sum, relative ", err_ds
+  call check(error, err_ds <= 1d-6, trim(info))
+  if (allocated(error)) return
+  write (info, '(a,es10.3)') "pw_green_modes at r_x = 0.9 R differs from FINGREEN3D, relative ", err_fg
+  call check(error, err_fg <= fg_near_limit, trim(info))
+end subroutine test_green_modes_near_circle
+
+!> The amplitudes of pw_green_modes against pw_decompose of FINGREEN3D (full G) sampled on the circle (pw_sample_points),
+!> same mmax and nev: max |da| / max |a| <= 1e-6, compared at r = R (a H_m(k0 R) and a K_m(kn R), the set_amplitudes form;
+!> the plain a(m, n) of high n multiply K_m(kn R) down to 1e-17, which magnifies the error of the samples).
+subroutine test_green_modes_decompose(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8) :: wvn_local(gm_nk), nu, worst, scale
+  complex(8), allocatable :: samples(:)
+  complex(8) :: hk, da
+  real(8), allocatable :: kv(:)
+  type(pw_set) :: pw, pd
+  type(cs_points) :: pts
+  integer :: mmax, i, m, n
+  character(len=160) :: info
+  external :: DISPERSION
+
+  call DISPERSION(wvn_local, gm_nk, gm_omega, gm_depth)
+  nu = gm_omega**2 / g_dispersion
+  mmax = pw_green_mmax(norm2(gm_x(1:2)), gm_radius, 1d-10)
+  call pw_green_modes(gm_x, [0d0, 0d0], gm_radius, gm_depth, wvn_local(1), wvn_local(2:), mmax, gm_nev, pw)
+  call pw_sample_points([0d0, 0d0], gm_radius, gm_depth, mmax, gm_nev, pts)
+  allocate (samples(pts%n), kv(0:mmax))
+  do i = 1, pts%n
+    samples(i) = green_full(gm_x, pts%x(:, i), nu, wvn_local)
+  end do
+  call pw_decompose(samples, [0d0, 0d0], gm_radius, gm_depth, wvn_local(1), wvn_local(2:), mmax, gm_nev, pd)
+
+  worst = 0d0; scale = 0d0
+  do n = 0, gm_nev
+    if (n > 0) call pw_bessel_k(mmax, wvn_local(n + 1) * gm_radius, kv)
+    do m = -mmax, mmax
+      if (n == 0) then
+        hk = cmplx(bessel_jn(abs(m), wvn_local(1) * gm_radius), bessel_yn(abs(m), wvn_local(1) * gm_radius), 8)
+        if (m < 0 .and. mod(abs(m), 2) == 1) hk = -hk
+        da = (pw%a(m, n) - pd%a(m, n)) * hk
+        scale = max(scale, abs(pw%a(m, n) * hk))
+      else
+        da = (pw%a(m, n) - pd%a(m, n)) * kv(abs(m))
+        scale = max(scale, abs(pw%a(m, n) * kv(abs(m))))
+      end if
+      worst = max(worst, abs(da))
+    end do
+  end do
+  print '(4x,a,i0,a,es10.2)', "pw_green_modes against pw_decompose of FINGREEN3D (mmax ", mmax, "), amplitudes at R, " &
+    //"relative ", worst / scale
+  write (info, '(a,es10.3)') "pw_green_modes differs from pw_decompose of FINGREEN3D, relative ", worst / scale
+  call check(error, worst <= 1d-6 * scale, trim(info))
+end subroutine test_green_modes_decompose
+
+!> The overflow cut of pw_green_modes is reported (review of Task 1): a long wave on a moderate circle, difference frequency
+!> 0.2 rad/s in h = 200 m, R = 30 m, source at r_x = 0.97 R. H_m(k0 R) passes 1e300 long before the order that
+!> pw_green_mmax(r_x, R, 1e-10) asks for; mcut must say so: mcut < that order, every mode nonzero up to mcut, the next
+!> order zero in some mode, and mcut pinned where |H_{mcut+1}| and K_{mcut+1} are <= 1e300 in every mode and one of them
+!> exceeds it at mcut + 2 (bessel_yn and pw_bessel_k, independent of the recurrence in the module). And in the case of
+!> green_modes_match_fingreen nothing is cut: mcut = mmax.
+subroutine test_green_modes_cut(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: h = 200d0, omega = 0.2d0, radius = 30d0, big = 1d300
+  integer, parameter :: nev = 10
+  real(8) :: wvn_local(nev + 1), x(3), k0r, tail
+  real(8), allocatable :: kv(:)
+  type(pw_set) :: pw
+  integer :: mneed, mc, n
+  logical :: beyond, zero_next
+  character(len=200) :: info
+  external :: DISPERSION
+
+  call DISPERSION(wvn_local, nev + 1, omega, h)
+  x = [0.97d0 * radius * gm_x(1:2) / norm2(gm_x(1:2)), -4d0]
+  mneed = pw_green_mmax(0.97d0 * radius, radius, 1d-10)
+  call pw_green_modes(x, [0d0, 0d0], radius, h, wvn_local(1), wvn_local(2:), mneed, nev, pw, mcut=mc)
+  k0r = wvn_local(1) * radius
+  tail = 0.97d0**(mc + 1) / (mc + 1)
+  print '(4x,a,f6.3,a,i0,a,i0,a,es10.2)', "k0 R ", k0r, ": order asked ", mneed, ", represented (mcut) ", mc, &
+    ", tail beyond it about ", tail
+  write (info, '(a,i0,a,i0)') "the cut is not reported: mcut ", mc, ", order asked ", mneed
+  call check(error, mc >= 0 .and. mc < mneed, trim(info))
+  if (allocated(error)) return
+  call check(error, tail > 1d-10, "the cut does not matter in this case: the test does not test it")
+  if (allocated(error)) return
+  call check(error, all(pw%a(-mc:mc, :) /= (0d0, 0d0)), "an amplitude at |m| <= mcut is zero")
+  if (allocated(error)) return
+  zero_next = any(pw%a(mc + 1, :) == (0d0, 0d0)) .and. any(pw%a(-mc - 1, :) == (0d0, 0d0))
+  call check(error, zero_next, "no mode is cut at mcut + 1")
+  if (allocated(error)) return
+  ! Where the cut lies: the radial functions at R up to mcut + 1 are <= big in every mode, and one exceeds it at mcut + 2
+  allocate (kv(0:mc + 2))
+  beyond = .not. (abs(bessel_yn(mc + 2, k0r)) <= big)
+  write (info, '(a,i0,a)') "|Y_", mc + 1, "(k0 R)| exceeds 1e300: mcut too high"
+  call check(error, abs(bessel_yn(mc + 1, k0r)) <= big, trim(info))
+  if (allocated(error)) return
+  do n = 1, nev
+    call pw_bessel_k(mc + 2, wvn_local(n + 1) * radius, kv)
+    write (info, '(a,i0,a,i0,a)') "K_", mc + 1, "(k_", n, " R) exceeds 1e300: mcut too high"
+    call check(error, kv(mc + 1) <= big, trim(info))
+    if (allocated(error)) return
+    beyond = beyond .or. .not. (kv(mc + 2) <= big)
+  end do
+  call check(error, beyond, "no radial function exceeds 1e300 at mcut + 2: mcut too low")
+  if (allocated(error)) return
+
+  ! Nothing cut in the case of the brief
+  call DISPERSION(wvn_local, nev + 1, gm_omega, gm_depth)
+  mneed = pw_green_mmax(norm2(gm_x(1:2)), gm_radius, 1d-10)
+  call pw_green_modes(gm_x, [0d0, 0d0], gm_radius, gm_depth, wvn_local(1), wvn_local(2:), mneed, nev, pw, mcut=mc)
+  write (info, '(a,i0,a,i0)') "mcut ", mc, " below mmax ", mneed
+  call check(error, mc == mneed, trim(info))
+end subroutine test_green_modes_cut
+
+!> The worst errors of pw_green_modes(x) against the full G of FINGREEN3D (err_fg) and of the direct eigen-sum (err_ds) at
+!> 12 angles on r = R, 18 m, 30 m and z = 0, -10 m, relative to the largest |G| there.
+subroutine green_modes_errors(x, mmax, nev, err_fg, err_ds)
+  real(8), intent(in) :: x(3)
+  integer, intent(in) :: mmax, nev
+  real(8), intent(out) :: err_fg, err_ds
+  real(8), parameter :: rings(3) = [gm_radius, 18d0, 30d0], depths(2) = [0d0, -10d0]
+  real(8) :: wvn_local(gm_nk), nu, xi(3), th, rho, scale
+  complex(8) :: phi, gf, gd, grn(3)
+  type(pw_set) :: pw
+  integer :: j, l, iz
+  external :: DISPERSION
+
+  call DISPERSION(wvn_local, gm_nk, gm_omega, gm_depth)
+  nu = gm_omega**2 / g_dispersion
+  call pw_green_modes(x, [0d0, 0d0], gm_radius, gm_depth, wvn_local(1), wvn_local(2:), mmax, nev, pw)
+  err_fg = 0d0; err_ds = 0d0; scale = 0d0
+  do l = 1, size(rings)
+    do iz = 1, size(depths)
+      do j = 0, 11
+        th = 2d0 * pi * j / 12d0
+        xi = [rings(l) * cos(th), rings(l) * sin(th), depths(iz)]
+        call pw_eval_point(pw, xi, phi)
+        gf = green_full(x, xi, nu, wvn_local)
+        rho = norm2(xi(1:2) - x(1:2))
+        call direct_sum_green(rho, xi(3), x(3), nu, wvn_local(1), gm_depth, grn)
+        gd = grn(1) + 1d0 / sqrt(rho**2 + (xi(3) - x(3))**2) + 1d0 / sqrt(rho**2 + (xi(3) + x(3))**2)
+        scale = max(scale, abs(gf))
+        err_fg = max(err_fg, abs(phi - gf))
+        err_ds = max(err_ds, abs(phi - gd))
+      end do
+    end do
+  end do
+  err_fg = err_fg / scale
+  err_ds = err_ds / scale
+end subroutine green_modes_errors
+
+!> The full finite-depth G(x, xi) of HAMS: FINGREEN3D with FLAG = 1 returns G - 1/r (the eigen-series of EIGEN less 1/r and
+!> 1/r1, plus 1/r1 added back), so 1/r is added here.
+complex(8) function green_full(x, xi, nu, wvn_local)
+  real(8), intent(in) :: x(3), xi(3), nu, wvn_local(gm_nk)
+  complex(8) :: grn(4)
+
+  call FINGREEN3D(xi(1), x(1), xi(2), x(2), xi(3), x(3), nu, wvn_local, gm_nk, gm_depth, grn, 1)
+  green_full = grn(1) + 1d0 / norm2(xi - x)
+end function green_full
 
 end module test_partial_waves

@@ -252,6 +252,34 @@ module test_integration_drift
     ! rounding of the solves). 2x measured, rounded up; a wrong mode or body gives order 1
     real(8), parameter :: direct_mirror_limit = 5d-6
 
+    ! The direct method with the free-surface forcing (qtf_direct = 1, qtf_terms = full), Phase 7b Task 5. T_dir is the sum of
+    ! the three parts of QTF_DirectTerms.txt (D_I2, D_D, D_FS), T_pot the sum of the 7 terms of QTF_PotentialTerms.txt, both
+    ! with 16 digits, and the gap is the largest |T_dir - T_pot| over max |T_pot| of the rows of forces or of moments.
+    ! The same gap from the files .12d - .10d against .11d - .10d, which have 7 digits, is the same within the printed digits.
+    ! "1.3x measured" limits are 1.3 times the value measured when the check was written, rounded up to two digits.
+    !
+    ! qtf_directfs_round (480 panels, depth 20, Omega = 0.25 and 0.15 rad/s): 3.92e-2 measured, the 7a limit of this hull
+    ! (direct_round_limit 5.2e-2: the bottom of the hull, M_y at (0.70, 0.95), where B1 and B2 cancel); without D_FS 1.12e-1.
+    ! 1.3x measured. The free-surface part alone, D_FS against FS_inner + FS_outer over max |FS|: 8.2e-3 here, 8.7e-3 at
+    ! qtf_directfs_irsp, 5.0e-3 at qtf_directfs_two (the unit test at depth 100 gave 2.3e-3 and 2.8e-3 over max |T_pot|); the
+    ! limit is 1.3x the largest, for all three
+    real(8), parameter :: directfs_round_limit = 5.1d-2, directfs_fs_limit = 1.2d-2
+    ! The half mesh against the whole mesh: 2.8e-8 measured (2.9e-7 at 30 m and 6.1e-7 at 100 m of water). The limit is
+    ! 1e-6: other compilers and libraries move the two meshes' bits apart by this much, and it is still about 1e5 below
+    ! the free-surface part
+    real(8), parameter :: directfs_half_limit = 1d-6
+    ! qtf_directfs_irsp (IRSP = 1, 0.95 and 1.10 rad/s, depth 20): 1.45e-3 measured, without D_FS 1.29e-1. 1.3x measured
+    real(8), parameter :: directfs_irsp_limit = 1.9d-3
+    ! qtf_directfs_two (two hulls of 220 panels, depth 20): 4.36e-1 measured, without D_FS 1.83. The gap is the moments of the
+    ! body forcing, the bottom of the coarse hull as in qtf_direct_two (M_y: 6.3e-2 of 0.144, where the free-surface part
+    ! of M_y is 0.20 and agrees to 3e-4); the free-surface part is checked by directfs_fs_limit. 1.3x measured
+    real(8), parameter :: directfs_two_limit = 5.7d-1
+    ! Body 2 against body 1 mirrored, .12d: 1.4e-8 measured; the brief's 1e-5 (the printed digits are 7)
+    real(8), parameter :: directfs_mirror_limit = 1d-5
+    ! The gap without D_FS has to be this many times the gap with it: the free-surface forcing is in the direct solve. For
+    ! qtf_directfs_round the gap is the mesh error of the body forcing (2.9 times), the sharper test is directfs_fs_limit
+    real(8), parameter :: nonvacuous = 2d0
+
 contains
 
     subroutine setup_drift(testsuite)
@@ -306,6 +334,7 @@ contains
             new_unittest("run_qtf_b2_defaults", run_qtf_b2_defaults), &
             new_unittest("run_qtf_field_cases", run_qtf_field_cases), &
             new_unittest("run_qtf_fs_cases", run_qtf_fs_cases), &
+            new_unittest("run_qtf_directfs_cases", run_qtf_directfs_cases), &
             new_unittest("run_control_cyl", run_control_cyl), &
             new_unittest("run_control_cyl_sybo", run_control_cyl_sybo), &
             new_unittest("run_control_cases", run_control_cases) &
@@ -431,7 +460,12 @@ contains
             new_unittest("fs_half_matches_full", fs_half_matches_full), &
             new_unittest("fs_irsp_lid", fs_irsp_lid), &
             new_unittest("fs_main_grid_omega", fs_main_grid_omega), &
-            new_unittest("fs_two_bodies_file", fs_two_bodies_file) &
+            new_unittest("fs_two_bodies_file", fs_two_bodies_file), &
+            new_unittest("direct_fs_vs_indirect_full", direct_fs_vs_indirect_full), &
+            new_unittest("direct_fs_half_matches_full", direct_fs_half_matches_full), &
+            new_unittest("direct_fs_irsp_lid", direct_fs_irsp_lid), &
+            new_unittest("direct_fs_two_bodies_file", direct_fs_two_bodies_file), &
+            new_unittest("direct_fs_off_unchanged", direct_fs_off_unchanged) &
         ]
     end subroutine collect_tests_drift
 
@@ -4109,15 +4143,25 @@ contains
     ! ---------------------------------------------------------------------------------------------- the direct method
 
     !> T_dir of each row of QTF_DirectTerms.txt: (PER1, PER2, BETA1, BETA2, I, Re, Im), the sum of its two parts, scaled
-    !> and conjugated as T_pot of read_pot_total
-    subroutine read_direct_total(path, rows, error)
+    !> and conjugated as T_pot of read_pot_total. With with_fs the file of qtf_terms = full has the third part D_FS too (11
+    !> columns), which is added; with fs_only the third part alone; without either only the first two parts are read, of
+    !> either file
+    subroutine read_direct_total(path, rows, error, with_fs, fs_only)
         character(len=*), intent(in) :: path
         real(8), allocatable, intent(out) :: rows(:,:)
         type(error_type), allocatable, intent(out) :: error
+        logical, intent(in), optional :: with_fs, fs_only
         character(len=:), allocatable :: lines(:)
-        real(8) :: t(9)
-        integer :: r, n, ios
+        real(8) :: t(11)
+        integer :: r, n, ios, ncol
+        logical :: fs, only
 
+        fs = .false.
+        only = .false.
+        if (present(with_fs)) fs = with_fs
+        if (present(fs_only)) only = fs_only
+        fs = fs .or. only
+        ncol = merge(11, 9, fs)
         call read_lines(path, lines, error)
         if (allocated(error)) return
         allocate (rows(size(lines), 7))
@@ -4125,12 +4169,18 @@ contains
         do r = 1, size(lines)
             if (lines(r)(1:1) == '#') cycle
             n = n + 1
-            read (lines(r), *, iostat=ios) t
+            read (lines(r), *, iostat=ios) t(1:ncol)
             call check(error, ios == 0, "Bad row in "//path//": "//trim(lines(r)))
             if (allocated(error)) return
             rows(n,1:5) = t(1:5)
             rows(n,6) = t(6) + t(8)
             rows(n,7) = t(7) + t(9)
+            if (only) then
+                rows(n,6:7) = t(10:11)
+            else if (fs) then
+                rows(n,6) = rows(n,6) + t(10)
+                rows(n,7) = rows(n,7) + t(11)
+            end if
         end do
         rows = rows(1:n,:)
     end subroutine read_direct_total
@@ -5484,5 +5534,241 @@ contains
             if (allocated(error)) return
         end do
     end subroutine check_same_file
+
+    ! ---------------------------------------------------------------------------------------------- direct with free surface
+
+    !> The fixtures of the direct method with the free-surface forcing (qtf_direct = 1, qtf_terms = full), in one setup
+    !> test, with the run time of each case
+    subroutine run_qtf_directfs_cases(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=18), parameter :: cases(4) = [character(len=18) :: "qtf_directfs_round", "qtf_directfs_half", &
+                                                    "qtf_directfs_irsp", "qtf_directfs_two"]
+        type(error_type), allocatable :: one
+        integer(8) :: t0, t1, rate
+        integer :: c
+
+        do c = 1, size(cases)
+            call system_clock(t0, rate)
+            call run_case(trim(cases(c)), [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file, &
+                                           qtf_direct_file, direct_terms_file], one)
+            call system_clock(t1)
+            print '(4x,a,": run time ",F8.1," s")', trim(cases(c)), real(t1 - t0, 8)/real(rate, 8)
+            if (allocated(one)) then
+                print '(4x,a)', trim(cases(c))//": "//one%message
+                if (.not. allocated(error)) call move_alloc(one, error)
+            end if
+        end do
+    end subroutine run_qtf_directfs_cases
+
+    !> The gap T_dir - T_pot of a run of qtf_terms = full: gap with the three parts of QTF_DirectTerms.txt, gap_body with the
+    !> first two (the direct solve without the free-surface forcing), over max |T_pot| of the rows of forces or of moments,
+    !> from the terms files; and gap_file from the files, (.12d - .10d) against (.11d - .10d), over max |.11d - .10d| of its
+    !> rows, with the diagonal left out (.12d and .11d are .10d there). gap_fs is the free-surface part alone: D_FS against
+    !> FS_inner + FS_outer, over max |FS_inner + FS_outer| of the rows of forces or of moments, which has none of the
+    !> mesh error of the hull of the body forcing
+    subroutine direct_full_gap(name, gap, gap_body, gap_file, gap_fs, error)
+        character(len=*), intent(in) :: name
+        real(8), intent(out) :: gap, gap_body, gap_file, gap_fs
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: td(:,:), tb(:,:), tp(:,:), d10(:,:), d11(:,:), d12(:,:), a(:,:), b(:,:), df(:,:), pf(:,:)
+        logical, allocatable :: off(:)
+
+        gap = huge(1d0)
+        gap_body = 0d0
+        gap_file = huge(1d0)
+        gap_fs = huge(1d0)
+        call check_no_bad_numbers(output_dir(name)//qtf_direct_file, error)
+        if (allocated(error)) return
+        call read_direct_total(output_dir(name)//direct_terms_file, td, error, with_fs=.true.)
+        if (allocated(error)) return
+        call read_direct_total(output_dir(name)//direct_terms_file, tb, error)
+        if (allocated(error)) return
+        call read_pot_total(output_dir(name)//pot_terms_file, tp, error)
+        if (allocated(error)) return
+        call largest_difference(td, tp, name//" T_dir against T_pot", gap, error)
+        if (allocated(error)) return
+        call largest_difference(tb, tp, name//" T_dir without D_FS against T_pot", gap_body, error)
+        if (allocated(error)) return
+        call read_direct_total(output_dir(name)//direct_terms_file, df, error, fs_only=.true.)
+        if (allocated(error)) return
+        call read_fs_total(output_dir(name)//pot_terms_file, pf, error)
+        if (allocated(error)) return
+        call largest_difference(df, pf, name//" D_FS against FS_inner + FS_outer", gap_fs, error)
+        if (allocated(error)) return
+        call read_qtf(output_dir(name)//qtf_diff_file, d10, error)
+        if (allocated(error)) return
+        call read_qtf(output_dir(name)//qtf_indirect_file, d11, error)
+        if (allocated(error)) return
+        call read_qtf(output_dir(name)//qtf_direct_file, d12, error)
+        if (allocated(error)) return
+        call check(error, size(d10, 1) == size(d11, 1) .and. size(d10, 1) == size(d12, 1), name//": .10d, .11d, .12d rows")
+        if (allocated(error)) return
+        off = d10(:,1) /= d10(:,2)
+        a = d12(:,[1, 2, 3, 4, 5, 8, 9])
+        b = d11(:,[1, 2, 3, 4, 5, 8, 9])
+        a(:,6:7) = a(:,6:7) - d10(:,8:9)
+        b(:,6:7) = b(:,6:7) - d10(:,8:9)
+        call largest_difference(pack_rows(a, off), pack_rows(b, off), name//" .12d - .10d against .11d - .10d", gap_file, &
+                                error)
+    end subroutine direct_full_gap
+
+    !> qtf_directfs_round (the rounded hull of qtf_round_body, 480 panels, depth 20, Omega = 0.25 and 0.15 rad/s, two
+    !> headings): the direct solve with the free-surface forcing against the complete indirect QTF, qtf_direct = 1 with
+    !> qtf_terms = full: .12d - .10d against .11d - .10d, and the same from the terms files. The terms file names D_FS. Not
+    !> vacuous: without D_FS the gap is the free-surface part of T_pot, 0.3 to 0.4 of it, about
+    !> twice the limit (1.12e-1 against 5.1e-2)
+    subroutine direct_fs_vs_indirect_full(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: name = "qtf_directfs_round"
+        character(len=:), allocatable :: lines(:)
+        real(8) :: gap, gap_body, gap_file, gap_fs
+        integer :: r, named
+
+        call read_lines(output_dir(name)//direct_terms_file, lines, error)
+        if (allocated(error)) return
+        named = 0
+        do r = 1, size(lines)
+            if (lines(r)(1:1) == '#' .and. index(lines(r), "D_FS") > 0) named = named + 1
+        end do
+        call check(error, named >= 1, name//": the terms file does not name D_FS")
+        if (allocated(error)) return
+        call direct_full_gap(name, gap, gap_body, gap_file, gap_fs, error)
+        if (allocated(error)) return
+        call report("direct_fs_vs_indirect_full T_dir against T_pot", gap)
+        call report("direct_fs_vs_indirect_full without D_FS", gap_body)
+        call report("direct_fs_vs_indirect_full D_FS against FS_inner + FS_outer", gap_fs)
+        call report("direct_fs_vs_indirect_full .12d - .10d against .11d - .10d", gap_file)
+        call check(error, count_log_lines(get_running_exe_path()//name//".log", " QTF direct free surface: Omega =") > 0, &
+                   name//": no direct free-surface line in the log")
+        if (allocated(error)) return
+        call check_below(error, "direct_fs_vs_indirect_full T_dir against T_pot", gap, directfs_round_limit)
+        if (allocated(error)) return
+        call check_below(error, "direct_fs_vs_indirect_full .12d - .10d against .11d - .10d", gap_file, directfs_round_limit)
+        if (allocated(error)) return
+        call check_below(error, "direct_fs_vs_indirect_full D_FS against FS_inner + FS_outer", gap_fs, directfs_fs_limit)
+        if (allocated(error)) return
+        call check(error, gap_body > nonvacuous*gap, "direct_fs_vs_indirect_full: the gap without D_FS is not larger")
+    end subroutine direct_fs_vs_indirect_full
+
+    !> The half mesh (ISY = 1) against the whole mesh, T_dir of the terms files with D_FS: the same discrete problem by
+    !> images (the inner free surface and the circle cover the whole plane in both)
+    subroutine direct_fs_half_matches_full(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: th(:,:), tf(:,:)
+        real(8) :: worst, gap, gap_body, gap_file, gap_fs
+
+        call read_direct_total(output_dir("qtf_directfs_half")//direct_terms_file, th, error, with_fs=.true.)
+        if (allocated(error)) return
+        call read_direct_total(output_dir("qtf_directfs_round")//direct_terms_file, tf, error, with_fs=.true.)
+        if (allocated(error)) return
+        call largest_difference(th, tf, "direct_fs_half_matches_full", worst, error)
+        if (allocated(error)) return
+        call report("direct_fs_half_matches_full", worst)
+        call check(error, size(th, 1) == 4*2*6 .and. size(tf, 1) == size(th, 1), &
+                   "qtf_directfs_half: expected 4 ordered pairs, 2 headings, 6 rows")
+        if (allocated(error)) return
+        call check_below(error, "direct_fs_half_matches_full", worst, directfs_half_limit)
+        if (allocated(error)) return
+        call direct_full_gap("qtf_directfs_half", gap, gap_body, gap_file, gap_fs, error)
+        if (allocated(error)) return
+        call report("direct_fs_half_matches_full T_dir against T_pot, half mesh", gap)
+        call check_below(error, "direct_fs_half_matches_full T_dir against T_pot, half mesh", gap, directfs_round_limit)
+    end subroutine direct_fs_half_matches_full
+
+    !> IRSP = 1 (the lid of qtf_round_body_irsp, 0.95 and 1.10 rad/s, Omega = 0.15 rad/s): the direct solve with the
+    !> free-surface forcing against the indirect one, the lid in both
+    subroutine direct_fs_irsp_lid(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: gap, gap_body, gap_file, gap_fs
+
+        call direct_full_gap("qtf_directfs_irsp", gap, gap_body, gap_file, gap_fs, error)
+        if (allocated(error)) return
+        call report("direct_fs_irsp_lid T_dir against T_pot", gap)
+        call report("direct_fs_irsp_lid D_FS against FS_inner + FS_outer", gap_fs)
+        call report("direct_fs_irsp_lid without D_FS", gap_body)
+        call report("direct_fs_irsp_lid .12d - .10d against .11d - .10d", gap_file)
+        call check_below(error, "direct_fs_irsp_lid T_dir against T_pot", gap, directfs_irsp_limit)
+        if (allocated(error)) return
+        call check_below(error, "direct_fs_irsp_lid .12d - .10d against .11d - .10d", gap_file, directfs_irsp_limit)
+        if (allocated(error)) return
+        call check_below(error, "direct_fs_irsp_lid D_FS against FS_inner + FS_outer", gap_fs, directfs_fs_limit)
+        if (allocated(error)) return
+        call check(error, gap_body > nonvacuous*gap, "direct_fs_irsp_lid: the gap without D_FS is not larger")
+    end subroutine direct_fs_irsp_lid
+
+    !> Two hulls at y = +-10 m with FSInnerMesh.pnl, heading 0 (the layout of qtf_fs_two, depth 20): the layout and every
+    !> mesh are their own mirror images about y = 0, so the rows of body 2 of .12d are those of body 1 with the sign of
+    !> sway, roll and yaw changed. The file mesh is used (its coverage line is in the log, no warning), and T_dir against
+    !> T_pot is within the limit of two small hulls
+    subroutine direct_fs_two_bodies_file(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: name = "qtf_directfs_two"
+        real(8), parameter :: mirror_sign(6) = [1d0, -1d0, 1d0, -1d0, 1d0, -1d0]
+        real(8), allocatable :: d12(:,:)
+        real(8) :: gap, gap_body, gap_file, gap_fs, worst, scale
+        integer :: r, q, k, n
+
+        call read_qtf(output_dir(name)//qtf_direct_file, d12, error)
+        if (allocated(error)) return
+        worst = 0d0
+        n = 0
+        do r = 1, size(d12, 1)
+            k = nint(d12(r,5))
+            if (k > 6) cycle
+            scale = maxval(d12(:,6), mask=same_index_kind(d12(:,5), d12(r,5)))
+            do q = 1, size(d12, 1)
+                if (.not. (same(d12(q,1), d12(r,1)) .and. same(d12(q,2), d12(r,2)) .and. d12(q,3) == d12(r,3) .and. &
+                           d12(q,4) == d12(r,4) .and. nint(d12(q,5)) == k + 6)) cycle
+                n = n + 1
+                worst = max(worst, hypot(d12(q,8) - mirror_sign(k)*d12(r,8), d12(q,9) - mirror_sign(k)*d12(r,9))/scale)
+            end do
+        end do
+        call report("direct_fs_two_bodies_file body 2 against body 1 mirrored", worst)
+        call check(error, n == count(nint(d12(:,5)) <= 6) .and. n > 0, name//": rows of body 2 missing")
+        if (allocated(error)) return
+        call check_below(error, "direct_fs_two_bodies_file body 2 against body 1 mirrored", worst, directfs_mirror_limit)
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//name//".log", "FSInnerMesh.pnl covers") == 1, &
+                   name//": no coverage line of FSInnerMesh.pnl in the log")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//name//".log", "QTF free surface warning") == 0, &
+                   name//": a free-surface warning in the log")
+        if (allocated(error)) return
+        call direct_full_gap(name, gap, gap_body, gap_file, gap_fs, error)
+        if (allocated(error)) return
+        call report("direct_fs_two_bodies_file T_dir against T_pot", gap)
+        call report("direct_fs_two_bodies_file without D_FS", gap_body)
+        call report("direct_fs_two_bodies_file D_FS against FS_inner + FS_outer", gap_fs)
+        call check_below(error, "direct_fs_two_bodies_file T_dir against T_pot", gap, directfs_two_limit)
+        if (allocated(error)) return
+        call check_below(error, "direct_fs_two_bodies_file D_FS against FS_inner + FS_outer", gap_fs, directfs_fs_limit)
+        if (allocated(error)) return
+        call check(error, gap_body > nonvacuous*gap, "direct_fs_two_bodies_file: the gap without D_FS is not larger")
+    end subroutine direct_fs_two_bodies_file
+
+    !> Without qtf_terms = full the direct solve is that of Phase 7a, bit for bit: QTF_Direct.12d and QTF_DirectTerms.txt
+    !> of qtf_direct_round, qtf_direct_irsp and qtf_direct_two are the files of the binary before the free-surface forcing
+    !> (commit 17dfbff, which leaves the direct path as merged in Phase 7a), stored in expected_output of each case, and
+    !> the log has no free-surface line of the direct solve
+    subroutine direct_fs_off_unchanged(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=16), parameter :: cases(3) = [character(len=16) :: "qtf_direct_round", "qtf_direct_irsp", &
+                                                    "qtf_direct_two"]
+        character(len=:), allocatable :: name
+        integer :: c
+
+        do c = 1, size(cases)
+            name = trim(cases(c))
+            call check_same_file(get_repo_root_path()//"test/data/"//name//"/expected_output/QTF_Direct.12d", &
+                                 output_dir(name)//qtf_direct_file, error)
+            if (allocated(error)) return
+            call check_same_file(get_repo_root_path()//"test/data/"//name//"/expected_output/QTF_DirectTerms.txt", &
+                                 output_dir(name)//direct_terms_file, error)
+            if (allocated(error)) return
+            call check(error, count_log_lines(get_running_exe_path()//name//".log", " QTF direct free surface:") == 0, &
+                       name//": a free-surface line of the direct solve in the log without full")
+            if (allocated(error)) return
+        end do
+    end subroutine direct_fs_off_unchanged
 
 end module test_integration_drift
