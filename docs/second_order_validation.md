@@ -773,7 +773,37 @@ Four fixtures, all with `qtf_direct = 1`, `qtf_terms = full`, `qtf = 1`, `qtf_ma
 
 ### Snellius validation
 
-*Pending.* The Snellius runs (the sharp cylinder against the exact potential part with the free-surface forcing, the rounded hull against the indirect method, the cost of the set-up on large hulls) are not finished. The results, the cases and the cost are to be added here when they are.
+Six cases ran on Snellius at 97dd419 (fat_genoa, 24 CPUs, free body):
+- the rounded hull of the 7a direct cases at m1, m2 and m3 (480, 1920 and 4320 panels; `q_round_directfs_free_*`);
+- the sharp cylinder of the 6a free-surface cases at m1, m2 and m3 (448, 1792 and 4032 panels; `q_sharp_directfs_free_*`).
+
+The rounded-hull cases set `qtf_b2 = body`, as in 7a. The sharp cases keep the default `qtf_b2 = control` for the indirect side, as in 6a. The cases come from `drift_convergence.py` (`qtf_directfs_cases`). They are compared with `qtf_compare.py --direct` and `--potential` against the 6a reference with the free-surface columns. The 0.75–0.79 rad/s band is left out, as in 6a: the free sharp cylinder has its undamped surge-pitch resonance there.
+
+The gap below is |T_dir − T_pot| / max |T_pot| over all modes and heading pairs, with 0 < Δω ≤ 0.30 rad/s. Each cell gives the max / median of the forces, in percent. The body part compares D_I2 + D_D with the five body terms. The free-surface part compares D_FS with FS_inner + FS_outer.
+
+| Case | Total gap | Body part | Free-surface part |
+| --- | --- | --- | --- |
+| rounded hull m1 / m2 / m3 | 1.72 / 0.44 / 0.20 (max) | 1.75 / 0.47 / 0.22 | 0.08 / 0.03 / 0.03 |
+| sharp cylinder m1 / m2 / m3 | 20.0 / 11.0 / 7.8 (max) | 20.0 / 11.0 / 7.8 | 0.15 / 0.02 / 0.01 |
+| sharp cylinder, median | 0.04 / 0.01 / 0.01 | 0.03 / 0.01 / 0.01 | 0.003 / 0.000 / 0.000 |
+
+- **The free-surface forcing is right on large hulls.** D_FS equals the indirect free-surface terms to 0.01 % of max |T_pot| at m3, and the difference falls with the mesh.
+- **The rounded hull converges as in Phase 7a.** The factor is 3.9, then 2.2 (7a: 1.88 → 0.48 → 0.23 %).
+- **On the sharp cylinder the gap is the body forcing.** The body part of `.12d` is the same as in the 7a runs to 1e-14. The gap is larger than in 7a (14 → 8 → 6.2 %) because the indirect B2 is now `qtf_b2 = control`. B2 is the only term that differs between the runs. The direct solve keeps the hull form of B2, which converges slowly at the sharp edge ([direct against indirect](#direct-method-against-indirect-method)).
+- **Against the exact answer (F_x, heading 0, max), `.12d` and `.11d` are equal:** 27.2, 10.9 and 6.0 % at m1, m2 and m3. That max is the first-order motion error, as in 6a. The potential part shows the difference between the methods. The direct one gives 18.8 → 9.8 → 6.8 % (F_z 22 → 13 → 7.9 %, M_y 15 → 8.5 → 6.1 %). The indirect one with `qtf_b2 = control` gives 11.8 → 4.4 → 1.6 %. Both converge, and the indirect method stays the more accurate one on sharp edges.
+- **With the resonance band included,** the totals are 99, 41 and 24 % from the exact answer for both files (the 6a values of `.11d`).
+
+**Cost (measured, sharp cylinder):**
+
+| Mesh | Wall time | Peak memory | Indirect full run (6a) |
+| --- | --- | --- | --- |
+| m1 | 1.54 h | 0.38 GB | 0.99 h, 0.15 GB |
+| m2 | 3.36 h | 1.25 GB | 2.74 h, 0.64 GB |
+| m3 | 7.95 h | 3.54 GB | 7.17 h, 2.37 GB |
+
+The direct free-surface forcing adds 2000–2800 s to the indirect full run: 56 % at m1, 23 % at m2 and 11 % at m3. The free-surface set-up that both methods share dominates the cost. The rounded hull took 32 s, 150 s and 553 s. All six cases took about 313 core-hours.
+
+The results, the scripts and a figure are in `validation-runs/snellius-qtf-directfs` (`findings.md`, `split_gap.py`) of the working folder, which is outside the repository.
 
 ### Limits of this check
 
@@ -841,7 +871,7 @@ The largest d12 is 1.427e-3 and the largest d23 8.17e-4, a ratio of 0.573. The p
 - Nemoh's HASBO: whether it contains a term like B3 was not checked, and the sharp-cylinder Nemoh maps were made with the hull form of B2 only.
 - The free-surface integral (`qtf_terms = full`) is validated on one hull, single body, heading 0, finite depth; deep water is not supported. At m1 its error is not monotone in the inner mesh, and the cause is not found ([QTF free-surface integral](#qtf-free-surface-integral)). The sum-frequency potential part is not implemented (Phase 6b).
 - Direct method (`QTF_Direct.12d`): validated on a smooth hull to 0.23% / 0.35% (forces / moments) against the indirect method at 4320 panels, and on the sharp cylinder only against the exact potential part (13 / 13 / 28% at 4032 panels, resonance pairs included). The cause of its smaller F_z error than the hull-form indirect result is not tested, and the IRSP case ran at one mesh (448 panels).
-- Direct method with the free-surface forcing (`qtf_terms = full`): checked on the laptop against the indirect free-surface terms (unit and integration tests, depth 20 m and 100 m), finite depth only; the Snellius validation is pending ([Snellius validation](#snellius-validation)).
+- Direct method with the free-surface forcing (`qtf_terms = full`): checked on the laptop against the indirect free-surface terms (unit and integration tests, depth 20 m and 100 m), finite depth only. On Snellius it was checked on one rounded hull and one sharp cylinder, free body only ([Snellius validation](#snellius-validation)). No fixed, damped or multi-body case was run there.
 - Two unit tests failed under ifx 2024a on Snellius (job of 2026-11-09, the build of the hull-form runs): `control_surface_mesh/separate_bodies_accepted` and `field_velocity/field_green_is_smooth_in_z`, in modules the potential part does not change. Both are fixed on the `second-order-drift` branch by commit 60a972e, which this branch does not contain yet. With ifort 2022.1 on Windows all tests pass ([Developer Documentation](developer_documentation.md#qtf-potential-part)).
 - WAMIT: the OC4 comparison with the public WAMIT run of OpenFAST now exists ([OC4 against WAMIT](#oc4-against-wamit)). A WAMIT licence would still be needed to settle the conjugation and axes of the WAMIT-format output on a hull with a known answer, since the diagonal of that comparison is real. The semi-analytical reference covers the signs of the mean drift values (210 values agree at 7168 panels), not the phases of the complex outputs.
 
