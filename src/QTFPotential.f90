@@ -86,9 +86,28 @@ MODULE QTFPotential
    ! with X = xi + alpha x (x - xr), Xdot = -i omega X, d/dt = -i Omega on the pair, phi_I2 of SecondOrderIncident. The
    ! terms are kept apart in the order of the TP_ indices. n_k of the FK term are the generalized normals mesh%nj of the
    ! panels of the body of mode k.
+   !
+   ! Sum frequency (kernel = KERNEL_SUM, Phase 7c-2). The same terms at Omega+ = omega_1 + omega_2, with every product of
+   ! two first-order quantities through pair_plus instead of pair_minus, phi_I2 of the sum (incident2_pair with
+   ! KERNEL_SUM) and B3 = n.d/dt(H x) with d/dt = -i Omega+ on the pair: H x = (1/2) alpha x (alpha x x) is quadratic in
+   ! alpha, so its sum-frequency part is (1/2) pair_cross(KERNEL_SUM, alpha, alpha x x) e^{-i Omega+ t}, and the time
+   ! derivative of e^{-i Omega+ t} is -i Omega+ times it. B1 is unchanged in form: Xdot = -i omega_j X_j holds per
+   ! first-order component. The factor i Omega rho of the pressure -rho dphi/dt is i Omega+ rho.
+   !    Green's identity at Omega+. phi_2 (the part forced by B on S) and psi_k at Omega+ both satisfy, with the time
+   ! factor e^{-i Omega+ t}, the Laplace equation in the fluid, -Omega+^2 phi + g phi_z = 0 on z = 0 (the free-surface
+   ! forcing Q enters phi_2 only, and is left out here as at Omega-), the bottom condition, and the radiation condition of
+   ! outgoing waves at the same wave number k(Omega+). Green's second identity over the fluid then gives
+   !    int_S (phi_2 dpsi_k/dn - psi_k dphi_2/dn) dS + int_F (phi_2 psi_k,z - psi_k phi_2,z) dS + int_far (...) = 0
+   ! where the F integrand is (Omega+^2/g)(phi_2 psi_k - psi_k phi_2) = 0 and the far integral vanishes because both are
+   ! outgoing at k(Omega+). With dpsi_k/dn = n_k and dphi_2/dn = B - dphi_I2/dn this is int_S phi_2 n_k dS =
+   ! int_S psi_k (B - dphi_I2/dn) dS, the identity of the difference frequency with Omega+ for Omega-. Nothing in it uses
+   ! how Omega was formed from omega_1 and omega_2; it needs Omega > 0 so that psi at Omega is the outgoing potential.
+   ! For the difference, Omega- = omega_1 - omega_2 < 0 needs psi(-|Omega|) = conj psi(|Omega|); Omega+ > 0 always (and is
+   ! never 0), so the sum takes psi at Omega+ as solved, with no conjugation branch and no Omega = 0 return. The sum
+   ! kernel is symmetric in the two states (pair_plus), so terms(1, 2) = terms(2, 1) (test pot_sum_symmetric).
 
    USE SecondOrderTypes, ONLY: panel_mesh, surface_geom, first_order_state, cs_points, CS_WALL, CS_FREE
-   USE NearFieldDrift, ONLY: pair_cross, pair_product, rigid_displacement, waterline_point, KERNEL_DIFF
+   USE NearFieldDrift, ONLY: pair_cross, pair_product, rigid_displacement, waterline_point, KERNEL_DIFF, KERNEL_SUM
    USE SurfaceVelocity, ONLY: tangential_fit
    USE FirstOrderState, ONLY: incident_phi, incident_grad, wave_gravity
    USE SecondOrderIncident, ONLY: incident2, incident2_pair, incident2_phi, incident2_grad
@@ -107,10 +126,11 @@ MODULE QTFPotential
 CONTAINS
 
    SUBROUTINE potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, omega_psi, rho, g, terms, ok, &
-                             phi2_constant, cs, grad_psi_cs, u1_cs, u2_cs, edge_w, omega_tol)
-      ! Body-forcing terms of the difference-frequency potential QTF of the state pair (s1, s2), per unit amplitudes.
+                             phi2_constant, cs, grad_psi_cs, u1_cs, u2_cs, edge_w, omega_tol, kernel)
+      ! Body-forcing terms of the potential QTF of the state pair (s1, s2), per unit amplitudes: the difference frequency
+      ! Omega = s1%omega - s2%omega (default), or with kernel = KERNEL_SUM the sum frequency Omega = s1%omega + s2%omega.
       !   wl1, wl2      total potential at the waterline segments (nwl), as for near_field_pair
-      !   psi           (n, 6 nbody) radiation potentials at |Omega|, Omega = s1%omega - s2%omega
+      !   psi           (n, 6 nbody) radiation potentials at |Omega|
       !   grad_psi      (3, n, 6 nbody) their gradients (psi_surface_gradient)
       !   psi_wl        (nwl, 6 nbody) psi at the waterline (psi_waterline with the same grad_psi)
       !   omega_psi     the frequency psi was solved at; must be |Omega| within omega_tol, or without omega_tol within
@@ -126,9 +146,11 @@ CONTAINS
       !   edge_w        optional (n), with cs only: panel weights of the hull term at sharp edges (SharpEdge)
       !   omega_tol     optional: the tolerance of the omega_psi check. QTFDriver passes the one it merges and looks up the
       !                 difference frequencies with (qtf_psi_tolerance), so that the check cannot refuse a psi it handed over
-      ! Omega = 0 gives zeros. For Omega < 0, psi(-|Omega|) = conj psi(|Omega|) is used (the radiation potential of the
-      ! negative frequency), so terms(2, 1) = conj terms(1, 2). Exact equality s1%omega == s2%omega is the diagonal: the
-      ! caller passes the same grid value for both.
+      !   kernel        optional: KERNEL_DIFF (default, bit-identical to the code without it) or KERNEL_SUM (header)
+      ! Difference kernel: Omega = 0 gives zeros. For Omega < 0, psi(-|Omega|) = conj psi(|Omega|) is used (the radiation
+      ! potential of the negative frequency), so terms(2, 1) = conj terms(1, 2). Exact equality s1%omega == s2%omega is the
+      ! diagonal: the caller passes the same grid value for both. Sum kernel: Omega > 0 always, psi is used as solved, and
+      ! terms(2, 1) = terms(1, 2); the diagonal s1 = s2 is a regular pair at 2 omega.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       TYPE(first_order_state), INTENT(IN) :: s1, s2
@@ -141,16 +163,27 @@ CONTAINS
       COMPLEX(8), INTENT(IN), OPTIONAL :: grad_psi_cs(:, :, :), u1_cs(:, :), u2_cs(:, :)
       REAL(8), INTENT(IN), OPTIONAL :: edge_w(:)
       REAL(8), INTENT(IN), OPTIONAL :: omega_tol
+      INTEGER, INTENT(IN), OPTIONAL :: kernel
 
-      INTEGER :: nmode
+      INTEGER :: nmode, kn
       LOGICAL :: control
       REAL(8) :: omega, tol
       CHARACTER(LEN=200) :: msg
 
       terms = (0D0, 0D0)
       IF (PRESENT(ok)) ok = .TRUE.
-      omega = s1%omega - s2%omega
-      IF (omega == 0D0) RETURN
+      kn = KERNEL_DIFF
+      IF (PRESENT(kernel)) kn = kernel
+      IF (kn /= KERNEL_DIFF .AND. kn /= KERNEL_SUM) THEN
+         WRITE (*, '(a,I0,a)') ' potential_pair: kernel ', kn, ' is neither KERNEL_DIFF nor KERNEL_SUM.'
+         ERROR STOP 1
+      END IF
+      IF (kn == KERNEL_SUM) THEN
+         omega = s1%omega + s2%omega
+      ELSE
+         omega = s1%omega - s2%omega
+         IF (omega == 0D0) RETURN
+      END IF
 
       nmode = 6*mesh%nbody
       IF (SIZE(psi, 1) /= mesh%n .OR. SIZE(psi, 2) /= nmode .OR. SIZE(grad_psi, 1) /= 3 .OR. &
@@ -235,7 +268,7 @@ CONTAINS
 
          zero3 = (0D0, 0D0)
          IF (.NOT. PRESENT(phi2_constant)) THEN
-            CALL incident2_pair(s1%omega, s1%k, s1%beta, s2%omega, s2%k, s2%beta, s1%h, g, inc)
+            CALL incident2_pair(s1%omega, s1%k, s1%beta, s2%omega, s2%k, s2%beta, s1%h, g, inc, kn)
          END IF
          ALLOCATE (u1(3, mesh%n), u2(3, mesh%n), hs(nmode))
          u1 = s1%grad_i + s1%grad_p
@@ -262,12 +295,12 @@ CONTAINS
             d2 = rigid_displacement(s2%xi(:, b), x)
             v1 = -CI*s1%omega*d1 - u1(:, i)
             v2 = -CI*s2%omega*d2 - u2(:, i)
-            b1v = SUM(nv*pair_cross(KERNEL_DIFF, v1, s1%xi(4:6, b), v2, s2%xi(4:6, b)))
+            b1v = SUM(nv*pair_cross(kn, v1, s1%xi(4:6, b), v2, s2%xi(4:6, b)))
 
-            ! B3 = n.d/dt(H x), H x = (1/2) alpha x (alpha x x)
+            ! B3 = n.d/dt(H x), H x = (1/2) alpha x (alpha x x), d/dt = -i Omega on the pair (either kernel)
             r1 = rigid_displacement([zero3, s1%xi(4:6, b)], x)
             r2 = rigid_displacement([zero3, s2%xi(4:6, b)], x)
-            hx = 0.5D0*pair_cross(KERNEL_DIFF, s1%xi(4:6, b), r1, s2%xi(4:6, b), r2)
+            hx = 0.5D0*pair_cross(kn, s1%xi(4:6, b), r1, s2%xi(4:6, b), r2)
             b3v = -CI*omega*SUM(nv*hx)
 
             DO k = 1, nmode
@@ -283,16 +316,16 @@ CONTAINS
             ALLOCATE (uw1(3, geom%nwl), uw2(3, geom%nwl))
             CALL waterline_velocity(mesh, geom, s1, wl1, body_normal_velocity(s1), uw1)
             CALL waterline_velocity(mesh, geom, s2, wl2, body_normal_velocity(s2), uw2)
-            CALL hessian_term_converted(mesh, geom, ps, gps, pw, s1%xi, u1, s2%xi, u2, KERNEL_DIFF, hs, uw1, uw2, &
+            CALL hessian_term_converted(mesh, geom, ps, gps, pw, s1%xi, u1, s2%xi, u2, kn, hs, uw1, uw2, &
                                         pieces=pieces)
          ELSE
-            CALL hessian_term_converted(mesh, geom, ps, gps, pw, s1%xi, u1, s2%xi, u2, KERNEL_DIFF, hs, pieces=pieces)
+            CALL hessian_term_converted(mesh, geom, ps, gps, pw, s1%xi, u1, s2%xi, u2, kn, hs, pieces=pieces)
          END IF
          IF (PRESENT(gcs)) THEN
             ! qtf_b2 = control: rot and line as above, the surface piece from the hull term and the C and F term
             ALLOCATE (hb(nmode), hc(nmode))
-            CALL b2_body_term(mesh, gps, s1%xi, u1, s2%xi, u2, KERNEL_DIFF, hb, edge_w)   ! edge_w may be absent
-            CALL b2_control_term(cs, mesh%xr, gcs, s1%xi, u1_cs, s2%xi, u2_cs, KERNEL_DIFF, hc)
+            CALL b2_body_term(mesh, gps, s1%xi, u1, s2%xi, u2, kn, hb, edge_w)   ! edge_w may be absent
+            CALL b2_control_term(cs, mesh%xr, gcs, s1%xi, u1_cs, s2%xi, u2_cs, kn, hc)
             hs = pieces(:, 1) + pieces(:, 3) + hb + hc
          END IF
          terms(:, TP_B2) = -hs

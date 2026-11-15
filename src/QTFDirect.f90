@@ -126,6 +126,15 @@ MODULE QTFDirect
    ! integrals in place of CGRN and RKBN, and the near-panel linear density and the waterline line integral as on the
    ! hull rows. AMAT keeps the full system; it is not factored with the lid. The Omega < 0 rule above holds unchanged,
    ! since A^T uses no conjugate: conj((A^T A)^-1 A^T r[conj b]) solves the problem at -|Omega|.
+   !
+   ! Sum frequency (Phase 7c-2). With kernels(p) = KERNEL_SUM, pair p of direct_at_omega is the sum pair at
+   ! Omega+ = omega_1 + omega_2: B1, B2 (b2_stokes_densities) and B3 by pair_plus, phi_I2 of the sum, B3 with -i Omega+
+   ! (QTFPotential has the derivation), and T_dir,k = i Omega+ rho int_S (phi_I2 + phi_D) n_k dS. Omega+ > 0, so the
+   ! forcing is never conjugated: phi_D solves the problem at Omega+ with the matrix and Green function of the radiation
+   ! solve there. Sum and difference pairs of the same Omega share one factorisation and one block of right sides; each
+   ! column carries its own signed Omega (dws). By the Green's identity of QTFPotential at Omega+, T_dir = T_pot of
+   ! potential_pair with KERNEL_SUM to the mesh error (test direct_sum_matches_indirect_pair). The free-surface forcing
+   ! of the sum (Q_D of pair_plus) is Phase 7c-2 Task 3: direct_at_omega stops when fs is given with a sum pair.
 
    USE Const_mod, ONLY: RXY, RXY_MULTI
    USE HAMS_mod, ONLY: NTHREAD, ISOLV, IRSP
@@ -143,7 +152,7 @@ MODULE QTFDirect
    USE FinGreen3D_Open, ONLY: FINGREEN3D
    USE SecondOrderTypes, ONLY: panel_mesh, surface_geom, first_order_state
    USE FirstOrderState, ONLY: image_signs, wave_gravity
-   USE NearFieldDrift, ONLY: pair_cross, rigid_displacement, waterline_point, KERNEL_DIFF
+   USE NearFieldDrift, ONLY: pair_cross, rigid_displacement, waterline_point, KERNEL_DIFF, KERNEL_SUM
    USE WaterlineField, ONLY: rankine_panel_integral
    USE QTFPotential, ONLY: waterline_velocity
    USE SecondOrderIncident, ONLY: incident2, incident2_pair, incident2_phi, incident2_grad
@@ -413,12 +422,15 @@ CONTAINS
    END SUBROUTINE direct_solve
 
    SUBROUTINE direct_at_omega(mesh, geom, omega, store, store_wl, pairs, tdir, is_multi, omega_tol, phi2_constant, seconds, parts, &
-                              fs, field_points, phi_field)
-      ! The direct load T_dir of every pair of the difference frequency omega (> 0), per unit amplitudes (header):
+                              fs, field_points, phi_field, kernels)
+      ! The direct load T_dir of every pair of the second-order frequency omega (> 0), per unit amplitudes (header):
       !   store, store_wl  the first-order states (nfreq, nbeta) and their waterline potentials (nwl, nfreq, nbeta), as
       !                    QTFDriver keeps them
-      !   pairs            (4, npair): frequency and heading of state 1, then of state 2, in store; each pair with
-      !                    |omega_1 - omega_2| = omega within omega_tol (default 1e-6 max(omega_1, omega_2))
+      !   pairs            (4, npair): frequency and heading of state 1, then of state 2, in store; each difference
+      !                    pair with |omega_1 - omega_2| = omega, each sum pair with omega_1 + omega_2 = omega, within
+      !                    omega_tol (default 1e-6 max(omega_1, omega_2))
+      !   kernels          optional (npair): KERNEL_DIFF or KERNEL_SUM per pair (default all KERNEL_DIFF, bit-identical
+      !                    to the code without it). A sum pair is not conjugated (header); with fs it stops (Task 3).
       !   tdir             (6 nbody, npair), T_dir,k of each pair, e^{-i omega t}, as the sum of the terms of potential_pair
       !   phi2_constant    optional test hook, as potential_pair: phi_I2 replaced by this constant (dphi_I2/dn = 0)
       !   parts            optional (6 nbody, npair, 2): the part of tdir from phi_I2 (:, :, 1) and from phi_D (:, :, 2);
@@ -435,7 +447,8 @@ CONTAINS
       !                    points off the hull by Green's formula (direct_field_at_points), e^{-i omega t}. phi_field is
       !                    the phi_D of the body forcing only: with fs the free-surface columns are then solved apart
       !                    (as for the third slice of parts), since Green's formula over the hull alone holds only for
-      !                    the body-forced phi_D. tdir and parts still have the whole load.
+      !                    the body-forced phi_D. tdir and parts still have the whole load. A sum column's phi_field
+      !                    is phi_D at Omega+ as solved; only the difference columns with Omega < 0 are conjugated.
       ! The solver globals must be at omega, with CALGREEN (CALGREEN_MULTI) and ASSB_LEFT (ASSB_LEFT_MULTI) run there, as
       ! RadiationOnlySolves leaves them after the radiation solve at omega; W1 is checked. direct_setup must have been
       ! called for this mesh. With IRSP = 1 the right sides have the lid rows too (header), and the radiation solve must
@@ -456,9 +469,11 @@ CONTAINS
       TYPE(direct_fs_data), INTENT(IN), OPTIONAL :: fs
       REAL(8), INTENT(IN), OPTIONAL :: field_points(:, :)
       COMPLEX(8), INTENT(OUT), OPTIONAL :: phi_field(:, :)
+      INTEGER, INTENT(IN), OPTIONAL :: kernels(:)
       COMPLEX(8), ALLOCATABLE :: vf(:, :, :), rf(:, :, :), r2(:, :, :), a(:, :), c(:, :, :), cl(:, :, :, :), e(:, :), &
                                  phi(:, :), p2(:, :), rfs(:, :, :), phis(:, :)
       REAL(8), ALLOCATABLE :: dws(:)
+      INTEGER, ALLOCATABLE :: kns(:)
       INTEGER :: npair, nb, nt, nl, ns, n, nmode, first, last, nc, col, ncol_max
       INTEGER(8) :: c0, c1, c2, rate
       REAL(8) :: sec(4), fsec(2), per_col
@@ -505,6 +520,25 @@ CONTAINS
          parts = (0D0, 0D0)
          fs_slice = SIZE(parts, 3) == 3
          fs_apart = PRESENT(fs) .AND. fs_slice
+      END IF
+      ALLOCATE (kns(npair))
+      kns = KERNEL_DIFF
+      IF (PRESENT(kernels)) THEN
+         IF (SIZE(kernels) /= npair) THEN
+            WRITE (*, '(a)') ' direct_at_omega: kernels must have one entry per pair.'
+            ERROR STOP 1
+         END IF
+         IF (ANY(kernels /= KERNEL_DIFF .AND. kernels /= KERNEL_SUM)) THEN
+            WRITE (*, '(a)') ' direct_at_omega: kernels must be KERNEL_DIFF or KERNEL_SUM.'
+            ERROR STOP 1
+         END IF
+         kns = kernels
+      END IF
+      IF (PRESENT(fs) .AND. ANY(kns == KERNEL_SUM)) THEN
+         ! direct_fs_block orders and conjugates by the sign of dws, for the difference kernel only
+         WRITE (*, '(a)') ' direct_at_omega: the free-surface forcing of the sum frequency is not implemented yet'// &
+            ' (Phase 7c-2 Task 3); call without fs for the sum pairs.'
+         ERROR STOP 1
       END IF
       IF (PRESENT(fs)) CALL check_fs()
       fsec = 0D0
@@ -605,8 +639,9 @@ CONTAINS
    CONTAINS
 
       SUBROUTINE pair_forcing(p, col)
-         ! Column col of the block for pair p: the panel field b - B2 (vf) and phi_I2 at the panels (p2). The forcing is
-         ! conjugated for Omega < 0 (header); p2 is not.
+         ! Column col of the block for pair p: the panel field b - B2 (vf) and phi_I2 at the panels (p2), under the kernel
+         ! of the pair. The forcing is conjugated for a difference pair with Omega < 0 (header); p2 is not. A sum pair has
+         ! dws = omega_1 + omega_2 > 0 and is never conjugated.
          INTEGER, INTENT(IN) :: p, col
          TYPE(incident2) :: inc
          COMPLEX(8) :: gr2(3), dn2, d1(3), d2(3), v1(3), v2(3), q1(3), q2(3), hx(3), b1v, b3v, zero3(3), field
@@ -614,20 +649,29 @@ CONTAINS
          INTEGER :: f, b
 
          ASSOCIATE (s1 => store(pairs(1, p), pairs(2, p)), s2 => store(pairs(3, p), pairs(4, p)))
-            dw = s1%omega - s2%omega
             tol = 1D-6*MAX(s1%omega, s2%omega)
             IF (PRESENT(omega_tol)) tol = omega_tol
-            IF (dw == 0D0 .OR. ABS(ABS(dw) - omega) > tol) THEN
-               WRITE (*, '(a,I0,a,ES14.6,a,ES14.6,a)') ' direct_at_omega: pair ', p, ' has Omega =', dw, &
-                  ' rad/s, not +-', omega, ' rad/s.'
-               ERROR STOP 1
+            IF (kns(p) == KERNEL_SUM) THEN
+               dw = s1%omega + s2%omega
+               IF (ABS(dw - omega) > tol) THEN
+                  WRITE (*, '(a,I0,a,ES14.6,a,ES14.6,a)') ' direct_at_omega: sum pair ', p, ' has Omega =', dw, &
+                     ' rad/s, not', omega, ' rad/s.'
+                  ERROR STOP 1
+               END IF
+            ELSE
+               dw = s1%omega - s2%omega
+               IF (dw == 0D0 .OR. ABS(ABS(dw) - omega) > tol) THEN
+                  WRITE (*, '(a,I0,a,ES14.6,a,ES14.6,a)') ' direct_at_omega: pair ', p, ' has Omega =', dw, &
+                     ' rad/s, not +-', omega, ' rad/s.'
+                  ERROR STOP 1
+               END IF
             END IF
             dws(col) = dw
             zero3 = (0D0, 0D0)
             ! phi_I2 with the gravity of the first-order wave, as potential_part
             g_wave = wave_gravity(s1%omega, s1%k, s1%h)
             IF (.NOT. PRESENT(phi2_constant)) THEN
-               CALL incident2_pair(s1%omega, s1%k, s1%beta, s2%omega, s2%k, s2%beta, s1%h, g_wave, inc)
+               CALL incident2_pair(s1%omega, s1%k, s1%beta, s2%omega, s2%k, s2%beta, s1%h, g_wave, inc, kns(p))
             END IF
             DO f = 1, n
                b = mesh%body(f)
@@ -646,11 +690,11 @@ CONTAINS
                d2 = rigid_displacement(s2%xi(:, b), x)
                v1 = -CI*s1%omega*d1 - (s1%grad_i(:, f) + s1%grad_p(:, f))
                v2 = -CI*s2%omega*d2 - (s2%grad_i(:, f) + s2%grad_p(:, f))
-               b1v = SUM(nv*pair_cross(KERNEL_DIFF, v1, s1%xi(4:6, b), v2, s2%xi(4:6, b)))
-               ! B3 = n.d/dt(H x), H x = (1/2) alpha x (alpha x x)
+               b1v = SUM(nv*pair_cross(kns(p), v1, s1%xi(4:6, b), v2, s2%xi(4:6, b)))
+               ! B3 = n.d/dt(H x), H x = (1/2) alpha x (alpha x x), d/dt = -i dw (dw = Omega+ for the sum)
                q1 = rigid_displacement([zero3, s1%xi(4:6, b)], x)
                q2 = rigid_displacement([zero3, s2%xi(4:6, b)], x)
-               hx = 0.5D0*pair_cross(KERNEL_DIFF, s1%xi(4:6, b), q1, s2%xi(4:6, b), q2)
+               hx = 0.5D0*pair_cross(kns(p), s1%xi(4:6, b), q1, s2%xi(4:6, b), q2)
                b3v = -CI*dw*SUM(nv*hx)
                field = b1v + b3v - dn2
                IF (dw < 0D0) field = CONJG(field)
@@ -660,14 +704,14 @@ CONTAINS
       END SUBROUTINE pair_forcing
 
       SUBROUTINE pair_densities(p, col)
-         ! Column col of the B2 densities for pair p, with the sharp-edge mask of the run (direct_setup), conjugated for
-         ! Omega < 0 as the forcing
+         ! Column col of the B2 densities for pair p under its kernel, with the sharp-edge mask of the run (direct_setup),
+         ! conjugated for Omega < 0 as the forcing
          INTEGER, INTENT(IN) :: p, col
 
          ASSOCIATE (s1 => store(pairs(1, p), pairs(2, p)), s2 => store(pairs(3, p), pairs(4, p)))
             CALL b2_stokes_densities(mesh, geom, s1, s2, store_wl(:, pairs(1, p), pairs(2, p)), &
                                      store_wl(:, pairs(3, p), pairs(4, p)), a(:, col), c(:, :, col), e(:, col), &
-                                     cl(:, :, :, col), edge_mask)
+                                     cl(:, :, :, col), edge_mask, kns(p))
             IF (dws(col) < 0D0) THEN
                a(:, col) = CONJG(a(:, col))
                c(:, :, col) = CONJG(c(:, :, col))
@@ -678,7 +722,8 @@ CONTAINS
       END SUBROUTINE pair_densities
 
       SUBROUTINE pair_load(p, col)
-         ! T_dir,k = i Omega rho int_S (phi_I2 + phi_D) n_k dS over the panels of the body of mode k; with parts, the
+         ! T_dir,k = i Omega rho int_S (phi_I2 + phi_D) n_k dS over the panels of the body of mode k, Omega = dws(col)
+         ! (signed for the difference, Omega+ for the sum); with parts, the
          ! two integrals are kept apart, and with three slices the free-surface part of phi_D (phis) too
          INTEGER, INTENT(IN) :: p, col
          COMPLEX(8) :: t2(6*mesh%nbody), td(6*mesh%nbody), tf(6*mesh%nbody), fac
@@ -774,12 +819,13 @@ CONTAINS
       rhs = r(:, 1, :)
    END SUBROUTINE direct_rhs_b2
 
-   SUBROUTINE b2_stokes_densities(mesh, geom, s1, s2, wl1, wl2, a, c, e, cl, one_point)
+   SUBROUTINE b2_stokes_densities(mesh, geom, s1, s2, wl1, wl2, a, c, e, cl, one_point, kernel)
       ! The pair data of the Stokes form, so that for any potential psi
       !   int_S psi n.[(X.grad)u] dS = sum_p [ psi_p a_p + (int_p grad psi).c_p ] - sum_w psi_w e_w
       ! with psi_p and int_p grad psi panel integrals and psi_w the line integral over segment w:
       !   a(p) = n.(alpha x u)       c(:, p) = (X x u) x n   [(n x g).w = g.(w x n)]       e(w) = (X x u).t
-      ! kernel KERNEL_DIFF, the motion of the body that owns the panel or segment.
+      ! under kernel (optional, KERNEL_DIFF by default, or KERNEL_SUM), the motion of the body that owns the panel or
+      ! segment. The waterline velocity (waterline_velocity) is first order and does not depend on the kernel.
       !   cl  optional (3, 4, n): the linear parts on each panel, from tangential_fit over the panel neighbours (zero on a
       !       panel without a fit): c(xi) = c_p + cl(:, 1:3, p) (xi - xi_p), from the components of w = X x u crossed
       !       with n_p, and a(xi) = a_p + cl(:, 4, p).(xi - xi_p), from the components of alpha x u dotted with n_p.
@@ -791,12 +837,15 @@ CONTAINS
       COMPLEX(8), INTENT(OUT) :: a(:), c(:, :), e(:)
       COMPLEX(8), INTENT(OUT), OPTIONAL :: cl(:, :, :)
       LOGICAL, INTENT(IN), OPTIONAL :: one_point(:)
+      INTEGER, INTENT(IN), OPTIONAL :: kernel
       COMPLEX(8), ALLOCATABLE :: uw1(:, :), uw2(:, :), w(:, :)
       COMPLEX(8) :: u1(3), u2(3), d1(3), d2(3), rot(3), xu(3), dw1(6), dw2(6), g1, g2
       REAL(8) :: nv(3), x(3), t(3), t1(3), t2(3)
-      INTEGER :: i, b, iw, m
+      INTEGER :: i, b, iw, m, kn
       LOGICAL :: ok
 
+      kn = KERNEL_DIFF
+      IF (PRESENT(kernel)) kn = kernel
       IF (SIZE(a) /= mesh%n .OR. SIZE(c, 1) /= 3 .OR. SIZE(c, 2) /= mesh%n .OR. SIZE(e) /= geom%nwl .OR. &
           SIZE(wl1) /= geom%nwl .OR. SIZE(wl2) /= geom%nwl) THEN
          WRITE (*, '(a)') ' b2_stokes_densities: a, c, e or wl does not have the size of the mesh.'
@@ -809,8 +858,8 @@ CONTAINS
          u2 = s2%grad_i(:, i) + s2%grad_p(:, i)
          d1 = rigid_displacement(s1%xi(:, b), mesh%xc(:, i) - mesh%xr(:, b))
          d2 = rigid_displacement(s2%xi(:, b), mesh%xc(:, i) - mesh%xr(:, b))
-         rot = pair_cross(KERNEL_DIFF, s1%xi(4:6, b), u1, s2%xi(4:6, b), u2)
-         xu = pair_cross(KERNEL_DIFF, d1, u1, d2, u2)
+         rot = pair_cross(kn, s1%xi(4:6, b), u1, s2%xi(4:6, b), u2)
+         xu = pair_cross(kn, d1, u1, d2, u2)
          a(i) = SUM(nv*rot)
          c(:, i) = cross_cr(xu, nv)
          IF (PRESENT(cl)) THEN
@@ -862,7 +911,7 @@ CONTAINS
          t = (geom%wl_x2(:, iw) - geom%wl_x1(:, iw))/geom%wl_len(iw)
          d1 = rigid_displacement(s1%xi(:, b), x - mesh%xr(:, b))
          d2 = rigid_displacement(s2%xi(:, b), x - mesh%xr(:, b))
-         xu = pair_cross(KERNEL_DIFF, d1, uw1(:, iw), d2, uw2(:, iw))
+         xu = pair_cross(kn, d1, uw1(:, iw), d2, uw2(:, iw))
          e(iw) = SUM(xu*t)
       END DO
 

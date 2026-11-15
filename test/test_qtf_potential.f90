@@ -15,7 +15,8 @@ module test_qtf_potential
                            waterline_velocity, NPOT_TERMS, TP_FK, TP_DIFFRACTION, TP_B1, TP_B2, TP_B3, &
                            b2_body_term, b2_control_term, b2_control_check
   use ControlSurfaceMesh, only : build_control_surface
-  use second_order_fixtures, only : make_cylinder, set_panel
+  use second_order_fixtures, only : make_cylinder, set_panel, read_pnl_hull
+  use, intrinsic :: ieee_arithmetic, only : ieee_is_finite
   use SecondOrderIncident, only : incident2, incident2_pair, incident2_grad
   use SharpEdge, only : sharp_edge_weights, DEFAULT_EDGE_DEG
   implicit none
@@ -38,6 +39,41 @@ module test_qtf_potential
   integer, parameter :: sph_nlat(3) = [8, 16, 32]
   ! Control-surface form of the B2 surface piece against the hull form, and the closed flux, on analytic fields
   real(8), parameter :: B2_SMOOTH_RATIO = 3d0, B2_SMOOTH_LIMIT = 1d-3, B2_FLUX_LIMIT = 1d-3
+  ! Sum kernel (Phase 7c-2). The free rounded cylinder of the 7a fixture qtf_direct_round (480 panels, radius 10, draft
+  ! 10), in depth 100 with the states of that fixture (0.70 and 0.95 rad/s) and synthetic psi, taken as solved at
+  ! Omega+ = 1.65 rad/s (the frequency is only checked, the identities hold for any psi)
+  character(len=*), parameter :: round_mesh = "test/data/qtf_direct_round/input/HullMesh.pnl"
+  real(8), parameter :: rd_w1 = 0.70d0, rd_w2 = 0.95d0
+  ! Swapping the states of a sum pair gives the same terms (pair_plus is symmetric): rounding only
+  real(8), parameter :: sum_symmetric_limit = 1d-12
+  ! pot_sum_b1_direct and pot_sum_b3_direct against the time series: rounding only
+  real(8), parameter :: sum_series_limit = 1d-12
+  ! pot_kernel_default: the terms of default_terms from the code before the sum kernel (dfd9c78), 17 digits
+  complex(8), parameter :: stored_t12(nmode, NPOT_TERMS) = reshape([ &
+    (3.41393580072235889d-014, 1.29942148562561670d+003), (5.26315102611363676d-013, -1.09505584887902864d+003), &
+    (-6.62308973498240448d+003, 4.40966707593304742d-014), (2.07112105243823114d-012, -2.88179042171966557d+003), &
+    (-4.73399097700167153d-012, -3.41960676698447014d+003), (4.00166797834731387d-012, 5.39575407519462820d-013), &
+    (1.01059811257231075d+002, 4.59491172375733257d+001), (6.51175406321924868d+001, 6.20978448970220285d+001), &
+    (3.83935604578510876d+001, 3.68910714563435675d+001), (3.69487388203554090d+001, -5.58283047878482286d+000), &
+    (5.03726575313704288d+001, -4.07931082683222002d+001), (6.23548054432500649d+001, -6.37984658483351552d+001), &
+    (1.41864431109236175d+001, -7.62762212971044420d+001), (1.26822571504951505d+001, -5.37552010765674950d+001), &
+    (6.26175769025205664d+000, -1.40287975057056027d+001), (-1.55157254303286365d+001, 2.73816757212552275d+001), &
+    (-4.92355181167876736d+001, 4.37262621135517193d+001), (-7.40715621919081286d+001, 2.23956801556733538d+001), &
+    (-1.16154793458039649d+002, -1.71080927879110511d+001), (-7.55795572828963174d+001, -5.43889124917693749d+001), &
+    (-2.89232652910960155d+001, -6.70387912952317890d+001), (8.53138104122221463d+000, -4.64105595427142674d+001), &
+    (1.94133284848760148d+001, -3.76409688053979175d-001), (1.47701715547122137d-001, 5.17497407710282715d+001), &
+    (-4.18084515792647426d+000, 2.76335193360185105d+000), (-4.15279337289163131d+000, 1.19345355274885456d+000), &
+    (-2.85762786987677275d+000, -1.73174135935105306d-001), (-7.14057712056112015d-001, -4.60241812346905699d-001), &
+    (1.26927634148147517d+000, 6.75194650602275903d-001), (2.14847933747628694d+000, 2.68576934129154310d+000)], &
+    [nmode, NPOT_TERMS])
+  complex(8), parameter :: stored_t21(NPOT_TERMS) = [ &
+    (-6.62308973498240266d+003, 6.09703155195754607d+003), (3.54247114142250553d+002, -3.47636289954967452d+001), &
+    (-1.05692347787353611d+002, 5.05566018888972550d+001), (-1.92565204790386616d+002, 1.33573025034652176d+002), &
+    (-8.48756843379322845d+000, -6.68435352996251364d+000)]
+  complex(8), parameter :: stored_tc(NPOT_TERMS) = [ &
+    (-6.62308973498240266d+003, -6.09703155195754607d+003), (3.54247114142250553d+002, 3.47636289954967452d+001), &
+    (-1.05692347787353611d+002, -5.05566018888972550d+001), (-2.07721253735140635d+003, 1.07797732718342513d+003), &
+    (-8.48756843379322845d+000, 6.68435352996251364d+000)]
 
 contains
 
@@ -65,7 +101,12 @@ subroutine collect_qtf_potential(testsuite)
     new_unittest("b2_control_needs_bottom_and_f", test_b2_control_check), &
     new_unittest("pot_b2_control_assembly", test_pot_b2_control_assembly), &
     new_unittest("b2_body_term_edge_weights", test_b2_body_term_edge_weights), &
-    new_unittest("pot_b2_control_two_bodies", test_pot_b2_control_two_bodies) &
+    new_unittest("pot_b2_control_two_bodies", test_pot_b2_control_two_bodies), &
+    new_unittest("pot_kernel_default", test_pot_kernel_default), &
+    new_unittest("pot_sum_symmetric", test_pot_sum_symmetric), &
+    new_unittest("pot_sum_diagonal", test_pot_sum_diagonal), &
+    new_unittest("pot_sum_b1_direct", test_pot_sum_b1_direct), &
+    new_unittest("pot_sum_b3_direct", test_pot_sum_b3_direct) &
     ]
 end subroutine collect_qtf_potential
 
@@ -1548,5 +1589,275 @@ subroutine join_two(m1, m2, mesh)
   mesh%image = 1 + 0*mesh%base
   mesh%xr = reshape([m1%xr(:, 1), m2%xr(:, 1)], [3, 2])
 end subroutine join_two
+
+! ---------------------------------------------------------------------------------------------- sum kernel (Phase 7c-2)
+
+!> The terms of the default path on fixed fixtures, for pot_kernel_default: the setup of pot_hermitian (448-panel
+!> cylinder, moving body, complex psi), pair (1, 2) at Omega > 0 and pair (2, 1) at Omega < 0 (the conjugate branch), and
+!> the qtf_b2 = control form of pair (1, 2) on the C and F of control_points with the analytic fields there.
+subroutine default_terms(t12, t21, tc, error, kernel)
+  complex(8), intent(out) :: t12(nmode, NPOT_TERMS), t21(nmode, NPOT_TERMS), tc(nmode, NPOT_TERMS)
+  type(error_type), allocatable, intent(out) :: error
+  integer, intent(in), optional :: kernel
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(cs_points) :: pts
+  type(first_order_state) :: s1, s2
+  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), wl1(:), wl2(:), gcs(:,:,:), uc1(:,:), uc2(:,:)
+  complex(8) :: x1(6, 1), x2(6, 1)
+  integer :: k
+
+  call cylinder_448(mesh, geom, error)
+  if (allocated(error)) return
+  call control_points(mesh, geom, pts, error)
+  if (allocated(error)) return
+  call motions(x1, x2)
+  call make_state(mesh, geom, w1, b1, depth, x1, s1, wl1)
+  call make_state(mesh, geom, w2, b2, depth, x2, s2, wl2)
+  call synthetic_psi(mesh, geom, .true., psi, grad_psi, psi_wl)
+  call control_fields_analytic(pts, w1, b1, gcs, uc1)
+  call control_fields_analytic(pts, w2, b2, gcs, uc2)
+  do k = 1, nmode
+    gcs(:, :, k) = gcs(:, :, k) * exp(ci * 0.3d0 * real(k, 8))
+  end do
+  if (present(kernel)) then
+    call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, 0.1d0, rho, g, t12, kernel=kernel)
+    call potential_pair(mesh, geom, s2, s1, wl2, wl1, psi, grad_psi, psi_wl, 0.1d0, rho, g, t21, kernel=kernel)
+    call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, 0.1d0, rho, g, tc, cs=pts, &
+                        grad_psi_cs=gcs, u1_cs=uc1, u2_cs=uc2, kernel=kernel)
+  else
+    call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, 0.1d0, rho, g, t12)
+    call potential_pair(mesh, geom, s2, s1, wl2, wl1, psi, grad_psi, psi_wl, 0.1d0, rho, g, t21)
+    call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, 0.1d0, rho, g, tc, cs=pts, &
+                        grad_psi_cs=gcs, u1_cs=uc1, u2_cs=uc2)
+  end if
+end subroutine default_terms
+
+!> Without kernel potential_pair is the difference path of Phases 6 and 7a to the bit: the terms of default_terms equal
+!> the values stored from the code before the sum kernel was added (commit dfd9c78, printed with 17 digits, which
+!> round-trip a double), and passing kernel = KERNEL_DIFF gives the same bits. The stored values are t12 in full, and
+!> the per-term sums over the modes of t21 (Omega < 0) and of the control form.
+subroutine test_pot_kernel_default(error)
+  type(error_type), allocatable, intent(out) :: error
+  complex(8) :: t12(nmode, NPOT_TERMS), t21(nmode, NPOT_TERMS), tc(nmode, NPOT_TERMS)
+  complex(8) :: k12(nmode, NPOT_TERMS), k21(nmode, NPOT_TERMS), kc(nmode, NPOT_TERMS)
+  integer :: j, k
+  logical :: same
+
+  call default_terms(t12, t21, tc, error)
+  if (allocated(error)) return
+  same = all(t12 == stored_t12) .and. all(sum(t21, dim=1) == stored_t21) .and. all(sum(tc, dim=1) == stored_tc)
+  if (.not. same) then
+    do j = 1, NPOT_TERMS
+      do k = 1, nmode
+        write(*, '(4x,a,es25.17e3,a,es25.17e3,a)') "t12 (", real(t12(k, j)), ", ", aimag(t12(k, j)), ")"
+      end do
+    end do
+    do j = 1, NPOT_TERMS
+      write(*, '(4x,a,es25.17e3,a,es25.17e3,a)') "t21 (", real(sum(t21(:, j))), ", ", aimag(sum(t21(:, j))), ")"
+    end do
+    do j = 1, NPOT_TERMS
+      write(*, '(4x,a,es25.17e3,a,es25.17e3,a)') "tc (", real(sum(tc(:, j))), ", ", aimag(sum(tc(:, j))), ")"
+    end do
+  end if
+  call check(error, same, "the default path differs from the stored values of the difference path")
+  if (allocated(error)) return
+  call default_terms(k12, k21, kc, error, kernel=KERNEL_DIFF)
+  if (allocated(error)) return
+  call check(error, all(k12 == t12) .and. all(k21 == t21) .and. all(kc == tc), &
+             "kernel = KERNEL_DIFF differs from the default")
+end subroutine test_pot_kernel_default
+
+!> The 480-panel rounded cylinder of qtf_direct_round (round_mesh) and its geometry
+subroutine round_hull(mesh, geom, error)
+  type(panel_mesh), intent(out) :: mesh
+  type(surface_geom), intent(out) :: geom
+  type(error_type), allocatable, intent(out) :: error
+  logical :: ok
+  call read_pnl_hull(round_mesh, [0d0, 0d0, -5d0], mesh, ok)
+  call check(error, ok, "cannot open " // round_mesh)
+  if (allocated(error)) return
+  call check(error, mesh%n == 480, "the fixture is not the 480-panel rounded cylinder")
+  if (allocated(error)) return
+  call geometry(mesh, geom, error)
+end subroutine round_hull
+
+!> Sum kernel: T+(1, 2) = T+(2, 1) term by term, with complex psi and a moving body (the free rounded cylinder, states
+!> 0.70 and 0.95 rad/s at different headings, psi at Omega+ = 1.65), since pair_plus(f1, g1, f2, g2) is symmetric in the
+!> two states and phi_I2 of the sum is too. No conjugate: a conjugation branch for the sum would fail here by order 1.
+subroutine test_pot_sum_symmetric(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: s1, s2
+  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), wl1(:), wl2(:)
+  complex(8) :: x1(6, 1), x2(6, 1), t12(nmode, NPOT_TERMS), t21(nmode, NPOT_TERMS)
+  real(8) :: e, worst
+  integer :: j
+  character(len=200) :: line
+
+  call round_hull(mesh, geom, error)
+  if (allocated(error)) return
+  call motions(x1, x2)
+  call make_state(mesh, geom, rd_w1, b1, depth, x1, s1, wl1)
+  call make_state(mesh, geom, rd_w2, b2, depth, x2, s2, wl2)
+  call synthetic_psi(mesh, geom, .true., psi, grad_psi, psi_wl)
+  call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, rd_w1 + rd_w2, rho, g, t12, kernel=KERNEL_SUM)
+  call potential_pair(mesh, geom, s2, s1, wl2, wl1, psi, grad_psi, psi_wl, rd_w1 + rd_w2, rho, g, t21, kernel=KERNEL_SUM)
+  worst = 0d0
+  do j = 1, NPOT_TERMS
+    write(line, '(a,i0)') "term ", j
+    call check(error, maxval(abs(t12(:, j))) > 0d0, trim(line) // " is zero")
+    if (allocated(error)) return
+    e = maxval(abs(t21(:, j) - t12(:, j))) / maxval(abs(t12(:, j)))
+    worst = max(worst, e)
+    call check(error, e <= sum_symmetric_limit, trim(line) // ": (2, 1) is not (1, 2)")
+    if (allocated(error)) return
+  end do
+  write(line, '(a,es10.2,a,es10.2)') "sum kernel, |T(2, 1) - T(1, 2)| / max |T(1, 2)|, worst term ", worst, &
+    "; against conj ", maxval(abs(t21 - conjg(t12))) / maxval(abs(t12))
+  print '(4x,a)', trim(line)
+end subroutine test_pot_sum_symmetric
+
+!> Sum kernel on the diagonal: the state at 0.70 rad/s with itself, Omega+ = 1.40 (the difference kernel returns zeros
+!> there). Every term is finite, and the motion terms B1, B2 and B3 are not all zero for the free body.
+subroutine test_pot_sum_diagonal(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: s1
+  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), wl1(:)
+  complex(8) :: x1(6, 1), x2(6, 1), terms(nmode, NPOT_TERMS)
+  real(8) :: bsum
+  character(len=200) :: line
+
+  call round_hull(mesh, geom, error)
+  if (allocated(error)) return
+  call motions(x1, x2)
+  call make_state(mesh, geom, rd_w1, b1, depth, x1, s1, wl1)
+  call synthetic_psi(mesh, geom, .true., psi, grad_psi, psi_wl)
+  call potential_pair(mesh, geom, s1, s1, wl1, wl1, psi, grad_psi, psi_wl, 2d0 * rd_w1, rho, g, terms, kernel=KERNEL_SUM)
+  bsum = maxval(abs(terms(:, TP_B1))) + maxval(abs(terms(:, TP_B2))) + maxval(abs(terms(:, TP_B3)))
+  write(line, '(a,5es10.2)') "diagonal at Omega+ = 1.40, max |term| of FK, diffraction, B1, B2, B3: ", &
+    maxval(abs(terms), dim=1)
+  print '(4x,a)', trim(line)
+  call check(error, all(ieee_is_finite(real(terms))) .and. all(ieee_is_finite(aimag(terms))), "a term is not finite; " // line)
+  if (allocated(error)) return
+  call check(error, bsum > 0d0, "B1, B2 and B3 are all zero for the free body; " // line)
+end subroutine test_pot_sum_diagonal
+
+!> The Omega+ component of a product of the real signals of two states, from the time series over the beat period
+!> 2 pi / (w1 - w2) with nt samples. With w1 = 0.8 and w2 = 0.7 every frequency of the product is a multiple m of 0.1
+!> rad/s, m in {0, 1, 14, 15, 16}, and Omega+ is m = 15. With 64 samples no other m aliases onto 15 (or -15 = 49), so the
+!> projection (1/N) sum h(t_n) e^{i Omega+ t_n} is exact. For h = Re(f) Re(g) it is (1/4)(f1 g2 + f2 g1) = pair_plus:
+!> the e^{-i Omega+ t} part of (1/4)(f + conj f)(g + conj g) is (1/4)(f1 g2 + f2 g1) e^{-i Omega+ t}, and the projection
+!> picks it alone. So the reference of T+(1, 2) is the projection, as for the difference in pot_b1_direct.
+real(8) function series_time(n, nt)
+  integer, intent(in) :: n, nt
+  series_time = 2d0 * pi * real(n, 8) / (real(nt, 8) * (w1 - w2))
+end function series_time
+
+!> B1 of the sum kernel against the time series of (Xdot - u).(alpha x n) (series_time), with pair_plus written out by
+!> the projection at Omega+ = w1 + w2 = 1.5 rad/s, psi taken at 1.5
+subroutine test_pot_sum_b1_direct(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: s1, s2
+  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), wl1(:), wl2(:)
+  complex(8) :: x1(6, 1), x2(6, 1), terms(nmode, NPOT_TERMS), ref(nmode), acc, v1(3), v2(3)
+  integer, parameter :: nt = 64
+  real(8) :: om, t, a(3), v(3), x(3), an(3), rel
+  integer :: i, n
+  character(len=200) :: line
+
+  call cylinder_448(mesh, geom, error)
+  if (allocated(error)) return
+  call motions(x1, x2)
+  call make_state(mesh, geom, w1, b1, depth, x1, s1, wl1)
+  call make_state(mesh, geom, w2, b2, depth, x2, s2, wl2)
+  call synthetic_psi(mesh, geom, .true., psi, grad_psi, psi_wl)
+  om = w1 + w2
+  call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, om, rho, g, terms, kernel=KERNEL_SUM)
+
+  ref = (0d0, 0d0)
+  do i = 1, mesh%n
+    x = mesh%xc(:, i) - mesh%xr(:, 1)
+    v1 = -ci * w1 * rigid_displacement(x1(:, 1), x) - s1%grad_i(:, i)
+    v2 = -ci * w2 * rigid_displacement(x2(:, 1), x) - s2%grad_i(:, i)
+    acc = (0d0, 0d0)
+    do n = 0, nt - 1
+      t = series_time(n, nt)
+      a = real(x1(4:6, 1) * exp(-ci * w1 * t) + x2(4:6, 1) * exp(-ci * w2 * t))
+      v = real(v1 * exp(-ci * w1 * t) + v2 * exp(-ci * w2 * t))
+      an = [a(2)*mesh%nrm(3, i) - a(3)*mesh%nrm(2, i), a(3)*mesh%nrm(1, i) - a(1)*mesh%nrm(3, i), &
+            a(1)*mesh%nrm(2, i) - a(2)*mesh%nrm(1, i)]
+      acc = acc + sum(v * an) * exp(ci * om * t)
+    end do
+    ref = ref + psi(i, :) * acc / real(nt, 8) * mesh%area(i)
+  end do
+  ref = ci * om * rho * ref
+  rel = maxval(abs(terms(:, TP_B1) - ref)) / maxval(abs(ref))
+  write(line, '(a,es10.2)') "sum B1 against the time series, relative ", rel
+  print '(4x,a)', trim(line)
+  call check(error, maxval(abs(ref)) > 0d0, "the reference B1 is zero")
+  if (allocated(error)) return
+  call check(error, rel <= sum_series_limit, line)
+end subroutine test_pot_sum_b1_direct
+
+!> B3 of the sum kernel against the time series of (1/2) alpha(t) x (alpha(t) x x) (series_time), projected at
+!> Omega+ = 1.5 rad/s; d/dt of the Omega+ part gives -i Omega+
+subroutine test_pot_sum_b3_direct(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: s1, s2
+  complex(8), allocatable :: psi(:,:), grad_psi(:,:,:), psi_wl(:,:), wl1(:), wl2(:)
+  complex(8) :: x1(6, 1), x2(6, 1), terms(nmode, NPOT_TERMS), ref(nmode), acc(3), bi
+  integer, parameter :: nt = 64
+  real(8) :: om, t, a(3), x(3), hx(3), ax(3), rel
+  integer :: i, n
+  character(len=200) :: line
+
+  call cylinder_448(mesh, geom, error)
+  if (allocated(error)) return
+  call motions(x1, x2)
+  call make_state(mesh, geom, w1, b1, depth, x1, s1, wl1)
+  call make_state(mesh, geom, w2, b2, depth, x2, s2, wl2)
+  call synthetic_psi(mesh, geom, .true., psi, grad_psi, psi_wl)
+  om = w1 + w2
+  call potential_pair(mesh, geom, s1, s2, wl1, wl2, psi, grad_psi, psi_wl, om, rho, g, terms, kernel=KERNEL_SUM)
+
+  ref = (0d0, 0d0)
+  do i = 1, mesh%n
+    x = mesh%xc(:, i) - mesh%xr(:, 1)
+    acc = (0d0, 0d0)
+    do n = 0, nt - 1
+      t = series_time(n, nt)
+      a = real(x1(4:6, 1) * exp(-ci * w1 * t) + x2(4:6, 1) * exp(-ci * w2 * t))
+      ax = cross_r(a, x)
+      hx = 0.5d0 * cross_r(a, ax)
+      acc = acc + hx * exp(ci * om * t)
+    end do
+    bi = sum(mesh%nrm(:, i) * (-ci * om * acc / real(nt, 8)))
+    ref = ref + psi(i, :) * bi * mesh%area(i)
+  end do
+  ref = ci * om * rho * ref
+  rel = maxval(abs(terms(:, TP_B3) - ref)) / maxval(abs(ref))
+  write(line, '(a,es10.2)') "sum B3 against the time series, relative ", rel
+  print '(4x,a)', trim(line)
+  call check(error, maxval(abs(ref)) > 0d0, "the reference B3 is zero")
+  if (allocated(error)) return
+  call check(error, rel <= sum_series_limit, line)
+
+contains
+
+  pure function cross_r(p, q) result(c)
+    real(8), intent(in) :: p(3), q(3)
+    real(8) :: c(3)
+    c = [p(2)*q(3) - p(3)*q(2), p(3)*q(1) - p(1)*q(3), p(1)*q(2) - p(2)*q(1)]
+  end function cross_r
+
+end subroutine test_pot_sum_b3_direct
 
 end module test_qtf_potential

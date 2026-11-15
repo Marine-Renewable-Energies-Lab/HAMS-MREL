@@ -6,7 +6,7 @@ module second_order_fixtures
   private
 
   public :: make_cylinder, make_two_bodies, set_panel, maccamy_fuchs_a, maccamy_fuchs_state, maccamy_fuchs_phi, maccamy_fuchs_drift, &
-            maccamy_fuchs_waterline, maccamy_fuchs_field
+            maccamy_fuchs_waterline, maccamy_fuchs_field, read_pnl_hull
 
 contains
 
@@ -367,5 +367,76 @@ subroutine make_two_bodies(m, dx, both)
   both%image = [m%image, m%image]
   both%xr = reshape([m%xr(:, 1), m%xr(:, 1) + [dx, 0d0, 0d0]], [3, 2])
 end subroutine make_two_bodies
+
+!> Reads a hull mesh of HAMS (HullMesh.pnl, no symmetry plane) into a whole panel_mesh of one body, as make_cylinder
+!> builds one: vertex-average centroid and area from the diagonals (set_panel, as HAMS), the flat-panel normal from the
+!> diagonals, turned to point into the body (towards c_in, a point inside; the hull is convex)
+subroutine read_pnl_hull(path, c_in, mesh, ok)
+  character(len=*), intent(in) :: path
+  real(8), intent(in) :: c_in(3)
+  type(panel_mesh), intent(out) :: mesh
+  logical, intent(out) :: ok
+  character(len=200) :: line
+  real(8) :: v(3, 4), d1(3), d2(3), c(3), nrm(3), xc(3)
+  integer :: u, ios, npan, nnode, i, m, id, nv
+
+  open (newunit=u, file=path, status='old', action='read', iostat=ios)
+  ok = ios == 0
+  if (.not. ok) return
+  do
+    read (u, '(a)') line
+    if (index(line, 'Number of Panels') > 0) exit
+  end do
+  read (u, *) npan, nnode
+  mesh%n = npan
+  mesh%nbase = npan
+  mesh%nnode = nnode
+  mesh%nbody = 1
+  mesh%nsys = 1
+  allocate (mesh%xc(3, npan), mesh%nrm(3, npan), mesh%area(npan), mesh%psize(npan), mesh%nj(6, npan))
+  allocate (mesh%xnode(3, nnode), mesh%ncn(npan), mesh%ncon(4, npan), mesh%body(npan), mesh%base(npan), mesh%image(npan))
+  allocate (mesh%xr(3, 1))
+  mesh%xr = 0d0
+  mesh%body = 1
+  mesh%image = 1
+  mesh%base = [(i, i = 1, npan)]
+  mesh%ncon = 0
+  do
+    read (u, '(a)') line
+    if (index(line, 'Start Definition of Node Coordinates') > 0) exit
+  end do
+  do i = 1, nnode
+    read (u, *) id, mesh%xnode(:, i)
+  end do
+  do
+    read (u, '(a)') line
+    if (index(line, 'Start Definition of Node Relations') > 0) exit
+  end do
+  do i = 1, npan
+    read (u, '(a)') line
+    read (line, *) id, nv
+    mesh%ncn(i) = nv
+    read (line, *) id, nv, mesh%ncon(1:nv, i)
+  end do
+  close (u)
+  do i = 1, npan
+    nv = mesh%ncn(i)
+    do m = 1, nv
+      v(:, m) = mesh%xnode(:, mesh%ncon(m, i))
+    end do
+    xc = sum(v(:, 1:nv), dim=2) / real(nv, 8)
+    if (nv == 4) then
+      d1 = v(:, 3) - v(:, 1)
+      d2 = v(:, 4) - v(:, 2)
+    else
+      d1 = v(:, 2) - v(:, 1)
+      d2 = v(:, 3) - v(:, 1)
+    end if
+    c = [d1(2) * d2(3) - d1(3) * d2(2), d1(3) * d2(1) - d1(1) * d2(3), d1(1) * d2(2) - d1(2) * d2(1)]
+    nrm = c / norm2(c)
+    if (sum(nrm * (c_in - xc)) < 0d0) nrm = -nrm
+    call set_panel(mesh, i, nrm)
+  end do
+end subroutine read_pnl_hull
 
 end module second_order_fixtures
