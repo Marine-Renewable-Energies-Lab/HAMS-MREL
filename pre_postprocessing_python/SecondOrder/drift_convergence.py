@@ -554,6 +554,11 @@ def qtf_directfs_cases(grid):
     return chosen
 
 
+# The 21-frequency grid of R7, 0.40 to 1.40 rad/s by 0.05 (not the 101 points of QTF_FREQUENCY_RANGE: the sum then costs 3 to 4
+# times more)
+QTF_SUM_FREQUENCIES = tuple(round(0.40 + 0.05 * i, 2) for i in range(21))
+
+
 def qtf_directsum_cases(grid):
     """The cases of the sum-frequency direct solve (Phase 7c-2, R7 of the plan): qtf = 3 (both quadratic QTFs, so the sum
     frequency is on) with qtf_direct = 1 and qtf_terms = full, free body, IRSP = 1 with velocity_method = differencing (the
@@ -569,7 +574,7 @@ def qtf_directsum_cases(grid):
                            qtf_max_dw=QTF_POTENTIAL_MAX_DW, extra_options=DIRECT_OPTIONS))
     for m in (1, 2, 3):
         chosen.append(Case("q_sharp_directsum_free_%s" % tag(m), "D", "7c2", "sharp", m, "free", "differencing",
-                           frequencies=grid, headings=(0.0,), irsp=1, qtf=3, qtf_terms="full",
+                           frequencies=QTF_SUM_FREQUENCIES, headings=(0.0,), irsp=1, qtf=3, qtf_terms="full",
                            qtf_max_dw=QTF_POTENTIAL_MAX_DW, extra_options=dict(CS_FIXED_M1 if m > 1 else {}, qtf_direct=1)))
     return chosen
 

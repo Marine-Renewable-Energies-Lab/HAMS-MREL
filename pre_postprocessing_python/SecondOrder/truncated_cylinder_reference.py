@@ -2961,7 +2961,7 @@ def fs_grid(cyl, radius, omegas, big_omegas, n_modes, gauss=FS_GAUSS, panel=FS_P
     """FSGrid for the first-order frequencies omegas and the difference frequencies big_omegas, first-order series of
     n_modes evanescent modes (which sets the strip, delta = FS_STRIP_DECAY h/(N pi)). far: r_far - R (default
     FS_FAR_DECAY/k_1, k_1 the smallest first evanescent root of all the frequencies). strip_decay: the strip width in
-    decay lengths, default FS_STRIP_DECAY (the sum checks use FS_SUM_STRIP_DECAY, see check_fs_sum_bvp)."""
+    decay lengths, default FS_STRIP_DECAY (see FS_SUM_N: the strip is delta = strip_decay h/(N pi) wide)."""
     a, h = cyl.radius, cyl.depth
     delta = (FS_STRIP_DECAY if strip_decay is None else strip_decay) * h / (n_modes * math.pi)
     if radius < a + 4.0 * delta:
@@ -5061,36 +5061,75 @@ def check_potential_sum_symmetry():
 
 FS_SUM_PAIRS = ((0.70, 0.95), (0.70, 0.70))     # (omega_j, omega_i) of fs_sum_bvp and fs_sum_radius_invariance
 FS_SUM_TOLERANCE = 1e-5
-# Strip width of the sum checks, in decay lengths. At FS_STRIP_DECAY = 36 the direct solve and the indirect sum differ by
-# 2.9e-4 at (0.70, 0.95) and 2e-3 at (1.0, 1.0), growing with omega; at 12 by 1.5e-6 and 1.6e-6 (measured). Both sides move
-# by about 1 per cent between 36 and 12, as the difference-frequency pair (0.90, 1.10) does by 0.3 per cent (measured),
-# so the strip fit, not the sum forcing, limits the accuracy; the open question is for the next session (task-7-report).
-FS_SUM_STRIP_DECAY = 12.0
+# Mode count of fs_sum_bvp. The waterline strip is delta = FS_STRIP_DECAY h/(N pi) wide, and its fit limits the accuracy of the
+# direct and the indirect sum alike: at N = 1000 (delta = 11 m at the default 36 decay lengths) the two differ by 2.9e-4 at
+# (0.70, 0.95) rad/s, 2e-3 at (1.0, 1.0); at N = 4000 by 4.3e-7 and 2.5e-7 at (0.70, 0.95) and (0.70, 0.70) with the default
+# strip (measured; with N = 1000 and 12 decay lengths, the same delta/4, 1.5e-6). The width in metres, not the count of decay
+# lengths, is what matters, and the 21-frequency table runs at N = 64000, where 36 and 12 agree to 1e-7 at (1.40, 1.40).
+FS_SUM_N = 4000
 
 
-def _fs_sum_pair(cyl, low, high, motion, radius=FS_RADIUS, rhs=False):
-    """(grid, pair) of the sum-frequency free-surface forcing of the states (high, low) at FS_CHECK_RESOLUTION, and the
-    totals."""
-    res = FS_CHECK_RESOLUTION
+def _fs_sum_pair(cyl, low, high, motion, radius=FS_RADIUS, n_modes=None):
+    """(grid, pair, totals, Omega) of the sum-frequency free-surface forcing of the states (high, low) at
+    FS_CHECK_RESOLUTION, with n_modes evanescent modes if given."""
+    res = dict(FS_CHECK_RESOLUTION, n_modes=n_modes or FS_CHECK_RESOLUTION["n_modes"])
     big_omega = round(high + low, 9)
-    grid = fs_grid(cyl, radius, (low, high), (big_omega,), res["n_modes"], strip_decay=FS_SUM_STRIP_DECAY)
+    grid = fs_grid(cyl, radius, (low, high), (big_omega,), res["n_modes"])
     totals = {w: _first_order_case(cyl, w, motion, res["n_modes"], res["p_max"], res["orders"]) for w in (low, high)}
     pair = fs_pair(grid, fs_state(grid, high, totals[high][0]), fs_state(grid, low, totals[low][0]), kernel="sum")
     return grid, pair, totals, big_omega
+
+
+def check_fs_sum_forcing_vs_incident():
+    """The sum analogue of check_fs_forcing_vs_incident: _fs_forcing(plus=True) for incident-only fields, state j
+    unconjugated, equals the sum-frequency second-order incident wave's -Omega**2 phi_I2 + g d phi_I2/dz on z = 0
+    (incident2 with kernel "sum"), to FS_FORCING_TOLERANCE relative, at 0.80 and 0.60 rad/s, h = 100 m: (a) Cartesian
+    fields, headings 0 and 0 and 0 and 30 degrees; (b) the polar fields of the cylinder code (_plane_fields times
+    e^(i k x), state j with conj=False, e^(+i k_j x)). It tests the sign of wj -> -wj and the unconjugated field j."""
+    wi, wj, depth = 0.80, 0.60, 100.0
+    g = make_mesh.G
+    x, y = np.array([0.0, 13.7, -25.1]), np.array([0.0, -4.2, 31.9])
+    worst = 0.0
+    for bj in (0.0, math.radians(30.0)):
+        inc = incident2(wi, 0.0, wj, bj, depth, kernel="sum")
+        phi2, grad2 = inc.fields(x, y, 0.0 * x)
+        exact = -inc.omega ** 2 * phi2 + g * grad2[2]
+        fields = []
+        for omega, beta in ((wi, 0.0), (wj, bj)):
+            k = _wave_number_g(omega, depth, g)
+            phi = -g / omega * np.exp(1j * k * (x * math.cos(beta) + y * math.sin(beta)))
+            fields.append((phi, 1j * k * math.cos(beta) * phi, 1j * k * math.sin(beta) * phi, omega ** 2 / g * phi,
+                           k ** 2 * phi))
+        q = _fs_forcing(wi, fields[0], wj, fields[1], plus=True)
+        worst = max(worst, np.max(np.abs(q - exact) / np.abs(exact)))
+    inc = incident2(wi, 0.0, wj, 0.0, depth, kernel="sum")
+    r, theta = np.array([10.0, 17.3, 41.0]), np.array([0.0, 2.1, 4.4])
+    phi2 = inc.fields(r * np.cos(theta), r * np.sin(theta), 0.0 * r)
+    exact = -inc.omega ** 2 * phi2[0] + g * phi2[1][2]
+    states = []
+    for omega in (wi, wj):
+        k = drift_convergence.wave_number(omega, depth)
+        states.append(FSState(omega, k, omega ** 2 / g, -g / omega, [], None, None, None, None))
+    f_i = tuple(v * np.exp(1j * states[0].k * r * np.cos(theta)) for v in _plane_fields(states[0], theta))
+    f_j = tuple(v * np.exp(1j * states[1].k * r * np.cos(theta)) for v in _plane_fields(states[1], theta))
+    polar = np.max(np.abs(_fs_forcing(wi, f_i, wj, f_j, plus=True) - exact) / np.abs(exact))
+    return max(worst, polar) <= FS_FORCING_TOLERANCE, ("max |Q+[I, I] - (-Omega**2 phi_I2+ + g phi_I2+,z)|/|.| %.1e "
+                                                       "(Cartesian, headings 0/0 and 0/30 deg), %.1e (polar fields)"
+                                                       % (worst, polar))
 
 
 def check_fs_sum_bvp():
     """The sum-frequency free-surface term against the direct solve, as check_fs_sign_from_bvp: fixed body, (0.70, 0.95)
     and (0.70, 0.70), fs_direct_force at Omega+ (the load of phi_D) equals the indirect ID + FS (potential_terms_states
     with kernel=_pair_sum plus the free-surface term T_FS+; FK is the load of phi_I2) to FS_SUM_TOLERANCE of max abs(direct) over F_x, F_z, M_y. It
-    tests the sum forcing, the three tail classes and incident2's sum together. psi and the direct solve at
-    FS_SIGN_RESOLUTION."""
+    tests the sum forcing, the three tail classes and incident2's sum together. The first-order fields, psi and the
+    direct solve at N = FS_SUM_N (the strip, see there), p_max of FS_SIGN_RESOLUTION."""
     cyl = Cylinder()
-    sign_res = FS_SIGN_RESOLUTION
+    sign_res = dict(FS_SIGN_RESOLUTION, n_modes=FS_SUM_N)
     quad = body_quadrature(cyl, *POTENTIAL_QUADRATURE)
     worst, parts = 0.0, []
     for low, high in FS_SUM_PAIRS:
-        grid, pair, totals, big_omega = _fs_sum_pair(cyl, low, high, "fixed")
+        grid, pair, totals, big_omega = _fs_sum_pair(cyl, low, high, "fixed", n_modes=FS_SUM_N)
         rads = _psi_solutions(cyl, big_omega, sign_res["n_modes"], _spec_key(sign_res["p_max"]))
         fs = fs_terms_states(pair, {k: fs_psi_test(grid, rads[k]) for k in MOTION_MODES})
         surface = {w: surface_state(cyl, w, totals[w][0], totals[w][1], quad) for w in (low, high)}
@@ -5136,6 +5175,7 @@ CHECKS = {"roots": check_roots, "inner_products": check_inner_products, "polylog
           "fs_forcing_vs_incident": check_fs_forcing_vs_incident, "fs_radius_invariance": check_fs_radius_invariance,
           "fs_outer": check_fs_outer, "fs_sign_from_bvp": check_fs_sign_from_bvp,
           "incident2_sum": check_incident2_sum, "potential_sum_symmetry": check_potential_sum_symmetry,
+          "fs_sum_forcing_vs_incident": check_fs_sum_forcing_vs_incident,
           "fs_sum_bvp": check_fs_sum_bvp, "fs_sum_radius_invariance": check_fs_sum_radius_invariance}
 # Run by name (check uncertainty compare_signs) and by the reference subcommand, not by a bare check: uncertainty computes
 # nine rows at N = 128000 that no other check needs; compare_signs reads the study's results outside the repository and
@@ -5293,6 +5333,14 @@ def main(argv=None):
     if args.command == "qtf":
         return run_qtf(args.out, ("fixed", "free") if args.motion == "both" else (args.motion,))
     if args.command == "qtf-potential":
+        if args.kernel == "sum":
+            for flag, given in (("--fs-check", args.fs_check), ("--max-dw", args.max_dw != QTF_MAX_DW)):
+                if given:
+                    print("WARNING: %s is ignored with --kernel sum (every pair omega_i <= omega_j is written)" % flag,
+                          file=sys.stderr)
+            if args.light and args.free_surface:
+                print("WARNING: --light with --kernel sum --free-surface: the sum free-surface term is up to 6% off at "
+                      "LIGHT_RESOLUTION (a quick look only)", file=sys.stderr)
         if (args.fs_check or args.fs_radius != FS_RADIUS) and not args.free_surface:
             parser.error("--fs-radius and --fs-check need --free-surface")
         return run_qtf_potential(args.out, ("fixed", "free") if args.motion == "both" else (args.motion,),
