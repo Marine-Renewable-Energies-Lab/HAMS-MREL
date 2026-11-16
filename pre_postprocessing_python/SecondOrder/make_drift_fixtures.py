@@ -97,6 +97,18 @@ QTF_FS_FREQUENCIES = (0.8, 1.0)
 QTF_FS_MAIN_FREQUENCIES = (0.2, 0.8, 1.0)
 QTF_FS_DEPTH = 20.0
 QTF_FS_RADIUS = 10.0
+
+# The direct method at the sum frequency (qtf_direct = 1, qtf = 2 or 3, QTF_Direct.12s), Phase 7c-2 Task 6. The rounded hull
+# of qtf_direct_round has its cutoff of the sum (the estimate of the lowest irregular frequency, 1.536 rad/s) between
+# 0.70 + 0.70 and 0.70 + 0.95, so only Omega = 1.40 rad/s survives. With IRSP = 1 no cutoff applies (qtf_directsum_irsp:
+# the lid hull of qtf_directfs_irsp, depth 20, Omega = 1.90, 2.05 and 2.20 rad/s). The half mesh and its whole mesh are the
+# hull of qtf_directfs_round at 0.50, 0.60 and 0.70 rad/s, IRSP = 0, whose sums 1.0 to 1.4 rad/s are below the cutoff.
+# qtf_directsum_d1 and _d3 are qtf_directsum_irsp with qtf = 1 and 3 and the panel size and the angular modes of the
+# free-surface integral given, so that the sum frequencies do not change the mesh and the modes of the difference run
+QTF_DIRECTSUM_HALF_FREQUENCIES = (0.50, 0.60, 0.70)
+QTF_DIRECTSUM_FS_PANEL = 3.0
+QTF_DIRECTSUM_FS_MODES = 24
+
 QTF_FS_TWO_OFFSET = 10.0
 QTF_FS_TWO_RADIUS = 25.0
 QTF_FS_TWO_SPACING = 4.0   # point spacing of FSInnerMesh.pnl away from the waterlines, about lambda/15 at 1.0 rad/s
@@ -441,6 +453,7 @@ def main():
     write_qtf_field_fixtures(data, both)
     write_qtf_fs_fixtures(data, both)
     write_qtf_directfs_fixtures(data, both)
+    write_qtf_directsum_fixtures(data)
 
     # The control-surface method on the hull of drift_cyl: held fixed, and with the limit frequencies and all heading pairs
     for name, control, options in (("control_cyl", dict(), dict(mean_drift=1, drift_methods="far control", write_terms=1,
@@ -920,6 +933,47 @@ def write_control_physics(data):
         control = dict(dict(headings=DRIFT_CYL_HEADINGS, threads=CONTROL_THREADS), **control)
         write_control(os.path.join(target, "ControlFile.in"), **control)
         write_second_order(os.path.join(target, "SecondOrder.in"), **options)
+
+
+def write_qtf_directsum_fixtures(data):
+    """Fixtures of the direct method at the sum frequency (QTF_Direct.12s), Phase 7c-2 Task 6: qtf_directsum_round,
+    qtf_directsum_irsp, qtf_directsum_half and its whole mesh qtf_directsum_halfref, qtf_directsum_d1 and _d3 (qtf = 1 and
+    3, the difference outputs must be the same), and qtf_directsum_field."""
+    inputs = ("HullMesh.pnl", "Hydrostatic.in", "ControlFile.in")
+    # qtf_direct_round with qtf = 3 (body terms, IRSP = 0, depth 100, velocity by the source solve)
+    target = case_dir(data, "qtf_directsum_round")
+    copy_inputs(data, "qtf_direct_round", target, inputs)
+    write_second_order(os.path.join(target, "SecondOrder.in"),
+                       **dict(mean_drift=1, drift_methods="far near", motion_state="free", write_terms=1, qtf_terms="body",
+                              qtf=3, qtf_b2="body", qtf_edge_weights="off", qtf_direct=1, qtf_max_dw=0.3,
+                              velocity_method="source"))
+    # The lid hull of qtf_directfs_irsp, the sum only, with the free-surface terms
+    full = dict(mean_drift=1, drift_methods="far near", motion_state="free", write_terms=1, qtf_terms="full", qtf=2,
+                qtf_max_dw=0.3, qtf_b2="body", qtf_edge_weights="off", qtf_direct=1)
+    target = case_dir(data, "qtf_directsum_irsp")
+    copy_inputs(data, "qtf_directfs_irsp", target, inputs + ("WaterPlaneMesh.pnl",))
+    write_second_order(os.path.join(target, "SecondOrder.in"), **full)
+    # The same two difference runs, qtf = 1 and 3
+    for name, qtf in (("qtf_directsum_d1", 1), ("qtf_directsum_d3", 3)):
+        target = case_dir(data, name)
+        copy_inputs(data, "qtf_directfs_irsp", target, inputs + ("WaterPlaneMesh.pnl",))
+        write_second_order(os.path.join(target, "SecondOrder.in"),
+                           **dict(full, qtf=qtf, qtf_fs_panel=QTF_DIRECTSUM_FS_PANEL, qtf_fs_modes=QTF_DIRECTSUM_FS_MODES))
+    # The half mesh (ISY = 1) and the whole mesh of the rounded hull, IRSP = 0
+    for name, half in (("qtf_directsum_half", True), ("qtf_directsum_halfref", False)):
+        target = case_dir(data, name)
+        make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
+                                         half_y=half, **ROUND_MESH)
+        write_control(os.path.join(target, "ControlFile.in"), depth=QTF_DIRECTFS_DEPTH,
+                      frequencies=QTF_DIRECTSUM_HALF_FREQUENCIES, headings=DRIFT_CYL_HEADINGS, threads=QTF_DIRECTFS_THREADS)
+        write_second_order(os.path.join(target, "SecondOrder.in"), **full)
+    # qtf_direct_field_six with qtf = 3
+    target = case_dir(data, "qtf_directsum_field")
+    copy_inputs(data, "qtf_direct_field_six", target, inputs)
+    write_second_order(os.path.join(target, "SecondOrder.in"),
+                       **dict(mean_drift=1, drift_methods="far near", motion_state="free", write_terms=1, qtf_terms="body",
+                              qtf=3, qtf_b2="body", qtf_edge_weights="off", qtf_direct=1, velocity_method="source",
+                              qtf_field=1))
 
 
 if __name__ == "__main__":

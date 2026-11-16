@@ -10,6 +10,11 @@ read by the names of the "# Columns:" line. The integration test qtf_direct_fiel
 this file to a relative 1e-5 (the run writes 7 digits). Regenerate it only when the direct part is meant to change:
 run the integration tests, then this script on
 <build>/output_qtf_direct_field_six/Wamit_format/QTF_Field.txt.
+
+With a third argument K = 2 the file holds the sum rows (K = 2 of the "# Columns:" line) of a QTF_Field.txt of the run of
+qtf_directsum_field (Phase 7c-2), for the test direct_sum_field_rows:
+    python -I extract_direct_field_expected.py <build>/output_qtf_directsum_field/Wamit_format/QTF_Field.txt
+        ../../test/data/qtf_directsum_field/expected_sum.txt 2
 """
 
 import os
@@ -23,6 +28,7 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     target = sys.argv[2] if len(sys.argv) > 2 else os.path.join(here, "..", "..", "test", "data", "qtf_direct_field_six",
                                                                   "expected_direct.txt")
+    only_k = sys.argv[3] if len(sys.argv) > 3 else None
     names = None
     rows = []
     with open(source) as f:
@@ -31,12 +37,13 @@ def main():
                 names = line.split(":", 1)[1].split()
             elif names and line.strip() and not line.startswith("#"):
                 tokens = line.split()
-                if int(tokens[names.index("has_direct")]) == 1:
+                if int(tokens[names.index("has_direct")]) == 1 and (only_k is None or tokens[names.index("K")] == only_k):
                     rows.append([tokens[names.index(key)] for key in KEYS])
     assert rows, "no row with has_direct = 1"
     os.makedirs(os.path.dirname(target), exist_ok=True)
     with open(target, "w") as f:
-        f.write("! Direct part of the rows of qtf_direct_field_six that the direct solve covers, from QTF_Field.txt of a run of\n")
+        fixture = "qtf_direct_field_six" if only_k is None else "qtf_directsum_field (K = %s)" % only_k
+        f.write("! Direct part of the rows of %s that the direct solve covers, from QTF_Field.txt of a run of\n" % fixture)
         f.write("! this build (extract_direct_field_expected.py). Columns: %s\n" % " ".join(KEYS))
         for row in rows:
             f.write(" ".join(row) + "\n")
