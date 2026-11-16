@@ -4,7 +4,7 @@
 module test_qtf_free_surface
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use SecondOrderIncident, only : incident2, incident2_pair, incident2_phi, incident2_grad, free_surface_forcing
-  use NearFieldDrift, only : KERNEL_DIFF
+  use NearFieldDrift, only : KERNEL_DIFF, KERNEL_SUM
   use QTFFreeSurface, only : fs_point_field, fs_forcing_diff, fs_inner_fields, fs_inner_steps, fs_circle_modes, &
                              fs_mode_warning, fs_auto_modes, FS_MODE_TOL, fs_sample_phi, fs_mode_scales, fs_auto_evanescent, &
                              fs_inner_pair, fs_outer_pair, fs_outer_annulus, fs_outer_tail, fs_outer_ring, fs_outer_rfar, &
@@ -71,6 +71,13 @@ subroutine collect_qtf_free_surface(testsuite)
     new_unittest("outer_moments_contract_psi", test_moments_contract_psi), &
     new_unittest("outer_moments_contract_green", test_moments_contract_green), &
     new_unittest("outer_moments_cost", test_moments_cost), &
+    new_unittest("fs_kernel_default", test_kernel_default), &
+    new_unittest("fs_sum_ring_sampled", test_sum_ring_sampled), &
+    new_unittest("fs_sum_tail_contour", test_sum_tail_contour), &
+    new_unittest("fs_sum_classes_positive", test_sum_classes_positive), &
+    new_unittest("fs_sum_swap", test_sum_swap), &
+    new_unittest("fs_sum_diagonal", test_sum_diagonal), &
+    new_unittest("fs_sum_moments_contract_psi", test_sum_moments_contract_psi), &
     new_unittest("fs_local_polygon_centre", test_local_polygon_centre), &
     new_unittest("fs_local_corner_and_edge", test_local_corner_and_edge), &
     new_unittest("fs_local_linear", test_local_linear), &
@@ -1521,6 +1528,351 @@ subroutine test_moments_cost(error)
   if (allocated(error)) return
   call check(error, t_mom <= 5d0 * t_pair, trim(info))
 end subroutine test_moments_cost
+
+!> The difference kernel is the default, bit for bit (Phase 7c-2 Task 3): on the synthetic fields of fs_pair_terms_order
+!> (both incident waves, 12 chords), fs_pair_terms (t_in, t_out, r_far), fs_forcing_points and three outer moments of the
+!> basis of psi against the values printed from the code before the kernel argument (47a088c, 17 digits, round-trip),
+!> without the kernel argument and with kernel = KERNEL_DIFF. A mismatch prints the values.
+subroutine test_kernel_default(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om1 = 1d0, om2 = 0.8d0, b1 = 0.3d0, b2 = -0.5d0
+  integer, parameter :: npoly = 12
+  real(8), parameter :: rf_ref = 2.69884203762059587d+003
+  complex(8), parameter :: ref(9) = [ &
+    (-7.24342032070703468d+000, 1.53559242799299533d+000), (1.23854798148363354d+001, -4.44698132104596322d+000), &
+    (-1.03223975586585220d+003, -5.33975601675838107d+002), (-8.37712822663757038d+002, -7.07227326613316677d+002), &
+    (-8.23949933467954532d-002, 2.12136804605483759d-001), (-3.97114099000321741d-001, 2.17977241832092911d-001), &
+    (-3.00338205537782450d+001, -1.76014593334371412d+001), (-2.76434867007945728d-001, -5.50332129958162231d+000), &
+    (-3.39774989672709353d+003, 4.65917953875059652d+002)]
+  type(fs_point_field) :: f1(4), i1(4), f2(4), i2(4)
+  type(pw_set) :: pw1, pw2, pwp(2)
+  complex(8) :: psi(4, 2), tin(2), tout(2), q(4), mom(-sy_mmax:sy_mmax, 0:sy_nev), got(9)
+  real(8) :: wts(4), rf
+  integer :: j, pass
+  character(len=120) :: info
+
+  call pseudo_inner(4, f1, i1, f2, i2, psi, wts)
+  call synthetic_set(om1, om2, pw1, pw2, pwp)
+  do pass = 1, 2
+    if (pass == 1) then
+      call fs_pair_terms(om1, f1, i1, pw1, b1, pw1%k0, om2, f2, i2, pw2, b2, pw2%k0, psi, pwp, wts, npoly, g, rho, tin, &
+                         tout, r_far=rf)
+      call fs_forcing_points(om1, f1, i1, om2, f2, i2, g, q)
+      call fs_outer_moments(om1, pw1, b1, pw1%k0, om2, pw2, b2, pw2%k0, pwp(1)%k0, pwp(1)%kev, sy_h, sy_centre, &
+                            sy_radius, sy_mmax, sy_nev, om1 - om2, g, npoly, rf, mom)
+    else
+      call fs_pair_terms(om1, f1, i1, pw1, b1, pw1%k0, om2, f2, i2, pw2, b2, pw2%k0, psi, pwp, wts, npoly, g, rho, tin, &
+                         tout, r_far=rf, kernel=KERNEL_DIFF)
+      call fs_forcing_points(om1, f1, i1, om2, f2, i2, g, q, kernel=KERNEL_DIFF)
+      call fs_outer_moments(om1, pw1, b1, pw1%k0, om2, pw2, b2, pw2%k0, pwp(1)%k0, pwp(1)%kev, sy_h, sy_centre, &
+                            sy_radius, sy_mmax, sy_nev, om1 - om2, g, npoly, rf, mom, kernel=KERNEL_DIFF)
+    end if
+    got = [tin, tout, q(1), q(4), mom(0, 0), mom(2, 1), mom(-3, 0)]
+    if (.not. (all(got == ref) .and. rf == rf_ref)) then
+      print '(4x,a,i0,a,es25.17e3)', "pass ", pass, ": r_far ", rf
+      do j = 1, 9
+        print '(4x,a,i0,a,2es25.17e3)', "value ", j, ": ", got(j)
+      end do
+    end if
+    write (info, '(a,i0,a)') "pass ", pass, " (1: no kernel argument, 2: KERNEL_DIFF) is not bit-identical to 47a088c"
+    call check(error, all(got == ref) .and. rf == rf_ref, trim(info))
+    if (allocated(error)) return
+  end do
+end subroutine test_kernel_default
+
+! ---------------------------------------------------------------------------------------------- Phase 7c-2, Task 3
+
+!> The synthetic fields of the sum-frequency tests: states 1 and 2 at om1 and om2 (seeds 1, 2, as synthetic_set), and
+!> two psi at Omega = om1 + om2 (seeds 3, 4).
+subroutine synthetic_sum_set(om1, om2, pw1, pw2, psi)
+  real(8), intent(in) :: om1, om2
+  type(pw_set), intent(out) :: pw1, pw2, psi(2)
+
+  call synthetic_pw(om1, sy_mmax, sy_nev, 1, pw1)
+  call synthetic_pw(om2, sy_mmax, sy_nev, 2, pw2)
+  call synthetic_pw(om1 + om2, sy_mmax, sy_nev, 3, psi(1))
+  call synthetic_pw(om1 + om2, sy_mmax, sy_nev, 4, psi(2))
+end subroutine synthetic_sum_set
+
+!> The ring integral of the sum (ring_coef with -w2 and the modes of field 2 reversed) against theta sampling: on the
+!> synthetic fields (M = 3, one evanescent mode, both incident waves) at r = 1.2 R (the evanescent modes alive) and 3 R,
+!> fs_outer_ring with KERNEL_SUM against the trapezoid rule on 720 angles of psi Q_S, Q_S = Q[t1, t2] - Q[i1, i2] from
+!> free_surface_forcing (KERNEL_SUM) of the fields at each point (pw_eval_surface, the exact incident waves). The
+!> integrand is band-limited up to the Jacobi-Anger tails, so 720 points give it to rounding: 1e-11 relative.
+subroutine test_sum_ring_sampled(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om1 = 1d0, om2 = 0.8d0, b1 = 0.3d0, b2 = -0.5d0, rs(2) = [1.2d0, 3d0]
+  integer, parameter :: nth = 720
+  type(pw_set) :: pw1, pw2, psi(2)
+  type(fs_point_field) :: s1, s2, i1, i2, t1, t2
+  complex(8) :: ring(2), direct(2), q, ps, gr(3), zz
+  real(8) :: r, x(3), th, err, worst
+  integer :: ir, j, l
+  character(len=200) :: info
+
+  call synthetic_sum_set(om1, om2, pw1, pw2, psi)
+  worst = 0d0
+  do ir = 1, 2
+    r = rs(ir) * sy_radius
+    call fs_outer_ring(om1, pw1, b1, pw1%k0, om2, pw2, b2, pw2%k0, psi, g, r, ring, kernel=KERNEL_SUM)
+    direct = (0d0, 0d0)
+    do j = 0, nth - 1
+      th = 2d0 * pi * j / nth
+      x = [sy_centre(1) + r * cos(th), sy_centre(2) + r * sin(th), 0d0]
+      i1 = incident_point(om1, pw1%k0, b1, x)
+      i2 = incident_point(om2, pw2%k0, b2, x)
+      s1 = scattered_point(pw1, x)
+      s2 = scattered_point(pw2, x)
+      t1 = add_fields(s1, i1)
+      t2 = add_fields(s2, i2)
+      q = free_surface_forcing(KERNEL_SUM, om1, t1%phi, t1%grad, t1%phizz, om2, t2%phi, t2%grad, t2%phizz, g) &
+          - free_surface_forcing(KERNEL_SUM, om1, i1%phi, i1%grad, i1%phizz, om2, i2%phi, i2%grad, i2%phizz, g)
+      do l = 1, 2
+        call pw_eval_surface(psi(l), x, ps, gr, zz)
+        direct(l) = direct(l) + ps * q * (2d0 * pi / nth)
+      end do
+    end do
+    err = maxval(abs(ring - direct)) / maxval(abs(direct))
+    print '(4x,a,f4.1,a,2es12.4,a,es10.2)', "sum ring at r =", rs(ir), " R: |ring| ", abs(ring), ", relative error ", err
+    worst = max(worst, err)
+  end do
+  write (info, '(a,es10.3)') "sum ring against 720-point theta sampling of psi Q_S, worst relative ", worst
+  call check(error, worst <= 1d-11, trim(info))
+end subroutine test_sum_ring_sampled
+
+!> The tail of the sum (the classes k1 + k2 + K, -k1 + k2 + K, k1 - k2 + K on rotated contours, field 2 on H^(1))
+!> against the real axis: tail(r_far) = annulus(r_far, 2 r_far) + tail(2 r_far) to 1e-8 relative of the outer integral
+!> annulus(R, r_far) + tail(r_far), with both incident waves, for the pair (1.0, 0.8) and the diagonal (0.8, 0.8). The
+!> annulus r_far..2 r_far is above 1e-4 of the total, so a wrong tail cannot pass.
+subroutine test_sum_tail_contour(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: wa(2) = [1d0, 0.8d0], wb(2) = [0.8d0, 0.8d0], b1 = 0.3d0, b2 = -0.5d0
+  type(pw_set) :: pw1, pw2, psi(2)
+  complex(8) :: a_in(2), a_mid(2), tl1(2), tl2(2), t1(2)
+  real(8) :: rf, err, sig, worst_err, least_sig, om
+  integer :: ip
+  character(len=200) :: info
+
+  worst_err = 0d0
+  least_sig = huge(1d0)
+  do ip = 1, 2
+    om = wa(ip) + wb(ip)
+    call synthetic_sum_set(wa(ip), wb(ip), pw1, pw2, psi)
+    rf = fs_outer_rfar(pw1, pw1%k0, pw2, pw2%k0, psi, kernel=KERNEL_SUM)
+    call fs_outer_annulus(wa(ip), pw1, b1, pw1%k0, wb(ip), pw2, b2, pw2%k0, psi, om, g, rho, sy_radius, rf, a_in, &
+                          kernel=KERNEL_SUM)
+    call fs_outer_annulus(wa(ip), pw1, b1, pw1%k0, wb(ip), pw2, b2, pw2%k0, psi, om, g, rho, rf, 2d0 * rf, a_mid, &
+                          kernel=KERNEL_SUM)
+    call fs_outer_tail(wa(ip), pw1, b1, pw1%k0, wb(ip), pw2, b2, pw2%k0, psi, om, g, rho, rf, tl1, kernel=KERNEL_SUM)
+    call fs_outer_tail(wa(ip), pw1, b1, pw1%k0, wb(ip), pw2, b2, pw2%k0, psi, om, g, rho, 2d0 * rf, tl2, kernel=KERNEL_SUM)
+    t1 = a_in + tl1
+    err = maxval(abs(tl1 - a_mid - tl2)) / maxval(abs(t1))
+    sig = maxval(abs(a_mid)) / maxval(abs(t1))
+    print '(4x,a,f5.2,a,f10.1,a,2es12.4,a,es10.2,a,es10.2,a,es10.2)', "sum tail, Omega", om, ": r_far", rf, &
+      " m, |T| ", abs(t1), ", |tail(r_far)| / |T| ", maxval(abs(tl1)) / maxval(abs(t1)), ", r_far vs 2 r_far ", err, &
+      ", annulus r_far..2 r_far ", sig
+    worst_err = max(worst_err, err)
+    least_sig = min(least_sig, sig)
+  end do
+  write (info, '(a,es10.3,a,es10.3)') "sum: outer integral with r_far against 2 r_far, worst relative ", worst_err, &
+    "; least annulus share ", least_sig
+  call check(error, worst_err <= 1d-8 .and. least_sig > 1d-4, trim(info))
+end subroutine test_sum_tail_contour
+
+!> A pw_set of no amplitude at omega in depth h (circle sy_radius about sy_centre) with nev evanescent modes: what
+!> fs_outer_rfar reads (k0, kev(1), the circle)
+subroutine rfar_set(omega, h, nev, pw)
+  real(8), intent(in) :: omega, h
+  integer, intent(in) :: nev
+  type(pw_set), intent(out) :: pw
+  real(8) :: wvn_l(nev + 1)
+  external :: DISPERSION
+
+  call DISPERSION(wvn_l, nev + 1, omega, h)
+  pw%mmax = 0
+  pw%nev = nev
+  pw%k0 = wvn_l(1)
+  pw%h = h
+  pw%radius = sy_radius
+  pw%centre = sy_centre
+  allocate (pw%kev(nev), pw%a(0:0, 0:nev))
+  pw%kev = wvn_l(2:nev + 1)
+  pw%a = (0d0, 0d0)
+end subroutine rfar_set
+
+!> The phase classes of the sum tail are positive (fs_outer_tail: K = k(w1 + w2) > k1 >= k2), and the propagating rule of
+!> r_far of the sum (20 periods of its slowest class) is not beyond that of the difference for the same ordered states
+!> (both incident waves): on the grid 0.3 to 1.5 rad/s in steps of 0.1, every ordered pair w1 >= w2 (the diagonal for the
+!> classes; w1 > w2 for r_far), h = 15 and 100 m. The classes of the sum exceed those of the difference: k1 + k2 + K+ and
+!> k1 - k2 + K+ since K+ > K-, and -k1 + k2 + K+ >= k1 + k2 - K- (the class -k1 - k2 + K- of the difference, negative)
+!> since K+ + K- >= 2 k1 (k(w) is convex). The sets have no evanescent mode there, so r_far is the class rule alone.
+!> With one evanescent mode r_far may be larger for the sum: the evanescent rule R + 27.6 / kev(1) takes the slowest
+!> mode of all sets, and kev(1) falls as Omega rises (kev(1) h from pi as Omega -> 0 to pi / 2 as Omega -> infinity,
+!> the roots of -Omega^2 / g = k tan(k h)), so psi at Omega+ can decay slower than psi at Omega-: printed, not gated.
+subroutine test_sum_classes_positive(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: hs(2) = [15d0, 100d0]
+  integer, parameter :: nw = 13
+  type(pw_set) :: pa, pb, ps(1), pd(1)
+  real(8) :: w(nw), ka, kb, kk, cmin, rs, rd, worst_ratio, worst_ev
+  integer :: ih, i, j, nbad_cls, nbad_rfar, iev
+  character(len=200) :: info
+
+  do i = 1, nw
+    w(i) = 0.3d0 + 0.1d0 * (i - 1)
+  end do
+  nbad_cls = 0
+  nbad_rfar = 0
+  cmin = huge(1d0)
+  worst_ratio = 0d0
+  worst_ev = 0d0
+  do ih = 1, 2
+    do i = 1, nw
+      do j = 1, i
+        ka = wave_number(w(i), hs(ih))
+        kb = wave_number(w(j), hs(ih))
+        kk = wave_number(w(i) + w(j), hs(ih))
+        cmin = min(cmin, ka + kb + kk, -ka + kb + kk, ka - kb + kk)
+        if (.not. (ka + kb + kk > 0d0 .and. -ka + kb + kk > 0d0 .and. ka - kb + kk > 0d0)) nbad_cls = nbad_cls + 1
+        if (i == j) cycle
+        do iev = 0, 1
+          call rfar_set(w(i), hs(ih), iev, pa)
+          call rfar_set(w(j), hs(ih), iev, pb)
+          call rfar_set(w(i) + w(j), hs(ih), iev, ps(1))
+          call rfar_set(w(i) - w(j), hs(ih), iev, pd(1))
+          rs = fs_outer_rfar(pa, pa%k0, pb, pb%k0, ps, kernel=KERNEL_SUM)
+          rd = fs_outer_rfar(pa, pa%k0, pb, pb%k0, pd)
+          if (iev == 0) then
+            worst_ratio = max(worst_ratio, (rs - sy_radius) / (rd - sy_radius))
+            if (.not. rs <= rd) nbad_rfar = nbad_rfar + 1
+          else
+            worst_ev = max(worst_ev, (rs - sy_radius) / (rd - sy_radius))
+          end if
+        end do
+      end do
+    end do
+  end do
+  write (info, '(a,i0,a,es10.3,a,i0,a,f7.4)') "sum classes not positive: ", nbad_cls, " (least class ", cmin, &
+    " 1/m); sum r_far beyond the difference: ", nbad_rfar, " (largest (r_far - R) ratio sum / difference ", worst_ratio
+  print '(4x,a,a)', trim(info), ")"
+  print '(4x,a,f7.4)', "with one evanescent mode, largest (r_far - R) ratio sum / difference (not gated) ", worst_ev
+  call check(error, nbad_cls == 0 .and. nbad_rfar == 0, trim(info))
+end subroutine test_sum_classes_positive
+
+!> fs_pair_terms of the sum is symmetric: the pair given as (2, 1) is evaluated as (1, 2), with no conjugate
+!> (Q_S(2, 1) = Q_S(1, 2), pair_plus symmetric), so T(1, 2) = T(2, 1) to 1e-12 relative (r_far too); the synthetic fields
+!> with both incident waves and the sliver of 12 chords. The difference kernel gives the conjugate instead
+!> (fs_pair_terms_order), so a conjugate on the sum swap fails.
+subroutine test_sum_swap(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om1 = 1d0, om2 = 0.8d0, b1 = 0.3d0, b2 = -0.5d0
+  integer, parameter :: npoly = 12
+  type(fs_point_field) :: f1(4), i1(4), f2(4), i2(4)
+  complex(8) :: psi(4, 2), tin(2), tout(2), sin_(2), sout(2)
+  real(8) :: wts(4), rf, rf2, err, conj_err
+  type(pw_set) :: pw1, pw2, pwp(2)
+  character(len=200) :: info
+
+  call pseudo_inner(4, f1, i1, f2, i2, psi, wts)
+  call synthetic_sum_set(om1, om2, pw1, pw2, pwp)
+  call fs_pair_terms(om1, f1, i1, pw1, b1, pw1%k0, om2, f2, i2, pw2, b2, pw2%k0, psi, pwp, wts, npoly, g, rho, tin, tout, &
+                     r_far=rf, kernel=KERNEL_SUM)
+  call fs_pair_terms(om2, f2, i2, pw2, b2, pw2%k0, om1, f1, i1, pw1, b1, pw1%k0, psi, pwp, wts, npoly, g, rho, sin_, sout, &
+                     r_far=rf2, kernel=KERNEL_SUM)
+  err = max(maxval(abs(sin_ - tin)), maxval(abs(sout - tout))) / max(maxval(abs(tin)), maxval(abs(tout)))
+  conj_err = max(maxval(abs(sin_ - conjg(tin))), maxval(abs(sout - conjg(tout)))) / max(maxval(abs(tin)), maxval(abs(tout)))
+  write (info, '(a,es10.3,a,es10.3,a,2es12.4)') "sum T(2, 1) against T(1, 2), relative ", err, " (against conj: ", &
+    conj_err, "); |t_in|, |t_out| ", maxval(abs(tin)), maxval(abs(tout))
+  print '(4x,a)', trim(info)
+  call check(error, err <= 1d-12 .and. rf2 == rf .and. conj_err > 1d-3 .and. rf > sy_radius, trim(info))
+end subroutine test_sum_swap
+
+!> The diagonal of the sum, w1 = w2 = 0.8 (two states of one frequency, headings 0.3 and -0.5): t_in and t_out are
+!> finite and not zero (no Omega = 0 return), and within 1e-4 of the pair (w, w + 1e-5), whose fields, psi and Omega
+!> differ by O(1e-5): the diagonal is a regular point of the sum, not a special case.
+subroutine test_sum_diagonal(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: w = 0.8d0, dw = 1d-5, b1 = 0.3d0, b2 = -0.5d0
+  integer, parameter :: npoly = 12
+  type(fs_point_field) :: f1(4), i1(4), f2(4), i2(4)
+  complex(8) :: psi(4, 2), tin(2), tout(2), nin(2), nout(2)
+  real(8) :: wts(4), e_in, e_out
+  type(pw_set) :: pa, pb, pp(2), qb, qp(2)
+  logical :: finite
+  character(len=250) :: info
+
+  call pseudo_inner(4, f1, i1, f2, i2, psi, wts)
+  call synthetic_pw(w, sy_mmax, sy_nev, 1, pa)
+  call synthetic_pw(w, sy_mmax, sy_nev, 2, pb)
+  call synthetic_pw(2d0 * w, sy_mmax, sy_nev, 3, pp(1))
+  call synthetic_pw(2d0 * w, sy_mmax, sy_nev, 4, pp(2))
+  call synthetic_pw(w + dw, sy_mmax, sy_nev, 2, qb)
+  call synthetic_pw(2d0 * w + dw, sy_mmax, sy_nev, 3, qp(1))
+  call synthetic_pw(2d0 * w + dw, sy_mmax, sy_nev, 4, qp(2))
+  call fs_pair_terms(w, f1, i1, pa, b1, pa%k0, w, f2, i2, pb, b2, pb%k0, psi, pp, wts, npoly, g, rho, tin, tout, &
+                     kernel=KERNEL_SUM)
+  call fs_pair_terms(w + dw, f2, i2, qb, b2, qb%k0, w, f1, i1, pa, b1, pa%k0, psi, qp, wts, npoly, g, rho, nin, nout, &
+                     kernel=KERNEL_SUM)
+  finite = all(ieee_is_finite(abs(tin))) .and. all(ieee_is_finite(abs(tout)))
+  e_in = maxval(abs(nin - tin)) / maxval(abs(tin))
+  e_out = maxval(abs(nout - tout)) / maxval(abs(tout))
+  write (info, '(a,2es12.4,a,2es12.4,a,es10.3,a,es10.3)') "sum diagonal at 0.8: |t_in| ", abs(tin), ", |t_out| ", &
+    abs(tout), "; against (w, w + 1e-5): inner ", e_in, ", outer ", e_out
+  print '(4x,a)', trim(info)
+  call check(error, finite .and. minval(abs(tin)) > 0d0 .and. minval(abs(tout)) > 0d0 .and. e_in <= 1d-4 .and. &
+             e_out <= 1d-4, trim(info))
+end subroutine test_sum_diagonal
+
+!> As outer_moments_contract_psi, with the sum kernel: the moments of the basis of psi at Omega = om1 + om2 (mg = 3,
+!> nev = 1, K and kev of psi), contracted with the amplitudes of each psi, give fs_outer_pair + fs_outer_sliver (12 chords)
+!> of the sum to 1e-10 relative (annulus, the three tail classes of the sum, sliver), with both incident waves and with
+!> none; and fs_forcing_points (KERNEL_SUM) weighted by the panel areas and psi is fs_inner_pair of the sum (1e-14).
+subroutine test_sum_moments_contract_psi(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om1 = 1d0, om2 = 0.8d0, b1 = 0.3d0, b2 = -0.5d0
+  integer, parameter :: npoly = 12
+  type(pw_set) :: pw1, pw2, psi(2)
+  type(fs_point_field) :: f1(4), i1(4), f2(4), i2(4)
+  complex(8) :: tp(2), sl(2), t(2), mom(-sy_mmax:sy_mmax, 0:sy_nev), ap(-sy_mmax:sy_mmax, 0:sy_nev), q(4), pin(4, 2)
+  complex(8) :: tin(2), tq(2)
+  real(8) :: kk1, kk2, rf, err, worst, wts(4), om
+  integer :: ic, k
+  character(len=200) :: info
+
+  om = om1 + om2
+  call synthetic_sum_set(om1, om2, pw1, pw2, psi)
+  worst = 0d0
+  do ic = 1, 2
+    kk1 = merge(pw1%k0, 0d0, ic == 1)
+    kk2 = merge(pw2%k0, 0d0, ic == 1)
+    rf = fs_outer_rfar(pw1, kk1, pw2, kk2, psi, kernel=KERNEL_SUM)
+    call fs_outer_pair(om1, pw1, b1, kk1, om2, pw2, b2, kk2, psi, om, g, rho, rf, tp, kernel=KERNEL_SUM)
+    call fs_outer_sliver(om1, pw1, b1, kk1, om2, pw2, b2, kk2, psi, om, g, rho, npoly, sl, kernel=KERNEL_SUM)
+    call fs_outer_moments(om1, pw1, b1, kk1, om2, pw2, b2, kk2, psi(1)%k0, psi(1)%kev, sy_h, sy_centre, sy_radius, &
+                          sy_mmax, sy_nev, om, g, npoly, rf, mom, kernel=KERNEL_SUM)
+    do k = 1, 2
+      call scaled_amplitudes(psi(k), sy_mmax, ap)
+      t(k) = contract(ap, mom, sy_mmax, sy_nev, sy_mmax, om)
+    end do
+    err = maxval(abs(t - (tp + sl))) / maxval(abs(tp + sl))
+    print '(4x,a,i0,a,2es12.4,a,es10.2)', "sum moments contracted with psi, case ", ic, ": |T_out| ", abs(tp + sl), &
+      ", relative error ", err
+    worst = max(worst, err)
+  end do
+  write (info, '(a,es10.3)') "sum: the moments contracted with psi against fs_outer_pair + fs_outer_sliver, worst ", worst
+  call check(error, worst <= 1d-10, trim(info))
+  if (allocated(error)) return
+  call pseudo_inner(4, f1, i1, f2, i2, pin, wts)
+  call fs_forcing_points(om1, f1, i1, om2, f2, i2, g, q, kernel=KERNEL_SUM)
+  call fs_inner_pair(om1, f1, i1, om2, f2, i2, pin, wts, g, rho, tin, kernel=KERNEL_SUM)
+  do k = 1, 2
+    tq(k) = FS_SIGN * cmplx(0d0, om * rho / g, 8) * sum(wts * pin(:, k) * q)
+  end do
+  err = maxval(abs(tq - tin)) / maxval(abs(tin))
+  write (info, '(a,es10.3)') "sum: fs_forcing_points weighted by psi against fs_inner_pair, relative ", err
+  print '(4x,a)', trim(info)
+  call check(error, err <= 1d-14, trim(info))
+end subroutine test_sum_moments_contract_psi
 
 !> Reference for fs_local_rankine, by quadrature in polar coordinates about x: the polygon is the union of the triangles
 !> (x, P_e, P_e+1), and in each the integral of (2/sqrt(rho^2 + eps^2)) (q0 + qg . rho u) rho drho dtheta is done over rho in

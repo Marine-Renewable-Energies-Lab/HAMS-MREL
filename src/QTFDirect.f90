@@ -133,8 +133,10 @@ MODULE QTFDirect
    ! forcing is never conjugated: phi_D solves the problem at Omega+ with the matrix and Green function of the radiation
    ! solve there. Sum and difference pairs of the same Omega share one factorisation and one block of right sides; each
    ! column carries its own signed Omega (dws). By the Green's identity of QTFPotential at Omega+, T_dir = T_pot of
-   ! potential_pair with KERNEL_SUM to the mesh error (test direct_sum_matches_indirect_pair). The free-surface forcing
-   ! of the sum (Q_D of pair_plus) is Phase 7c-2 Task 3: direct_at_omega stops when fs is given with a sum pair.
+   ! potential_pair with KERNEL_SUM to the mesh error (test direct_sum_matches_indirect_pair). With fs, a sum column gets
+   ! the free-surface forcing Q_S of pair_plus (direct_fs_block: the pair ordered by frequency, never conjugated), and
+   ! T_dir holds the free-surface part that the indirect method has as FS_inner + FS_outer of fs_pair_terms with
+   ! KERNEL_SUM (test direct_fs_sum_equals_indirect); a block may mix sum and difference columns (direct_fs_mixed_block).
 
    USE Const_mod, ONLY: RXY, RXY_MULTI
    USE HAMS_mod, ONLY: NTHREAD, ISOLV, IRSP
@@ -195,16 +197,19 @@ MODULE QTFDirect
    END TYPE direct_fs_data
 
    INTERFACE
-      MODULE SUBROUTINE direct_fs_block(fs, store, pairs, dws, rhs, seconds)
+      MODULE SUBROUTINE direct_fs_block(fs, store, pairs, dws, kernels, rhs, seconds)
          ! The free-surface part of the right sides of a block of pairs (QTFDirectFSBlock.f90, a submodule of this module,
          ! which it needs for direct_fs_rhs of QTFDirectFS): added to rhs (nbase + nl, npair, nsys), the layout of
-         ! ASSB_RHS_FIELD_IRR. pairs (4, npair) and dws (npair), omega_1 - omega_2, as direct_at_omega has them; the
-         ! columns of dws < 0 get the right side at |Omega| of the conjugated forcing (header). seconds(2): the time of
+         ! ASSB_RHS_FIELD_IRR. pairs (4, npair), dws (npair) and kernels (npair) as direct_at_omega has them: dws is
+         ! omega_1 - omega_2 of a difference column and omega_1 + omega_2 of a sum column. The difference columns of
+         ! dws < 0 get the right side at |Omega| of the conjugated forcing (header); a sum column is never conjugated and
+         ! its pair is ordered by frequency, not by the sign of dws (QTFDirectFSBlock header). seconds(2): the time of
          ! Q_D and the outer moments, and of the contraction (direct_fs_rhs), added to.
          TYPE(direct_fs_data), INTENT(IN) :: fs
          TYPE(first_order_state), INTENT(IN) :: store(:, :)
          INTEGER, INTENT(IN) :: pairs(:, :)
          REAL(8), INTENT(IN) :: dws(:)
+         INTEGER, INTENT(IN) :: kernels(:)
          COMPLEX(8), INTENT(INOUT) :: rhs(:, :, :)
          REAL(8), INTENT(INOUT) :: seconds(2)
       END SUBROUTINE direct_fs_block
@@ -430,7 +435,7 @@ CONTAINS
       !                    pair with |omega_1 - omega_2| = omega, each sum pair with omega_1 + omega_2 = omega, within
       !                    omega_tol (default 1e-6 max(omega_1, omega_2))
       !   kernels          optional (npair): KERNEL_DIFF or KERNEL_SUM per pair (default all KERNEL_DIFF, bit-identical
-      !                    to the code without it). A sum pair is not conjugated (header); with fs it stops (Task 3).
+      !                    to the code without it). A sum pair is not conjugated (header), with fs as without.
       !   tdir             (6 nbody, npair), T_dir,k of each pair, e^{-i omega t}, as the sum of the terms of potential_pair
       !   phi2_constant    optional test hook, as potential_pair: phi_I2 replaced by this constant (dphi_I2/dn = 0)
       !   parts            optional (6 nbody, npair, 2): the part of tdir from phi_I2 (:, :, 1) and from phi_D (:, :, 2);
@@ -534,12 +539,6 @@ CONTAINS
          END IF
          kns = kernels
       END IF
-      IF (PRESENT(fs) .AND. ANY(kns == KERNEL_SUM)) THEN
-         ! direct_fs_block orders and conjugates by the sign of dws, for the difference kernel only
-         WRITE (*, '(a)') ' direct_at_omega: the free-surface forcing of the sum frequency is not implemented yet'// &
-            ' (Phase 7c-2 Task 3); call without fs for the sum pairs.'
-         ERROR STOP 1
-      END IF
       IF (PRESENT(fs)) CALL check_fs()
       fsec = 0D0
       IF (PRESENT(field_points) .NEQV. PRESENT(phi_field)) THEN
@@ -595,9 +594,9 @@ CONTAINS
          IF (fs_apart) THEN
             ! The free-surface right sides as their own columns, so that their part of the load is known (parts slice 3)
             rfs = (0D0, 0D0)
-            CALL direct_fs_block(fs, store, pairs(:, first:last), dws, rfs, fsec)
+            CALL direct_fs_block(fs, store, pairs(:, first:last), dws, kns(first:last), rfs, fsec)
          ELSE IF (PRESENT(fs)) THEN
-            CALL direct_fs_block(fs, store, pairs(:, first:last), dws, rf, fsec)
+            CALL direct_fs_block(fs, store, pairs(:, first:last), dws, kns(first:last), rf, fsec)
          END IF
          CALL SYSTEM_CLOCK(c0)
          CALL direct_solve(mesh, rf, phi, multi)
