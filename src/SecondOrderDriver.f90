@@ -85,7 +85,7 @@ MODULE SecondOrderDriver
                         qtf_radiation_list, qtf_omega_list, qtf_sum_limits, qtf_psi_tolerance, &
                         qtf_radiation_omegas, qtf_omega_on_grid, qtf_set_control_surface, qtf_keep_cs_velocity, &
                         qtf_keep_cs_psi, qtf_set_edge_weights, qtf_keep_fs_state, qtf_keep_fs_psi, qtf_direct_at_omega, &
-                        qtf_diff_omega
+                        qtf_diff_omega, qtf_sum_omega
    USE QTFFreeSurface, ONLY: fs_point_field, fs_inner_fields, fs_inner_steps, fs_sample_phi, fs_circle_modes, fs_mode_warning, &
                              fs_auto_modes, fs_auto_evanescent, fs_radius_message, fs_coverage_check
    USE PartialWaves, ONLY: pw_set, pw_sample_points, pw_evanescent_from_wvn, PW_KR_MAX
@@ -339,7 +339,7 @@ CONTAINS
       LOGICAL, ALLOCATABLE :: is_diff(:), is_sum(:)
       REAL(8) :: cut_irr, sum_top
       LOGICAL :: want_sum
-      INTEGER :: i, first, nneed, nreuse, npairs, nmask
+      INTEGER :: i, first, nneed, nreuse, npairs, nmask, nsum_pairs
 
       first = MERGE(2, 0, SYBO == 1)
       DO i = 1, nqtf
@@ -362,15 +362,24 @@ CONTAINS
             ' from the main grid and ', nneed - nreuse, ' radiation-only solves (each costs about one radiation solve)'
       END IF
       npairs = MERGE(NBETA*NBETA, NBETA, opts%mean_drift == 2)
-      ! qtf_direct = 1 keeps T_dir beside T_pot, of the same size
+      ! The sum stores (Phase 7c-2): tdir_sum and tpot_sum, one slice each per heading pair
+      nsum_pairs = 0
+      IF (want_sum) nsum_pairs = 2*npairs
+      ! qtf_direct = 1 keeps T_dir beside T_pot, of the same size; both only with the difference QTF (qtf = 1 or 3)
       IF (opts%qtf_direct == 1) npairs = 2*npairs
-      mb = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs)
+      IF (.NOT. (opts%qtf == 1 .OR. opts%qtf == 3)) npairs = 0
+      mb = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs, nsum_pairs=nsum_pairs)
       fs_terms = uses_fs(opts)
       mb_dfs = 0D0
       IF (fs_terms) THEN
-         CALL fs_setup(opts, inputdir, omegas)
+         IF (want_sum .AND. ANY(is_sum)) THEN
+            ! The inner mesh is built for the largest sum frequency of the list (ruling R3 a)
+            CALL fs_setup(opts, inputdir, omegas, MAXVAL(PACK(need, is_sum)))
+         ELSE
+            CALL fs_setup(opts, inputdir, omegas)
+         END IF
          mb_fs = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs, nfs=fs_pts%n, &
-                               npw=(2*fs_mmax + 1)*(fs_nev + 1)) - mb
+                               npw=(2*fs_mmax + 1)*(fs_nev + 1), nsum_pairs=nsum_pairs) - mb
          WRITE (*, '(a,F10.1,a,I0,a)') ' QTF free surface: the store takes', mb_fs, ' MB more for the fields at the ', &
             fs_pts%n, ' inner points and the partial waves (qtf_terms = full)'
          IF (opts%qtf_direct == 1) THEN
@@ -383,7 +392,8 @@ CONTAINS
       END IF
       IF (b2_control) THEN
          ! The share of C and F is what the points add to the store, so qtf_stored_mb is the one formula
-         mb_cs = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs, ncs=b2_pts%n) - mb
+         mb_cs = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs, ncs=b2_pts%n, &
+                               nsum_pairs=nsum_pairs) - mb
          WRITE (*, '(a,F10.1,a,F10.1,a,I0,a)') ' QTF: with psi and the potential part the store takes', mb + mb_dfs + mb_cs, &
             ' MB, of which', mb_cs, ' MB for the fields at the ', b2_pts%n, ' points of C and F (qtf_b2 = control)'
       ELSE
@@ -428,7 +438,7 @@ CONTAINS
       END IF
    END SUBROUTINE body_terms_setup
 
-   SUBROUTINE fs_setup(opts, inputdir, omegas)
+   SUBROUTINE fs_setup(opts, inputdir, omegas, omega_sum_max)
       ! qtf_terms = full: the inner free surface (build_fs_inner, panel size from the largest frequency of the grid omegas),
       ! the offsets of its points (fs_inner_steps, once: they do not depend on the frequency), the mode counts of the
       ! partial waves (M = qtf_fs_modes, or ceil(k0_max R) + 10 with k0_max the wave number of the largest frequency;
@@ -436,17 +446,29 @@ CONTAINS
       ! a waterline node, fs_auto_evanescent) and the samples on the circle (pw_sample_points). Stops if the mesh cannot be
       ! built or the evanescent modes do not fit at R. A mesh from FSInnerMesh.pnl gets the coverage check
       ! (fs_coverage_check): it must reach the circle, since it has no sliver; its coverage goes to the log.
+      ! omega_sum_max (optional, Phase 7c-2 with the sum on): the largest sum frequency of the list. The partial waves of
+      ! psi at Omega+ and the inner integral of psi at Omega+ then need the finer scale lambda(Omega+): the mesh is built
+      ! for max(omega_max, omega_sum_max) and M takes its wave number (ruling R3 a and b). The offsets of phi_zz keep the
+      ! first-order scale (R3 c), step x max(psize, lambda(omega_max)/10), when the generated mesh got finer for the sum,
+      ! i.e. with qtf_fs_panel = 0. With qtf_fs_panel given or a file mesh the mesh is that of the difference run, and
+      ! the offsets stay step x psize, so that the difference files of qtf = 3 equal those of qtf = 1 (plan, global
+      ! constraints). Direct versus indirect sum load on a mesh built for the first-order omega_max: 1.5e-2, on one built
+      ! for Omega+: 6.0e-3 (direct_fs_sum_equals_indirect, Phase 7c-2 Task 3).
       TYPE(so_options), INTENT(IN) :: opts
       CHARACTER(LEN=*), INTENT(IN) :: inputdir
       REAL(8), INTENT(IN) :: omegas(:)
+      REAL(8), INTENT(IN), OPTIONAL :: omega_sum_max
       CHARACTER(LEN=:), ALLOCATABLE :: msg
-      REAL(8) :: omega_max, wvn1(1), k0_max, r_wl, miss
-      LOGICAL :: ok, stops
+      REAL(8) :: omega_max, omega_mesh, wvn1(1), k0_max, r_wl, miss, lam_fo
+      REAL(8), ALLOCATABLE :: scale(:)
+      LOGICAL :: ok, stops, scaled
       INTEGER :: nshrunk, nfloor, iw, nrows
       EXTERNAL :: DISPERSION
 
       omega_max = MAXVAL(omegas)
-      CALL build_fs_inner(mesh, geom, opts, H, inputdir, fs_pts, fs_centre, fs_radius, ok, msg, omega_max=omega_max, &
+      omega_mesh = omega_max
+      IF (PRESENT(omega_sum_max)) omega_mesh = MAX(omega_max, omega_sum_max)
+      CALL build_fs_inner(mesh, geom, opts, H, inputdir, fs_pts, fs_centre, fs_radius, ok, msg, omega_max=omega_mesh, &
                           np_circle=fs_np, n_rows=nrows, fs_panels=fs_panels)
       IF (.NOT. ok) THEN
          WRITE (*, '(a,a)') ' QTF free surface: ', msg
@@ -468,7 +490,7 @@ CONTAINS
          IF (LEN(msg) > 0) WRITE (*, '(a,a)') ' ', msg
          IF (stops) ERROR STOP 1
       END IF
-      CALL DISPERSION(wvn1, 1, omega_max, H)
+      CALL DISPERSION(wvn1, 1, omega_mesh, H)
       k0_max = wvn1(1)
       fs_mmax = fs_auto_modes(opts%qtf_fs_modes, k0_max, fs_radius)
       ! r_wl: the largest distance from the centre to a waterline node, of all bodies (as build_fs_inner)
@@ -503,7 +525,19 @@ CONTAINS
       ! divided by delta^2, take over (fs_laplace_residual: 1.6e-2 at delta = 0.02 psize against 7.2e-4 at 0.1)
       fs_step = 2D0*opts%cs_fd_step
       ALLOCATE (fs_delta(fs_pts%n))
-      CALL fs_inner_steps(mesh, fs_pts, fs_step, fs_delta, nshrunk, nfloor)
+      scaled = omega_mesh > omega_max .AND. fs_np > 0 .AND. .NOT. (opts%qtf_fs_panel > 0D0)
+      IF (scaled) THEN
+         ! lambda(omega_max)/10, the panel size at the circle of the mesh of the difference run (build_fs_inner)
+         CALL DISPERSION(wvn1, 1, omega_max, H)
+         lam_fo = 2D0*PI/wvn1(1)
+         scale = MAX(fs_pts%psize, 0.1D0*lam_fo)
+         CALL fs_inner_steps(mesh, fs_pts, fs_step, fs_delta, nshrunk, nfloor, scale=scale)
+         WRITE (*, '(a,F10.5,a,F10.5,a,F10.4,a)') ' QTF free surface: inner mesh for the sum, built at', omega_mesh, &
+            ' rad/s; offsets of phi_zz at the first-order scale (omega_max', omega_max, ' rad/s, lambda/10 =', 0.1D0*lam_fo, &
+            ' m)'
+      ELSE
+         CALL fs_inner_steps(mesh, fs_pts, fs_step, fs_delta, nshrunk, nfloor)
+      END IF
       WRITE (*, '(a,I0,a,F10.3,a,F10.3,a,F10.3,a)') ' QTF free surface: ', fs_pts%n, ' inner points, circle R =', fs_radius, &
          ' m about (', fs_centre(1), ',', fs_centre(2), ')'
       WRITE (*, '(a,I0,a,I0,a,a,I0,a,F8.4,a,F8.3,a)') ' QTF free surface: partial waves outside R with M = ', fs_mmax, &
@@ -605,8 +639,10 @@ CONTAINS
    END SUBROUTINE so_after_radiation
 
    SUBROUTINE so_after_radiation_only(opts, omega)
-      ! Call after the radiation-only solve at the difference frequency omega (one of qtf_radiation_omegas(),
-      ! or of qtf_direct_omegas() with qtf_direct = 1).
+      ! Call after the radiation-only solve at the frequency omega of the list (one of qtf_radiation_omegas(), or of
+      ! qtf_direct_omegas() with qtf_direct = 1, the union of the difference and, with the sum on, the sum frequencies).
+      ! psi (and with full psi on the inner free surface, with qtf_b2 = control grad psi on C and F) is kept at every
+      ! frequency of the union that is not on the main grid; the main-grid ones so_after_radiation kept.
       TYPE(so_options), INTENT(IN) :: opts
       REAL(8), INTENT(IN) :: omega
 
@@ -629,16 +665,18 @@ CONTAINS
       ! With qtf_terms = full the free-surface forcing (Phase 7b): direct_fs_setup at omega (the inner Green matrix and the
       ! Graf amplitudes of every row), whose time and size go to the log (the near-panel rule costs up to n^2 Green
       ! function calls per near pair, ledger ruling F12), then direct_at_omega with it, which logs the time of the moments.
+      ! With the sum on (Phase 7c-2) the sum pairs of omega are solved in the same call, and the log line gives the
+      ! number of difference and of sum pairs.
       TYPE(so_options), INTENT(IN) :: opts
       REAL(8), INTENT(IN) :: omega
       INTEGER(8) :: t0, t1, rate
       REAL(8) :: sec(4)
-      INTEGER :: npair
+      INTEGER :: npair, nsum
       TYPE(direct_fs_data) :: dfs
 
       IF (opts%qtf_direct /= 1 .OR. .NOT. (omega > 0D0)) RETURN
-      IF (.NOT. qtf_diff_omega(omega)) THEN
-         ! A sum-only frequency: no difference pair, so no set-up and no log line of a solve
+      IF (.NOT. (qtf_diff_omega(omega) .OR. qtf_sum_omega(omega))) THEN
+         ! Neither kernel has a pair here: no set-up and no log line of a solve
          CALL qtf_direct_at_omega(mesh, geom, omega)
          RETURN
       END IF
@@ -650,13 +688,19 @@ CONTAINS
             ' rad/s, set-up', REAL(t1 - t0, 8)/REAL(rate, 8), ' s (', dfs%nrow, ' rows, ', dfs%nfs, &
             ' inner panels, orders ', dfs%mg, ' (cut at ', dfs%mcut, '), ', dfs%nev, ' evanescent modes,', &
             direct_fs_array_mb(dfs%nrow, dfs%nfs, dfs%mg, dfs%nev), ' MB)'
-         CALL qtf_direct_at_omega(mesh, geom, omega, npair, sec, fs=dfs)
+         CALL qtf_direct_at_omega(mesh, geom, omega, npair, sec, fs=dfs, nsum=nsum)
       ELSE
-         CALL qtf_direct_at_omega(mesh, geom, omega, npair, sec)
+         CALL qtf_direct_at_omega(mesh, geom, omega, npair, sec, nsum=nsum)
       END IF
       CALL SYSTEM_CLOCK(t1)
-      WRITE (*, '(a,F10.5,a,I0,a,F9.2,a,4F9.2,a)') ' QTF direct: omega = ', omega, ' rad/s, ', npair, ' pairs, ', &
-         REAL(t1 - t0, 8)/REAL(rate, 8), ' s (forcing, B2, solve, field:', sec, ' s)'
+      IF (opts%qtf >= 2) THEN
+         WRITE (*, '(a,F10.5,a,I0,a,I0,a,F9.2,a,4F9.2,a)') ' QTF direct: omega = ', omega, ' rad/s, ', npair, &
+            ' difference and ', nsum, ' sum pairs, ', REAL(t1 - t0, 8)/REAL(rate, 8), ' s (forcing, B2, solve, field:', &
+            sec, ' s)'
+      ELSE
+         WRITE (*, '(a,F10.5,a,I0,a,F9.2,a,4F9.2,a)') ' QTF direct: omega = ', omega, ' rad/s, ', npair, ' pairs, ', &
+            REAL(t1 - t0, 8)/REAL(rate, 8), ' s (forcing, B2, solve, field:', sec, ' s)'
+      END IF
    END SUBROUTINE so_direct_solve
 
    SUBROUTINE keep_radiation_only_psi(opts, omega)

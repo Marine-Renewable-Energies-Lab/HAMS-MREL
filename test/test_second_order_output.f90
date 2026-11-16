@@ -2,7 +2,8 @@
 module test_second_order_output
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use Const_mod, only : G, RHO
-  use SecondOrderOutput, only : write_drift_row, write_terms_row, write_field_row
+  use SecondOrderOutput, only : write_drift_row, write_terms_row, write_field_row, write_direct_sum_terms_header, &
+                                write_qtf_terms_row
   implicit none
   private
 
@@ -17,7 +18,8 @@ subroutine collect_second_order_output(testsuite)
     new_unittest("drift_row_moment", drift_row_moment), &
     new_unittest("terms_row", terms_row), &
     new_unittest("field_row", field_row), &
-    new_unittest("field_direct_columns", field_direct_columns) &
+    new_unittest("field_direct_columns", field_direct_columns), &
+    new_unittest("direct_sum_terms_header", direct_sum_terms_header) &
   ]
 end subroutine collect_second_order_output
 
@@ -145,6 +147,61 @@ subroutine field_direct_columns(error)
   call check(error, abs(b(1) - 1d0) < 1d-5 .and. abs(b(2) - 3d0) < 1d-5 .and. ih == 1, "Pressure row: Re_dir, Im_dir")
   close (unit, status='delete')
 end subroutine field_direct_columns
+
+!> QTF_DirectTermsSum.txt (Phase 7c-2): four comment lines; with full the column line names D_I2, D_D, D_FS, P_BODY and P_FS
+!> and a row (keys and 5 values, as QTFDriver writes it) has 15 columns; with body it names D_I2, D_D and P_BODY, not D_FS
+!> or P_FS, and a row has 11 columns. (The brief of Task 4 said 13 and 9, which does not fit its own list of 5 keys and
+!> 3 or 5 complex values; ruling of Task 4, see its report.)
+subroutine direct_sum_terms_header(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: path = "second_order_output_sum_terms.tmp"
+  character(len=600) :: line(5)
+  integer :: unit, pass, i, n
+  logical :: full
+
+  do pass = 1, 2
+    full = pass == 1
+    open (newunit=unit, file=path, status='replace', action='readwrite')
+    call write_direct_sum_terms_header(unit, full)
+    if (full) then
+      call write_qtf_terms_row(unit, 0.5d0, 0.7d0, 0d0, 30d0, 3, [(1d0, 2d0), (3d0, 4d0), (5d0, 6d0), (7d0, 8d0), &
+                               (9d0, 1d0)], 1d0, .false.)
+    else
+      call write_qtf_terms_row(unit, 0.5d0, 0.7d0, 0d0, 30d0, 3, [(1d0, 2d0), (3d0, 4d0), (5d0, 6d0)], 1d0, .false.)
+    end if
+    rewind (unit)
+    do i = 1, 5
+      read (unit, '(a)') line(i)
+    end do
+    close (unit, status='delete')
+    call check(error, all(line(1:4)(1:1) == "#") .and. line(5)(1:1) /= "#", "four comment lines, then the row")
+    if (allocated(error)) return
+    if (full) then
+      call check(error, index(line(2), "D_I2") > 0 .and. index(line(2), "D_D") > 0 .and. index(line(2), "D_FS") > 0 .and. &
+                 index(line(2), "P_BODY") > 0 .and. index(line(2), "P_FS") > 0, "full: the columns are not all named")
+    else
+      call check(error, index(line(2), "D_I2") > 0 .and. index(line(2), "D_D") > 0 .and. index(line(2), "P_BODY") > 0 .and. &
+                 index(line(2), "D_FS") == 0 .and. index(line(2), "P_FS") == 0, "body: the columns are not named as they are")
+    end if
+    if (allocated(error)) return
+    n = count_fields(line(5))
+    call check(error, n, merge(15, 11, full), "columns of a row")
+    if (allocated(error)) return
+  end do
+end subroutine direct_sum_terms_header
+
+integer function count_fields(s)
+  character(len=*), intent(in) :: s
+  integer :: i
+  logical :: blank
+
+  count_fields = 0
+  blank = .true.
+  do i = 1, len_trim(s)
+    if (s(i:i) /= " " .and. blank) count_fields = count_fields + 1
+    blank = s(i:i) == " "
+  end do
+end function count_fields
 
 subroutine write_and_read(path, value, moment, row, index)
   character(len=*), intent(in) :: path

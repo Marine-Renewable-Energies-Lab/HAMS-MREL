@@ -4441,6 +4441,7 @@ contains
         character(len=:), allocatable :: a(:), b(:), name
         real(8), allocatable :: d(:,:), omegas(:)
         integer :: c, r, diagonal
+        logical :: has_sum
 
         do c = 1, size(cases)
             name = trim(cases(c))
@@ -4466,6 +4467,16 @@ contains
             end do
             call check(error, diagonal > 0, name//": no diagonal rows")
             if (allocated(error)) return
+            ! With the sum on (qtf = 3, Phase 7c-2) the sum frequencies of .12s that are no difference frequency have a
+            ! direct-solve line of their own
+            inquire (file=output_dir(name)//"Wamit_format/QTF_Direct.12s", exist=has_sum)
+            if (has_sum) then
+                call read_qtf(output_dir(name)//"Wamit_format/QTF_Direct.12s", d, error)
+                if (allocated(error)) return
+                do r = 1, size(d, 1)
+                    if (.not. any(abs(omegas - (d(r,1) + d(r,2))) < 1d-5)) omegas = [omegas, d(r,1) + d(r,2)]
+                end do
+            end if
             call check(error, count_log_lines(get_running_exe_path()//name//".log", "QTF direct: omega"), size(omegas), &
                        name//": direct-solve lines in the log against the difference frequencies of .12d")
             if (allocated(error)) return

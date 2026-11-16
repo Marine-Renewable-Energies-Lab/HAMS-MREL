@@ -11,8 +11,17 @@ module test_qtf
   use QTFDriver, only : qtf_init, qtf_keep, qtf_pair_load, qtf_finish, qtf_kept, qtf_radiation_list, qtf_radiation_omegas, &
                         qtf_direct_omegas, qtf_keep_psi, qtf_nonfinite_psi, qtf_nonfinite_pairs, qtf_psi_tolerance, &
                         qtf_psi_index, qtf_direct_missing, qtf_omega_list, irregular_frequency_estimate, sum_pair_index, &
-                        qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active, qtf_stored_mb
+                        qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active, qtf_stored_mb, &
+                        qtf_direct_sum_pairs, qtf_direct_at_omega, qtf_direct_sum_load
   use QTFFreeSurface, only : fs_point_field
+  use HAMS_mod, only : NTHREAD, ISOLV
+  use Potentials_mod, only : MXPOT
+  use FirstOrderState, only : radiation_psi
+  use QTFDirect, only : direct_setup
+  use SharpEdge, only : DEFAULT_EDGE_DEG
+  use test_waterline_field, only : set_wave, load_panels
+  use test_qtf_potential, only : make_state, motions
+  use test_qtf_direct, only : radiation_at
   use PartialWaves, only : pw_set
   use, intrinsic :: ieee_arithmetic, only : ieee_value, ieee_quiet_nan
   use SecondOrderOutput, only : write_qtf_row
@@ -29,6 +38,15 @@ module test_qtf
   real(8), parameter :: fs_centre(2) = [1d0, 2d0], fs_radius = 7d0
   complex(8), parameter :: ci = (0d0, 1d0)
   character(len=*), parameter :: root = "hams_test_qtf_files"
+  ! direct_sum_terms_waterline: D_I2 + D_D against P_BODY over max |P_BODY| on the sharp cylinder of radius 5, draft 5,
+  ! depth 10, frequencies 0.4 and 0.5 rad/s. Measured at 112 / 448 / 1008 panels: all pairs (the diagonal at 0.8 and
+  ! 1.0 rad/s is the largest) 8.76e-2 / 5.89e-2 / 4.54e-2, the pair (0.4, 0.5) 2.43e-2 / 1.62e-2 / 1.24e-2, an order of
+  ! about 0.6 in the panel size. The difference kernel on the same runs (qtf = 3, .12d against .11d over max |.11d - .10d|)
+  ! falls at the same order: 7.77e-3 / 4.93e-3 / 3.73e-3. So the gap is the mesh error of the waterline body, which both
+  ! kernels share, not an error of the sum path (which would not fall). Limits at 448 panels 1.3x measured, rounded up;
+  ! the ratio 112 to 448 (measured 1.49 for both) must be at least terms_waterline_ratio
+  real(8), parameter :: terms_waterline_limit_all = 7.7d-2, terms_waterline_limit_pair = 2.1d-2
+  real(8), parameter :: terms_waterline_ratio = 1.3d0
 
 contains
 
@@ -54,6 +72,11 @@ subroutine collect_qtf(testsuite)
     new_unittest("qtf_direct_missing", test_qtf_direct_missing), &
     new_unittest("psi_nonfinite_counted", test_psi_nonfinite_counted), &
     new_unittest("fs_store_order", test_fs_store_order), &
+    new_unittest("qtf_sum_pairs_cover", test_sum_pairs_cover), &
+    new_unittest("qtf_stored_mb_sum", test_stored_mb_sum), &
+    new_unittest("qtf_sum_store_symmetric", test_sum_store_symmetric), &
+    new_unittest("direct12s_rows", test_direct12s_rows), &
+    new_unittest("direct_sum_terms_waterline", test_direct_sum_terms_waterline), &
     new_unittest("qtf_files", test_files) &
     ]
 end subroutine collect_qtf
@@ -902,6 +925,348 @@ contains
 
 end subroutine test_fs_store_order
 
+!> Phase 7c-2, R6: on the grid [0.3, 0.6, 0.9] with two headings and mean_drift = 2, the canonical sum pairs of every
+!> frequency of the list (qtf_direct_sum_pairs) hold each unordered pair of states (i, b1, j, b2) exactly once: 6 states,
+!> 6 x 7 / 2 = 21 pairs, the diagonal ones (i, b, i, b) included. With the difference kernel on (qtf = 3) the list also has
+!> the difference frequencies, and 0.6 is both (0.9 - 0.3 and 0.3 + 0.3): the count is the same.
+subroutine test_sum_pairs_cover(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: w(3) = [0.3d0, 0.6d0, 0.9d0], hb(2) = [0d0, 30d0]
+  type(so_options) :: opts
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: state
+  complex(8), allocatable :: wl(:)
+  integer, allocatable :: pairs(:, :)
+  real(8), allocatable :: om(:)
+  integer :: seen(3, 2, 3, 2), i, ib, m, p, a(2), b(2), kq, n
+  logical :: ok
+  character(len=:), allocatable :: msg
+
+  call CreateDirectory(root//"/Wamit_format", ok)
+  call check(error, ok, "could not create the test folder")
+  if (allocated(error)) return
+  call make_cylinder(10d0, depth, 32, 4, 2, mesh, .true.)
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call check(error, ok, "build_surface_geom stopped")
+  if (allocated(error)) return
+  allocate (wl(geom%nwl))
+  wl = (0d0, 0d0)
+  do kq = 2, 3
+    opts%mean_drift = 2; opts%qtf = kq; opts%qtf_terms = QTF_TERMS_BODY; opts%qtf_direct = 1
+    call qtf_init(opts, 3, hb, geom%nwl, mesh%n, mesh%nbody, root, omegas_main=w)
+    do i = 1, 3
+      do ib = 1, 2
+        call maccamy_fuchs_state(mesh, 10d0, depth, wave_number(w(i), depth), w(i), 1d0, hb(ib)*0.0174533d0, g, rho, state)
+        call qtf_keep(ib, state, wl, w(i))
+      end do
+    end do
+    seen = 0
+    n = 0
+    om = qtf_direct_omegas()
+    do m = 1, size(om)
+      call qtf_direct_sum_pairs(om(m), pairs)
+      do p = 1, size(pairs, 2)
+        ! The unordered pair, as its two states sorted
+        a = pairs(1:2, p)
+        b = pairs(3:4, p)
+        if (b(1) < a(1) .or. (b(1) == a(1) .and. b(2) < a(2))) then
+          a = pairs(3:4, p)
+          b = pairs(1:2, p)
+        end if
+        seen(a(1), a(2), b(1), b(2)) = seen(a(1), a(2), b(1), b(2)) + 1
+        n = n + 1
+        call check(error, abs(w(pairs(1, p)) + w(pairs(3, p)) - om(m)) <= 1d-12, "a pair is listed at another Omega")
+        if (allocated(error)) return
+      end do
+    end do
+    call check(error, n, 21, "canonical sum pairs over all Omega")
+    if (allocated(error)) return
+    call check(error, maxval(seen), 1, "an unordered pair is listed twice")
+    if (allocated(error)) return
+    call check(error, count(seen == 1), 21, "unordered pairs listed once")
+    if (allocated(error)) return
+  end do
+  ! No qtf_finish: psi was not kept, which the potential parts need; the next qtf_init resets the store
+end subroutine test_sum_pairs_cover
+
+!> qtf_stored_mb with the sum stores (Phase 7c-2): tdir_sum and tpot_sum add 16 bytes x 6 nbody x nfreq^2 per slice,
+!> nsum_pairs = 2 x the heading pairs; and the inner mesh built for the largest sum frequency adds 16 (5 dn_fs) bytes per
+!> frequency and heading and 16 x 6 nbody dn_fs per frequency of psi for its dn_fs more points.
+subroutine test_stored_mb_sum(error)
+  type(error_type), allocatable, intent(out) :: error
+  integer, parameter :: nfreq = 3, nb = 2, nhp = 4, nbody = 1, npsi = 7, npw = 20, nfs0 = 10, nfs1 = 130
+  real(8) :: mb0, mb1, expected
+
+  mb0 = qtf_stored_mb(10, 4, nbody, nfreq, nb, npsi=npsi, npairs=0)
+  mb1 = qtf_stored_mb(10, 4, nbody, nfreq, nb, npsi=npsi, npairs=0, nsum_pairs=2*nhp)
+  expected = 2d0 * 16d0 * 6d0 * nbody * nfreq**2 * nhp / 1d6
+  call check(error, abs((mb1 - mb0) - expected) <= 1d-12 * expected, "the sum stores in qtf_stored_mb")
+  if (allocated(error)) return
+  mb0 = qtf_stored_mb(10, 4, nbody, nfreq, nb, npsi=npsi, nfs=nfs0, npw=npw, nsum_pairs=2*nhp)
+  mb1 = qtf_stored_mb(10, 4, nbody, nfreq, nb, npsi=npsi, nfs=nfs1, npw=npw, nsum_pairs=2*nhp)
+  expected = 16d0 * (5d0 * (nfs1 - nfs0) * nfreq * nb + 6d0 * nbody * (nfs1 - nfs0) * npsi) / 1d6
+  call check(error, abs((mb1 - mb0) - expected) <= 1d-12 * expected, "the larger inner mesh in qtf_stored_mb")
+end subroutine test_stored_mb_sum
+
+!> The whole direct sum path of the driver on a waterline body (Phase 7c-2): the 112-panel cylinder of
+!> direct_zero_forcing (radius 5, draft 5, depth 10), frequencies 0.4 and 0.5 rad/s, headings 0 and 30 degrees,
+!> mean_drift = 2, qtf = 2, qtf_terms = body, qtf_direct = 1, write_terms = 1. States: the incident wave and rigid motions
+!> (make_state). At every frequency of the list the radiation solve (radiation_at), psi into the store, and
+!> qtf_direct_at_omega, as RadiationOnlySolves and so_after_radiation_only do it. max_sw is qtf_max_sw.
+subroutine sum_pipeline(error, max_sw, mesh, geom, refine)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), intent(in) :: max_sw
+  type(panel_mesh), intent(out) :: mesh
+  type(surface_geom), intent(out) :: geom
+  integer, intent(in), optional :: refine   ! 2: the cylinder with twice the panels in each direction (448)
+  integer :: rf
+  real(8), parameter :: w(2) = [0.4d0, 0.5d0], hb(2) = [0d0, 30d0], h10 = 10d0
+  type(panel_mesh) :: full
+  type(so_options) :: opts
+  type(first_order_state) :: s
+  complex(8), allocatable :: wl(:), psi(:, :)
+  complex(8) :: x1(6, 1), x2(6, 1), xi(6, 1)
+  real(8), allocatable :: om(:)
+  integer :: i, ib, m
+  logical :: ok
+  character(len=:), allocatable :: msg
+
+  call CreateDirectory(root//"/Wamit_format", ok)
+  call check(error, ok, "could not create the test folder")
+  if (allocated(error)) return
+  rf = 1
+  if (present(refine)) rf = refine
+  call make_cylinder(5d0, 5d0, 16 * rf, 4 * rf, 3 * rf, full, .true.)
+  call set_wave(h10)
+  NTHREAD = 4
+  ISOLV = 1
+  call load_panels(full, 0, 0, mesh)
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call check(error, ok .and. geom%nwl > 0, "build_surface_geom stopped, or no waterline")
+  if (allocated(error)) return
+  opts%mean_drift = 2; opts%qtf = 2; opts%qtf_terms = QTF_TERMS_BODY; opts%qtf_direct = 1; opts%write_terms = 1
+  opts%qtf_max_sw = max_sw
+  call qtf_init(opts, 2, hb, geom%nwl, mesh%n, mesh%nbody, root, omegas_main=w)
+  call motions(x1, x2)
+  do i = 1, 2
+    do ib = 1, 2
+      ! Motions that differ per frequency and heading, so that a slot error shows
+      xi = merge(x1, x2, i == 1) * exp(ci * 0.4d0 * ib)
+      call make_state(mesh, geom, w(i), hb(ib) * 3.141592653589793d0 / 180d0, h10, xi, s, wl)
+      call qtf_keep(ib, s, wl, w(i))
+    end do
+  end do
+  call direct_setup(mesh, DEFAULT_EDGE_DEG)
+  om = qtf_direct_omegas()
+  allocate (psi(mesh%n, 6))
+  do m = 1, size(om)
+    call radiation_at(om(m), .false., mesh%nbase)
+    call radiation_psi(mesh, om(m), MXPOT, psi)
+    call qtf_keep_psi(om(m), psi)
+    call qtf_direct_at_omega(mesh, geom, om(m))
+  end do
+end subroutine sum_pipeline
+
+!> R6: after qtf_direct_at_omega, tdir_sum(:, i, j, h(b1, b2)) = tdir_sum(:, j, i, h(b2, b1)) to the bit for every pair, and
+!> no slot is left empty (both halves are filled from the canonical one).
+subroutine test_sum_store_symmetric(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  complex(8) :: t1(6), t2(6)
+  real(8) :: smallest
+  integer :: i, j, b1, b2
+
+  call sum_pipeline(error, 0d0, mesh, geom)
+  if (allocated(error)) return
+  smallest = huge(1d0)
+  do i = 1, 2
+    do j = 1, 2
+      do b1 = 1, 2
+        do b2 = 1, 2
+          call qtf_direct_sum_load(i, b1, j, b2, t1)
+          call qtf_direct_sum_load(j, b2, i, b1, t2)
+          call check(error, all(t1 == t2), "tdir_sum(i, b1, j, b2) is not tdir_sum(j, b2, i, b1) to the bit")
+          if (allocated(error)) return
+          smallest = min(smallest, maxval(abs(t1)))
+        end do
+      end do
+    end do
+  end do
+  print '(4x,a,es10.2)', "qtf_sum_store_symmetric: smallest max |T+_dir| over the 16 slots ", smallest
+  call check(error, smallest > 0d0, "a slot of tdir_sum is empty")
+  call qtf_finish(mesh, geom, 1d0)
+  call remove_files()
+end subroutine test_sum_store_symmetric
+
+!> QTF_Direct.12s with qtf_max_sw = 0.9: the rows of .10s with omega_i + omega_j <= 0.9, in the order of .10s (the pair
+!> (0.5, 0.5) is cut: 3 of 4 frequency pairs, 4 heading pairs, 6 modes = 72 rows of the 96 of .10s). The diagonal
+!> (0.4, 0.4) is a row of its own and carries T+_dir (it is not .10s, which the diagonal of .12d is).
+subroutine test_direct12s_rows(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  real(8), allocatable :: rs(:, :), rd(:, :)
+  integer :: i, k
+  real(8) :: diag_change
+
+  call sum_pipeline(error, 0.9d0, mesh, geom)
+  if (allocated(error)) return
+  call qtf_finish(mesh, geom, 1d0)
+  call read_qtf_rows(root//"/Wamit_format/QTF_Quadratic.10s", rs)
+  call read_qtf_rows(root//"/Wamit_format/QTF_Direct.12s", rd)
+  call check(error, size(rs, 2), 96, "rows of .10s")
+  if (allocated(error)) return
+  call check(error, size(rd, 2), 72, "rows of .12s with qtf_max_sw = 0.9")
+  if (allocated(error)) return
+  k = 0
+  diag_change = 0d0
+  do i = 1, size(rs, 2)
+    if (rs(1, i) + rs(2, i) > 0.9d0 + 1d-9) cycle
+    k = k + 1
+    call check(error, all(rd(1:5, k) == rs(1:5, i)), ".12s is not in the order of .10s")
+    if (allocated(error)) return
+    if (rs(1, i) == 0.4d0 .and. rs(2, i) == 0.4d0) diag_change = max(diag_change, maxval(abs(rd(8:9, k) - rs(8:9, i))))
+  end do
+  call check(error, k, 72, "rows of .10s kept by the cut")
+  if (allocated(error)) return
+  print '(4x,a,es10.2)', "direct12s_rows: largest |.12s - .10s| on the diagonal (0.4, 0.4) ", diag_change
+  call check(error, diag_change > 0d0, "the diagonal of .12s is .10s: T+_dir left out")
+  call qtf_finish(mesh, geom, 1d0)
+  call remove_files()
+end subroutine test_direct12s_rows
+
+!> The in-run indirect check on a body with a waterline (review minors of Tasks 2 and 3: the only direct-against-indirect
+!> sum test so far used a submerged sphere and the diagonal pair). QTF_DirectTermsSum.txt has 11 columns (keys, D_I2, D_D,
+!> P_BODY) and one row per row of .12s, the non-diagonal pair (0.4, 0.5) and its mirror included. Its parts add up to
+!> .12s - .10s (to the 7 digits of the files), and D_I2 + D_D against P_BODY, over the largest |P_BODY|, is the mesh error
+!> of the two methods: below the limits at 448 panels, and falling from 112 to 448 panels (limits and measured values at
+!> terms_waterline_limit_all).
+subroutine test_direct_sum_terms_waterline(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  real(8), allocatable :: rs(:, :), rd(:, :), rt(:, :)
+  real(8) :: v(11), gap_all(2), gap_off(2), pmax, pmax_off, sumerr, scale, dpart(2), ppart(2)
+  integer :: i, k, ncol, rfn
+  character(len=300) :: line
+  character(len=*), parameter :: terms_path = root//"/Wamit_format/QTF_DirectTermsSum.txt"
+
+  do rfn = 1, 2
+    call sum_pipeline(error, 0d0, mesh, geom, refine=rfn)
+    if (allocated(error)) return
+    call qtf_finish(mesh, geom, 1d0)
+    call read_qtf_rows(root//"/Wamit_format/QTF_Quadratic.10s", rs)
+    call read_qtf_rows(root//"/Wamit_format/QTF_Direct.12s", rd)
+    call check(error, size(rd, 2), size(rs, 2), ".12s has every row of .10s without a cut")
+    if (allocated(error)) return
+    call read_terms_rows(terms_path, rt, ncol)
+    call check(error, ncol, 11, "columns of QTF_DirectTermsSum.txt with qtf_terms = body")
+    if (allocated(error)) return
+    call check(error, size(rt, 2), size(rd, 2), "rows of QTF_DirectTermsSum.txt")
+    if (allocated(error)) return
+    gap_all(rfn) = 0d0
+    gap_off(rfn) = 0d0
+    pmax = 0d0
+    pmax_off = 0d0
+    sumerr = 0d0
+    scale = maxval(abs(rd(8:9, :)))
+    do k = 1, size(rt, 2)
+      v = rt(:, k)
+      ! The row of .12s and .10s with the same keys
+      do i = 1, size(rd, 2)
+        if (all(rd(1:5, i) == v(1:5))) exit
+      end do
+      call check(error, i <= size(rd, 2), "a row of QTF_DirectTermsSum.txt has no row in .12s")
+      if (allocated(error)) return
+      dpart = v(6:7) + v(8:9)
+      ppart = v(10:11)
+      sumerr = max(sumerr, maxval(abs((rd(8:9, i) - rs(8:9, i)) - dpart)))
+      gap_all(rfn) = max(gap_all(rfn), maxval(abs(dpart - ppart)))
+      pmax = max(pmax, maxval(abs(ppart)))
+      if (v(1) /= v(2)) then
+        gap_off(rfn) = max(gap_off(rfn), maxval(abs(dpart - ppart)))
+        pmax_off = max(pmax_off, maxval(abs(ppart)))
+      end if
+    end do
+    gap_all(rfn) = gap_all(rfn) / pmax
+    gap_off(rfn) = gap_off(rfn) / pmax_off
+    write (line, '(a,i0,a,es10.3,a,es10.3,a,es10.2,a,es10.2,a)') "mesh ", mesh%n, " panels: D_I2 + D_D against P_BODY"// &
+      " over max |P_BODY|: all pairs ", gap_all(rfn), ", the pair (0.4, 0.5) ", gap_off(rfn), &
+      "; parts against .12s - .10s ", sumerr, " (max |.12s| ", scale, ")"
+    print '(4x,a)', trim(line)
+    call check(error, sumerr <= 2d-5 * scale .and. pmax_off > 0d0, &
+               "the parts of QTF_DirectTermsSum.txt do not add up to .12s - .10s: "//trim(line))
+    if (allocated(error)) return
+    call remove_files()
+  end do
+  write (line, '(a,2es10.3,a,es10.3,a,3es10.3)') "the gap falls with the mesh (all, pair; 112 to 448 panels, ratio) ", &
+    gap_all(1) / gap_all(2), gap_off(1) / gap_off(2), "; at 448 panels ", maxval([gap_all(2), gap_off(2)]), &
+    "; limits ", terms_waterline_limit_all, terms_waterline_limit_pair, terms_waterline_ratio
+  print '(4x,a)', trim(line)
+  call check(error, gap_all(2) <= terms_waterline_limit_all .and. gap_off(2) <= terms_waterline_limit_pair .and. &
+             gap_all(1) / gap_all(2) >= terms_waterline_ratio .and. gap_off(1) / gap_off(2) >= terms_waterline_ratio, line)
+end subroutine test_direct_sum_terms_waterline
+
+!> The rows of a QTF file, r(9, n): PER1 PER2 BETA1 BETA2 I Mod Pha Re Im
+subroutine read_qtf_rows(path, r)
+  character(len=*), intent(in) :: path
+  real(8), allocatable, intent(out) :: r(:, :)
+  integer :: n, unit, i, idx
+  real(8) :: v(8)
+
+  n = count_rows(path)
+  allocate (r(9, max(n, 0)))
+  if (n <= 0) return
+  open (newunit=unit, file=path, status="old", action="read")
+  do i = 1, n
+    read (unit, *) v(1:4), idx, v(5:8)
+    r(1:4, i) = v(1:4)
+    r(5, i) = idx
+    r(6:9, i) = v(5:8)
+  end do
+  close (unit)
+end subroutine read_qtf_rows
+
+!> The data rows of a terms file (lines without #), r(ncol, n), and the number of columns of the first row
+subroutine read_terms_rows(path, r, ncol)
+  character(len=*), intent(in) :: path
+  real(8), allocatable, intent(out) :: r(:, :)
+  integer, intent(out) :: ncol
+  character(len=1000) :: line
+  integer :: unit, ios, n, i
+  logical :: blank
+
+  ncol = 0
+  n = 0
+  open (newunit=unit, file=path, status="old", action="read")
+  do
+    read (unit, '(a)', iostat=ios) line
+    if (ios /= 0) exit
+    if (len_trim(line) == 0 .or. line(1:1) == "#") cycle
+    n = n + 1
+    if (n == 1) then
+      blank = .true.
+      do i = 1, len_trim(line)
+        if (line(i:i) /= " " .and. blank) ncol = ncol + 1
+        blank = line(i:i) == " "
+      end do
+    end if
+  end do
+  allocate (r(ncol, n))
+  rewind (unit)
+  i = 0
+  do
+    read (unit, '(a)', iostat=ios) line
+    if (ios /= 0) exit
+    if (len_trim(line) == 0 .or. line(1:1) == "#") cycle
+    i = i + 1
+    read (line, *) r(:, i)
+  end do
+  close (unit)
+end subroutine read_terms_rows
+
 !> Rows of both files: the full square of frequency pairs, heading pairs for mean_drift = 2, and qtf_max_dw on .10d only.
 subroutine test_files(error)
   type(error_type), allocatable, intent(out) :: error
@@ -1013,14 +1378,15 @@ subroutine check_file_symmetry(error, path, hermitian)
 end subroutine check_file_symmetry
 
 subroutine remove_files()
-  character(len=*), parameter :: names(2) = [character(len=17) :: "QTF_Quadratic.10d", "QTF_Quadratic.10s"]
+  character(len=*), parameter :: names(4) = [character(len=24) :: "QTF_Quadratic.10d", "QTF_Quadratic.10s", &
+                                                "QTF_Direct.12s", "QTF_DirectTermsSum.txt"]
   integer :: unit, ios, i
   logical :: exists
 
-  do i = 1, 2
-    inquire(file=root//"/Wamit_format/"//names(i), exist=exists)
+  do i = 1, 4
+    inquire(file=root//"/Wamit_format/"//trim(names(i)), exist=exists)
     if (.not. exists) cycle
-    open(newunit=unit, file=root//"/Wamit_format/"//names(i), status="old", iostat=ios)
+    open(newunit=unit, file=root//"/Wamit_format/"//trim(names(i)), status="old", iostat=ios)
     if (ios == 0) close(unit, status="delete")
   end do
 end subroutine remove_files

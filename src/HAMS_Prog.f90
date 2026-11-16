@@ -830,8 +830,8 @@ contains
         ENDIF
     end subroutine SolveRadiationMulti
 
-    ! The radiation problems at the QTF difference frequencies that are not on the main grid (qtf_terms = body; all of them with
-    ! qtf_direct = 1), after the
+    ! The radiation problems at the QTF difference (and, with the sum on, sum) frequencies that are not on the main grid
+    ! (qtf_terms = body; all of them with qtf_direct = 1), after the
     ! frequency loop: the potentials only, for so_after_radiation_only. No RFORCE, no output file, and AMAS, BDMP and EXFC
     ! are left as they are. The wave globals (W1, WK, V, ...) are left at the last of these frequencies.
     subroutine RadiationOnlySolves(multi)
@@ -839,7 +839,9 @@ contains
         real(8), allocatable :: omegas(:)
         integer :: m
 
-        ! With qtf_direct = 1 every difference frequency, those on the main grid too (the direct solve of Phase 7a)
+        ! With qtf_direct = 1 every difference frequency, those on the main grid too (the direct solve of Phase 7a), and with
+        ! the sum on (qtf = 2 or 3, Phase 7c-2) every sum frequency omega_i + omega_j of the list as well: the direct
+        ! solve there takes the difference and the sum pairs of that frequency in one call
         if (so_opts%qtf_direct == 1) then
             omegas = qtf_direct_omegas()
         else

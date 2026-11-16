@@ -29,7 +29,7 @@ MODULE SecondOrderOutput
    PRIVATE
 
    PUBLIC :: write_drift_row, write_terms_row, write_qtf_row, write_qtf_terms_row, write_qtf_terms_header, write_field_row
-   PUBLIC :: write_direct_terms_header
+   PUBLIC :: write_direct_terms_header, write_direct_sum_terms_header
 
 CONTAINS
 
@@ -124,6 +124,32 @@ CONTAINS
          ' |omega_i - omega_j|.'
       WRITE (unit, '(a)') '# The rows are not in the order of .12d: match them by PER1 PER2 BETA1 BETA2 I.'
    END SUBROUTINE write_direct_terms_header
+
+   SUBROUTINE write_direct_sum_terms_header(unit, full)
+      ! The four comment lines of QTF_DirectTermsSum.txt (Phase 7c-2, ruling R1 of its plan): the parts of the direct sum
+      ! load of QTF_Direct.12s beside the indirect sum load of the same run, from the same psi at Omega = omega_i +
+      ! omega_j, so that the file checks .12s pair by pair. Columns: the 5 keys, then Re Im of D_I2, D_D and P_BODY (11 in
+      ! all, qtf_terms = body), or with full of D_I2, D_D, D_FS, P_BODY and P_FS (15 in all, qtf_terms = full)
+      INTEGER, INTENT(IN) :: unit
+      LOGICAL, INTENT(IN) :: full
+
+      WRITE (unit, '(a)') '# Parts of the direct sum-frequency load of QTF_Direct.12s (qtf_direct = 1) and the indirect'// &
+         ' load of the same pairs, scaled and conjugated as QTF_Quadratic.10s.'
+      IF (full) THEN
+         WRITE (unit, '(a)') '# PER1 PER2 BETA1 BETA2 I, then Re Im of: 1 D_I2, the second-order incident potential'// &
+            ' phi_I2; 2 D_D, phi_D of the body forcing; 3 D_FS, phi_D of the free-surface forcing; 4 P_BODY, the five'// &
+            ' body-forcing terms of the indirect method; 5 P_FS, its free-surface integral (FS_inner + FS_outer).'
+         WRITE (unit, '(a)') '# .12s - .10s = D_I2 + D_D + D_FS; the indirect method gives P_BODY + P_FS for the same'// &
+            ' pair. One row per pair of .12s (the diagonal included), by ascending omega_i + omega_j.'
+      ELSE
+         WRITE (unit, '(a)') '# PER1 PER2 BETA1 BETA2 I, then Re Im of: 1 D_I2, the second-order incident potential'// &
+            ' phi_I2; 2 D_D, phi_D of the body forcing; 3 P_BODY, the five body-forcing terms of the indirect method.'
+         WRITE (unit, '(a)') '# .12s - .10s = D_I2 + D_D; the indirect method gives P_BODY for the same pair (the'// &
+            ' free-surface integral is omitted). One row per pair of .12s (the diagonal included), by ascending'// &
+            ' omega_i + omega_j.'
+      END IF
+      WRITE (unit, '(a)') '# The rows are not in the order of .12s: match them by PER1 PER2 BETA1 BETA2 I.'
+   END SUBROUTINE write_direct_sum_terms_header
 
    SUBROUTINE write_qtf_terms_row(unit, oufr1, oufr2, beta1_deg, beta2_deg, index, values, refl, moment)
       ! Writes one row PER1 PER2 BETA1 BETA2 I, then Re Im of each of values, of QTF_PotentialTerms.txt. The keys are as in

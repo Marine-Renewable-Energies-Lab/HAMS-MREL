@@ -35,6 +35,11 @@ module test_qtf_free_surface
   real(8), parameter :: g = 9.81d0, pi = 3.14159265358979323846d0, deg = pi / 180d0
   ! Depth of the cylinder fixture of the field tests (as pw_hams_field: 5 m of water under the keel)
   real(8), parameter :: fx_depth = 15d0
+  ! fs_inner_steps_scale (Phase 7c-2): the residual of Laplace's equation at delta = step x lambda(omega_max)/10 = 0.195 m,
+  ! measured 1.21e-3, 2.32e-3 and 1.10e-3 at r = 12, 14.5 and 19 m, as fs_laplace_residual found at delta = 0.2 m
+  ! (1.4e-3, 2.4e-3, 1.5e-3). This is the offset that the difference run has at its circle (panel size lambda/10 there),
+  ! so the sum keeps it; the 1e-3 of the brief was the value at delta = 0.1 m. Limit 1.3x measured, rounded up
+  real(8), parameter :: scale_residual_limit = 3.1d-3
   ! The synthetic partial waves of the outer-integral tests (Task 7): depth, circle, angular and evanescent modes
   real(8), parameter :: rho = 1025d0
   real(8), parameter :: sy_h = 20d0, sy_radius = 12d0, sy_centre(2) = [1.5d0, -0.7d0]
@@ -81,7 +86,8 @@ subroutine collect_qtf_free_surface(testsuite)
     new_unittest("fs_local_polygon_centre", test_local_polygon_centre), &
     new_unittest("fs_local_corner_and_edge", test_local_corner_and_edge), &
     new_unittest("fs_local_linear", test_local_linear), &
-    new_unittest("fs_local_limit", test_local_limit) &
+    new_unittest("fs_local_limit", test_local_limit), &
+    new_unittest("fs_inner_steps_scale", test_inner_steps_scale) &
     ]
 end subroutine collect_qtf_free_surface
 
@@ -2116,5 +2122,93 @@ subroutine test_local_limit(error)
   if (allocated(sncn)) call move_alloc(sncn, pm_ncn)
   if (allocated(sncon)) call move_alloc(sncon, pm_ncon)
 end subroutine test_local_limit
+
+!> Phase 7c-2, ruling R3 c: the offsets of phi_zz on the inner mesh of the sum. The 448-panel cylinder of the 6a tests
+!> (depth 15, omega_max = 1.1 rad/s), its inner mesh built for Omega+ = 2.2 rad/s as fs_setup builds it with the sum on,
+!> and scale = max(psize, lambda(1.1)/10) as fs_setup passes it, with the driver's step 0.04 (2 x cs_fd_step):
+!>   - the points whose stencil is not shrunk have delta = step x scale, and those with psize < lambda/10 away from the
+!>     waterline (16 offsets clear) have delta = step x lambda(1.1)/10 exactly;
+!>   - without scale the offsets are step x psize, so smaller there (the mesh of 2.2 rad/s is finer);
+!>   - at that delta the residual of Laplace's equation of fs_laplace_residual (5-point horizontal Laplacian of
+!>     fs_inner_fields plus the 3-point d2/dz2, below z = 0 at the points of that test) relative to |lap_h phi| stays at
+!>     the level of the difference run (scale_residual_limit).
+subroutine test_inner_steps_scale(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: step = 0.04d0, om_fo = 1.1d0, om_sum = 2.2d0, zp = -2d0
+  real(8), parameter :: rp(3) = [12d0, 14.5d0, 19d0], thp(3) = [0.3d0, 2.0d0, -1.9d0]
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(so_options) :: opts
+  type(first_order_state) :: states(1)
+  type(cs_points) :: pts, rpts, vp
+  type(fs_point_field) :: f(3, 1)
+  complex(8) :: ph(9, 1), lap_h, phizz_fd
+  real(8), allocatable :: scale(:), delta(:), delta0(:)
+  real(8) :: centre(2), radius, lam10, d, x(3, 3), xv(3, 9), dec(3, 9), worst, rr
+  integer :: nshrunk, nfloor, ns0, i, nfar, nbad, nthread_saved
+  logical :: ok
+  character(len=:), allocatable :: msg
+  character(len=250) :: info
+
+  call cylinder_fixture(mesh, states, error)
+  if (allocated(error)) return
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call check(error, ok, "geometry: "//msg)
+  if (allocated(error)) return
+  call build_fs_inner(mesh, geom, opts, fx_depth, 'fs_7c2_no_input_dir', pts, centre, radius, ok, msg, omega_max=om_sum)
+  call check(error, ok, "inner mesh: "//msg)
+  if (allocated(error)) return
+  lam10 = 0.1d0 * 2d0 * pi / wave_number(om_fo, fx_depth)
+  allocate (scale(pts%n), delta(pts%n), delta0(pts%n))
+  scale = max(pts%psize, lam10)
+  nthread_saved = NTHREAD
+  NTHREAD = 4
+  call fs_inner_steps(mesh, pts, step, delta, nshrunk, nfloor, scale=scale)
+  call fs_inner_steps(mesh, pts, step, delta0, ns0)
+  nfar = 0
+  nbad = 0
+  do i = 1, pts%n
+    rr = norm2(pts%x(1:2, i))
+    if (delta(i) < step * scale(i)) cycle
+    if (pts%psize(i) < lam10 .and. rr > 10d0 + 16d0 * step * lam10) then
+      nfar = nfar + 1
+      if (delta(i) /= step * lam10) nbad = nbad + 1
+      if (.not. delta0(i) < delta(i)) nbad = nbad + 1
+    end if
+  end do
+  print '(4x,a,i0,a,f8.4,a,i0,a,i0,a,i0)', "fs_inner_steps_scale: ", pts%n, " inner points, lambda(1.1)/10 =", lam10, &
+    " m; ", nfar, " finer points away from the waterline, ", nshrunk, " shrunk, ", nfloor, " at the floor"
+  call check(error, nfar > 0 .and. nbad == 0, "away from the waterline delta is not step x lambda(omega_max)/10")
+  if (allocated(error)) then
+    NTHREAD = nthread_saved
+    return
+  end if
+
+  ! The residual of Laplace's equation at delta = step x lambda/10 (the method of fs_laplace_residual)
+  d = step * lam10
+  do i = 1, 3
+    x(:, i) = [rp(i) * cos(thp(i)), rp(i) * sin(thp(i)), zp]
+    xv(:, 3 * i - 2) = x(:, i)
+    xv(:, 3 * i - 1) = x(:, i) + [0d0, 0d0, d]
+    xv(:, 3 * i) = x(:, i) - [0d0, 0d0, d]
+    dec(:, 3 * i - 2:3 * i) = spread(x(:, i), 2, 3)
+  end do
+  call free_points(x, lam10, rpts)
+  call free_points(xv, lam10, vp)
+  call fs_inner_fields(mesh, rpts, states, step, .false., f, delta=[d, d, d])
+  call fs_sample_phi(mesh, vp, states, .false., ph, decide=dec)
+  NTHREAD = nthread_saved
+  worst = 0d0
+  do i = 1, 3
+    lap_h = -f(i, 1)%phizz
+    phizz_fd = (ph(3 * i - 1, 1) + ph(3 * i, 1) - 2d0 * ph(3 * i - 2, 1)) / d**2
+    print '(4x,a,f6.3,a,f6.2,a,es10.2)', "fs_inner_steps_scale: delta", d, " m at r =", rp(i), ", residual relative ", &
+      abs(lap_h + phizz_fd) / max(abs(lap_h), tiny(1d0))
+    worst = max(worst, abs(lap_h + phizz_fd) / max(abs(lap_h), tiny(1d0)))
+  end do
+  write (info, '(a,es10.3,a,es10.3)') "lap_h phi + phi_zz relative to |lap_h phi| at delta = step x lambda/10 ", worst, &
+    "; limit ", scale_residual_limit
+  call check(error, worst <= scale_residual_limit, trim(info))
+end subroutine test_inner_steps_scale
 
 end module test_qtf_free_surface

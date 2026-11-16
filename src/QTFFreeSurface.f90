@@ -268,7 +268,7 @@ CONTAINS
       END DO
    END SUBROUTINE fs_inner_fields
 
-   SUBROUTINE fs_inner_steps(mesh, pts, step, delta, nshrunk, nfloor)
+   SUBROUTINE fs_inner_steps(mesh, pts, step, delta, nshrunk, nfloor, scale)
       ! The offset delta of each inner point for fs_inner_fields: step x its size, halved until two conditions hold, but not
       ! below DELTA_FLOOR x step x its size (Green-function rounding divided by delta^2 would take over):
       !   - no point of the stencil, x +- delta e_x and x +- delta e_y, lies in a waterplane (body_winding of QTFField 1/2
@@ -280,12 +280,18 @@ CONTAINS
       ! nshrunk counts the points whose delta was shrunk, nfloor those held at the floor (still clear of the waterplane,
       ! but closer than the clearance asks). A stencil still in a waterplane at the floor stops the run, naming the point.
       ! Frequency-independent: the driver calls it once.
+      ! scale (optional, n): the length the step is a fraction of, per point (default pts%psize, bit-identical). With the
+      ! sum frequency the inner mesh is built for the largest sum frequency (ruling R3 a of Phase 7c-2), finer than the
+      ! first-order fields need; the driver then passes max(psize, lambda(omega_max)/10), omega_max the largest first-order
+      ! frequency (R3 c): the first-order fields vary on lambda(omega), and a smaller offset only raises the rounding of
+      ! the Green function divided by delta^2 (fs_laplace_residual: 1.6e-2 at delta = 0.02 psize against 7.2e-4 at 0.1).
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(cs_points), INTENT(IN) :: pts
       REAL(8), INTENT(IN) :: step
       REAL(8), INTENT(OUT) :: delta(pts%n)
       INTEGER, INTENT(OUT) :: nshrunk
       INTEGER, INTENT(OUT), OPTIONAL :: nfloor
+      REAL(8), INTENT(IN), OPTIONAL :: scale(:)
       REAL(8), PARAMETER :: CLEARANCE = 16D0, DELTA_FLOOR = 1D-3
       REAL(8) :: d, d0, dmin
       INTEGER :: i, nf, ibad
@@ -294,10 +300,20 @@ CONTAINS
       nshrunk = 0
       nf = 0
       ibad = 0
+      IF (PRESENT(scale)) THEN
+         IF (SIZE(scale) /= pts%n) THEN
+            WRITE (*, '(a)') ' fs_inner_steps: scale must have one value per inner point.'
+            ERROR STOP 1
+         END IF
+      END IF
       !$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(d, d0, dmin, in_wp, at_floor) REDUCTION(+:nshrunk, nf) &
       !$OMP REDUCTION(MAX:ibad) SCHEDULE(DYNAMIC, 4)
       DO i = 1, pts%n
-         d0 = step*pts%psize(i)
+         IF (PRESENT(scale)) THEN
+            d0 = step*scale(i)
+         ELSE
+            d0 = step*pts%psize(i)
+         END IF
          dmin = DELTA_FLOOR*d0
          d = d0
          at_floor = .FALSE.
