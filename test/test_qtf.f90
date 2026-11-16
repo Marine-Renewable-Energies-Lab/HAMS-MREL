@@ -12,7 +12,8 @@ module test_qtf
                         qtf_direct_omegas, qtf_keep_psi, qtf_nonfinite_psi, qtf_nonfinite_pairs, qtf_psi_tolerance, &
                         qtf_psi_index, qtf_direct_missing, qtf_omega_list, irregular_frequency_estimate, sum_pair_index, &
                         qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active, qtf_stored_mb, &
-                        qtf_direct_sum_pairs, qtf_direct_at_omega, qtf_direct_sum_load
+                        qtf_direct_sum_pairs, qtf_direct_at_omega, qtf_direct_sum_load, qtf_direct_pairs, &
+                        qtf_direct_diff_load
   use QTFFreeSurface, only : fs_point_field
   use HAMS_mod, only : NTHREAD, ISOLV
   use Potentials_mod, only : MXPOT
@@ -21,7 +22,7 @@ module test_qtf
   use SharpEdge, only : DEFAULT_EDGE_DEG
   use test_waterline_field, only : set_wave, load_panels
   use test_qtf_potential, only : make_state, motions
-  use test_qtf_direct, only : radiation_at
+  use test_qtf_direct, only : radiation_at, radiation_at_irr, append_lid, set_lid, clear_lid
   use PartialWaves, only : pw_set
   use, intrinsic :: ieee_arithmetic, only : ieee_value, ieee_quiet_nan
   use SecondOrderOutput, only : write_qtf_row
@@ -77,6 +78,7 @@ subroutine collect_qtf(testsuite)
     new_unittest("qtf_sum_store_symmetric", test_sum_store_symmetric), &
     new_unittest("direct12s_rows", test_direct12s_rows), &
     new_unittest("direct_sum_terms_waterline", test_direct_sum_terms_waterline), &
+    new_unittest("qtf3_diff_unchanged", test_qtf3_diff_unchanged), &
     new_unittest("qtf_files", test_files) &
     ]
 end subroutine collect_qtf
@@ -1014,14 +1016,18 @@ end subroutine test_stored_mb_sum
 !> mean_drift = 2, qtf = 2, qtf_terms = body, qtf_direct = 1, write_terms = 1. States: the incident wave and rigid motions
 !> (make_state). At every frequency of the list the radiation solve (radiation_at), psi into the store, and
 !> qtf_direct_at_omega, as RadiationOnlySolves and so_after_radiation_only do it. max_sw is qtf_max_sw.
-subroutine sum_pipeline(error, max_sw, mesh, geom, refine)
+subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid)
   type(error_type), allocatable, intent(out) :: error
   real(8), intent(in) :: max_sw
   type(panel_mesh), intent(out) :: mesh
   type(surface_geom), intent(out) :: geom
-  integer, intent(in), optional :: refine   ! 2: the cylinder with twice the panels in each direction (448)
-  integer :: rf
-  real(8), parameter :: w(2) = [0.4d0, 0.5d0], hb(2) = [0d0, 30d0], h10 = 10d0
+  integer, intent(in), optional :: refine     ! 2: the cylinder with twice the panels in each direction (448)
+  integer, intent(in), optional :: kind_qtf   ! qtf of SecondOrder.in, 2 by default
+  real(8), intent(in), optional :: grid(:)    ! the frequencies, [0.4, 0.5] by default
+  logical, intent(in), optional :: lid        ! IRSP = 1 with the lid of the cylinder (clear_lid after the test)
+  integer :: rf, kq, nl
+  real(8), parameter :: hb(2) = [0d0, 30d0], h10 = 10d0
+  real(8), allocatable :: w(:), pts(:, :)
   type(panel_mesh) :: full
   type(so_options) :: opts
   type(first_order_state) :: s
@@ -1029,7 +1035,7 @@ subroutine sum_pipeline(error, max_sw, mesh, geom, refine)
   complex(8) :: x1(6, 1), x2(6, 1), xi(6, 1)
   real(8), allocatable :: om(:)
   integer :: i, ib, m
-  logical :: ok
+  logical :: ok, use_lid
   character(len=:), allocatable :: msg
 
   call CreateDirectory(root//"/Wamit_format", ok)
@@ -1037,22 +1043,37 @@ subroutine sum_pipeline(error, max_sw, mesh, geom, refine)
   if (allocated(error)) return
   rf = 1
   if (present(refine)) rf = refine
+  kq = 2
+  if (present(kind_qtf)) kq = kind_qtf
+  if (present(grid)) then
+    w = grid
+  else
+    w = [0.4d0, 0.5d0]
+  end if
+  use_lid = .false.
+  if (present(lid)) use_lid = lid
   call make_cylinder(5d0, 5d0, 16 * rf, 4 * rf, 3 * rf, full, .true.)
   call set_wave(h10)
   NTHREAD = 4
   ISOLV = 1
   call load_panels(full, 0, 0, mesh)
+  nl = 0
+  if (use_lid) then
+    call append_lid(5d0, 16, 3, 0d0, 0, pts)
+    call set_lid(pts, .false.)
+    nl = size(pts, 2)
+  end if
   call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
   call check(error, ok .and. geom%nwl > 0, "build_surface_geom stopped, or no waterline")
   if (allocated(error)) return
-  opts%mean_drift = 2; opts%qtf = 2; opts%qtf_terms = QTF_TERMS_BODY; opts%qtf_direct = 1; opts%write_terms = 1
+  opts%mean_drift = 2; opts%qtf = kq; opts%qtf_terms = QTF_TERMS_BODY; opts%qtf_direct = 1; opts%write_terms = 1
   opts%qtf_max_sw = max_sw
-  call qtf_init(opts, 2, hb, geom%nwl, mesh%n, mesh%nbody, root, omegas_main=w)
+  call qtf_init(opts, size(w), hb, geom%nwl, mesh%n, mesh%nbody, root, omegas_main=w)
   call motions(x1, x2)
-  do i = 1, 2
+  do i = 1, size(w)
     do ib = 1, 2
       ! Motions that differ per frequency and heading, so that a slot error shows
-      xi = merge(x1, x2, i == 1) * exp(ci * 0.4d0 * ib)
+      xi = merge(x1, x2, mod(i, 2) == 1) * exp(ci * 0.4d0 * ib)
       call make_state(mesh, geom, w(i), hb(ib) * 3.141592653589793d0 / 180d0, h10, xi, s, wl)
       call qtf_keep(ib, s, wl, w(i))
     end do
@@ -1061,12 +1082,70 @@ subroutine sum_pipeline(error, max_sw, mesh, geom, refine)
   om = qtf_direct_omegas()
   allocate (psi(mesh%n, 6))
   do m = 1, size(om)
-    call radiation_at(om(m), .false., mesh%nbase)
+    if (use_lid) then
+      call radiation_at_irr(om(m), .false., mesh%nbase, nl)
+    else
+      call radiation_at(om(m), .false., mesh%nbase)
+    end if
     call radiation_psi(mesh, om(m), MXPOT, psi)
     call qtf_keep_psi(om(m), psi)
     call qtf_direct_at_omega(mesh, geom, om(m))
   end do
 end subroutine sum_pipeline
+
+!> Plan global constraint, review of 5e4b8da: with qtf = 3 the sum columns of an Omega that is also a difference frequency
+!> must not change the difference results. On the grid [0.3, 0.6, 0.9], Omega = 0.6 is both a difference (0.9 - 0.3) and
+!> a sum (0.3 + 0.3), so its direct solve has both kinds of columns with qtf = 3. With two headings and mean_drift = 2,
+!> tdir and its two parts of every difference pair are the same to the bit with qtf = 1 and qtf = 3, without the lid and
+!> with it (IRSP = 1, the least-squares solve of HAMS with A^T r). The fixture has no field points (qtf_field = 0).
+subroutine test_qtf3_diff_unchanged(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: w3(3) = [0.3d0, 0.6d0, 0.9d0]
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  complex(8) :: t(6, 3, 3, 2, 2, 2), p1(6, 3, 3, 2, 2, 2), p2(6, 3, 3, 2, 2, 2)
+  integer, allocatable :: pd(:, :), ps(:, :)
+  integer :: ilid, ik, i, j, b1, b2, nmixed
+  character(len=200) :: line
+
+  do ilid = 1, 2
+    nmixed = 0
+    do ik = 1, 2
+      call sum_pipeline(error, 0d0, mesh, geom, kind_qtf=merge(1, 3, ik == 1), grid=w3, lid=ilid == 2)
+      if (allocated(error)) then
+        call clear_lid()
+        return
+      end if
+      if (ik == 2) then
+        call qtf_direct_pairs(0.6d0, pd)
+        call qtf_direct_sum_pairs(0.6d0, ps)
+        nmixed = min(size(pd, 2), size(ps, 2))
+      end if
+      do i = 1, 3
+        do j = 1, 3
+          do b1 = 1, 2
+            do b2 = 1, 2
+              call qtf_direct_diff_load(i, b1, j, b2, t(:, i, j, b1, b2, ik), p1(:, i, j, b1, b2, ik), &
+                                        p2(:, i, j, b1, b2, ik))
+            end do
+          end do
+        end do
+      end do
+      call qtf_finish(mesh, geom, 1d0)
+      call remove_files()
+    end do
+    call clear_lid()
+    write (line, '(a,i0,a,i0,a,es10.2,a,es10.2)') "IRSP = ", ilid - 1, ": Omega = 0.6 has difference and sum pairs ", &
+      nmixed, "; max |T_dir| ", maxval(abs(t(:, :, :, :, :, 1))), ", max |qtf 3 - qtf 1| ", &
+      maxval(abs(t(:, :, :, :, :, 2) - t(:, :, :, :, :, 1)))
+    print '(4x,a)', trim(line)
+    call check(error, nmixed > 0 .and. maxval(abs(t(:, :, :, :, :, 1))) > 0d0, "the fixture has no mixed Omega: "//trim(line))
+    if (allocated(error)) return
+    call check(error, all(t(:, :, :, :, :, 2) == t(:, :, :, :, :, 1)) .and. all(p1(:, :, :, :, :, 2) == p1(:, :, :, :, :, 1)) &
+               .and. all(p2(:, :, :, :, :, 2) == p2(:, :, :, :, :, 1)), "qtf = 3 changes the difference results: "//trim(line))
+    if (allocated(error)) return
+  end do
+end subroutine test_qtf3_diff_unchanged
 
 !> R6: after qtf_direct_at_omega, tdir_sum(:, i, j, h(b1, b2)) = tdir_sum(:, j, i, h(b2, b1)) to the bit for every pair, and
 !> no slot is left empty (both halves are filled from the canonical one).

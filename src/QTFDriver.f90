@@ -82,7 +82,8 @@ MODULE QTFDriver
    ! The sum frequency (Phase 7c-2, qtf = 2 or 3 with qtf_direct = 1 and qtf_terms = body or full): the list psi_need is
    ! the union of the difference and the sum frequencies Omega = omega_i + omega_j (qtf_omega_list), and psi, grad psi on
    ! C and F and psi on the inner free surface are kept at every one of them, indexed like psi_store. qtf_direct_at_omega
-   ! puts every difference pair and every sum pair of an Omega into one direct_at_omega call, with a kernel per column.
+   ! solves every difference pair and every sum pair of an Omega with one factorisation, the sum pairs in a
+   ! direct_at_omega call of their own, so that the difference results keep the bits of a run without the sum.
    ! T+ is symmetric, T+(i, b1, j, b2) = T+(j, b2, i, b1) (pair_plus; ruling R6 of the plan), so only the canonical half of
    ! the sum pairs is solved (qtf_direct_sum_pairs: i < j, or i = j with b1 <= b2) and each result fills both slots of
    ! tdir_sum. qtf_finish then writes QTF_Direct.12s: the rows of .10s whose sum is kept (sum_pair_index > 0), in its
@@ -116,7 +117,7 @@ MODULE QTFDriver
    PUBLIC :: qtf_radiation_list, qtf_radiation_omegas, qtf_direct_omegas, qtf_omega_on_grid, qtf_keep_psi, qtf_psi_index, qtf_psi_count, qtf_psi_tolerance
    PUBLIC :: qtf_nonfinite_psi, qtf_nonfinite_pairs
    PUBLIC :: qtf_direct_at_omega, qtf_direct_pairs, qtf_direct_missing, qtf_diff_omega, qtf_direct_sum_pairs, qtf_sum_omega
-   PUBLIC :: qtf_direct_sum_load
+   PUBLIC :: qtf_direct_sum_load, qtf_direct_diff_load
    PUBLIC :: qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, qtf_set_edge_weights
    PUBLIC :: qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active
 
@@ -1192,6 +1193,20 @@ CONTAINS
       IF (ALLOCATED(tdir_sum)) t = tdir_sum(:, i, j, heading_pair(b1, b2))
    END SUBROUTINE qtf_direct_sum_load
 
+   SUBROUTINE qtf_direct_diff_load(i, b1, j, b2, t, p_i2, p_d)
+      ! T_dir(6 nbody) of the stored difference pair as tdir holds it, and its parts from phi_I2 and phi_D (write_terms
+      ! >= 1, zero otherwise), for the test that qtf = 3 leaves the difference results of qtf = 1 unchanged
+      INTEGER, INTENT(IN) :: i, b1, j, b2
+      COMPLEX(8), INTENT(OUT) :: t(:), p_i2(:), p_d(:)
+
+      t = (0D0, 0D0)
+      p_i2 = (0D0, 0D0)
+      p_d = (0D0, 0D0)
+      IF (ALLOCATED(tdir)) t = tdir(:, i, j, heading_pair(b1, b2))
+      IF (ALLOCATED(tdir_i2)) p_i2 = tdir_i2(:, i, j, heading_pair(b1, b2))
+      IF (ALLOCATED(tdir_d)) p_d = tdir_d(:, i, j, heading_pair(b1, b2))
+   END SUBROUTINE qtf_direct_diff_load
+
    SUBROUTINE free_sum_stores()
       IF (ALLOCATED(tdir_sum)) DEALLOCATE (tdir_sum)
       IF (ALLOCATED(tpot_sum)) DEALLOCATE (tpot_sum)
@@ -1203,9 +1218,9 @@ CONTAINS
    SUBROUTINE qtf_direct_at_omega(mesh, geom, omega, npair, seconds, fs, nsum)
       ! The direct method at the frequency omega of the list (qtf_direct = 1): T_dir of every difference pair with that
       ! Omega (qtf_direct_pairs) and, with the sum on (Phase 7c-2), T+_dir of the canonical half of its sum pairs
-      ! (qtf_direct_sum_pairs), all in one direct_at_omega call with a kernel per column, so that the matrix is factored
-      ! once. The difference results go into tdir, each sum result into both slots of tdir_sum (R6). Call after the
-      ! frequency loop, when every frequency is kept, with the solver at omega after its radiation solve
+      ! (qtf_direct_sum_pairs), with one factorisation: two direct_at_omega calls, the difference columns as without the
+      ! sum, then the sum columns. The difference results go into tdir, each sum result into both slots of tdir_sum
+      ! (R6). Call after the frequency loop, when every frequency is kept, with the solver at omega after its radiation solve
       ! (RadiationOnlySolves). Pairs with NaN or Inf are counted in qtf_nonfinite_pairs() and logged. npair, nsum and
       ! seconds (optional): the number of difference and of sum pairs solved, and the times of direct_at_omega (4: forcing,
       ! B2, solve and load, field evaluation), for the log. A frequency with neither kind of pair is only marked as done.
@@ -1222,8 +1237,8 @@ CONTAINS
       REAL(8), INTENT(OUT), OPTIONAL :: seconds(4)
       TYPE(direct_fs_data), INTENT(INOUT), OPTIONAL :: fs
       INTEGER, INTENT(OUT), OPTIONAL :: nsum
-      REAL(8) :: sec(4)
-      INTEGER, ALLOCATABLE :: pairs(:, :), pd(:, :), ps(:, :), kernels(:)
+      REAL(8) :: sec(4), sec2(4)
+      INTEGER, ALLOCATABLE :: pd(:, :), ps(:, :), kernels(:)
       COMPLEX(8), ALLOCATABLE :: t(:, :), parts(:, :, :), phi_field(:, :)
       REAL(8), ALLOCATABLE :: xfield(:, :)
       INTEGER :: m, p, nbad, h, hm, nd, ns
@@ -1260,68 +1275,82 @@ CONTAINS
       END IF
       nd = SIZE(pd, 2)
       ns = SIZE(ps, 2)
-      ! The difference columns first, as before Phase 7c-2, then the sum columns
-      ALLOCATE (pairs(4, nd + ns), kernels(nd + ns))
-      pairs(:, 1:nd) = pd
-      pairs(:, nd + 1:nd + ns) = ps
-      kernels(1:nd) = KERNEL_DIFF
-      kernels(nd + 1:nd + ns) = KERNEL_SUM
-      ALLOCATE (t(6*mesh%nbody, nd + ns))
-      IF (PRESENT(fs)) THEN
-         CALL direct_fs_store(fs)
-         ! The third slice keeps the free-surface part apart, for QTF_DirectTerms.txt and QTF_DirectTermsSum.txt
-         ALLOCATE (parts(6*mesh%nbody, nd + ns, MERGE(3, 2, direct_terms .OR. sum_terms)))
-      ELSE
-         ALLOCATE (parts(6*mesh%nbody, nd + ns, 2))
-      END IF
-      ! An absent fs is passed on as absent: the direct solve of Phase 7a. kernels all KERNEL_DIFF is the call without it,
-      ! to the bit (test direct_kernels_default of Phase 7c-2 Task 2)
-      IF (qfield_direct_active() .AND. nd > 0) THEN
-         ! qtf_field = 1 with qtf_direct = 1: phi_D of every difference pair at the field points, for QTF_Field.txt
-         ! (QTFField)
-         CALL qfield_direct_points(xfield)
-         ALLOCATE (phi_field(SIZE(xfield, 2), nd + ns))
-         CALL direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, omega_tol=psi_tol, seconds=sec, parts=parts, &
-                              fs=fs, field_points=xfield, phi_field=phi_field, kernels=kernels)
+      ! Two calls of direct_at_omega with one factorisation (review of Task 4, fix round 1): first the difference columns,
+      ! exactly as without the sum (the call of 3f00f4d, so the same column blocks, ZGETRS and ZGEMM sizes and bits; MKL
+      ! does not promise column p to be the same for another number of right sides), then the sum columns with
+      ! factored = .TRUE. (the factors of the first call; with no difference pair the second call factors)
+      sec = 0D0
+      sec2 = 0D0
+      IF (PRESENT(fs)) CALL direct_fs_store(fs)
+      nbad = 0
+      IF (nd > 0) THEN
+         ALLOCATE (t(6*mesh%nbody, nd))
+         IF (PRESENT(fs)) THEN
+            ! The third slice keeps the free-surface part apart, for QTF_DirectTerms.txt
+            ALLOCATE (parts(6*mesh%nbody, nd, MERGE(3, 2, direct_terms)))
+         ELSE
+            ALLOCATE (parts(6*mesh%nbody, nd, 2))
+         END IF
+         ! An absent fs is passed on as absent: the direct solve of Phase 7a
+         IF (qfield_direct_active()) THEN
+            ! qtf_field = 1 with qtf_direct = 1: phi_D of every pair at the field points, for QTF_Field.txt (QTFField)
+            CALL qfield_direct_points(xfield)
+            ALLOCATE (phi_field(SIZE(xfield, 2), nd))
+            CALL direct_at_omega(mesh, geom, omega, store, store_wl, pd, t, omega_tol=psi_tol, seconds=sec, parts=parts, &
+                                 fs=fs, field_points=xfield, phi_field=phi_field)
+            DO p = 1, nd
+               CALL qfield_keep_direct(pd(1, p), pd(2, p), pd(3, p), pd(4, p), phi_field(:, p))
+            END DO
+         ELSE
+            CALL direct_at_omega(mesh, geom, omega, store, store_wl, pd, t, omega_tol=psi_tol, seconds=sec, parts=parts, &
+                                 fs=fs)
+         END IF
          DO p = 1, nd
-            CALL qfield_keep_direct(pairs(1, p), pairs(2, p), pairs(3, p), pairs(4, p), phi_field(:, p))
+            h = heading_pair(pd(2, p), pd(4, p))
+            tdir(:, pd(1, p), pd(3, p), h) = t(:, p)
+            IF (direct_terms) THEN
+               tdir_i2(:, pd(1, p), pd(3, p), h) = parts(:, p, 1)
+               tdir_d(:, pd(1, p), pd(3, p), h) = parts(:, p, 2)
+               IF (SIZE(parts, 3) == 3) tdir_fs(:, pd(1, p), pd(3, p), h) = parts(:, p, 3)
+            END IF
+            IF (.NOT. ALL(IEEE_IS_FINITE(REAL(t(:, p), 8)) .AND. IEEE_IS_FINITE(AIMAG(t(:, p))))) nbad = nbad + 1
          END DO
-      ELSE
-         CALL direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, omega_tol=psi_tol, seconds=sec, parts=parts, &
-                              fs=fs, kernels=kernels)
+         DEALLOCATE (t, parts)
+      END IF
+      IF (ns > 0) THEN
+         ALLOCATE (t(6*mesh%nbody, ns), kernels(ns))
+         kernels = KERNEL_SUM
+         IF (PRESENT(fs)) THEN
+            ALLOCATE (parts(6*mesh%nbody, ns, MERGE(3, 2, sum_terms)))
+         ELSE
+            ALLOCATE (parts(6*mesh%nbody, ns, 2))
+         END IF
+         ! No field points: the sum rows of QTF_Field.txt are Task 5 of Phase 7c-2
+         CALL direct_at_omega(mesh, geom, omega, store, store_wl, ps, t, omega_tol=psi_tol, seconds=sec2, parts=parts, &
+                              fs=fs, kernels=kernels, factored=nd > 0)
+         sec = sec + sec2
+         DO p = 1, ns
+            ! Both slots of the symmetric pair (R6): (i, b1, j, b2) and its mirror (j, b2, i, b1), the same values
+            h = heading_pair(ps(2, p), ps(4, p))
+            hm = heading_pair(ps(4, p), ps(2, p))
+            tdir_sum(:, ps(1, p), ps(3, p), h) = t(:, p)
+            tdir_sum(:, ps(3, p), ps(1, p), hm) = t(:, p)
+            IF (sum_terms) THEN
+               tdir_sum_i2(:, ps(1, p), ps(3, p), h) = parts(:, p, 1)
+               tdir_sum_i2(:, ps(3, p), ps(1, p), hm) = parts(:, p, 1)
+               tdir_sum_d(:, ps(1, p), ps(3, p), h) = parts(:, p, 2)
+               tdir_sum_d(:, ps(3, p), ps(1, p), hm) = parts(:, p, 2)
+               IF (SIZE(parts, 3) == 3 .AND. ALLOCATED(tdir_sum_fs)) THEN
+                  tdir_sum_fs(:, ps(1, p), ps(3, p), h) = parts(:, p, 3)
+                  tdir_sum_fs(:, ps(3, p), ps(1, p), hm) = parts(:, p, 3)
+               END IF
+            END IF
+            IF (.NOT. ALL(IEEE_IS_FINITE(REAL(t(:, p), 8)) .AND. IEEE_IS_FINITE(AIMAG(t(:, p))))) nbad = nbad + 1
+         END DO
       END IF
       IF (PRESENT(npair)) npair = nd
       IF (PRESENT(nsum)) nsum = ns
       IF (PRESENT(seconds)) seconds = sec
-      nbad = 0
-      DO p = 1, nd
-         h = heading_pair(pairs(2, p), pairs(4, p))
-         tdir(:, pairs(1, p), pairs(3, p), h) = t(:, p)
-         IF (direct_terms) THEN
-            tdir_i2(:, pairs(1, p), pairs(3, p), h) = parts(:, p, 1)
-            tdir_d(:, pairs(1, p), pairs(3, p), h) = parts(:, p, 2)
-            IF (SIZE(parts, 3) == 3) tdir_fs(:, pairs(1, p), pairs(3, p), h) = parts(:, p, 3)
-         END IF
-         IF (.NOT. ALL(IEEE_IS_FINITE(REAL(t(:, p), 8)) .AND. IEEE_IS_FINITE(AIMAG(t(:, p))))) nbad = nbad + 1
-      END DO
-      DO p = nd + 1, nd + ns
-         ! Both slots of the symmetric pair (R6): (i, b1, j, b2) and its mirror (j, b2, i, b1), the same values
-         h = heading_pair(pairs(2, p), pairs(4, p))
-         hm = heading_pair(pairs(4, p), pairs(2, p))
-         tdir_sum(:, pairs(1, p), pairs(3, p), h) = t(:, p)
-         tdir_sum(:, pairs(3, p), pairs(1, p), hm) = t(:, p)
-         IF (sum_terms) THEN
-            tdir_sum_i2(:, pairs(1, p), pairs(3, p), h) = parts(:, p, 1)
-            tdir_sum_i2(:, pairs(3, p), pairs(1, p), hm) = parts(:, p, 1)
-            tdir_sum_d(:, pairs(1, p), pairs(3, p), h) = parts(:, p, 2)
-            tdir_sum_d(:, pairs(3, p), pairs(1, p), hm) = parts(:, p, 2)
-            IF (SIZE(parts, 3) == 3 .AND. ALLOCATED(tdir_sum_fs)) THEN
-               tdir_sum_fs(:, pairs(1, p), pairs(3, p), h) = parts(:, p, 3)
-               tdir_sum_fs(:, pairs(3, p), pairs(1, p), hm) = parts(:, p, 3)
-            END IF
-         END IF
-         IF (.NOT. ALL(IEEE_IS_FINITE(REAL(t(:, p), 8)) .AND. IEEE_IS_FINITE(AIMAG(t(:, p))))) nbad = nbad + 1
-      END DO
       tdir_kept(m) = .TRUE.
       IF (nbad > 0) THEN
          n_bad_pairs = n_bad_pairs + nbad

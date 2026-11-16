@@ -427,7 +427,7 @@ CONTAINS
    END SUBROUTINE direct_solve
 
    SUBROUTINE direct_at_omega(mesh, geom, omega, store, store_wl, pairs, tdir, is_multi, omega_tol, phi2_constant, seconds, parts, &
-                              fs, field_points, phi_field, kernels)
+                              fs, field_points, phi_field, kernels, factored)
       ! The direct load T_dir of every pair of the second-order frequency omega (> 0), per unit amplitudes (header):
       !   store, store_wl  the first-order states (nfreq, nbeta) and their waterline potentials (nwl, nfreq, nbeta), as
       !                    QTFDriver keeps them
@@ -458,7 +458,11 @@ CONTAINS
       ! RadiationOnlySolves leaves them after the radiation solve at omega; W1 is checked. direct_setup must have been
       ! called for this mesh. With IRSP = 1 the right sides have the lid rows too (header), and the radiation solve must
       ! have been the one with the lid (CALGREEN_IRR, ASSB_LEFT_IRR). The matrix is factored in place when ISOLV /= 1
-      ! (direct_factor), so call this once per radiation solve.
+      ! (direct_factor), so call this once per radiation solve; or with factored = .TRUE. (optional, default .FALSE.) for
+      ! a further call at the same Omega after one that factored the matrix (with pairs): direct_factor is then skipped.
+      ! QTFDriver solves the sum columns of an Omega in such a call of their own, so that the difference columns keep the
+      ! block sizes, and so the bits, of a run without the sum (MKL does not promise column p of ZGETRS or ZGEMM to be
+      ! the same for another number of right sides).
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       REAL(8), INTENT(IN) :: omega
@@ -475,6 +479,7 @@ CONTAINS
       REAL(8), INTENT(IN), OPTIONAL :: field_points(:, :)
       COMPLEX(8), INTENT(OUT), OPTIONAL :: phi_field(:, :)
       INTEGER, INTENT(IN), OPTIONAL :: kernels(:)
+      LOGICAL, INTENT(IN), OPTIONAL :: factored
       COMPLEX(8), ALLOCATABLE :: vf(:, :, :), rf(:, :, :), r2(:, :, :), a(:, :), c(:, :, :), cl(:, :, :, :), e(:, :), &
                                  phi(:, :), p2(:, :), rfs(:, :, :), phis(:, :)
       REAL(8), ALLOCATABLE :: dws(:)
@@ -557,7 +562,11 @@ CONTAINS
       IF (npair == 0) RETURN
 
       CALL SYSTEM_CLOCK(c0, rate)
-      CALL direct_factor(mesh, multi)
+      IF (PRESENT(factored)) THEN
+         IF (.NOT. factored) CALL direct_factor(mesh, multi)
+      ELSE
+         CALL direct_factor(mesh, multi)
+      END IF
       CALL SYSTEM_CLOCK(c1)
       sec(3) = sec(3) + REAL(c1 - c0, 8)/REAL(rate, 8)
       ncol_max = MAX(1, INT(DIRECT_BLOCK_BYTES/(16D0*25D0*REAL(n, 8))))
