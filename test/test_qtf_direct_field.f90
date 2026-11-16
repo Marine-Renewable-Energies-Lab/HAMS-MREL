@@ -510,7 +510,8 @@ contains
   ! ------------------------------------------------------------------------------------------------ the hook
 
   !> The fixture of the hook tests: the truncated cylinder at depth 10 (test_qtf_direct), the radiation solve at
-  !> Omega = w1 - w2 (or omega, for the sum), the two states with the motions of test_qtf_potential and the pairs (1, 2) with Omega > 0 and (2, 1)
+  !> Omega = w1 - w2 (or omega, for the sum), the two states with the motions of test_qtf_potential and the pairs (1, 2) with
+  !> Omega > 0 and (2, 1)
   !> with Omega < 0; xp holds 4 points off the hull.
   subroutine hook_fixture(mesh, geom, store, store_wl, pairs, xp, error, omega)
     type(panel_mesh), intent(out) :: mesh

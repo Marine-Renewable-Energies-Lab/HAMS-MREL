@@ -395,7 +395,7 @@ CONTAINS
          WRITE (*, '(a)') ' QTF field: qfield_keep_direct called with the difference kernel for a run without it.'
          ERROR STOP 1
       END IF
-      IF (i < 1 .OR. j < 1 .OR. i > SIZE(dir_have, 1) .OR. j > SIZE(dir_have, 2) .OR. b1 < 1 .OR. b2 < 1 .OR. &
+      IF (i < 1 .OR. j < 1 .OR. i > SIZE(phi_store, 2) .OR. j > SIZE(phi_store, 2) .OR. b1 < 1 .OR. b2 < 1 .OR. &
           b1 > nbeta .OR. b2 > nbeta .OR. SIZE(phi_d) /= npt) THEN
          WRITE (*, '(a)') ' QTF field: qfield_keep_direct called with a pair or a size that is not in the store.'
          ERROR STOP 1
@@ -548,8 +548,9 @@ CONTAINS
          WRITE (unit, '(a)') '# Re_dir Im_dir: the direct part, i rho Omega phi_D (pressure) and (i Omega/g) phi_D (elevation),'// &
             ' Omega = omega_1 - omega_2 (K = 1) or omega_1 + omega_2 (K = 2), per unit amplitude pair, conjugated and scaled'// &
             ' as Re Im. Add it to Re Im.'
-         WRITE (unit, '(a)') '# phi_D of the direct solve with body forcing, for both kernels; free-surface forcing not included'// &
-            ' (it is in .12d and .12s with qtf_terms = full); radiated wave of the second-order motion not included (Phase 6c)'
+         WRITE (unit, '(a)') '# phi_D of the direct solve with body forcing, for both kernels; free-surface forcing not'// &
+            ' included (it is in .12d and .12s with qtf_terms = full); radiated wave of the second-order motion not included'// &
+            ' (Phase 6c)'
          WRITE (unit, '(a)') '# has_direct: 1 where the direct solve covers the row (K = 1: omega_1 /= omega_2; K = 2: the'// &
             ' sum pairs of QTF_Direct.12s), else 0 with Re_dir = Im_dir = 0 (mean rows and rows outside the direct solve).'
          WRITE (unit, '(a)') '# Columns: PER1 PER2 BETA1 BETA2 K IPT TYPE Mod Pha Re Im Re_quad Im_quad Re_inc Im_inc'// &

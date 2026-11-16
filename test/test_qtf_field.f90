@@ -52,6 +52,8 @@ subroutine collect_qtf_field_serial(testsuite)
     new_unittest("field_direct_sum_rows", test_direct_sum_rows), &
     new_unittest("field_direct_sum_symmetric", test_direct_sum_symmetric), &
     new_unittest("field_direct_sum_cutoff", test_direct_sum_cutoff), &
+    new_unittest("field_direct_sum_only", test_direct_sum_only), &
+    new_unittest("field_direct_both_kernels", test_direct_both_kernels), &
     new_unittest("field_direct_off", test_direct_off) &
     ]
 end subroutine collect_qtf_field_serial
@@ -503,12 +505,14 @@ end subroutine test_direct_pressure_elevation
 !> Runs the field store for two frequencies (0.5, 0.7), one heading and two points (pressure at z = -1, elevation at z = 0),
 !> qtf = 3, with the first-order fields set by hand. With direct, phi_D of the pair (1, 2) is phi12(ip) and that of (2, 1) its
 !> conjugate, as direct_at_omega gives them (Omega < 0 conjugated); the pairs (1, 1), (2, 2) are not given (Omega = 0).
-subroutine run_field_store(root, direct, phi12, phisum, sumkept)
+subroutine run_field_store(root, direct, phi12, phisum, sumkept, qtf_kind, both)
   character(len=*), intent(in) :: root
   logical, intent(in) :: direct
   complex(8), intent(in) :: phi12(2)
   complex(8), intent(in), optional :: phisum(2, 3)   ! sum phi_D at the 2 points of the pairs (1, 1), (1, 2), (2, 2)
   logical, intent(in), optional :: sumkept(3)         ! which of the three sum pairs the direct solve gives
+  integer, intent(in), optional :: qtf_kind           ! opts%qtf (default 3)
+  logical, intent(in), optional :: both               ! with phisum: also keep the difference pairs
   type(so_options) :: opts
   type(cs_points) :: pts
   type(first_order_state) :: st(1)
@@ -520,6 +524,7 @@ subroutine run_field_store(root, direct, phi12, phisum, sumkept)
   call remove_dir(root)
   call CreateDirectory(root // "/Wamit_format", ok)
   opts%qtf = 3
+  if (present(qtf_kind)) opts%qtf = qtf_kind
   opts%qtf_field = 1
   opts%qtf_direct = merge(1, 0, direct)
   opts%mean_drift = 1
@@ -541,7 +546,7 @@ subroutine run_field_store(root, direct, phi12, phisum, sumkept)
     call qfield_keep(st, fl, 0.1d0*i)
     deallocate (fl(1)%phi, fl(1)%grad)
   end do
-  if (direct .and. .not. present(phisum)) then
+  if (direct .and. (.not. present(phisum) .or. present(both))) then
     call qfield_keep_direct(1, 1, 2, 1, phi12)
     call qfield_keep_direct(2, 1, 1, 1, conjg(phi12))
   end if
@@ -759,6 +764,61 @@ subroutine test_direct_sum_cutoff(error)
   end do
   call remove_dir(root)
 end subroutine test_direct_sum_cutoff
+
+!> qtf = 2 (sum only, no difference store): qfield_keep_direct with the sum kernel must work and the file has the 8 sum rows
+!> with has_direct = 1 for the kept pairs. Fix round 1: the bounds check once read the unallocated difference store here.
+subroutine test_direct_sum_only(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "qtf_field_dsonly_tmp"
+  complex(8), parameter :: phi12(2) = [(0.4d0, -0.3d0), (-0.1d0, 0.6d0)]
+  complex(8), parameter :: ps(2, 3) = reshape([(0.2d0, 0.5d0), (-0.7d0, 0.1d0), (0.9d0, -0.4d0), (0.3d0, 0.3d0), &
+                                               (-0.5d0, -0.2d0), (0.1d0, 0.8d0)], [2, 3])
+  character(len=600) :: rows(32), prows(32)
+  real(8) :: dv(2)
+  integer :: n, np, r, ih
+
+  call run_field_store(root, .true., phi12, ps, [.true., .true., .true.], qtf_kind=2)
+  call read_rows(root // "/Wamit_format/QTF_Field.txt", rows, n)
+  call read_rows(root // "/Wamit_format/QTF_FieldPartial.txt", prows, np)
+  call check(error, n == 8 .and. np == 8, "qtf = 2 has 8 sum rows")
+  if (allocated(error)) return
+  do r = 1, 8
+    read (rows(r)(len_trim(prows(r)) + 1:), '(2ES14.6,I6)') dv, ih
+    call check(error, ih == 1 .and. abs(dv(1)) + abs(dv(2)) > 0d0, "sum-only row without direct part")
+    if (allocated(error)) return
+  end do
+  call remove_dir(root)
+end subroutine test_direct_sum_only
+
+!> qtf = 3 with both kernels kept in one run: difference rows (i /= j) and all sum rows have has_direct = 1, mean rows of the
+!> difference 0, and the two stores do not mix (the difference value is not the sum value).
+subroutine test_direct_both_kernels(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "qtf_field_dboth_tmp"
+  complex(8), parameter :: phi12(2) = [(0.4d0, -0.3d0), (-0.1d0, 0.6d0)]
+  complex(8), parameter :: ps(2, 3) = reshape([(0.2d0, 0.5d0), (-0.7d0, 0.1d0), (0.9d0, -0.4d0), (0.3d0, 0.3d0), &
+                                               (-0.5d0, -0.2d0), (0.1d0, 0.8d0)], [2, 3])
+  character(len=600) :: rows(32), prows(32)
+  real(8) :: dv(2)
+  integer :: n, np, r, ih, k, ii, jj
+  logical :: expect
+
+  call run_field_store(root, .true., phi12, ps, [.true., .true., .true.], both=.true.)
+  call read_rows(root // "/Wamit_format/QTF_Field.txt", rows, n)
+  call read_rows(root // "/Wamit_format/QTF_FieldPartial.txt", prows, np)
+  call check(error, n == 16, "16 rows")
+  if (allocated(error)) return
+  do r = 1, 16
+    read (rows(r)(len_trim(prows(r)) + 1:), '(2ES14.6,I6)') dv, ih
+    k = (r - 1)/8 + 1
+    ii = mod((r - 1)/4, 2) + 1
+    jj = mod((r - 1)/2, 2) + 1
+    expect = k == 2 .or. ii /= jj
+    call check(error, (ih == 1) .eqv. expect, "has_direct with both kernels kept")
+    if (allocated(error)) return
+  end do
+  call remove_dir(root)
+end subroutine test_direct_both_kernels
 
 !> qtf_field = 1 with qtf_direct = 0: the store is the one of 5b. QTF_Field.txt is not written, and QTF_FieldPartial.txt is
 !> the file of the run with direct parts, to the byte (the direct parts are in QTF_Field.txt only), whose header names no
