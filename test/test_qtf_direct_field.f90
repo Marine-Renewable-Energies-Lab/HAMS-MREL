@@ -13,7 +13,7 @@ module test_qtf_direct_field
   use SecondOrderTypes, only : panel_mesh, surface_geom, first_order_state, cs_points, cs_fields, CS_LINE
   use FirstOrderState, only : radiation_psi
   use FieldVelocity, only : fields_green
-  use NearFieldDrift, only : pair_product, pair_cross, rigid_displacement, KERNEL_DIFF
+  use NearFieldDrift, only : pair_product, pair_cross, rigid_displacement, KERNEL_DIFF, KERNEL_SUM
   use QTFDirect, only : b2_stokes_densities, b2_stokes_at_point, direct_rhs_b2_block, direct_solve, rankine_moments, &
                         sharp_edge_panels, direct_setup, direct_edge_mask, direct_at_omega, &
                         direct_field_at_points
@@ -69,6 +69,7 @@ contains
       new_unittest("direct_field_approaches_panel", test_approaches_panel), &
       new_unittest("direct_field_symmetry", test_symmetry), &
       new_unittest("direct_field_hook_matches", test_hook_matches), &
+      new_unittest("direct_field_sum_hook_matches", test_hook_sum_matches), &
       new_unittest("direct_field_negative_omega", test_negative_omega), &
       new_unittest("direct_field_hook_absent", test_hook_absent), &
       new_unittest("direct_field_two_bodies", test_two_bodies), &
@@ -509,9 +510,9 @@ contains
   ! ------------------------------------------------------------------------------------------------ the hook
 
   !> The fixture of the hook tests: the truncated cylinder at depth 10 (test_qtf_direct), the radiation solve at
-  !> Omega = w1 - w2, the two states with the motions of test_qtf_potential and the pairs (1, 2) with Omega > 0 and (2, 1)
+  !> Omega = w1 - w2 (or omega, for the sum), the two states with the motions of test_qtf_potential and the pairs (1, 2) with Omega > 0 and (2, 1)
   !> with Omega < 0; xp holds 4 points off the hull.
-  subroutine hook_fixture(mesh, geom, store, store_wl, pairs, xp, error)
+  subroutine hook_fixture(mesh, geom, store, store_wl, pairs, xp, error, omega)
     type(panel_mesh), intent(out) :: mesh
     type(surface_geom), intent(out) :: geom
     type(first_order_state), allocatable, intent(out) :: store(:, :)
@@ -519,6 +520,7 @@ contains
     integer, allocatable, intent(out) :: pairs(:, :)
     real(8), intent(out) :: xp(3, 4)
     type(error_type), allocatable, intent(out) :: error
+    real(8), intent(in), optional :: omega
     type(panel_mesh) :: full
     complex(8) :: x1(6, 1), x2(6, 1)
     complex(8), allocatable :: wl1(:), wl2(:)
@@ -530,7 +532,7 @@ contains
     call load_panels(full, 0, 0, mesh)
     call geometry(mesh, geom, error)
     if (allocated(error)) return
-    call radiation_at(w1 - w2, .false., mesh%nbase)
+    call radiation_at(merge(omega, w1 - w2, present(omega)), .false., mesh%nbase)
     call direct_setup(mesh, DEFAULT_EDGE_DEG)
     call motions(x1, x2)
     allocate(store(2, 1), store_wl(geom%nwl, 2, 1))
@@ -619,6 +621,79 @@ contains
     call check(error, all(phi_hook == phi_ref) .and. maxval(abs(phi_ref(:, 1))) > 0d0 .and. &
                maxval(abs(phi_ref(:, 2))) > 0d0, line)
   end subroutine test_hook_matches
+
+  !> The hook for sum columns (Phase 7c-2): phi_field of two sum pairs (1, 2) and (2, 1) at Omega+ = w1 + w2 against the same
+  !> columns built here as in test_hook_matches, with the sum kernel (pair_cross and b2_stokes_densities with KERNEL_SUM,
+  !> B3 with dw = Omega+) and no conjugation (Omega+ > 0): the same operations on the same data, so equal to the bit.
+  subroutine test_hook_sum_matches(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: mesh
+    type(surface_geom) :: geom
+    type(first_order_state), allocatable :: store(:, :)
+    complex(8), allocatable :: store_wl(:, :, :), t(:, :), phi_hook(:, :), phi_ref(:, :), vf(:, :, :), rf(:, :, :), &
+                               r2(:, :, :), a(:, :), c(:, :, :), e(:, :), cl(:, :, :, :), phi(:, :)
+    integer, allocatable :: pairs(:, :)
+    logical, allocatable :: mask(:)
+    real(8) :: xp(3, 4), dw, nv(3), x(3)
+    complex(8) :: d1(3), d2(3), v1(3), v2(3), q1(3), q2(3), hx(3), b1v, b3v, field, zero3(3)
+    integer :: p, f, b, n, nb, ns
+    character(len=200) :: line
+
+    call hook_fixture(mesh, geom, store, store_wl, pairs, xp, error, w1 + w2)
+    if (allocated(error)) return
+    n = mesh%n
+    nb = mesh%nbase
+    ns = mesh%nsys
+    allocate(t(6, 2), phi_hook(4, 2), phi_ref(4, 2))
+    call direct_at_omega(mesh, geom, w1 + w2, store, store_wl, pairs, t, phi2_constant=(0d0, 0d0), &
+                         field_points=xp, phi_field=phi_hook, kernels=[KERNEL_SUM, KERNEL_SUM])
+
+    allocate(vf(nb, 2, ns), rf(nb, 2, ns), r2(nb, 2, ns), a(n, 2), c(3, n, 2), e(geom%nwl, 2), cl(3, 4, n, 2), phi(n, 2))
+    mask = direct_edge_mask()
+    zero3 = (0d0, 0d0)
+    do p = 1, 2
+      associate (s1 => store(pairs(1, p), pairs(2, p)), s2 => store(pairs(3, p), pairs(4, p)))
+        dw = s1%omega + s2%omega
+        do f = 1, n
+          b = mesh%body(f)
+          nv = mesh%nrm(:, f)
+          x = mesh%xc(:, f) - mesh%xr(:, b)
+          d1 = rigid_displacement(s1%xi(:, b), x)
+          d2 = rigid_displacement(s2%xi(:, b), x)
+          v1 = -cmplx(0d0, 1d0, kind=8)*s1%omega*d1 - (s1%grad_i(:, f) + s1%grad_p(:, f))
+          v2 = -cmplx(0d0, 1d0, kind=8)*s2%omega*d2 - (s2%grad_i(:, f) + s2%grad_p(:, f))
+          b1v = sum(nv*pair_cross(KERNEL_SUM, v1, s1%xi(4:6, b), v2, s2%xi(4:6, b)))
+          q1 = rigid_displacement([zero3, s1%xi(4:6, b)], x)
+          q2 = rigid_displacement([zero3, s2%xi(4:6, b)], x)
+          hx = 0.5d0*pair_cross(KERNEL_SUM, s1%xi(4:6, b), q1, s2%xi(4:6, b), q2)
+          b3v = -cmplx(0d0, 1d0, kind=8)*dw*sum(nv*hx)
+          field = b1v + b3v - (0d0, 0d0)
+          if (dw < 0d0) field = conjg(field)
+          vf(mesh%base(f), p, mesh%image(f)) = field
+        end do
+        call b2_stokes_densities(mesh, geom, s1, s2, store_wl(:, pairs(1, p), pairs(2, p)), &
+                                 store_wl(:, pairs(3, p), pairs(4, p)), a(:, p), c(:, :, p), e(:, p), cl(:, :, :, p), mask, &
+                                 KERNEL_SUM)
+        if (dw < 0d0) then
+          a(:, p) = conjg(a(:, p))
+          c(:, :, p) = conjg(c(:, :, p))
+          e(:, p) = conjg(e(:, p))
+          cl(:, :, :, p) = conjg(cl(:, :, :, p))
+        end if
+      end associate
+    end do
+    call ASSB_RHS_FIELD_IRR(vf, rf, nb, 0, ns, 2)
+    call direct_rhs_b2_block(mesh, geom, a, c, e, r2, .false., cl)
+    rf = rf + r2
+    call direct_solve(mesh, rf, phi, .false.)
+    call direct_field_at_points(mesh, geom, xp, phi, vf, a, c, e, cl, .false., phi_ref)
+    write(line, '(a,es10.2,a,es10.2,a,es10.2)') "sum hook against the separate call, largest difference ", &
+      maxval(abs(phi_hook - phi_ref)), "; largest |phi_field| ", maxval(abs(phi_ref(:, 1))), " and ", &
+      maxval(abs(phi_ref(:, 2)))
+    print '(4x,a)', trim(line)
+    call check(error, all(phi_hook == phi_ref) .and. maxval(abs(phi_ref(:, 1))) > 0d0 .and. &
+               maxval(abs(phi_ref(:, 2))) > 0d0, line)
+  end subroutine test_hook_sum_matches
 
   !> The pair (2, 1) is the pair (1, 2) with the waves exchanged, so its phi_D is the complex conjugate (T_dir of the
   !> negative frequency is the conjugate of that of the positive one). phi_field of the hook, with the real phi_I2, for the

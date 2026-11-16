@@ -1301,6 +1301,7 @@ CONTAINS
             DO p = 1, nd
                CALL qfield_keep_direct(pd(1, p), pd(2, p), pd(3, p), pd(4, p), phi_field(:, p))
             END DO
+            DEALLOCATE (phi_field, xfield)
          ELSE
             CALL direct_at_omega(mesh, geom, omega, store, store_wl, pd, t, omega_tol=psi_tol, seconds=sec, parts=parts, &
                                  fs=fs)
@@ -1325,9 +1326,22 @@ CONTAINS
          ELSE
             ALLOCATE (parts(6*mesh%nbody, ns, 2))
          END IF
-         ! No field points: the sum rows of QTF_Field.txt are Task 5 of Phase 7c-2
-         CALL direct_at_omega(mesh, geom, omega, store, store_wl, ps, t, omega_tol=psi_tol, seconds=sec2, parts=parts, &
-                              fs=fs, kernels=kernels, factored=nd > 0)
+         IF (qfield_direct_active()) THEN
+            ! qtf_field = 1 with qtf_direct = 1: phi_D of every sum pair at the field points for the sum rows of
+            ! QTF_Field.txt (QTFField), body-forced as for the difference columns (R4). Not conjugated: Omega+ > 0.
+            CALL qfield_direct_points(xfield)
+            ALLOCATE (phi_field(SIZE(xfield, 2), ns))
+            CALL direct_at_omega(mesh, geom, omega, store, store_wl, ps, t, omega_tol=psi_tol, seconds=sec2, parts=parts, &
+                                 fs=fs, kernels=kernels, factored=nd > 0, field_points=xfield, phi_field=phi_field)
+            DO p = 1, ns
+               ! One call fills both slots of the symmetric pair (R6)
+               CALL qfield_keep_direct(ps(1, p), ps(2, p), ps(3, p), ps(4, p), phi_field(:, p), KERNEL_SUM)
+            END DO
+            DEALLOCATE (phi_field, xfield)
+         ELSE
+            CALL direct_at_omega(mesh, geom, omega, store, store_wl, ps, t, omega_tol=psi_tol, seconds=sec2, parts=parts, &
+                                 fs=fs, kernels=kernels, factored=nd > 0)
+         END IF
          sec = sec + sec2
          DO p = 1, ns
             ! Both slots of the symmetric pair (R6): (i, b1, j, b2) and its mirror (j, b2, i, b1), the same values
