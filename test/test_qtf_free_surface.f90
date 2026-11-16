@@ -1708,7 +1708,8 @@ end subroutine rfar_set
 !> since K+ + K- >= 2 k1 (k(w) is convex). The sets have no evanescent mode there, so r_far is the class rule alone.
 !> With one evanescent mode r_far may be larger for the sum: the evanescent rule R + 27.6 / kev(1) takes the slowest
 !> mode of all sets, and kev(1) falls as Omega rises (kev(1) h from pi as Omega -> 0 to pi / 2 as Omega -> infinity,
-!> the roots of -Omega^2 / g = k tan(k h)), so psi at Omega+ can decay slower than psi at Omega-: printed, not gated.
+!> the roots of -Omega^2 / g = k tan(k h)), so psi at Omega+ can decay slower than psi at Omega-. That ratio of
+!> r_far - R, sum over difference, is gated at 1.39: 1.3x the measured largest, 1.065 (ruling R-c of fix round 1).
 subroutine test_sum_classes_positive(error)
   type(error_type), allocatable, intent(out) :: error
   real(8), parameter :: hs(2) = [15d0, 100d0]
@@ -1755,8 +1756,12 @@ subroutine test_sum_classes_positive(error)
   write (info, '(a,i0,a,es10.3,a,i0,a,f7.4)') "sum classes not positive: ", nbad_cls, " (least class ", cmin, &
     " 1/m); sum r_far beyond the difference: ", nbad_rfar, " (largest (r_far - R) ratio sum / difference ", worst_ratio
   print '(4x,a,a)', trim(info), ")"
-  print '(4x,a,f7.4)', "with one evanescent mode, largest (r_far - R) ratio sum / difference (not gated) ", worst_ev
+  print '(4x,a,f7.4)', "with one evanescent mode, largest (r_far - R) ratio sum / difference ", worst_ev
   call check(error, nbad_cls == 0 .and. nbad_rfar == 0, trim(info))
+  if (allocated(error)) return
+  write (info, '(a,f7.4,a)') "with one evanescent mode the sum r_far - R exceeds 1.39 times the difference one: ", &
+    worst_ev, " (measured 1.065)"
+  call check(error, worst_ev <= 1.39d0, trim(info))
 end subroutine test_sum_classes_positive
 
 !> fs_pair_terms of the sum is symmetric: the pair given as (2, 1) is evaluated as (1, 2), with no conjugate

@@ -18,6 +18,7 @@ module test_qtf_direct_fs
   use direct_sum_green_mod, only : direct_sum_green
   use PartialWaves, only : pw_set, pw_bessel_k, pw_green_mmax, pw_eval_surface
   use QTFFreeSurface, only : fs_point_field, fs_forcing_diff, fs_outer_moments
+  use QTFDirectFS, only : fs_remainder_order
   use QTFDirectFS, only : direct_fs_data, direct_fs_setup, direct_fs_rhs, direct_fs_rfar, DIRECT_FS_SIGN, DIRECT_FS_TOL, &
     direct_fs_estimate, direct_fs_array_mb
   use second_order_fixtures, only : make_cylinder, set_panel, maccamy_fuchs_state, read_pnl_hull
@@ -1258,16 +1259,63 @@ complex(8) function green_quadrature_ref(fm, p, x, n, deep) result(s)
   end do
 end function green_quadrature_ref
 
+!> int over inner panel p of fm of the rest G - 1/r - 1/r1 by n x n Gauss-Legendre (as green_quadrature): of the
+!> eigenfunction series summed directly (series = .true., direct_sum_green), or of FINGREEN3D (flag 1, which leaves out
+!> 1/r) less 1/r1, as panel_green of QTFDirectFS takes it
+complex(8) function rest_quad(fm, p, x, n, series) result(s)
+  type(panel_mesh), intent(in) :: fm
+  integer, intent(in) :: p, n
+  real(8), intent(in) :: x(3)
+  logical, intent(in) :: series
+  real(8) :: gx(n), gw(n), xv(3, 4), xq(3), du(3), ds(3), c(3), u, t, rh
+  complex(8) :: grn(4), gd(3), val
+  integer :: k, iu, iv
+
+  call gauss(n, gx, gw)
+  do k = 1, 4
+    xv(:, k) = fm%xnode(:, fm%ncon(min(k, fm%ncn(p)), p))
+  end do
+  s = (0d0, 0d0)
+  do iu = 1, n
+    u = gx(iu)
+    do iv = 1, n
+      t = gx(iv)
+      xq = 0.25d0 * ((1 - u) * (1 - t) * xv(:, 1) + (1 + u) * (1 - t) * xv(:, 2) + (1 + u) * (1 + t) * xv(:, 3) &
+                     + (1 - u) * (1 + t) * xv(:, 4))
+      du = 0.25d0 * ((1 - t) * (xv(:, 2) - xv(:, 1)) + (1 + t) * (xv(:, 3) - xv(:, 4)))
+      ds = 0.25d0 * ((1 - u) * (xv(:, 4) - xv(:, 1)) + (1 + u) * (xv(:, 3) - xv(:, 2)))
+      c = [du(2) * ds(3) - du(3) * ds(2), du(3) * ds(1) - du(1) * ds(3), du(1) * ds(2) - du(2) * ds(1)]
+      rh = hypot(xq(1) - x(1), xq(2) - x(2))
+      if (series) then
+        call direct_sum_green(rh, xq(3), x(3), V, WVN(1), H, gd)
+        val = gd(1)
+      else
+        call FINGREEN3D(xq(1), x(1), xq(2), x(2), xq(3), x(3), V, WVN, NK, H, grn, 1)
+        val = grn(1) - 1d0 / sqrt(rh**2 + (xq(3) + x(3))**2)
+      end if
+      s = s + val * gw(iu) * gw(iv) * norm2(c)
+    end do
+  end do
+end function rest_quad
+
 !> The inner Green matrix at large K h (Review Focus 3 of the 7c-2 plan: the sum frequencies reach K h far beyond those
 !> of the difference): direct_fs_setup at Omega = 2.2 rad/s in h = 100 m (K h = 2.2^2 / 9.81 x 100 = 49, just below
 !> the nu h = 50 limit of the series choice of FINGREEN3D) on the 448-panel cylinder and its inner mesh, gfs(i, j) at 5
 !> (row, panel) pairs away from the waterline (as fs_green_matrix_matches) against (1 / w_j) int_j G dS by 20 x 20
 !> Gauss-Legendre of the eigenfunction series summed directly (direct_sum_green). Measured 1.1e-7 to 7.8e-7 at three
-!> pairs, but 2.3e-5 and 1.40e-4 at the two pairs of the smallest R/h (0.05 and 0.04): that is FINGREEN3D itself, not
-!> the panel rule. At those centroids FINGREEN3D is off the series by 2.5e-5 and 1.3e-5, against 1.6e-7 to 6.8e-7 at
-!> the other three (printed per pair), and at the R/h = 0.04 centroid its error grows with nu h: 3.4e-7, 8.5e-6 and
-!> 3.4e-5 at nu h = 1.6, 26 and 59 (measured in the Task 3 report). The gate is 1.3x the
-!> worst, rounded up, 2e-4 (not the 1e-6 of fs_green_matrix_matches, ruling T3-a of the 7c-2 ledger, as reported).
+!> pairs, but 2.3e-5 and 1.40e-4 at the two pairs of the smallest R/h (0.05 and 0.04). That is FINGREEN3D, not the
+!> panel rule (fix round 1 of Task 3, the reviewer's question whether the Gauss order of fs_remainder_order, from d / a
+!> alone, misses the oscillation of the rest on the scale 1 / K = 2 m, K a = 1.24 here):
+!>   - the rule's own order (3 to 6 here) on the rest of the series is within 1.2e-7 of 40 x 40 points at all five
+!>     pairs (1.3e-12 at the worst pair), so the order resolves the rest at this K a; gated at 1.6e-7 (1.3x, rounded up);
+!>   - FINGREEN3D is what does not converge: on the worst pair its rest at the rule's order differs from 40 x 40 points by
+!>     7.8e-5 and 20 x 20 from 40 x 40 by 4.0e-6 (it is not smooth on the panel), and at 40 x 40 it is 2.2e-4 off the
+!>     series (1.9e-7 to 7.8e-7 at the three good pairs, 2.3e-5 at the other); the plain 20 x 20 Gauss of FINGREEN3D
+!>     (flag 0) that the review proposed as the reference differs from gfs by 7.4e-5 there for the same reason;
+!>   - at the centroids FINGREEN3D is off the series by 2.5e-5 and 1.3e-5 (1.6e-7 to 6.8e-7 at the other three), and at
+!>     the R/h = 0.04 centroid its error grows with nu h: 3.4e-7, 8.5e-6 and 3.4e-5 at nu h = 1.6, 26 and 59.
+!> All of these are printed per pair. The gate on gfs is 1.3x the worst, rounded up, 2e-4 (not the 1e-6 of
+!> fs_green_matrix_matches; rulings T3-a and T3-c of the 7c-2 ledger).
 !> INFGREEN3D, the deep-water Green function, is printed beside it but not held to 1e-6: it is
 !> the global approximation of Wu et al. (2017, Eur. J. Mech. B 65, 54-64), about 7e-4 off the exact function (measured
 !> 6e-4 to 9e-4 against FINGREEN3D at K h = 11 to 47, where the depth changes G by O(e^{-2 K h}) only [derived: the
@@ -1279,9 +1327,9 @@ subroutine test_green_matrix_large_kh(error)
   type(panel_mesh) :: mesh, fm
   type(cs_points) :: pts
   type(direct_fs_data) :: fs
-  real(8) :: centre(2), radius, err, worst, err_deep, worst_deep, rh
+  real(8) :: centre(2), radius, err, worst, err_deep, worst_deep, rh, pr, dd, gw_ij, e_rule, e_fin, e_fin_ser, worst_rule
   complex(8) :: ref, ref_deep, gp(4), gd(3), gc
-  integer :: rows(5), cols(5), k, i, j
+  integer :: rows(5), cols(5), k, i, j, kk, nr
   character(len=250) :: info
 
   call fixture(32, 8, 6, 0, 0d0, mesh, pts, fm, centre, radius, error)
@@ -1303,6 +1351,7 @@ subroutine test_green_matrix_large_kh(error)
   cols = [1, pts%n / 4, pts%n / 2, (3 * pts%n) / 4, pts%n]
   worst = 0d0
   worst_deep = 0d0
+  worst_rule = 0d0
   do k = 1, 5
     i = rows(k)
     j = cols(k)
@@ -1314,6 +1363,21 @@ subroutine test_green_matrix_large_kh(error)
       ", against the direct series ", err, ", against INFGREEN3D ", err_deep
     worst = max(worst, err)
     worst_deep = max(worst_deep, err_deep)
+    ! The panel rule: its Gauss order (fs_remainder_order of d and the panel radius) on the rest G - 1/r - 1/r1 of the
+    ! series, against 40 x 40 points; and the same with the rest of FINGREEN3D, as panel_green takes it
+    pr = 0d0
+    do kk = 1, fm%ncn(j)
+      pr = max(pr, norm2(fm%xnode(:, fm%ncon(kk, j)) - pts%x(:, j)))
+    end do
+    dd = norm2(mesh%xc(:, i) - pts%x(:, j))
+    nr = fs_remainder_order(dd, pr)
+    gw_ij = abs(fs%gfs(i, j) * pts%w(j))
+    e_rule = abs(rest_quad(fm, j, mesh%xc(:, i), nr, .true.) - rest_quad(fm, j, mesh%xc(:, i), 40, .true.)) / gw_ij
+    e_fin = abs(rest_quad(fm, j, mesh%xc(:, i), nr, .false.) - rest_quad(fm, j, mesh%xc(:, i), 40, .false.)) / gw_ij
+    e_fin_ser = abs(rest_quad(fm, j, mesh%xc(:, i), 40, .false.) - rest_quad(fm, j, mesh%xc(:, i), 40, .true.)) / gw_ij
+    print '(6x,a,f6.2,a,f5.2,a,i0,a,es10.2,a,es10.2,a,es10.2)', "d / a ", dd / pr, ", K a ", WVN(1) * pr, ", order ", nr, &
+      ": rule on the series ", e_rule, ", rule on FINGREEN3D ", e_fin, "; FINGREEN3D against the series (40 x 40) ", e_fin_ser
+    worst_rule = max(worst_rule, e_rule)
     ! FINGREEN3D itself at the centroids against the series: the error of the Green function, not of the panel rule
     call FINGREEN3D(fm%xc(1, j), mesh%xc(1, i), fm%xc(2, j), mesh%xc(2, i), fm%xc(3, j), mesh%xc(3, i), V, WVN, NK, H, &
                     gp, 0)
@@ -1323,10 +1387,10 @@ subroutine test_green_matrix_large_kh(error)
     print '(6x,a,f7.4,a,es10.2)', "R/h ", rh / depth, ": FINGREEN3D at the centroid against the series ", &
       abs(gp(1) - gc) / abs(gc)
   end do
-  write (info, '(a,es10.3,a,es10.3)') "gfs at K h = 49 against 20 x 20 Gauss of the direct eigenfunction series, worst "// &
-    "relative ", worst, "; against INFGREEN3D ", worst_deep
+  write (info, '(a,es10.3,a,es10.3,a,es10.3)') "gfs at K h = 49 against 20 x 20 Gauss of the direct eigenfunction "// &
+    "series, worst relative ", worst, "; against INFGREEN3D ", worst_deep, "; the panel rule on the series ", worst_rule
   print '(4x,a)', trim(info)
-  call check(error, worst <= 2d-4 .and. worst_deep <= 1d-2, trim(info))
+  call check(error, worst <= 2d-4 .and. worst_deep <= 1d-2 .and. worst_rule <= 1.6d-7, trim(info))
 end subroutine test_green_matrix_large_kh
 
 !> A block that mixes sum and difference columns with the free-surface forcing (the stop of Task 2 removed, Phase 7c-2
