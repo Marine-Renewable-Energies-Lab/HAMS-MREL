@@ -25,12 +25,15 @@ MODULE SingularIntgrMulti
    USE Const_mod
    USE PanelMesh_mod
    USE Inerfs_mod
+   USE INFG3D_Open
+   USE FinGreen3D_Open
 
    IMPLICIT NONE
 
       ! ..... Public Subroutines ...................................................................................................
 
    PUBLIC :: IMAGE_TERM_EXACT_MULTI
+   PUBLIC :: WAVE_PART_PANEL_MULTI
    PUBLIC :: SGLINTBD_MULTI_TRI
    PUBLIC :: SGLINTBD_MULTI_QUAD
    PUBLIC :: SGLINTBD_MULTI_TRI2
@@ -82,6 +85,75 @@ CONTAINS
 
       RETURN
       END SUBROUTINE IMAGE_TERM_EXACT_MULTI
+
+!-------------------------------------------------------------------------------
+!     The wave part of the Green function and of its source gradient, integrated over the source panel JEL.
+!     FINGREEN3D and INFGREEN3D give the wave part at the panel centroid, to be multiplied by the area. For a lid
+!     collocation point on z = 0 that lies much closer to a waterline panel than the panel is large, that one value
+!     is poor: the wave part varies strongly over the panel (it has a logarithmic singularity as R and z + zeta go
+!     to zero). This routine integrates it, by composite Gauss quadrature on the bilinear map of the panel (a
+!     triangle as a quadrilateral with a repeated node), with the same calls and the same image term as the
+!     centroid value, so GINT/area replaces GRN after IMAGE_TERM_EXACT. At the zero- and infinite-frequency limits
+!     there is no wave part and GINT is zero.
+!       XF   field point, already reflected for the symmetry image
+!       JEL  source panel, in the hull arrays of this path
+!-------------------------------------------------------------------------------
+      SUBROUTINE WAVE_PART_PANEL_MULTI(XF,JEL,V,WVN,NK,H,GINT)
+      IMPLICIT NONE
+
+      INTEGER,INTENT(IN):: JEL,NK
+      REAL*8,INTENT(IN):: XF(3),V,WVN(NK),H
+      COMPLEX*16,INTENT(OUT):: GINT(4)
+      INTEGER,PARAMETER:: NC=6                                  ! cells per direction of the panel's parameter square
+      REAL*8,PARAMETER:: GX(2)=(/0.3399810435848563D0,0.8611363115940526D0/)    ! 4-point Gauss-Legendre on (-1,1), half
+      REAL*8,PARAMETER:: GW(2)=(/0.6521451548625461D0,0.3478548451374538D0/)
+      INTEGER:: I,J,IA,IB,K
+      REAL*8:: A(4,3),XA,XB,WA,WB,Q(3),DU(3),DV(3),CN(3),PQ(3),R1
+      COMPLEX*16:: G(4)
+
+      GINT=CMPLX(0.D0,0.D0)
+      IF (ABS(V).LT.1.E-8.OR.ABS(V+1.D0).LT.1.E-8) RETURN
+
+      DO K=1,NCN_MULTI_COMB(JEL)
+       A(K,:)=XYZ_GLOBAL_MULTI_COMB(NCON_MULTI_COMB(JEL,K),:)
+      ENDDO
+      IF (NCN_MULTI_COMB(JEL).EQ.3) A(4,:)=A(3,:)
+
+      DO I=1,NC
+      DO J=1,NC
+       DO IA=-2,2
+        IF (IA.EQ.0) CYCLE
+        XA=(DBLE(I-1)+0.5D0*(1.D0+SIGN(GX(ABS(IA)),DBLE(IA))))/DBLE(NC)
+        WA=0.5D0*GW(ABS(IA))/DBLE(NC)
+        DO IB=-2,2
+         IF (IB.EQ.0) CYCLE
+         XB=(DBLE(J-1)+0.5D0*(1.D0+SIGN(GX(ABS(IB)),DBLE(IB))))/DBLE(NC)
+         WB=0.5D0*GW(ABS(IB))/DBLE(NC)
+         Q(:)=(1.D0-XA)*(1.D0-XB)*A(1,:)+XA*(1.D0-XB)*A(2,:)+XA*XB*A(3,:)+(1.D0-XA)*XB*A(4,:)
+         DU(:)=(1.D0-XB)*(A(2,:)-A(1,:))+XB*(A(3,:)-A(4,:))
+         DV(:)=(1.D0-XA)*(A(4,:)-A(1,:))+XA*(A(3,:)-A(2,:))
+         CN(1)=DU(2)*DV(3)-DU(3)*DV(2)
+         CN(2)=DU(3)*DV(1)-DU(1)*DV(3)
+         CN(3)=DU(1)*DV(2)-DU(2)*DV(1)
+         IF (H.LT.0.D0) THEN
+          CALL INFGREEN3D(Q(1),XF(1),Q(2),XF(2),Q(3),XF(3),V,G,1)
+         ELSE
+          CALL FINGREEN3D(Q(1),XF(1),Q(2),XF(2),Q(3),XF(3),V,WVN,NK,H,G,1)
+         ENDIF
+         PQ(1)=Q(1)-XF(1)
+         PQ(2)=Q(2)-XF(2)
+         PQ(3)=Q(3)+XF(3)
+         R1=SQRT(PQ(1)**2+PQ(2)**2+PQ(3)**2)
+         G(1)=G(1)-1.D0/R1                                   ! the image term, integrated by IMAGE_TERM_EXACT
+         G(2:4)=G(2:4)+PQ(:)/R1**3
+         GINT(:)=GINT(:)+WA*WB*SQRT(CN(1)**2+CN(2)**2+CN(3)**2)*G(:)
+        ENDDO
+       ENDDO
+      ENDDO
+      ENDDO
+
+      RETURN
+      END SUBROUTINE WAVE_PART_PANEL_MULTI
 
 !-------------------------------------------------------------------------------
 !          Evaluation of 1/r singular integrals in Constant Panel Method  

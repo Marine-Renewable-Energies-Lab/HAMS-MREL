@@ -16,6 +16,8 @@ module test_integration_image
     real(8), parameter :: gmres_limit = 1d-3          ! as test_integration_gmres
     real(8), parameter :: two_body_limit = 1d-3       ! the far body still radiates into this one: B33 differs by 5e-4
     real(8), parameter :: lid_limit = 5d-3
+    real(8), parameter :: lid_zero_limit = 1d-3     ! zero frequency: lid and hull rows are separate discretisations of one identity
+    real(8), parameter :: lid_inf_limit = 1d-8      ! infinite frequency: the lid rows are exactly zero
     real(8), parameter :: top_row_limit = 0.2d0
     real(8), parameter :: haskind_limit = 1d-2
 
@@ -36,7 +38,9 @@ contains
             new_unittest("run_image_cos_two", run_image_cos_two), &
             new_unittest("run_image_uni", run_image_uni), &
             new_unittest("run_image_cos_fine", run_image_cos_fine), &
-            new_unittest("run_image_uni_fine", run_image_uni_fine) &
+            new_unittest("run_image_uni_fine", run_image_uni_fine), &
+            new_unittest("run_image_cos_limits", run_image_cos_limits), &
+            new_unittest("run_image_cos_lid_limits", run_image_cos_lid_limits) &
             ]
     end subroutine setup_image
 
@@ -50,6 +54,7 @@ contains
             new_unittest("gmres_matches_direct", gmres_matches_direct), &
             new_unittest("multi_matches_single", multi_matches_single), &
             new_unittest("lid_matches_no_lid", lid_matches_no_lid), &
+            new_unittest("lid_limits_match_no_lid", lid_limits_match_no_lid), &
             new_unittest("cosine_and_uniform_approach", cosine_and_uniform_approach), &
             new_unittest("haskind_heave", haskind_heave), &
             new_unittest("stops_on_hull_panel_at_z0", stops_on_hull_panel_at_z0), &
@@ -152,6 +157,16 @@ contains
         call run_case("image_cos_fine", error)
     end subroutine run_image_cos_fine
 
+    subroutine run_image_cos_limits(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("image_cos_limits", error)
+    end subroutine run_image_cos_limits
+
+    subroutine run_image_cos_lid_limits(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_case("image_cos_lid_limits", error)
+    end subroutine run_image_cos_lid_limits
+
     subroutine run_image_uni_fine(error)
         type(error_type), allocatable, intent(out) :: error
         call run_case("image_uni_fine", error)
@@ -196,6 +211,43 @@ contains
         end do
         close (unit)
     end subroutine read_coefficients
+
+    !> Diagonal added mass of the first body at the zero- (frequency 0) and infinite-frequency (frequency -1) limits.
+    subroutine read_limits(name, a0, ainf, error)
+        character(len=*), intent(in) :: name
+        real(8), intent(out) :: a0(6), ainf(6)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: freq, v1
+        integer :: unit, i, j, stat
+
+        a0 = 0d0
+        ainf = 0d0
+        open (newunit=unit, file=output_dir(name)//"Wamit_format/AmssDamp.1", status="old", action="read", iostat=stat)
+        if (stat /= 0) then
+            call test_failed(error, "No AmssDamp.1 for "//name)
+            return
+        end if
+        do
+            read (unit, *, iostat=stat) freq, i, j, v1
+            if (stat /= 0) exit
+            if (i /= j .or. i > 6) cycle
+            if (freq == 0d0) a0(i) = v1
+            if (freq == -1d0) ainf(i) = v1
+        end do
+        close (unit)
+        call check(error, all(a0(1:5) /= 0d0) .and. all(ainf(1:5) /= 0d0), name//": limits missing in AmssDamp.1")
+    end subroutine read_limits
+
+    !> Relative difference over the modes that are not zero by symmetry.
+    real(8) function worst_a(a1, a2)
+        real(8), intent(in) :: a1(6), a2(6)
+        integer :: m
+
+        worst_a = 0d0
+        do m = 1, 5
+            worst_a = max(worst_a, abs(a1(m) - a2(m))/abs(a2(m)))
+        end do
+    end function worst_a
 
     !> Panel centroids, areas and unit normals out of the body, from a mesh file.
     subroutine read_panels(name, file, xc, area, normal, error)
@@ -453,6 +505,22 @@ contains
         if (allocated(error)) return
         call check_below(error, "lid_matches_no_lid", worst_ab(lid, bare), lid_limit)
     end subroutine lid_matches_no_lid
+
+    !> At the zero- and infinite-frequency limits there is no irregular frequency, so the lid must give the no-lid added mass.
+    !> At infinite frequency the lid rows vanish exactly (G = 1/r - 1/r1 is zero on z = 0); at zero frequency they hold the same
+    !> identity as the hull rows on a different set of points.
+    subroutine lid_limits_match_no_lid(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8) :: b0(6), binf(6), l0(6), linf(6)
+
+        call read_limits("image_cos_limits", b0, binf, error)
+        if (allocated(error)) return
+        call read_limits("image_cos_lid_limits", l0, linf, error)
+        if (allocated(error)) return
+        call check_below(error, "lid_limits_match_no_lid (zero)", worst_a(l0, b0), lid_zero_limit)
+        if (allocated(error)) return
+        call check_below(error, "lid_limits_match_no_lid (infinite)", worst_a(linf, binf), lid_inf_limit)
+    end subroutine lid_limits_match_no_lid
 
     !> Cosine and uniform rows get closer as the mesh is refined, in every coefficient.
     subroutine cosine_and_uniform_approach(error)
