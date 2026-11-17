@@ -42,6 +42,8 @@ MODULE AssbMatx_irr
    PUBLIC :: ASSB_DBC_IRR
    PUBLIC :: RADIATION_SOLVER_IRR
    PUBLIC :: DIFFRACTION_SOLVER_IRR
+   PUBLIC :: NORMAL_MATRIX
+   PUBLIC :: NORMAL_RHS
    
 CONTAINS
 ! ------------------------------------------------------------------- 
@@ -148,25 +150,9 @@ CONTAINS
 !--------------------------------------------------------------
 !    Matrix set-up for the least-square problem
 
-      CMAT=CMPLX(0.0D0,0.0D0)
-
-      DO  6000  IP=1, NSYS
-!$OMP PARALLEL NUM_THREADS(NTHREAD)
-!$OMP DO PRIVATE(IEL,JEL,KEL,SUM)
-! SUM is per-iteration accumulator (PRIVATE); CMAT row-disjoint on IEL — no REDUCTION.
-      DO  5000  IEL=1,  NELEM
-      DO  5000  JEL=1,  NELEM
-        
-       SUM=CMPLX(0.0D0,0.0D0)
-       DO  KEL=1,  TNELEM
-          SUM=SUM+AMAT(KEL,IEL,IP)*AMAT(KEL,JEL,IP)
-       ENDDO
-       CMAT(IEL,JEL,IP)=SUM
-        
-5000   CONTINUE
-!$OMP END DO NOWAIT
-!$OMP END PARALLEL
-6000   CONTINUE
+      DO IP=1, NSYS
+       CALL NORMAL_MATRIX(AMAT(:,:,IP),TNELEM,NELEM,CMAT(:,:,IP))
+      ENDDO
 
 ! NSYS is 1 or 2 — let MKL's internal threading do the work in ZGETRF.
 ! Only factorize when direct-LU will be used; ISOLV>1 uses the unfactored normal-equations matrix.
@@ -297,25 +283,9 @@ CONTAINS
 !
       !WRITE(6, *) ' Right-hand side matrix setting-up for the least-square problem...'
 
-      DRMAT=CMPLX(0.0D0,0.0D0)
-
-!$OMP PARALLEL NUM_THREADS(NTHREAD)
-!$OMP DO PRIVATE(IP,IEL,KEL,MD)
-! Disjoint writes on (IP,IEL) — no REDUCTION needed.
-
-      DO  5000  IP=1, NSYS
-      DO  5000  IEL=1,  NELEM
-        
-       DO  MD=1,6
-       DO  KEL=1,  TNELEM
-          DRMAT(IEL,MD,IP)=DRMAT(IEL,MD,IP)+BRMAT(KEL,MD,IP)*AMAT(KEL,IEL,IP)
-       ENDDO
-       ENDDO
-
-5000  CONTINUE
-
-!$OMP END DO NOWAIT
-!$OMP END PARALLEL
+      DO IP=1, NSYS
+       CALL NORMAL_RHS(AMAT(:,:,IP),TNELEM,NELEM,BRMAT(:,:,IP),6,DRMAT(:,:,IP))
+      ENDDO
 
       RETURN
       END SUBROUTINE ASSB_RBC_IRR
@@ -444,23 +414,9 @@ CONTAINS
 !--------------------------------------------------------------
 !    Matrix set-up for the least-square problem
 
-      DDMAT=CMPLX(0.0D0,0.0D0)
-
-!$OMP PARALLEL NUM_THREADS(NTHREAD)
-!$OMP DO PRIVATE(IP,IEL,KEL)
-! Disjoint writes on (IP,IEL) — no REDUCTION needed.
-
-      DO  5000  IP=1, NSYS
-      DO  5000  IEL=1,  NELEM
- 
-       DO  KEL=1,  TNELEM
-          DDMAT(IEL,IP)=DDMAT(IEL,IP)+BDMAT(KEL,IP)*AMAT(KEL,IEL,IP)
-       ENDDO
-
-5000  CONTINUE
-
-!$OMP END DO NOWAIT
-!$OMP END PARALLEL
+      DO IP=1, NSYS
+       CALL NORMAL_RHS(AMAT(:,:,IP),TNELEM,NELEM,BDMAT(:,IP),1,DDMAT(:,IP))
+      ENDDO
 
       RETURN
       END SUBROUTINE ASSB_DBC_IRR
@@ -579,6 +535,62 @@ CONTAINS
 
       RETURN
       END SUBROUTINE DIFFRACTION_SOLVER_IRR
+
+!-------------------------------------------------------------------------------
+!     Normal equations of the overdetermined hull + lid system: C = A^T A over the N hull columns of A(1:M,1:N).
+!     Used by ASSB_LEFT_IRR and ASSB_LEFT_IRR_MULTI. Rows are summed in order, each (I,J) by one thread.
+!-------------------------------------------------------------------------------
+      SUBROUTINE NORMAL_MATRIX(A,M,N,C)
+      IMPLICIT NONE
+      INTEGER,INTENT(IN):: M,N
+      COMPLEX*16,INTENT(IN):: A(M,*)
+      COMPLEX*16,INTENT(OUT):: C(N,N)
+      INTEGER:: I,J,K
+      COMPLEX*16:: S
+
+!$OMP PARALLEL NUM_THREADS(NTHREAD)
+!$OMP DO PRIVATE(I,J,K,S)
+      DO I=1,N
+       DO J=1,N
+        S=CMPLX(0.0D0,0.0D0)
+        DO K=1,M
+         S=S+A(K,I)*A(K,J)
+        ENDDO
+        C(I,J)=S
+       ENDDO
+      ENDDO
+!$OMP END DO NOWAIT
+!$OMP END PARALLEL
+
+      RETURN
+      END SUBROUTINE NORMAL_MATRIX
+
+!-------------------------------------------------------------------------------
+!     Right sides of the normal equations: D = A^T B for NRHS columns of B(1:M,:), with the same A as NORMAL_MATRIX.
+!     Used by the radiation and diffraction right sides of both paths. D is overwritten.
+!-------------------------------------------------------------------------------
+      SUBROUTINE NORMAL_RHS(A,M,N,B,NRHS,D)
+      IMPLICIT NONE
+      INTEGER,INTENT(IN):: M,N,NRHS
+      COMPLEX*16,INTENT(IN):: A(M,*),B(M,NRHS)
+      COMPLEX*16,INTENT(OUT):: D(N,NRHS)
+      INTEGER:: I,K,MD
+
+!$OMP PARALLEL NUM_THREADS(NTHREAD)
+!$OMP DO PRIVATE(I,K,MD)
+      DO I=1,N
+       DO MD=1,NRHS
+        D(I,MD)=CMPLX(0.0D0,0.0D0)
+        DO K=1,M
+         D(I,MD)=D(I,MD)+B(K,MD)*A(K,I)
+        ENDDO
+       ENDDO
+      ENDDO
+!$OMP END DO NOWAIT
+!$OMP END PARALLEL
+
+      RETURN
+      END SUBROUTINE NORMAL_RHS
 
 !-------------------------------------------------------------------------------
 END MODULE AssbMatx_irr
