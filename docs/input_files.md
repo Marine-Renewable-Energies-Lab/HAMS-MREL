@@ -94,10 +94,12 @@ This section begines on the next line after the previous one.
 | Line | Format | Variable | Description |
 | :--- | :--- | :--- | :--- |
 | next | `26x,f30.15` | `REFL` | Reference body length |
-| next | `26x,i16` | `ISOL` | Wave diffraction solution. Switch: 1 or 2. 1 if incident and scattering potentials are combined; 2 if only scattering.  |
+| next | `26x,i16` | `ISOL` | What the diffraction outputs contain: 1 = total (incident + scattered), 2 = scattered only. Both values solve for the same scattered potential; with 1 the incident potential is added afterwards. This affects the exciting force (`.3`), and through it the motions (`.4`), and the pressure and elevation (`.6p`); added mass and damping (`.1`) do not depend on it. **Not the same as in the original HAMS**, see the note below this table. |
 | next | `23x,i16` | `IRSP` | Irregular frequencies: 1 for to remove them, 0 to keep them |
 | next | `23x,i16` | `NTHREAD` | Number of OpenMP threads; setting it to 1 removes parallelization |
 | (optional) | keyword, then free-format integer | `ISOLV` | Linear solver: 1 = direct LU (default), 2 = GMRES with H-matrix acceleration. Line is detected by the `Solver_type` keyword; the first integer after it is read and a trailing `# comment` is allowed. If the line is absent, ISOLV defaults to 1; if the value cannot be read, a warning is printed and ISOLV defaults to 1. See [iterative_solvers.md](iterative_solvers.md) for full details. |
+
+**`ISOL`: difference from the original HAMS.** In the original HAMS, both values give the total exciting force, by two formulations: `ISOL = 1` solves for the scattered potential and adds the incident potential in the force, and `ISOL = 2` solves for the total potential directly, with the incident potential on the right-hand side (`AssbMatx.f90`, `ASSB_DBC`, and `PotentWavForce.f90`, `EFORCE`, of github.com/YingyiLiu/HAMS). HAMS-MREL always solves for the scattered potential (`AssbMatx.f90`, `ASSB_DBC`, here), and the force routine is unchanged, so here `ISOL = 2` gives the scattered (diffraction) part only, without the Froude-Krylov force. A control file from the original HAMS with `ISOL = 2` should therefore use `ISOL = 1` in HAMS-MREL to get the same total force; `ISOL = 1` means the same in both programs.
 
 **Pressure and Elevation**
 
