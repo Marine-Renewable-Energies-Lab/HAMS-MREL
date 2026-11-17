@@ -116,7 +116,7 @@ CONTAINS
        MOD=ABS(EXFC(MD))/(RHO*G*AMP*REFL**LEXP_X(MD)) !SQRT(REL**2+MDMG**2)
        NREL=-IMG
        NIMG=-REL
-       PHS(MD)=ATAN2D(NIMG,NREL)*180.0D0/PI
+       PHS(MD)=ATAN2D(NIMG,NREL)                                ! degrees already: ATAN2D, not ATAN2
        WRITE(20+MD,1010) WK,W1,REAL(EXFC(MD)),IMAG(EXFC(MD)) ! These are different from the values of WAMIT? These change the RAOs. Why is that happening?
        
        IF (ABS(TP+1.D0).GT.1.E-6.AND.ABS(TP).GT.1.E-6) THEN

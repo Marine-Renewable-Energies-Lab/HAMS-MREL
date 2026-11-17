@@ -59,6 +59,7 @@ contains
             new_unittest("lid_matches_no_lid", lid_matches_no_lid), &
             new_unittest("lid_limits_match_no_lid", lid_limits_match_no_lid), &
             new_unittest("wamit_outputs_scale_with_length", wamit_outputs_scale_with_length), &
+            new_unittest("phases_are_in_degrees", phases_are_in_degrees), &
             new_unittest("cosine_and_uniform_approach", cosine_and_uniform_approach), &
             new_unittest("haskind_heave", haskind_heave), &
             new_unittest("stops_on_hull_panel_at_z0", stops_on_hull_panel_at_z0), &
@@ -625,6 +626,33 @@ contains
         worst = max(worst_scaled(a, b, 4, p), worst_scaled(a, b, 6, p), worst_scaled(a, b, 7, p))
         call check_below(error, "wamit_outputs_scale_with_length (.4)", worst, length_limit)
     end subroutine wamit_outputs_scale_with_length
+
+    !> The phase column of ExcForce.3 and Motion.4 is the phase of (Re, Im) in degrees, as in WAMIT. Single body and two bodies.
+    subroutine phases_are_in_degrees(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: cases(2) = [character(len=13) :: "image_cos", "image_cos_two"]
+        character(len=*), parameter :: files(2) = [character(len=10) :: "ExcForce.3", "Motion.4"]
+        real(8), allocatable :: a(:, :)
+        real(8) :: worst, d
+        integer :: c, f, r
+
+        do c = 1, size(cases)
+            do f = 1, size(files)
+                call read_rows(trim(cases(c)), trim(files(f)), 7, a, error)
+                if (allocated(error)) return
+                call check(error, size(a, 2) > 0, trim(cases(c))//" "//trim(files(f))//": no rows")
+                if (allocated(error)) return
+                worst = 0d0
+                do r = 1, size(a, 2)
+                    if (a(4, r) < 1d-6*maxval(a(4, :))) cycle                ! the phase of a zero is not defined
+                    d = modulo(a(5, r) - atan2(a(7, r), a(6, r))*180d0/acos(-1d0) + 180d0, 360d0) - 180d0
+                    worst = max(worst, abs(d))
+                end do
+                call check_below(error, "phases_are_in_degrees ("//trim(cases(c))//" "//trim(files(f))//"), deg", worst, 1d-3)
+                if (allocated(error)) return
+            end do
+        end do
+    end subroutine phases_are_in_degrees
 
     !> Cosine and uniform rows get closer as the mesh is refined, in every coefficient.
     subroutine cosine_and_uniform_approach(error)
