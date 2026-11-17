@@ -87,7 +87,9 @@ subroutine collect_qtf_free_surface(testsuite)
     new_unittest("fs_local_corner_and_edge", test_local_corner_and_edge), &
     new_unittest("fs_local_linear", test_local_linear), &
     new_unittest("fs_local_limit", test_local_limit), &
-    new_unittest("fs_inner_steps_scale", test_inner_steps_scale) &
+    new_unittest("fs_inner_steps_scale", test_inner_steps_scale), &
+    new_unittest("fs_sum_exact_inner", test_sum_exact_inner), &
+    new_unittest("fs_sum_exact_outer", test_sum_exact_outer) &
     ]
 end subroutine collect_qtf_free_surface
 
@@ -2210,5 +2212,187 @@ subroutine test_inner_steps_scale(error)
     "; limit ", scale_residual_limit
   call check(error, worst <= scale_residual_limit, trim(info))
 end subroutine test_inner_steps_scale
+
+! ------------------------------------------------------------------- the sum assembly with exact fields (7c-2 debugging)
+
+!> The fixture of the fs_sum_exact tests (test/data/fs_sum_exact/fs_sum_exact.txt, written by
+!> make_fs_sum_exact_fixture.py, whose header has the conventions): block ip of the file (1: (1.2, 1.2) rad/s,
+!> 2: (1.4, 1.0) rad/s, Omega+ = 2.4), sharp truncated cylinder, fixed body, exact first-order fields and psi_k.
+subroutine read_sum_exact(ip, w, k, g_ex, h_ex, xy, sc1, sc2, psi, exp_in, radius, pw, exp_out, ok)
+  integer, intent(in) :: ip
+  real(8), intent(out) :: w(3), k(3), g_ex, h_ex, radius
+  real(8), allocatable, intent(out) :: xy(:, :)
+  complex(8), allocatable, intent(out) :: sc1(:, :), sc2(:, :), psi(:, :)
+  complex(8), intent(out) :: exp_in(3), exp_out(3)
+  type(pw_set), intent(out) :: pw(5)
+  logical, intent(out) :: ok
+  character(len=64) :: tag
+  character(len=8192) :: buf
+  real(8) :: v(28), kv0   ! x, y, 10 complex fields, 3 complex psi
+  integer :: u, ios, iblock, n, i, j, mmax, nev, iset, m, nn
+
+  ok = .false.
+  open (newunit=u, file='test/data/fs_sum_exact/fs_sum_exact.txt', status='old', action='read', iostat=ios)
+  if (ios /= 0) return
+  iblock = 0
+  do
+    read (u, '(a)', iostat=ios) buf
+    if (ios /= 0) exit
+    read (buf, *, iostat=ios) tag
+    if (ios /= 0) cycle
+    select case (trim(tag))
+    case ('PAIR')
+      iblock = iblock + 1
+      if (iblock /= ip) cycle
+      read (buf, *) tag, w(1), w(2), w(3), k(1), k(2), k(3), g_ex, h_ex
+    case ('INNER')
+      if (iblock /= ip) cycle
+      read (buf, *) tag, n
+      allocate (xy(2, n), sc1(5, n), sc2(5, n), psi(n, 3))
+      do i = 1, n
+        read (u, *) v
+        xy(:, i) = v(1:2)
+        do j = 1, 5
+          sc1(j, i) = cmplx(v(1 + 2*j), v(2 + 2*j), 8)
+          sc2(j, i) = cmplx(v(11 + 2*j), v(12 + 2*j), 8)
+        end do
+        do j = 1, 3
+          psi(i, j) = cmplx(v(21 + 2*j), v(22 + 2*j), 8)
+        end do
+      end do
+    case ('EXPECT_INNER')
+      if (iblock /= ip) cycle
+      read (buf, *) tag, v(1:6)
+      exp_in = [(cmplx(v(2*j - 1), v(2*j), 8), j = 1, 3)]
+    case ('OUTER')
+      if (iblock /= ip) cycle
+      read (buf, *) tag, radius, mmax, nev
+      do iset = 1, 5
+        pw(iset)%mmax = mmax
+        pw(iset)%nev = nev
+        pw(iset)%h = h_ex
+        pw(iset)%radius = radius
+        pw(iset)%centre = 0d0
+        allocate (pw(iset)%kev(nev), pw(iset)%a(-mmax:mmax, 0:nev))
+        pw(iset)%a = (0d0, 0d0)
+      end do
+    case ('KEV')
+      if (iblock /= ip) cycle
+      read (buf, *) tag, iset, kv0
+      pw(iset)%k0 = kv0
+      read (buf, *) tag, iset, kv0, pw(iset)%kev
+    case ('A')
+      if (iblock /= ip) cycle
+      read (buf, *) tag, iset, m, nn, v(1:2)
+      pw(iset)%a(m, nn) = cmplx(v(1), v(2), 8)
+    case ('EXPECT_OUTER')
+      if (iblock /= ip) cycle
+      read (buf, *) tag, v(1:6)
+      exp_out = [(cmplx(v(2*j - 1), v(2*j), 8), j = 1, 3)]
+    case ('END')
+      if (iblock == ip) then
+        ok = .true.
+        exit
+      end if
+    end select
+  end do
+  close (u)
+end subroutine read_sum_exact
+
+!> The inner assembly of the sum: fs_inner_pair (KERNEL_SUM) with the exact scattered fields of the sharp truncated
+!> cylinder (fixed) at 360 points on five rings (r = 10.3 ... 13.5 m), HAMS's own incident waves, and the exact psi_1,
+!> psi_3, psi_5 at Omega+ = 2.4 rad/s, weight 1, against the reference formula on the same points (the fixture), for
+!> (1.2, 1.2) and (1.4, 1.0) rad/s. It tests Q_S and the assembly with fields that are not plane waves (evanescent
+!> parts, phi_zz /= k^2 phi), not the stencil or the inner mesh.
+subroutine test_sum_exact_inner(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8) :: w(3), k(3), g_ex, h_ex, radius, worst, x(3), gw
+  real(8), allocatable :: xy(:, :), wts(:)
+  complex(8), allocatable :: sc1(:, :), sc2(:, :), psi(:, :)
+  complex(8) :: exp_in(3), exp_out(3), t_in(3), phi, grad(3)
+  type(pw_set) :: pw(5)
+  type(fs_point_field), allocatable :: f1(:), f2(:), i1(:), i2(:)
+  logical :: ok
+  integer :: ip, i, n, j
+  character(len=300) :: info
+
+  worst = 0d0
+  do ip = 1, 2
+    call read_sum_exact(ip, w, k, g_ex, h_ex, xy, sc1, sc2, psi, exp_in, radius, pw, exp_out, ok)
+    call check(error, ok, "fs_sum_exact: cannot read block of test/data/fs_sum_exact/fs_sum_exact.txt")
+    if (allocated(error)) return
+    n = size(xy, 2)
+    allocate (f1(n), f2(n), i1(n), i2(n), wts(n))
+    wts = 1d0
+    do i = 1, n
+      x = [xy(1, i), xy(2, i), 0d0]
+      gw = wave_gravity(w(1), k(1), h_ex)
+      phi = incident_phi(x, w(1), k(1), h_ex, 1d0, 0d0, gw)
+      call incident_grad(x, w(1), k(1), h_ex, 1d0, 0d0, gw, grad)
+      i1(i)%phi = phi
+      i1(i)%grad = grad
+      i1(i)%phizz = k(1)**2*phi
+      f1(i)%phi = phi + sc1(1, i)
+      f1(i)%grad = grad + sc1(2:4, i)
+      f1(i)%phizz = i1(i)%phizz + sc1(5, i)
+      gw = wave_gravity(w(2), k(2), h_ex)
+      phi = incident_phi(x, w(2), k(2), h_ex, 1d0, 0d0, gw)
+      call incident_grad(x, w(2), k(2), h_ex, 1d0, 0d0, gw, grad)
+      i2(i)%phi = phi
+      i2(i)%grad = grad
+      i2(i)%phizz = k(2)**2*phi
+      f2(i)%phi = phi + sc2(1, i)
+      f2(i)%grad = grad + sc2(2:4, i)
+      f2(i)%phizz = i2(i)%phizz + sc2(5, i)
+    end do
+    call fs_inner_pair(w(1), f1, i1, w(2), f2, i2, psi, wts, g_ex, rho, t_in, KERNEL_SUM)
+    t_in = t_in/(rho*g_ex)
+    do j = 1, 3
+      print '(4x,a,2f5.2,a,i0,a,2es14.6,a,2es14.6,a,es9.2)', "(", w(1:2), ") inner psi_", 2*j - 1, ": HAMS ", t_in(j), &
+        ", exact ", exp_in(j), ", rel ", abs(t_in(j) - exp_in(j))/maxval(abs(exp_in))
+    end do
+    worst = max(worst, maxval(abs(t_in - exp_in))/maxval(abs(exp_in)))
+    deallocate (f1, f2, i1, i2, wts)
+  end do
+  write (info, '(a,es9.2)') "inner sum assembly with exact fields against the reference formula: worst ", worst
+  call check(error, worst <= 1d-8, trim(info))
+end subroutine test_sum_exact_inner
+
+!> The outer assembly of the sum: fs_outer_rfar and fs_outer_pair (KERNEL_SUM: annulus R .. r_far, then the tail
+!> contours of the three sum classes) with the exact partial waves of the scattered states and of psi_k on R = 15 m,
+!> against the reference's outer nodes and tail contours on a grid of radius 15 m (the fixture), (1.2, 1.2) and
+!> (1.4, 1.0) rad/s, Omega+ = 2.4.
+subroutine test_sum_exact_outer(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8) :: w(3), k(3), g_ex, h_ex, radius, worst, rf
+  real(8), allocatable :: xy(:, :)
+  complex(8), allocatable :: sc1(:, :), sc2(:, :), psi(:, :)
+  complex(8) :: exp_in(3), exp_out(3), t_out(3)
+  type(pw_set) :: pw(5)
+  logical :: ok
+  integer :: ip, j, nthread_saved
+  character(len=300) :: info
+
+  nthread_saved = NTHREAD
+  NTHREAD = 8
+  worst = 0d0
+  do ip = 1, 2
+    call read_sum_exact(ip, w, k, g_ex, h_ex, xy, sc1, sc2, psi, exp_in, radius, pw, exp_out, ok)
+    call check(error, ok, "fs_sum_exact: cannot read block of test/data/fs_sum_exact/fs_sum_exact.txt")
+    if (allocated(error)) exit
+    rf = fs_outer_rfar(pw(1), k(1), pw(2), k(2), pw(3:5), KERNEL_SUM)
+    call fs_outer_pair(w(1), pw(1), 0d0, k(1), w(2), pw(2), 0d0, k(2), pw(3:5), w(3), g_ex, rho, rf, t_out, KERNEL_SUM)
+    t_out = t_out/(rho*g_ex)
+    do j = 1, 3
+      print '(4x,a,2f5.2,a,i0,a,2es14.6,a,2es14.6,a,es9.2,a,f7.1)', "(", w(1:2), ") outer psi_", 2*j - 1, ": HAMS ", &
+        t_out(j), ", exact ", exp_out(j), ", rel ", abs(t_out(j) - exp_out(j))/maxval(abs(exp_out)), ", r_far ", rf
+    end do
+    worst = max(worst, maxval(abs(t_out - exp_out))/maxval(abs(exp_out)))
+  end do
+  NTHREAD = nthread_saved
+  if (allocated(error)) return
+  write (info, '(a,es9.2)') "outer sum assembly with exact partial waves against the reference: worst ", worst
+  call check(error, worst <= 1d-4, trim(info))
+end subroutine test_sum_exact_outer
 
 end module test_qtf_free_surface
