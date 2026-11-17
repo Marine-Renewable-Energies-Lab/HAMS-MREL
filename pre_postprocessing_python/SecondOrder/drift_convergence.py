@@ -576,6 +576,14 @@ def qtf_directsum_cases(grid):
         chosen.append(Case("q_sharp_directsum_free_%s" % tag(m), "D", "7c2", "sharp", m, "free", "differencing",
                            frequencies=QTF_SUM_FREQUENCIES, headings=(0.0,), irsp=1, qtf=3, qtf_terms="full",
                            qtf_max_dw=QTF_POTENTIAL_MAX_DW, extra_options=dict(CS_FIXED_M1 if m > 1 else {}, qtf_direct=1)))
+    # Inner-mesh check of the sum free-surface part (Snellius stage 2: D_FS = P_FS to 1.8 % but both 9 % median off the exact
+    # part at m2, growing with Omega+, while the generated mesh did not refine with the hull, 2600 / 2496 / 2880 points): m2
+    # with qtf_fs_panel 0.55 m against the default lambda(2.80 rad/s)/10 = 0.786 m (depth 100 m), about 1.5 times the
+    # points. With qtf_fs_panel given the phi_zz offsets follow the panel size, not the first-order scale (setup in
+    # SecondOrderDriver), as in the 6a fsP cases
+    chosen.append(Case("q_sharp_directsum_free_fsP055_m2", "D", "7c2", "sharp", 2, "free", "differencing",
+                       frequencies=QTF_SUM_FREQUENCIES, headings=(0.0,), irsp=1, qtf=3, qtf_terms="full",
+                       qtf_max_dw=QTF_POTENTIAL_MAX_DW, extra_options=dict(CS_FIXED_M1, qtf_direct=1, qtf_fs_panel=0.55)))
     return chosen
 
 
