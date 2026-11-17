@@ -43,6 +43,7 @@ contains
       new_unittest("triangle_finite_depth", test_triangle_finite_depth), &
       new_unittest("limits_have_no_wave_part", test_limits_have_no_wave_part), &
       new_unittest("multi_matches_single", test_multi_matches_single), &
+      new_unittest("far_point_matches_solver_convention", test_far_point_matches_solver_convention), &
       new_unittest("lid_row_holds_the_integral", test_lid_row_holds_the_integral), &
       new_unittest("lid_row_holds_the_integral_multi", test_lid_row_holds_the_integral_multi), &
       new_unittest("hull_row_and_far_lid_point_keep_one_point", test_hull_row_and_far_lid_point_keep_one_point) &
@@ -334,6 +335,28 @@ contains
     call check(error, maxval(abs(DGRN_MULTI_COMB(1, 1, 1, :) - gint/DS(1))) < 1d-6*maxval(abs(gint/DS(1))), &
                "the multi-body lid row does not hold the panel integral")
   end subroutine test_lid_row_holds_the_integral_multi
+
+  !> Far from the panel the integral over the area must be the one-point value the solver used before, built with its own
+  !> image removal (FLAG = 1 Green function, then IMAGE_TERM_EXACT). The reference quadrature above shares the integrand of
+  !> WAVE_PART_PANEL, so this ties the sign and components of its image removal to the solver's convention. The two differ
+  !> by the one-point error itself, about (k h)^2/24 = 8e-3 for this 0.68 m panel at T = 2.5 s (measured 6.9e-3); a sign
+  !> error in the image removal gives 1.4e-1. The limit sits between.
+  subroutine test_far_point_matches_solver_convention(error)
+    type(error_type), allocatable, intent(out) :: error
+    real(8) :: p(3), wvn(NK)
+    complex(8) :: gint(4)
+    complex(GRN_KIND) :: one(4)
+
+    p = [20d0*ph, 0.1d0, 0d0]
+    call set_solver(p)
+    wvn = 0d0
+    call WAVE_PART_PANEL(p, 1, V_SOLVER, wvn, NK, -1d0, gint)
+    one = one_point(p, 3)
+    write (*, '(4x, a, es10.3)') "far point, integral/area against the one-point value: ", &
+      maxval(abs(gint/DS(1) - one))/maxval(abs(one))
+    call check(error, maxval(abs(gint/DS(1) - one)) < 2d-2*maxval(abs(one)), &
+               "the integral far from the panel is not the solver's one-point value")
+  end subroutine test_far_point_matches_solver_convention
 
   !> Hull rows are not changed, and a lid point far from the panel compared with its size keeps the one-point value.
   subroutine test_hull_row_and_far_lid_point_keep_one_point(error)

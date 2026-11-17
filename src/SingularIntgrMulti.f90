@@ -95,6 +95,10 @@ CONTAINS
 !     triangle as a quadrilateral with a repeated node), with the same calls and the same image term as the
 !     centroid value, so GINT/area replaces GRN after IMAGE_TERM_EXACT. At the zero- and infinite-frequency limits
 !     there is no wave part and GINT is zero.
+!     Accuracy: within 1e-4 of a fine quadrature for a point 0.05 panel heights from a panel (test_lid_wave_part).
+!     The wave part keeps a 1/R1-type term in its z-gradient, so a point much closer than a tenth of a cell
+!     (panel size / 6) loses accuracy; the lid mesh rules in docs/input_files.md keep lid centroids further away.
+!     Cost: 144 Green function calls per call; the caller limits it to source panels within 2 panel sizes.
 !       XF   field point, already reflected for the symmetry image
 !       JEL  source panel, in the hull arrays of this path
 !-------------------------------------------------------------------------------

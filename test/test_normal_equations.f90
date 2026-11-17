@@ -6,6 +6,7 @@ module test_normal_equations
 
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use AssbMatx_irr, only : NORMAL_MATRIX, NORMAL_RHS
+  use HAMS_mod, only : NTHREAD
 
   implicit none
   private
@@ -47,6 +48,7 @@ contains
     integer :: ipiv(n), info
     external :: ZGESV, ZGELS
 
+    NTHREAD = 1
     call system(a, b)
     call NORMAL_MATRIX(a, m, n, c)
     call NORMAL_RHS(a, m, n, b, nrhs, d)
@@ -69,6 +71,7 @@ contains
     type(error_type), allocatable, intent(out) :: error
     complex(8) :: a(m, n), b(m, nrhs), c(n, n)
 
+    NTHREAD = 1
     call system(a, b)
     call NORMAL_MATRIX(a, m, n, c)
     call check(error, maxval(abs(c - conjg(transpose(c)))) < 1d-12*maxval(abs(c)), "the normal matrix is not Hermitian")
@@ -81,6 +84,7 @@ contains
     complex(8) :: a(m, n), b(m, nrhs), c(n, n), d(n, nrhs), s
     integer :: i, j, k
 
+    NTHREAD = 1
     call system(a, b)
     a = cmplx(real(a), 0d0, kind=8)
     call NORMAL_MATRIX(a, m, n, c)
