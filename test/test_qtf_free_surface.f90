@@ -21,7 +21,7 @@ module test_qtf_free_surface
   use FirstOrderState, only : incident_phi, incident_grad, wave_gravity
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use ControlSurfaceMesh, only : build_fs_inner
-  use second_order_fixtures, only : make_cylinder, maccamy_fuchs_state
+  use second_order_fixtures, only : make_cylinder, maccamy_fuchs_state, read_pnl_hull
   use test_waterline_field, only : set_wave, load_panels
   use Const_mod, only : g_const => G
   use, intrinsic :: ieee_arithmetic, only : ieee_is_finite
@@ -89,7 +89,9 @@ subroutine collect_qtf_free_surface(testsuite)
     new_unittest("fs_local_limit", test_local_limit), &
     new_unittest("fs_inner_steps_scale", test_inner_steps_scale), &
     new_unittest("fs_sum_exact_inner", test_sum_exact_inner), &
-    new_unittest("fs_sum_exact_outer", test_sum_exact_outer) &
+    new_unittest("fs_sum_exact_outer", test_sum_exact_outer), &
+    new_unittest("fs_fields_exact_inner", test_fields_exact_inner), &
+    new_unittest("fs_fields_exact_circle", test_fields_exact_circle) &
     ]
 end subroutine collect_qtf_free_surface
 
@@ -2394,5 +2396,224 @@ subroutine test_sum_exact_outer(error)
   write (info, '(a,es9.2)') "outer sum assembly with exact partial waves against the reference: worst ", worst
   call check(error, worst <= 1d-4, trim(info))
 end subroutine test_sum_exact_outer
+
+! ------------------------------------------------------- HAMS's field evaluation with exact panel data (7c-2 debugging)
+
+!> Block ib (1: 1.0 rad/s, 2: 1.4 rad/s) of test/data/fs_sum_exact/fs_fields_exact.txt (make_fs_fields_exact_fixture.py,
+!> whose header has the conventions): the exact scattered potential at the 448 panels of the sharp m1 hull
+!> (HullMesh_sharp_m1.pnl), and the exact fields (phi, grad, phi_zz; total at the points, scattered on the circle).
+subroutine read_fields_exact(ib, w, k, g_ex, h_ex, phip, xp, fp, xc, fc, ok)
+  integer, intent(in) :: ib
+  real(8), intent(out) :: w, k, g_ex, h_ex
+  complex(8), allocatable, intent(out) :: phip(:), fp(:, :), fc(:, :)
+  real(8), allocatable, intent(out) :: xp(:, :), xc(:, :)
+  logical, intent(out) :: ok
+  character(len=64) :: tag
+  character(len=2048) :: buf
+  real(8) :: v(12)
+  integer :: u, ios, iblock, n, i, j
+
+  ok = .false.
+  open (newunit=u, file='test/data/fs_sum_exact/fs_fields_exact.txt', status='old', action='read', iostat=ios)
+  if (ios /= 0) return
+  iblock = 0
+  do
+    read (u, '(a)', iostat=ios) buf
+    if (ios /= 0) exit
+    read (buf, *, iostat=ios) tag
+    if (ios /= 0) cycle
+    select case (trim(tag))
+    case ('FREQ')
+      iblock = iblock + 1
+      if (iblock == ib) read (buf, *) tag, w, k, g_ex, h_ex
+    case ('PANELS')
+      if (iblock /= ib) cycle
+      read (buf, *) tag, n
+      allocate (phip(n))
+      do i = 1, n
+        read (u, *) v(1:2)
+        phip(i) = cmplx(v(1), v(2), 8)
+      end do
+    case ('POINTS', 'CIRCLE')
+      if (iblock /= ib) cycle
+      read (buf, *) tag, n
+      if (trim(tag) == 'POINTS') then
+        allocate (xp(2, n), fp(5, n))
+      else
+        allocate (xc(2, n), fc(5, n))
+      end if
+      do i = 1, n
+        read (u, *) v
+        if (trim(tag) == 'POINTS') then
+          xp(:, i) = v(1:2)
+          fp(:, i) = [(cmplx(v(1 + 2*j), v(2 + 2*j), 8), j = 1, 5)]
+        else
+          xc(:, i) = v(1:2)
+          fc(:, i) = [(cmplx(v(1 + 2*j), v(2 + 2*j), 8), j = 1, 5)]
+        end if
+      end do
+    case ('END')
+      if (iblock == ib) then
+        ok = .true.
+        exit
+      end if
+    end select
+  end do
+  close (u)
+end subroutine read_fields_exact
+
+!> The sharp m1 hull with the exact scattered potential of block ib on its panels (fixed body: d phi_P/dn = -d phi_I/dn,
+!> as maccamy_fuchs_state), and the wave globals at its frequency in 100 m of water. The state's k is the exact one and
+!> its g the gravity of that wave (wave_gravity), so that HAMS's incident wave is the fixture's.
+subroutine exact_hull_state(ib, mesh, st, w, k, h_ex, xp, fp, xc, fc, error)
+  integer, intent(in) :: ib
+  type(panel_mesh), intent(out) :: mesh
+  type(first_order_state), intent(out) :: st(1)
+  real(8), intent(out) :: w, k, h_ex
+  real(8), allocatable, intent(out) :: xp(:, :), xc(:, :)
+  complex(8), allocatable, intent(out) :: fp(:, :), fc(:, :)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: full
+  complex(8), allocatable :: phip(:)
+  real(8) :: g_ex
+  logical :: ok
+  integer :: i
+
+  call read_fields_exact(ib, w, k, g_ex, h_ex, phip, xp, fp, xc, fc, ok)
+  call check(error, ok, "fs_fields_exact: cannot read test/data/fs_sum_exact/fs_fields_exact.txt")
+  if (allocated(error)) return
+  call read_pnl_hull('test/data/fs_sum_exact/HullMesh_sharp_m1.pnl', [0d0, 0d0, -5d0], full, ok)
+  call check(error, ok .and. full%n == size(phip), "fs_fields_exact: cannot read the sharp m1 hull")
+  if (allocated(error)) return
+  call load_panels(full, 0, 0, mesh)
+  call set_frequency(w, 0d0, h_ex)
+  associate (s => st(1))
+    s%omega = w
+    s%k = k
+    s%nu = w**2/g_const
+    s%h = h_ex
+    s%amp = 1d0
+    s%beta = 0d0
+    s%g = wave_gravity(w, k, h_ex)
+    s%rho = rho
+    allocate (s%phi_i(mesh%n), s%phi_p(mesh%n), s%dphi_p_dn(mesh%n), s%dphi_dn(mesh%n))
+    allocate (s%grad_i(3, mesh%n), s%grad_p(3, mesh%n), s%xi(6, mesh%nbody))
+    s%xi = (0d0, 0d0)
+    s%dphi_dn = (0d0, 0d0)
+    s%grad_p = (0d0, 0d0)
+    do i = 1, mesh%n
+      s%phi_i(i) = incident_phi(mesh%xc(:, i), w, k, h_ex, 1d0, 0d0, s%g)
+      call incident_grad(mesh%xc(:, i), w, k, h_ex, 1d0, 0d0, s%g, s%grad_i(:, i))
+      s%phi_p(i) = phip(i)
+      s%dphi_p_dn(i) = -sum(s%grad_i(:, i)*mesh%nrm(:, i))
+    end do
+  end associate
+end subroutine exact_hull_state
+
+!> fs_inner_fields (5-point stencil, offsets of fs_inner_steps with the driver's step 2 cs_fd_step = 0.04 and the sum's
+!> scale max(psize, lambda(1.4)/10)) with the exact scattered potential on the sharp m1 hull (no BEM solve), at rings
+!> 0.1 to 3.5 m from the waterline, against the exact total phi, grad phi and phi_zz; 1.0 and 1.4 rad/s. Measured
+!> (findings section 9): phi 0.3-2.5 % at every ring; from 2 m out grad and phi_zz 0.6-1.9 % (gate 3 %); within 1 m of
+!> the waterline, where fs_inner_steps shrinks the offset to 4-31 mm, grad 3-105 % and phi_zz 20-450 % off.
+!> That ring holds 37 % of the exact F_x free-surface term at (1.2, 1.2) rad/s: the cause of the 7c-2 sum error.
+subroutine test_fields_exact_inner(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: st(1)
+  type(cs_points) :: pts
+  type(fs_point_field), allocatable :: f(:, :)
+  real(8), allocatable :: xp(:, :), xc(:, :), delta(:), scale(:), x3(:, :)
+  complex(8), allocatable :: fp(:, :), fc(:, :)
+  real(8) :: w, k, h_ex, e(3), worst(3), lam, rr
+  integer :: ib, i, n, nshrunk, nthread_saved, ir, j
+  character(len=300) :: info
+
+  nthread_saved = NTHREAD
+  NTHREAD = 8
+  worst = 0d0
+  do ib = 1, 2
+    call exact_hull_state(ib, mesh, st, w, k, h_ex, xp, fp, xc, fc, error)
+    if (allocated(error)) exit
+    n = size(xp, 2)
+    allocate (x3(3, n), delta(n), scale(n), f(n, 1))
+    x3(1:2, :) = xp
+    x3(3, :) = 0d0
+    call free_points(x3, 0.786d0, pts)
+    lam = 2d0*pi/0.19986437774367391d0      ! lambda at 1.4 rad/s, h = 100 m
+    scale = max(0.786d0, lam/10d0)
+    call fs_inner_steps(mesh, pts, 0.04d0, delta, nshrunk, scale=scale)
+    call fs_inner_fields(mesh, pts, st, 0.04d0, .false., f, delta)
+    do ir = 1, n/5
+      e = 0d0
+      do j = 5*(ir - 1) + 1, 5*ir
+        e(1) = max(e(1), abs(f(j, 1)%phi - fp(1, j))/maxval(abs(fp(1, 5*(ir - 1) + 1:5*ir))))
+        e(2) = max(e(2), norm2(abs(f(j, 1)%grad - fp(2:4, j)))/maxval([(norm2(abs(fp(2:4, i))), i = 5*(ir - 1) + 1, 5*ir)]))
+        e(3) = max(e(3), abs(f(j, 1)%phizz - fp(5, j))/maxval(abs(fp(5, 5*(ir - 1) + 1:5*ir))))
+      end do
+      rr = norm2(xp(:, 5*ir - 4))
+      print '(4x,a,f4.1,a,f5.2,a,f7.4,a,3es10.2)', "omega ", w, ", r - a = ", rr - 10d0, " m, delta ", &
+        minval(delta(5*(ir - 1) + 1:5*ir)), ": phi, grad, phi_zz ", e
+      ! gated from 2 m out; within 1 m of the waterline the stencil derivatives are far off (findings section 9, the
+      ! cause of the 7c-2 sum free-surface error), printed only until that is fixed
+      if (rr - 10d0 >= 1.99d0) worst = max(worst, e)
+    end do
+    deallocate (x3, delta, scale, f)
+  end do
+  NTHREAD = nthread_saved
+  if (allocated(error)) return
+  write (info, '(a,3es10.2)') "first-order fields at the inner points 2 m and more from the waterline, exact panel data: "// &
+    "worst phi, grad, phi_zz ", worst
+  call check(error, maxval(worst) <= 3d-2, trim(info))
+end subroutine test_fields_exact_inner
+
+!> fs_circle_modes (samples by the centroid route on R = 15 m, M and N_ev as the driver for the sum run) with the exact
+!> scattered potential on the sharp m1 hull, evaluated by pw_eval_surface at r = 15.5 and 20 m, against the exact
+!> scattered phi, grad phi and phi_zz there; 1.0 and 1.4 rad/s. Measured 0.7-2.6 % (gate 3 %), mode check 4e-6.
+subroutine test_fields_exact_circle(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: st(1)
+  type(cs_points) :: circle
+  type(pw_set) :: pw(1)
+  real(8), allocatable :: xp(:, :), xc(:, :), kev(:)
+  complex(8), allocatable :: fp(:, :), fc(:, :)
+  complex(8) :: phi, grad(3), phizz
+  real(8) :: w, k, h_ex, e(3), worst(3), miss(1), k0max, sc(3)
+  integer :: ib, i, mmax, nev, nthread_saved
+  character(len=300) :: info
+
+  nthread_saved = NTHREAD
+  NTHREAD = 8
+  worst = 0d0
+  do ib = 1, 2
+    call exact_hull_state(ib, mesh, st, w, k, h_ex, xp, fp, xc, fc, error)
+    if (allocated(error)) exit
+    call set_frequency(2.8d0, 0d0, h_ex)
+    k0max = WK
+    call set_frequency(w, 0d0, h_ex)
+    mmax = fs_auto_modes(0, k0max, 15d0)
+    nev = fs_auto_evanescent(0, h_ex, 15d0, 10d0)
+    if (allocated(kev)) deallocate (kev)
+    allocate (kev(nev))
+    call pw_sample_points([0d0, 0d0], 15d0, h_ex, mmax, nev, circle)
+    call pw_evanescent_from_wvn(nev, kev)
+    call fs_circle_modes(mesh, circle, st, .false., [0d0, 0d0], 15d0, h_ex, WK, kev, mmax, nev, pw, miss)
+    sc = [maxval(abs(fc(1, :))), maxval([(norm2(abs(fc(2:4, i))), i = 1, size(xc, 2))]), maxval(abs(fc(5, :)))]
+    e = 0d0
+    do i = 1, size(xc, 2)
+      call pw_eval_surface(pw(1), [xc(1, i), xc(2, i), 0d0], phi, grad, phizz)
+      e(1) = max(e(1), abs(phi - fc(1, i))/sc(1))
+      e(2) = max(e(2), norm2(abs(grad - fc(2:4, i)))/sc(2))
+      e(3) = max(e(3), abs(phizz - fc(5, i))/sc(3))
+    end do
+    print '(4x,a,f4.1,a,i0,a,i0,a,es9.2,a,3es10.2)', "omega ", w, ": M ", mmax, ", N_ev ", nev, ", mode check ", miss(1), &
+      "; at r = 15.5, 20 m: phi, grad, phi_zz ", e
+    worst = max(worst, e)
+  end do
+  NTHREAD = nthread_saved
+  if (allocated(error)) return
+  write (info, '(a,3es10.2)') "partial waves of the circle with exact panel data: worst phi, grad, phi_zz ", worst
+  call check(error, maxval(worst) <= 3d-2, trim(info))
+end subroutine test_fields_exact_circle
 
 end module test_qtf_free_surface
