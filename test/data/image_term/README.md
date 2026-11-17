@@ -32,6 +32,6 @@ Before is `c40ad4d`. All are relative.
 | `multi_matches_single` | 1e-3 | 7.8e-4 | 7.8e-4 |
 | `haskind_heave` | 1e-2 | 7.8e-3 | 9.3e-3 |
 
-Added with the near-field integration of the wave part for lid rows (`WAVE_PART_PANEL`, after `3d0c0c3`): `lid_limits_match_no_lid` checks the lid against the no-lid added mass at the limits, limit 1e-3 at zero frequency (2.7e-4 measured) and 1e-8 at infinite frequency (0 measured: the lid rows vanish there). The same change moved `lid_matches_no_lid` from 3.3e-3 to 3.8e-3.
+Added with the near-field integration of the wave part for lid rows (`WAVE_PART_PANEL`, after `3d0c0c3`): `lid_limits_match_no_lid` checks the lid against the no-lid added mass at the limits, limit 1e-3 at zero frequency (2.7e-4 measured) and 1e-8 at infinite frequency (0 measured: the lid rows vanish there). The same change moved `lid_matches_no_lid` from 3.3e-3 to 3.83e-3, and the conjugate transpose in the normal equations (`NORMAL_MATRIX`, `NORMAL_RHS`) to 3.85e-3; the limits do not move with it, as A is real there.
 
 `multi_matches_single` is limited by the far body, which still radiates into this one. `cosine_and_uniform_approach` only asks that cosine and uniform rows get closer with refinement. It passes before and after, because A, B and X on this hull are dominated by the sharp bilge: A55 differs by 5.9% and 5.4% at the two meshes on both.

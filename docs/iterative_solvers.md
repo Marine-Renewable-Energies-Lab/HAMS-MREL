@@ -85,7 +85,7 @@ For all variants:
 - When `ISOLV=1`: the coefficient matrix is LU-factorized in `ASSB_LEFT*`, and `ZGETRS` is called in the solver subroutines (existing behavior).
 - When `ISOLV>1`: the coefficient matrix is preserved unfactored (LU factorization is skipped), and the iterative solver is called in the solver subroutines with the unfactored matrix for matrix-vector products.
 
-For the irregular frequency removal variants (`*_irr*`), the iterative solver operates on the normal equations matrix `C = A^T * A`, which is the system actually solved by these routines.
+For the irregular frequency removal variants (`*_irr*`), the iterative solver operates on the normal equations matrix `C = A^H * A` (`A^H`: conjugate transpose), which is the system actually solved by these routines. `C` is Hermitian and positive definite for a full-rank `A`, and its solution is the least-squares solution of the overdetermined hull + lid system (`NORMAL_MATRIX` and `NORMAL_RHS` in `AssbMatx_irr.f90`).
 
 ## Source Files
 

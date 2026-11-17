@@ -15,6 +15,7 @@ program unit_tester
     use test_generalized_modes, only : collect_generalized_modes
     use test_panel_integrals, only : collect_panel_integrals
     use test_lid_wave_part, only : collect_lid_wave_part
+    use test_normal_equations, only : collect_normal_equations
 
     implicit none
     integer :: stat, is
@@ -36,7 +37,8 @@ program unit_tester
         new_testsuite("image_term", collect_image_term), &
         new_testsuite("generalized_modes", collect_generalized_modes), &
         new_testsuite("panel_integrals", collect_panel_integrals), &
-        new_testsuite("lid_wave_part", collect_lid_wave_part) &
+        new_testsuite("lid_wave_part", collect_lid_wave_part), &
+        new_testsuite("normal_equations", collect_normal_equations) &
     ]
 
     stat = 0

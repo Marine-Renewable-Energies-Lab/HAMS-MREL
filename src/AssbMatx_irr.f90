@@ -537,7 +537,10 @@ CONTAINS
       END SUBROUTINE DIFFRACTION_SOLVER_IRR
 
 !-------------------------------------------------------------------------------
-!     Normal equations of the overdetermined hull + lid system: C = A^T A over the N hull columns of A(1:M,1:N).
+!     Normal equations of the overdetermined hull + lid system: C = A^H A over the N hull columns of A(1:M,1:N).
+!     A is complex at a real frequency, and the least-squares solution, the minimum of ||A x - b||, solves
+!     A^H A x = A^H b (Golub and Van Loan, Matrix Computations, section 5.3). The plain transpose of Liu (2019),
+!     J. Mar. Sci. Eng. 7(3) 81, Eq. (27), is the same only for a real A, at the zero- and infinite-frequency limits.
 !     Used by ASSB_LEFT_IRR and ASSB_LEFT_IRR_MULTI. Rows are summed in order, each (I,J) by one thread.
 !-------------------------------------------------------------------------------
       SUBROUTINE NORMAL_MATRIX(A,M,N,C)
@@ -554,7 +557,7 @@ CONTAINS
        DO J=1,N
         S=CMPLX(0.0D0,0.0D0)
         DO K=1,M
-         S=S+A(K,I)*A(K,J)
+         S=S+CONJG(A(K,I))*A(K,J)
         ENDDO
         C(I,J)=S
        ENDDO
@@ -566,7 +569,7 @@ CONTAINS
       END SUBROUTINE NORMAL_MATRIX
 
 !-------------------------------------------------------------------------------
-!     Right sides of the normal equations: D = A^T B for NRHS columns of B(1:M,:), with the same A as NORMAL_MATRIX.
+!     Right sides of the normal equations: D = A^H B for NRHS columns of B(1:M,:), with the same A as NORMAL_MATRIX.
 !     Used by the radiation and diffraction right sides of both paths. D is overwritten.
 !-------------------------------------------------------------------------------
       SUBROUTINE NORMAL_RHS(A,M,N,B,NRHS,D)
@@ -582,7 +585,7 @@ CONTAINS
        DO MD=1,NRHS
         D(I,MD)=CMPLX(0.0D0,0.0D0)
         DO K=1,M
-         D(I,MD)=D(I,MD)+B(K,MD)*A(K,I)
+         D(I,MD)=D(I,MD)+B(K,MD)*CONJG(A(K,I))
         ENDDO
        ENDDO
       ENDDO
