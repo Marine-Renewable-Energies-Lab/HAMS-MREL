@@ -83,11 +83,7 @@ SUBROUTINE SolveMotion(W1,TP,OUFR,BETA,AMP,AMAS,BDMP,&
 !
       DO MD=1,6
           
-       IF (MD.LE.3) THEN
-        MEXP=2
-       ELSEIF (MD.GE.4) THEN
-        MEXP=3
-       ENDIF
+       MEXP=LEXP_MOTION(MD)                                ! WAMIT: xi/(A/L^n), n = 0 translation, 1 rotation
 
        NFAC=(AMP)/REFL**MEXP
        

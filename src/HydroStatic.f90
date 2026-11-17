@@ -100,7 +100,7 @@ CONTAINS
       
       DO I=1,6
        DO J=1,6
-       WRITE(65,130) I,J,CRS(I,J)/(RHO*G)
+       WRITE(65,130) I,J,CRS(I,J)/(RHO*G*REFL**LEXP_C(I,J))        ! WAMIT: C/(rho g L^k)
        ENDDO
       ENDDO
  
