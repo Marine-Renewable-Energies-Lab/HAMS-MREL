@@ -893,7 +893,7 @@ Seven fixtures, written by `make_drift_fixtures.py` into `test/data/qtf_directsu
 | `direct_sum_off_unchanged`: `.12d` and `QTF_DirectTerms.txt` of `qtf_direct_irsp`, `qtf_direct_two` (7a) and `qtf_directfs_round`, `_irsp`, `_two` (7b); no sum solve in their logs | byte for byte | exact |
 | `direct_sum_qtf3_diff_unchanged`: `.11d`, `.12d`, `.10d` and `QTF_DirectTerms.txt` of `_d3` against `_d1` | byte for byte | exact |
 
-- **The gap of the rounded hull.** The direct sum is 12.7% from the in-run indirect sum on the rounded hull, and 13.8% on the lid hull, whose gap without D_FS is 77.5%. The gap is in the moments; the forces are 1.6% and 3.8%. It is the same on the half and the whole mesh (13.4%), so it is not a half-mesh effect. The cause is taken to be the coarse hull bottom, as for the difference at the same hull (3.9e-2 there), larger at Ω = 1.4 to 2.2 rad/s, where the waves are short on a 480-panel hull. This is a reading, not a result: it is to be settled by the rounded-hull meshes m1 to m3 on Snellius, where the gap should fall with the mesh at second order as in 7a and 7b.
+- **The gap of the rounded hull.** The direct sum is 12.7% from the in-run indirect sum on the rounded hull, and 13.8% on the lid hull, whose gap without D_FS is 77.5%. The gap is in the moments; the forces are 1.6% and 3.8%. It is the same on the half and the whole mesh (13.4%), so it is not a half-mesh effect. The cause is taken to be the coarse hull bottom, as for the difference at the same hull (3.9e-2 there), larger at Ω = 1.4 to 2.2 rad/s, where the waves are short on a 480-panel hull. The rounded-hull meshes m1 to m3 on Snellius settled it: the gap falls to 2.7% and 1.2% (moments) at m2 and m3, so it is mesh error ([Snellius validation](#snellius-validation-task-8)).
 - **Not vacuous.** The lid hull gap without D_FS is 5.6 times the one with it, so the free-surface forcing of the sum is tested by the whole path as well as by `direct_fs_sum_equals_indirect`.
 - **The 7a and 7b outputs do not change.** `direct_sum_off_unchanged` and `direct_sum_qtf3_diff_unchanged` compare the whole files. The 7b stored files were made with the merge binary of the second-order-drift branch (c716ed7), after reproducing the stored `qtf_direct_irsp` output byte for byte; the `qtf = 1` runs of this build match them to the byte.
 - **The pins are of this build.** `expected_sum.txt` is written from this build by `extract_direct_field_expected.py` (7 digits): it pins the rows against later changes and is not an independent reference. The `.12s` file holds both orders of an unequal pair (48 rows for 2 frequencies and 2 headings, not 36), as `.10s` does.
@@ -915,12 +915,46 @@ The strip step δ = decay · h/(N π) matters for the yardstick: with the defaul
 
 ### Snellius validation (Task 8)
 
-Pending: the Snellius runs (the exact reference, fixed and free, and the sharp cylinder and rounded hull at m1 to m3) have not returned; this subsection is filled with their results and the measured cost.
+The Snellius runs (fat_genoa, 24 CPUs billed per job, the code at ed27bd3) are in `validation-runs/snellius-qtf-directsum` of the working folder, which is outside the repository (findings_stage1.md, findings.md, the job logs and the compare files). The exact reference is `truncated_cylinder_reference.py qtf-potential --kernel sum --free-surface`, fixed and free, on the 21-frequency grid 0.40 to 1.40 rad/s (231 pairs). The cases are free bodies with IRSP = 1, `qtf = 3`, `qtf_terms = full`: the sharp cylinder at m1 to m3 (448, 1792 and 4032 panels plus the lid, heading 0) and the rounded hull of 7b at m1 to m3 (480, 1920 and 4320 panels, headings 0 and 30°).
+
+| Job | Wall | Core-h |
+| :--- | :--- | :--- |
+| build, reference | 1 min 33 s, 7 min 21 s | 3.5 |
+| sharp m1 / m2 / m3 | 54 min / 2 h 28 min / 6 h 9 min | 21.5 / 59.4 / 147.4 |
+| rounded m1 / m2 / m3 | 3.6 / 13 / 35 min | 1.4 / 5.2 / 14.0 |
+| **Total** | | **252.5** (planned about 210) |
+
+Peak memory 3.7 GB (sharp m3). `qtf_compare.py results --direct-sum qtfdirectsum_reference.csv` gives the tables below [measured, 2026-11-17].
+
+**Rounded hull: direct against indirect.** The in-run gap |T⁺_dir − T⁺_pot| / max |T⁺_pot|, all modes and pairs, falls with the mesh at the rate of 7b (1.72, 0.44, 0.20% there for the difference):
+
+| Mesh | Forces, max / median | Moments, max / median |
+| :--- | :--- | :--- |
+| m1 | 2.39 / 0.90% | 9.83 / 0.87% |
+| m2 | 0.60 / 0.11% | 2.70 / 0.10% |
+| m3 | 0.19 / 0.06% | 1.17 / 0.02% |
+
+So the 12.7% gap of the integration test (one pair on the same 480-panel hull) is mesh error: the direct and the indirect sum converge to the same QTF.
+
+**Sharp cylinder against the exact sum QTF.** |HAMS − exact| / max |exact|, max / median, with the pairs that have a frequency in 0.75–0.80 rad/s left out (the undamped surge–pitch resonance, as for the difference QTF; on the 0.05 grid the 0.80 point is still on the peak):
+
+| Mesh | `.12s` F_x | F_z | M_y | indirect P F_x | F_z | M_y |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| m1 | 10.0 / 0.9% | 10.4 / 0.6% | 26.2 / 1.6% | 8.7 / 1.7% | 2.5 / 0.1% | 5.1 / 0.4% |
+| m2 | 6.3 / 1.4% | 6.6 / 0.4% | 18.8 / 1.5% | 6.4 / 1.8% | 0.7 / 0.1% | 2.1 / 0.4% |
+| m3 | 5.4 / 1.0% | 5.0 / 0.3% | 15.3 / 1.1% | 5.8 / 1.5% | 0.3 / 0.1% | 1.3 / 0.3% |
+
+With every pair, the `.12s` maxima are 33 → 28 → 24% (F_x), 61 → 37 → 27% (F_z) and 117 → 84 → 67% (M_y), all at the resonance, where the motions amplify any error of the forcing. The direct-minus-indirect gap, without the resonance, falls 8.3 → 5.5 → 4.2% (forces) and 14.6 → 9.5 → 7.2% (moments), medians ≤ 0.2%. It is all in the body forcing (D_I2 + D_D against P_BODY, M_y 14.2 → 9.2 → 7.1%), as for the difference QTF in 7b (20 → 11 → 7.8%): the hull-form B2 term of the direct method converges slowly at the sharp edge.
+
+**The free-surface part.** The direct D_FS equals the indirect P_FS to 2.5 / 1.8 / 1.2% max and ≤ 0.3% median (F_x, m1 to m3), so the sum kernel of the direct free-surface solve agrees with the indirect integral. Both are off the exact free-surface part by the same amount, and that error does not fall with the hull mesh: F_x median 4.4 → 9.1 → 5.7%, max 12.5 → 27.2 → 16.7%. It grows with Ω⁺ (m2: median 0.4% at Ω⁺ = 0.8–1.2 rad/s, 15% at 2.4–2.8 rad/s). The generated inner mesh, built for the sum at Ω⁺_max = 2.80 rad/s, did not refine with the hull (2600, 2496 and 2880 points), and m2 has the fewest points and the largest error. A check with a finer inner mesh (m2, `qtf_fs_panel` 0.55 m against the default 0.786 m) is running; its result goes here.
+
+![Sum-frequency direct solve on Snellius: (a) rounded hull, direct against indirect at m1 to m3; (b) sharp cylinder, direct and indirect against the exact QTF, without the resonance; (c) sharp cylinder, the free-surface part of both methods against the exact one](figures/qtf_directsum_snellius.png)
 
 ### Limits of the checks of the sum frequency
 
-- **The in-run indirect sum shares code with the direct one.** Both use `incident2_pair`, `pair_cross` and the same ψ, so a fault in the sum form of those would not show in the gap between them. The absolute check is the exact reference of the sharp cylinder; its results are pending (Snellius). Until then the sum has been checked against the in-run indirect sum, the time-series products (`pot_sum_b1_direct`, `pot_sum_b3_direct`) and the Stokes wave (`incident2_sum`), not against an independent solver. Nemoh at the sum frequency is Phase 6b.
-- **The rounded-hull gap of 12.7% is open** until the finer meshes are run. The sharp-cylinder gap (8.8 / 5.9 / 4.5% at 112 / 448 / 1008 panels, order about 0.6) is read as mesh error at the sharp edge from its fall with the mesh and from the same rate for the difference kernel; the exact reference of the sharp cylinder will test that reading.
+- **The in-run indirect sum shares code with the direct one.** Both use `incident2_pair`, `pair_cross` and the same ψ, so a fault in the sum form of those would not show in the gap between them. The absolute check is the exact reference of the sharp cylinder ([Snellius validation](#snellius-validation-task-8)): both methods approach it with the mesh, away from the resonance. The free-surface part is the exception: D_FS and P_FS agree, but both are 4–9% (median) off the exact part, so a fault shared by both would not show in the in-run check. Nemoh at the sum frequency is Phase 6b.
+- **The rounded-hull gap of 12.7% is mesh error** (1.2% at m3 on Snellius). The sharp-cylinder gap is in the body forcing at the sharp edge and falls with the mesh (M_y 14.2 → 7.1% at m1 to m3, without the resonance), as for the difference kernel.
+- **The sum free-surface part on the default inner mesh** is 4–9% (median) off the exact part on the sharp cylinder, in both methods, and does not fall with the hull mesh ([Snellius validation](#snellius-validation-task-8)); check it with a smaller `qtf_fs_panel`.
 - Finite depth only for `qtf_terms = full`; the integration fixtures are at 20 m, and 100 m is covered by `direct_fs_sum_equals_indirect` and `direct_sum_cutoff_rows` (body forcing only) on one hull each.
 - `FINGREEN3D` is about 2e-4 off the exact series at ν h ≈ 50 with small R/h: the gate of `fs_green_matrix_large_kh` is 2e-4, not 1e-6.
 - The lid hull was run at one mesh (480 panels with 192 lid points), half and lid together were not tried, and no fixed-body, damped or multi-body sum case was run.
@@ -1018,7 +1052,7 @@ The relative differences are over the largest value at the points. The radiation
 - The free-surface integral (`qtf_terms = full`) is validated on one hull, single body, heading 0, finite depth; deep water is not supported. At m1 its error is not monotone in the inner mesh, and the cause is not found ([QTF free-surface integral](#qtf-free-surface-integral)). The indirect sum-frequency potential part (`.11s`) is not written (Phase 6b); the direct sum is [validated here](#direct-method-at-the-sum-frequency).
 - Direct method (`QTF_Direct.12d`): validated on a smooth hull to 0.23% / 0.35% (forces / moments) against the indirect method at 4320 panels, and on the sharp cylinder only against the exact potential part (13 / 13 / 28% at 4032 panels, resonance pairs included). The cause of its smaller F_z error than the hull-form indirect result is not tested, and the IRSP case ran at one mesh (448 panels).
 - Direct method with the free-surface forcing (`qtf_terms = full`): checked on the laptop against the indirect free-surface terms (unit and integration tests, depth 20 m and 100 m), finite depth only. On Snellius it was checked on one rounded hull and one sharp cylinder, free body only ([Snellius validation](#snellius-validation)). No fixed, damped or multi-body case was run there.
-- Direct method at the sum frequency (`QTF_Direct.12s`): checked on the laptop against the in-run indirect sum (unit and integration tests) and the Python reference checks; the rounded-hull gap of 12.7% in the moments is open, `FINGREEN3D` is about 2e-4 off the exact series at ν h ≈ 50 with small R/h, and the Snellius runs against the exact reference are pending ([direct method at the sum frequency](#direct-method-at-the-sum-frequency)).
+- Direct method at the sum frequency (`QTF_Direct.12s`): checked against the in-run indirect sum (unit and integration tests, rounded hull on Snellius to 1.2% at m3) and against the exact sum QTF of the sharp cylinder on Snellius (`.12s` within 5–15% max and 0.3–1.1% median at m3, away from the resonance); the free-surface part is 4–9% (median) off the exact part on the default inner mesh in both methods, and `FINGREEN3D` is about 2e-4 off the exact series at ν h ≈ 50 with small R/h ([direct method at the sum frequency](#direct-method-at-the-sum-frequency)).
 - Two unit tests failed under ifx 2024a on Snellius (job of 2026-11-09, the build of the hull-form runs): `control_surface_mesh/separate_bodies_accepted` and `field_velocity/field_green_is_smooth_in_z`, in modules the potential part does not change. Both are fixed on the `second-order-drift` branch by commit 60a972e, which this branch does not contain yet. With ifort 2022.1 on Windows all tests pass ([Developer Documentation](developer_documentation.md#qtf-potential-part)).
 - WAMIT: the OC4 comparison with the public WAMIT run of OpenFAST now exists ([OC4 against WAMIT](#oc4-against-wamit)). A WAMIT licence would still be needed to settle the conjugation and axes of the WAMIT-format output on a hull with a known answer, since the diagonal of that comparison is real. The semi-analytical reference covers the signs of the mean drift values (210 values agree at 7168 panels), not the phases of the complex outputs.
 
