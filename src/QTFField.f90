@@ -545,14 +545,24 @@ CONTAINS
             'the rows of QTF_FieldPartial.txt and the direct part'
          WRITE (unit, '(a)') '# Re Im, Re_quad Im_quad and Re_inc Im_inc: as in QTF_FieldPartial.txt, the partial value (the'// &
             ' quadratic part and the second-order incident wave).'
-         WRITE (unit, '(a)') '# Re_dir Im_dir: the direct part, i rho Omega phi_D (pressure) and (i Omega/g) phi_D (elevation),'// &
-            ' Omega = omega_1 - omega_2 (K = 1) or omega_1 + omega_2 (K = 2), per unit amplitude pair, conjugated and scaled'// &
-            ' as Re Im. Add it to Re Im.'
-         WRITE (unit, '(a)') '# phi_D of the direct solve with body forcing, for both kernels; free-surface forcing not'// &
-            ' included (it is in .12d and .12s with qtf_terms = full); radiated wave of the second-order motion not included'// &
-            ' (Phase 6c)'
-         WRITE (unit, '(a)') '# has_direct: 1 where the direct solve covers the row (K = 1: omega_1 /= omega_2; K = 2: the'// &
-            ' sum pairs of QTF_Direct.12s), else 0 with Re_dir = Im_dir = 0 (mean rows and rows outside the direct solve).'
+         IF (.NOT. direct_sum) THEN
+            ! No sum column: the header lines of Phase 7a, so that QTF_Field.txt of qtf = 1 stays as it was, to the byte
+            WRITE (unit, '(a)') '# Re_dir Im_dir: the direct part, i rho Omega phi_D (pressure) and (i Omega/g) phi_D (elevation),'// &
+               ' Omega = omega_1 - omega_2, per unit amplitude pair, conjugated and scaled as Re Im. Add it to Re Im.'
+            WRITE (unit, '(a)') '# phi_D of the direct solve with body forcing; free-surface forcing not included (it is in .12d with qtf_terms = full);'// &
+               ' radiated wave of the second-order motion not included (Phase 6c)'
+            WRITE (unit, '(a)') '# has_direct: 1 where the direct solve covers the row (difference frequency, omega_1 /='// &
+               ' omega_2), else 0 with Re_dir = Im_dir = 0 (mean rows and sum rows).'
+         ELSE
+            WRITE (unit, '(a)') '# Re_dir Im_dir: the direct part, i rho Omega phi_D (pressure) and (i Omega/g) phi_D (elevation),'// &
+               ' Omega = omega_1 - omega_2 (K = 1) or omega_1 + omega_2 (K = 2), per unit amplitude pair, conjugated and scaled'// &
+               ' as Re Im. Add it to Re Im.'
+            WRITE (unit, '(a)') '# phi_D of the direct solve with body forcing, for both kernels; free-surface forcing not'// &
+               ' included (it is in .12d and .12s with qtf_terms = full); radiated wave of the second-order motion not included'// &
+               ' (Phase 6c)'
+            WRITE (unit, '(a)') '# has_direct: 1 where the direct solve covers the row (K = 1: omega_1 /= omega_2; K = 2: the'// &
+               ' sum pairs of QTF_Direct.12s), else 0 with Re_dir = Im_dir = 0 (mean rows and rows outside the direct solve).'
+         END IF
          WRITE (unit, '(a)') '# Columns: PER1 PER2 BETA1 BETA2 K IPT TYPE Mod Pha Re Im Re_quad Im_quad Re_inc Im_inc'// &
             ' Re_dir Im_dir has_direct'
          WRITE (unit, '(a)') '# K: 1 difference frequency (T-), 2 sum frequency (T+). TYPE: 1 pressure, 2 elevation.'

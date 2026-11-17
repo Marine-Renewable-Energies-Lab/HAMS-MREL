@@ -137,6 +137,7 @@ MODULE SecondOrderDriver
    TYPE(cs_points) :: fp_pts                           ! the field points, kind CS_FREE
    ! Free-surface integral of the difference QTF (qtf_terms = full)
    LOGICAL :: fs_terms = .FALSE.                       ! the fields on the inner free surface and the partial waves are kept
+   LOGICAL :: sum_nuh_warned = .FALSE.                  ! the nu*h > 50 warning of the second-order solves was logged
    TYPE(cs_points) :: fs_pts                           ! the inner free-surface points (build_fs_inner)
    TYPE(cs_points) :: fs_circle                        ! the samples on the circle r = R (pw_sample_points)
    REAL(8) :: fs_centre(2) = 0D0, fs_radius = 0D0      ! the circle
@@ -681,6 +682,7 @@ CONTAINS
          CALL qtf_direct_at_omega(mesh, geom, omega)
          RETURN
       END IF
+      IF (fs_terms) CALL warn_second_order_nuh(omega)
       CALL SYSTEM_CLOCK(t0, rate)
       IF (fs_terms) THEN
          CALL direct_fs_setup(mesh, fs_pts, fs_panels, fs_centre, fs_radius, H, omega, multi_arrays, dfs)
@@ -784,6 +786,25 @@ CONTAINS
       END DO
    END SUBROUTINE psi_states
 
+   SUBROUTINE warn_second_order_nuh(omega)
+      ! The second-order free-surface fields at Omega (psi, the inner Green matrix) come from the finite-depth Green function
+      ! in the field mode, like the first-order ones. Above nu*h = 50 (nu = Omega^2/g, reached by the sum frequencies in deep
+      ! water: 80 at Omega = 2.8 rad/s and h = 100 m) the field series keeps the Limes acceleration of PIDCOCK, the regime the
+      ! 2e-4 check of FINGREEN3D (up to nu*h = 59) does not cover. Once per run, at the first Omega that reaches it.
+      REAL(8), INTENT(IN) :: omega
+      REAL(8), PARAMETER :: LIMES_NUH = 50D0
+      REAL(8) :: nuh
+
+      IF (sum_nuh_warned .OR. H < 0D0) RETURN
+      nuh = omega*omega/9.80665D0*H
+      IF (nuh > LIMES_NUH) THEN
+         sum_nuh_warned = .TRUE.
+         WRITE (*, '(a,F10.5,a,F8.2,a)') ' QTF second-order free surface warning: Omega', omega, ' rad/s, nu*h =', nuh, &
+            ' > 50: the finite-depth field values may scatter (the Green function series uses Limes there); this and all'// &
+            ' higher Omega, shown once.'
+      END IF
+   END SUBROUTINE warn_second_order_nuh
+
    SUBROUTINE keep_fs_psi(omega, psi)
       ! qtf_terms = full: psi_k at the inner free-surface points (value only, stock route) and the partial waves of each
       ! psi_k outside R (samples by the centroid route, with the mode check), into the QTF store. The solver globals
@@ -803,6 +824,7 @@ CONTAINS
             ' rad/s, but the solver is at another frequency.'
          ERROR STOP 1
       END IF
+      CALL warn_second_order_nuh(omega)
       nmode = 6*mesh%nbody
       CALL psi_states(omega, psi, ps)
       ALLOCATE (psi_pts(fs_pts%n, nmode), pw(nmode), miss(nmode))

@@ -54,7 +54,8 @@ subroutine collect_qtf_field_serial(testsuite)
     new_unittest("field_direct_sum_cutoff", test_direct_sum_cutoff), &
     new_unittest("field_direct_sum_only", test_direct_sum_only), &
     new_unittest("field_direct_both_kernels", test_direct_both_kernels), &
-    new_unittest("field_direct_off", test_direct_off) &
+    new_unittest("field_direct_off", test_direct_off), &
+    new_unittest("field_header_qtf1_c716ed7", test_header_qtf1) &
     ]
 end subroutine collect_qtf_field_serial
 
@@ -858,5 +859,55 @@ subroutine test_direct_off(error)
   call remove_dir(root)
   call remove_dir(root2)
 end subroutine test_direct_off
+
+!> The three header lines of QTF_Field.txt that Phase 7c-2 reworded: with qtf = 1 (no sum column) they are the text of
+!> c716ed7, byte for byte; with the sum on (qtf = 3) the sum wording.
+subroutine test_header_qtf1(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "qtf_field_hdr1_tmp", root3 = "qtf_field_hdr3_tmp"
+  complex(8), parameter :: phi12(2) = [(0.4d0, -0.3d0), (-0.1d0, 0.6d0)]
+  character(len=700) :: l1, l2, l3, m1, m2, m3
+
+  call run_field_store(root, .true., phi12, qtf_kind=1)
+  call header_lines(root // "/Wamit_format/QTF_Field.txt", l1, l2, l3)
+  call check(error, trim(l1) == "# Re_dir Im_dir: the direct part, i rho Omega phi_D (pressure) and (i Omega/g) phi_D (elevation),"// &
+             " Omega = omega_1 - omega_2, per unit amplitude pair, conjugated and scaled as Re Im. Add it to Re Im.", &
+             "qtf = 1: Re_dir line is not the one of c716ed7")
+  if (allocated(error)) return
+  call check(error, trim(l2) == "# phi_D of the direct solve with body forcing; free-surface forcing not included (it is in .12d with"// &
+             " qtf_terms = full); radiated wave of the second-order motion not included (Phase 6c)", &
+             "qtf = 1: phi_D line is not the one of c716ed7")
+  if (allocated(error)) return
+  call check(error, trim(l3) == "# has_direct: 1 where the direct solve covers the row (difference frequency, omega_1 /= omega_2),"// &
+             " else 0 with Re_dir = Im_dir = 0 (mean rows and sum rows).", "qtf = 1: has_direct line is not the one of c716ed7")
+  if (allocated(error)) return
+  call remove_dir(root)
+  call run_field_store(root3, .true., phi12, qtf_kind=3)
+  call header_lines(root3 // "/Wamit_format/QTF_Field.txt", m1, m2, m3)
+  call check(error, index(m1, "(K = 1) or omega_1 + omega_2 (K = 2)") > 0 .and. index(m2, "for both kernels") > 0 .and. &
+             index(m3, "K = 2: the sum pairs of QTF_Direct.12s") > 0, "qtf = 3: the header does not name the sum")
+  call remove_dir(root3)
+end subroutine test_header_qtf1
+
+!> The header lines of a field file that start with "# Re_dir Im_dir:", "# phi_D" and "# has_direct:"
+subroutine header_lines(path, l1, l2, l3)
+  character(len=*), intent(in) :: path
+  character(len=*), intent(out) :: l1, l2, l3
+  character(len=700) :: line
+  integer :: unit, ios
+
+  l1 = ""
+  l2 = ""
+  l3 = ""
+  open (newunit=unit, file=path, status='old', action='read')
+  do
+    read (unit, '(a)', iostat=ios) line
+    if (ios /= 0) exit
+    if (line(1:15) == "# Re_dir Im_dir") l1 = line
+    if (line(1:8) == "# phi_D ") l2 = line
+    if (line(1:13) == "# has_direct:") l3 = line
+  end do
+  close (unit)
+end subroutine header_lines
 
 end module test_qtf_field

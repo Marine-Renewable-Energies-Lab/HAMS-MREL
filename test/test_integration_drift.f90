@@ -5254,6 +5254,14 @@ contains
         if (allocated(error)) return
         call read_lines(output_dir("qtf_direct_field")//qtf_field_file, part, error)
         if (allocated(error)) return
+        ! qtf = 1: the header lines of Phase 7a, byte for byte as at c716ed7 (the has_direct line named no sum)
+        found = 0
+        do r = 1, size(full)
+            if (index(full(r), "# has_direct: 1 where the direct solve covers the row (difference frequency, omega_1 /= omega_2),") &
+                == 1 .and. index(full(r), "else 0 with Re_dir = Im_dir = 0 (mean rows and sum rows).") > 0) found = found + 1
+        end do
+        call check(error, found == 1, "The has_direct header line of QTF_Field.txt of a qtf = 1 run is not that of Phase 7a")
+        if (allocated(error)) return
         allocate (frow(size(full)), prow(size(part)))
         nf = 0
         do r = 1, size(full)
