@@ -175,6 +175,18 @@ The files are read in [HAMS_Prog.f90](../src/HAMS_Prog.f90) and in the subroutin
 
 The node coordinates of the waterplane mesh are stored in `iXYZ_LOCAL_MULTI(bodyID,nodeID,1:3)`. The number of vertices in each panel is stored in `iNCN_MULTI(bodyID,nodeID)` and the vertices (vertex1, vertex2, ...) are stored in `iNCON_MULTI(bodyID,nodeID,1:numvertices)`.
 
+### Lid mesh requirements
+
+With `IRSP = 1`, the waterplane mesh (the "lid") only supplies extra collocation points. HAMS-MREL places one point at each lid panel centroid and adds one equation there: Green's identity for a point inside the body, which has no free term. The hull potentials remain the only unknowns, and the hull and lid equations are solved together by least squares (`AssbMatx_irr.f90`, `AssbMatx_irrMulti.f90`). The lid panels are never sources. Their normals, areas and sizes are not used, so only the centroids matter. The rules are:
+
+- **All nodes on z = 0 exactly.** The reader stops on any lid node with |z| > 1e-10 (`ReadWTPLMesh`, `ReadWTPLMeshMulti`).
+- **Lid panels go only in `WaterPlaneMesh[_i].pnl`, never in `HullMesh[_i].pnl`.** A hull panel on z = 0 is a source panel in the free surface, and `CalNormals` stops on it.
+- **Cover the whole interior waterplane** of each body that cuts the free surface. The lid edge should follow the hull waterline; using the hull waterline nodes as the outer lid nodes is the simplest way to do that.
+- **Keep the outer centroids away from the hull wall.** The distance from each lid centroid to the wall should be at least about 0.3 to 0.5 times the height of the hull's waterline panel row. Near-field terms of the Green function are partly evaluated at one point per source panel, and that is poor when a lid point lies much closer to a hull panel than the panel is large. A ring of lid panels built on the hull waterline nodes, with a ring width about equal to the waterline row height, puts its centroids at about half that height from the wall.
+- **Normals pointing up (+z)** are the convention used in the examples. The solver does not use the lid normals.
+
+Why the distance matters: on a column with a heave plate (waterline rows 0.68 m high, 832 hull panels), a lid made by clipping a square grid to the waterline circle left thin triangles at the wall, with centroids 2 to 5 cm from it. With that lid, heave damping and heave excitation between 2 and 4 s were off from an independent reference solution by 68% and 30% on average. Without a lid they were off by 12% and 9%, because of the irregular frequency in that band. A lid of three rings on the 32 waterline nodes, with outer centroids 0.38 m from the wall, brought them to 5% and 0.7%. At the zero- and infinite-frequency limits both lids gave the no-lid added mass to within 0.04%, and between 5 and 30 s to within 0.3% on added mass and 1.1% on damping.
+
 
 ## gen_mod (Optional)
 
