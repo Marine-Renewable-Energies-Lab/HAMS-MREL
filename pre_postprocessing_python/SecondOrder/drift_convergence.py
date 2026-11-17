@@ -584,6 +584,13 @@ def qtf_directsum_cases(grid):
     chosen.append(Case("q_sharp_directsum_free_fsP055_m2", "D", "7c2", "sharp", 2, "free", "differencing",
                        frequencies=QTF_SUM_FREQUENCIES, headings=(0.0,), irsp=1, qtf=3, qtf_terms="full",
                        qtf_max_dw=QTF_POTENTIAL_MAX_DW, extra_options=dict(CS_FIXED_M1, qtf_direct=1, qtf_fs_panel=0.55)))
+    # Fixed-body check of the sum free-surface part (Snellius stage 3: the inner mesh and the phi_zz offsets are not the cause;
+    # the free-body error follows the first-order omega above the resonance). The stage 2 m2 case held fixed: without motions
+    # the free-surface forcing has no radiated waves, so this separates diffraction from radiation (qtfdirectsum_reference
+    # has the fixed rows)
+    chosen.append(Case("q_sharp_directsum_fixed_m2", "D", "7c2", "sharp", 2, "fixed", "differencing",
+                       frequencies=QTF_SUM_FREQUENCIES, headings=(0.0,), irsp=1, qtf=3, qtf_terms="full",
+                       qtf_max_dw=QTF_POTENTIAL_MAX_DW, extra_options=dict(CS_FIXED_M1, qtf_direct=1)))
     return chosen
 
 
