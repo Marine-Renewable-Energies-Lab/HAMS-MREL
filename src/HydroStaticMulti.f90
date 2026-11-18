@@ -103,7 +103,7 @@ CONTAINS
             bc = (J-1)/DOF + 1         ! body index for this column (1..NBODY)
             jl = J - (bc-1)*DOF        ! local col index within 6x6 (1..6)
             IF (br == bc) THEN
-              WRITE(65,130) I, J, CRS_MULTI(br, il, jl) / (RHO*G)
+              WRITE(65,130) I, J, CRS_MULTI(br, il, jl) / (RHO*G*REFL**LEXP_C(il,jl))        ! WAMIT: C/(rho g L^k)
             ELSE
               WRITE(65,130) I, J, 0.0D0
             END IF

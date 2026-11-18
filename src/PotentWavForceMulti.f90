@@ -110,12 +110,13 @@ CONTAINS
 
       DO MD=1,6
           
-       REL=REAL(EXFC(MD))/(RHO*G*AMP)
-       IMG=IMAG(EXFC(MD))/(RHO*G*AMP)
-       MOD=ABS(EXFC(MD))/(RHO*G*AMP) !SQRT(REL**2+MDMG**2)
+       ! WAMIT nondimensional exciting force X/(rho g A L^m), L the reference length (see LEXP_X in Const_mod)
+       REL=REAL(EXFC(MD))/(RHO*G*AMP*REFL**LEXP_X(MD))
+       IMG=IMAG(EXFC(MD))/(RHO*G*AMP*REFL**LEXP_X(MD))
+       MOD=ABS(EXFC(MD))/(RHO*G*AMP*REFL**LEXP_X(MD)) !SQRT(REL**2+MDMG**2)
        NREL=-IMG
        NIMG=-REL
-       PHS(MD)=ATAN2D(NIMG,NREL)*180.0D0/PI
+       PHS(MD)=ATAN2D(NIMG,NREL)                                ! degrees already: ATAN2D, not ATAN2
        WRITE(20+MD,1010) WK,W1,REAL(EXFC(MD)),IMAG(EXFC(MD)) ! These are different from the values of WAMIT? These change the RAOs. Why is that happening?
        
        IF (ABS(TP+1.D0).GT.1.E-6.AND.ABS(TP).GT.1.E-6) THEN
@@ -209,9 +210,9 @@ CONTAINS
        DO MD1=1,6
           DO MD2=1,6
             IF (ABS(TP+1.D0).LT.1.E-6.OR.ABS(TP).LT.1.E-6) THEN
-             WRITE(61,1020) OUFR, (DOF1 - 1)*6 + MD1, (DOF2 - 1)*6 + MD2, AMAS(MD1,MD2)/RHO
+             WRITE(61,1020) OUFR, (DOF1 - 1)*6 + MD1, (DOF2 - 1)*6 + MD2, AMAS(MD1,MD2)/(RHO*REFL**LEXP_AB(MD1,MD2))      ! WAMIT: A/(rho L^k)
             ELSE
-             WRITE(61,1020) OUFR, (DOF1 - 1)*6 + MD1, (DOF2 - 1)*6 + MD2, AMAS(MD1,MD2)/RHO, BDMP(MD1,MD2)/(RHO*W1)
+             WRITE(61,1020) OUFR, (DOF1 - 1)*6 + MD1, (DOF2 - 1)*6 + MD2, AMAS(MD1,MD2)/(RHO*REFL**LEXP_AB(MD1,MD2)), BDMP(MD1,MD2)/(RHO*W1*REFL**LEXP_AB(MD1,MD2))
             ENDIF
           ENDDO
        ENDDO

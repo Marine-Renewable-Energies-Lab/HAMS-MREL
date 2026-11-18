@@ -119,12 +119,8 @@ SUBROUTINE SolveMotionMulti(W1,TP,OUFR,BETA,AMP,AMAS,BDMP, &
      LD     = MOD(MD-1, 6) + 1
      BODYID = (MD-1)/6 + 1
 
-     ! Determine exponent for normalization
-     IF (LD .LE. 3) THEN
-        MEXP = 2  ! Translational DOFs: normalize by AMP/REFL^2
-     ELSE
-        MEXP = 3  ! Rotational DOFs: normalize by AMP/REFL^3
-     END IF
+     ! WAMIT normalisation xi/(A/L^n): n = 0 for translations, 1 for rotations (LEXP_MOTION in Const_mod)
+     MEXP = LEXP_MOTION(LD)
 
      NFAC = (AMP) / REFL**MEXP
 

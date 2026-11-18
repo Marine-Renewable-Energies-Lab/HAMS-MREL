@@ -203,6 +203,8 @@ CONTAINS
       INTEGER  IEL,JEL,IS,IP,IRR,FLAG
       REAL*8   XQ,YQ,ZQ,XP,YP,ZP,SIJ,DIJ(3),DIST,XFV(3),XQV(3)
       COMPLEX*16  GRN(4),DPOX,DPOY,DPOZ
+      COMPLEX*16  GINT(4)
+      REAL*8,PARAMETER:: WNEAR=2.D0          ! lid rows: wave part integrated over source panels closer than WNEAR panel sizes
 
       ! The per-body→COMB packing previously inlined here is now done once in BuildCombinedArrays
       ! at startup (Phase 2.3) — those copies are frequency-independent.
@@ -278,7 +280,7 @@ CONTAINS
 
       IRR=3
 
-!$OMP PARALLEL DO PRIVATE(IEL,JEL,IS,XQ,XP,YQ,YP,ZQ,ZP,SIJ,DIJ,GRN,FLAG,DIST,XFV,XQV) SCHEDULE(DYNAMIC,16)
+!$OMP PARALLEL DO PRIVATE(IEL,JEL,IS,XQ,XP,YQ,YP,ZQ,ZP,SIJ,DIJ,GRN,GINT,FLAG,DIST,XFV,XQV) SCHEDULE(DYNAMIC,16)
 
       DO IEL=1, iNELEM_TOTAL
           
@@ -331,6 +333,12 @@ CONTAINS
           XQV(2)=YQ
           XQV(3)=ZQ
           CALL IMAGE_TERM_EXACT_MULTI(XFV,XQV,V,JEL,IRR,GRN,SIJ,DIJ)
+          ! The lid point is outside the fluid, on z = 0; next to a waterline panel the wave part varies too much over
+          ! the panel for its centroid value. Integrate it there (see WAVE_PART_PANEL). The limits have no wave part.
+          IF (DIST.LE.WNEAR*PNSZ_MULTI_COMB(JEL).AND.ABS(V).GT.1.E-8.AND.ABS(V+1.D0).GT.1.E-8) THEN
+           CALL WAVE_PART_PANEL_MULTI(XFV,JEL,V,WVN,NK,H,GINT)
+           GRN(:)=GINT(:)/DS_MULTI_COMB(JEL)
+          ENDIF
          ENDIF
 
          PKBN_MULTI_COMB(IEL,JEL,IS,1)=SIJ

@@ -161,6 +161,41 @@
         DATA SX_MULTI   /  1.D0,  1.D0,  1.D0,  1.D0  /
         DATA SY_MULTI  /   1.D0,  -1.D0,  -1.D0,  1.D0  /
 
+        CONTAINS
+
+!       Powers of the reference length L in the WAMIT-format outputs (WAMIT User Manual, section 4, definitions of the
+!       nondimensional quantities). Mode I is 1-6, or 7, 8, ... in a multi-body run, where it stands for rigid-body mode
+!       MOD(I-1,6)+1 of its body. ROT is 1 for a rotation (modes 4-6) and 0 for a translation.
+        INTEGER FUNCTION ROT_MODE(I)
+        INTEGER,INTENT(IN):: I
+        ROT_MODE=0
+        IF (MOD(I-1,6)+1.GE.4) ROT_MODE=1
+        END FUNCTION ROT_MODE
+
+!       Added mass A/(rho L^k) and damping B/(rho omega L^k): k = 3, 4 or 5.
+        INTEGER FUNCTION LEXP_AB(I,J)
+        INTEGER,INTENT(IN):: I,J
+        LEXP_AB=3+ROT_MODE(I)+ROT_MODE(J)
+        END FUNCTION LEXP_AB
+
+!       Exciting force X/(rho g A L^m): m = 2 or 3.
+        INTEGER FUNCTION LEXP_X(I)
+        INTEGER,INTENT(IN):: I
+        LEXP_X=2+ROT_MODE(I)
+        END FUNCTION LEXP_X
+
+!       Hydrostatic restoring C/(rho g L^k): k = 2, 3 or 4.
+        INTEGER FUNCTION LEXP_C(I,J)
+        INTEGER,INTENT(IN):: I,J
+        LEXP_C=2+ROT_MODE(I)+ROT_MODE(J)
+        END FUNCTION LEXP_C
+
+!       Motion xi/(A/L^n): n = 0 or 1.
+        INTEGER FUNCTION LEXP_MOTION(I)
+        INTEGER,INTENT(IN):: I
+        LEXP_MOTION=ROT_MODE(I)
+        END FUNCTION LEXP_MOTION
+
         END MODULE Const_mod
         
 

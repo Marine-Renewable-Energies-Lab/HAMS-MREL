@@ -25,12 +25,18 @@ MODULE SingularIntgr
    USE Const_mod
    USE PanelMesh_mod
    USE Inerfs_mod
+   USE INFG3D_Open
+   USE FinGreen3D_Open
 
    IMPLICIT NONE
 
       ! ..... Public Subroutines ...................................................................................................
 
    PUBLIC :: IMAGE_TERM_EXACT
+   PUBLIC :: WAVE_PART_PANEL
+   PUBLIC :: WAVE_PART_KERNEL
+   PUBLIC :: WAVE_PART_CELLS
+   PUBLIC :: WAVE_PART_DISTANCE
    PUBLIC :: SGLINTBD_TRI
    PUBLIC :: SGLINTBD_QUAD
    PUBLIC :: SGLINTBD_TRI2
@@ -82,6 +88,157 @@ CONTAINS
 
       RETURN
       END SUBROUTINE IMAGE_TERM_EXACT
+
+!-------------------------------------------------------------------------------
+!     The wave part of the Green function and of its source gradient, integrated over the source panel JEL.
+!     FINGREEN3D and INFGREEN3D give the wave part at the panel centroid, to be multiplied by the area. For a lid
+!     collocation point on z = 0 that lies much closer to a waterline panel than the panel is large, that one value
+!     is poor: the wave part varies strongly over the panel (it has a logarithmic singularity as R and z + zeta go
+!     to zero). This routine integrates it (WAVE_PART_KERNEL), with the number of cells chosen by WAVE_PART_CELLS,
+!     so GINT/area replaces GRN after IMAGE_TERM_EXACT. At the zero- and infinite-frequency limits there is no wave
+!     part and GINT is zero.
+!       XF   field point, already reflected for the symmetry image
+!       JEL  source panel, in the hull arrays of this path
+!-------------------------------------------------------------------------------
+      SUBROUTINE WAVE_PART_PANEL(XF,JEL,V,WVN,NK,H,GINT)
+      IMPLICIT NONE
+
+      INTEGER,INTENT(IN):: JEL,NK
+      REAL*8,INTENT(IN):: XF(3),V,WVN(NK),H
+      COMPLEX*16,INTENT(OUT):: GINT(4)
+      INTEGER:: K
+      REAL*8:: A(4,3)
+
+      DO K=1,NCN(JEL)
+       A(K,:)=XYZ(NCON(JEL,K),:)
+      ENDDO
+      IF (NCN(JEL).EQ.3) A(4,:)=A(3,:)
+      CALL WAVE_PART_KERNEL(A,XF,WAVE_PART_CELLS(A,XF),V,WVN,NK,H,GINT)
+
+      RETURN
+      END SUBROUTINE WAVE_PART_PANEL
+
+!-------------------------------------------------------------------------------
+!     Distance from XF to the panel with corners A (a triangle with A(4,:) = A(3,:)), over the panel's longest side.
+!     The panel is taken as plane: inside its outline the distance is the height above the plane, outside it is the
+!     distance to the nearest edge.
+!-------------------------------------------------------------------------------
+      REAL*8 FUNCTION WAVE_PART_DISTANCE(A,XF)
+      IMPLICIT NONE
+      REAL*8,INTENT(IN):: A(4,3),XF(3)
+      INTEGER:: K,KN
+      REAL*8:: C(3),N(3),P(3),E(3),W(3),T,DN,DE,SIDE,EL
+      LOGICAL:: INSIDE
+
+      C(:)=0.25D0*(A(1,:)+A(2,:)+A(3,:)+A(4,:))
+      N(1)=(A(3,2)-A(1,2))*(A(4,3)-A(2,3))-(A(3,3)-A(1,3))*(A(4,2)-A(2,2))
+      N(2)=(A(3,3)-A(1,3))*(A(4,1)-A(2,1))-(A(3,1)-A(1,1))*(A(4,3)-A(2,3))
+      N(3)=(A(3,1)-A(1,1))*(A(4,2)-A(2,2))-(A(3,2)-A(1,2))*(A(4,1)-A(2,1))
+      N(:)=N(:)/SQRT(N(1)**2+N(2)**2+N(3)**2)
+      DN=(XF(1)-C(1))*N(1)+(XF(2)-C(2))*N(2)+(XF(3)-C(3))*N(3)
+      P(:)=XF(:)-DN*N(:)
+      INSIDE=.TRUE.
+      DE=HUGE(1.D0)
+      SIDE=0.D0
+      DO K=1,4
+       KN=MOD(K,4)+1
+       E(:)=A(KN,:)-A(K,:)
+       EL=SQRT(E(1)**2+E(2)**2+E(3)**2)
+       IF (EL.LT.1.D-12) CYCLE                                   ! the repeated node of a triangle
+       SIDE=MAX(SIDE,EL)
+       W(:)=P(:)-A(K,:)
+       IF ((E(2)*W(3)-E(3)*W(2))*N(1)+(E(3)*W(1)-E(1)*W(3))*N(2)+(E(1)*W(2)-E(2)*W(1))*N(3).LT.0.D0) INSIDE=.FALSE.
+       T=MIN(1.D0,MAX(0.D0,((XF(1)-A(K,1))*E(1)+(XF(2)-A(K,2))*E(2)+(XF(3)-A(K,3))*E(3))/EL**2))
+       DE=MIN(DE,SQRT((XF(1)-A(K,1)-T*E(1))**2+(XF(2)-A(K,2)-T*E(2))**2+(XF(3)-A(K,3)-T*E(3))**2))
+      ENDDO
+      IF (INSIDE) DE=ABS(DN)
+      WAVE_PART_DISTANCE=DE/SIDE
+
+      RETURN
+      END FUNCTION WAVE_PART_DISTANCE
+
+!-------------------------------------------------------------------------------
+!     Number of cells per direction for WAVE_PART_KERNEL on the panel with corners A (a triangle with A(4,:) = A(3,:)),
+!     seen from the field point XF, graded by the distance s of WAVE_PART_DISTANCE: 6 x 6 cells (576 points) below
+!     s = 0.075, 3 x 3 (144) up to 0.15, 2 x 2 (64) up to 0.4, one cell (16) beyond. From a scan against a fine
+!     quadrature (test_lid_wave_part; wall panel and triangle, deep water and h = 30 m, T = 2.5 s): the worst relative
+!     error of the gradient is about 2.5e-4 in each band, and below s = 0.025 it exceeds 1e-3 even with 6 x 6 cells,
+!     which docs/input_files.md advises against.
+!-------------------------------------------------------------------------------
+      INTEGER FUNCTION WAVE_PART_CELLS(A,XF)
+      IMPLICIT NONE
+      REAL*8,INTENT(IN):: A(4,3),XF(3)
+      REAL*8:: S
+
+      S=WAVE_PART_DISTANCE(A,XF)
+      IF (S.LT.0.075D0) THEN
+       WAVE_PART_CELLS=6
+      ELSEIF (S.LT.0.15D0) THEN
+       WAVE_PART_CELLS=3
+      ELSEIF (S.LT.0.4D0) THEN
+       WAVE_PART_CELLS=2
+      ELSE
+       WAVE_PART_CELLS=1
+      ENDIF
+
+      RETURN
+      END FUNCTION WAVE_PART_CELLS
+
+!-------------------------------------------------------------------------------
+!     Composite Gauss quadrature of the wave part of G and of its source gradient over the panel with corners A
+!     (bilinear map of the unit square; a triangle as a quadrilateral with a repeated node): NC x NC cells, 4 x 4
+!     points each, so 16 NC^2 Green function calls. Same calls and same image term as the centroid value.
+!-------------------------------------------------------------------------------
+      SUBROUTINE WAVE_PART_KERNEL(A,XF,NC,V,WVN,NK,H,GINT)
+      IMPLICIT NONE
+
+      INTEGER,INTENT(IN):: NC,NK
+      REAL*8,INTENT(IN):: A(4,3),XF(3),V,WVN(NK),H
+      COMPLEX*16,INTENT(OUT):: GINT(4)
+      REAL*8,PARAMETER:: GX(2)=(/0.3399810435848563D0,0.8611363115940526D0/)    ! 4-point Gauss-Legendre on (-1,1), half
+      REAL*8,PARAMETER:: GW(2)=(/0.6521451548625461D0,0.3478548451374538D0/)
+      INTEGER:: I,J,IA,IB
+      REAL*8:: XA,XB,WA,WB,Q(3),DU(3),DV(3),CN(3),PQ(3),R1
+      COMPLEX*16:: G(4)
+
+      GINT=CMPLX(0.D0,0.D0)
+      IF (ABS(V).LT.1.E-8.OR.ABS(V+1.D0).LT.1.E-8) RETURN
+
+      DO I=1,NC
+      DO J=1,NC
+       DO IA=-2,2
+        IF (IA.EQ.0) CYCLE
+        XA=(DBLE(I-1)+0.5D0*(1.D0+SIGN(GX(ABS(IA)),DBLE(IA))))/DBLE(NC)
+        WA=0.5D0*GW(ABS(IA))/DBLE(NC)
+        DO IB=-2,2
+         IF (IB.EQ.0) CYCLE
+         XB=(DBLE(J-1)+0.5D0*(1.D0+SIGN(GX(ABS(IB)),DBLE(IB))))/DBLE(NC)
+         WB=0.5D0*GW(ABS(IB))/DBLE(NC)
+         Q(:)=(1.D0-XA)*(1.D0-XB)*A(1,:)+XA*(1.D0-XB)*A(2,:)+XA*XB*A(3,:)+(1.D0-XA)*XB*A(4,:)
+         DU(:)=(1.D0-XB)*(A(2,:)-A(1,:))+XB*(A(3,:)-A(4,:))
+         DV(:)=(1.D0-XA)*(A(4,:)-A(1,:))+XA*(A(3,:)-A(2,:))
+         CN(1)=DU(2)*DV(3)-DU(3)*DV(2)
+         CN(2)=DU(3)*DV(1)-DU(1)*DV(3)
+         CN(3)=DU(1)*DV(2)-DU(2)*DV(1)
+         IF (H.LT.0.D0) THEN
+          CALL INFGREEN3D(Q(1),XF(1),Q(2),XF(2),Q(3),XF(3),V,G,1)
+         ELSE
+          CALL FINGREEN3D(Q(1),XF(1),Q(2),XF(2),Q(3),XF(3),V,WVN,NK,H,G,1)
+         ENDIF
+         PQ(1)=Q(1)-XF(1)
+         PQ(2)=Q(2)-XF(2)
+         PQ(3)=Q(3)+XF(3)
+         R1=SQRT(PQ(1)**2+PQ(2)**2+PQ(3)**2)
+         G(1)=G(1)-1.D0/R1                                   ! the image term, integrated by IMAGE_TERM_EXACT
+         G(2:4)=G(2:4)+PQ(:)/R1**3
+         GINT(:)=GINT(:)+WA*WB*SQRT(CN(1)**2+CN(2)**2+CN(3)**2)*G(:)
+        ENDDO
+       ENDDO
+      ENDDO
+      ENDDO
+
+      RETURN
+      END SUBROUTINE WAVE_PART_KERNEL
 
 !-------------------------------------------------------------------------------
 !          Evaluation of 1/r singular integrals in Constant Panel Method  
