@@ -41,6 +41,10 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("qtf_direct_key", test_qtf_direct_key), &
     new_unittest("qtf_direct_needs_body", test_qtf_direct_needs_body), &
     new_unittest("qtf_direct_full_accepted", test_qtf_direct_full_accepted), &
+    new_unittest("qtf_direct_sum_accepted", test_qtf_direct_sum_accepted), &
+    new_unittest("qtf_sum_indirect_stops", test_qtf_sum_indirect_stops), &
+    new_unittest("qtf_max_sw_negative", test_qtf_max_sw_negative), &
+    new_unittest("qtf_sum_full_deep_stops", test_qtf_sum_full_deep_stops), &
     new_unittest("qtf_edge_keys", test_qtf_edge_keys), &
     new_unittest("qtf_field_key", test_qtf_field_key) &
     ]
@@ -543,8 +547,8 @@ subroutine test_qtf_terms_body(error)
   end do
   call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 2", &
                                          "qtf_terms = body"], &
-                           "qtf_terms = body needs the difference QTF (qtf = 1 or 3); sum-frequency body forcing needs "// &
-                           "the free-surface integrals (Phase 6).")
+                           "qtf = 2 with qtf_terms = body or full needs qtf_direct = 1: "// &
+                           "the indirect sum-frequency QTF is Phase 6b.")
   call remove_directory(root)
 end subroutine test_qtf_terms_body
 
@@ -609,7 +613,8 @@ subroutine test_qtf_full_sum_only_stops(error)
   call make_directory(root)
   call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 2", &
                                          "qtf_terms = full"], &
-                           "qtf_terms = full needs the difference QTF (qtf = 1 or 3); the sum frequency is Phase 6b.")
+                           "qtf = 2 with qtf_terms = body or full needs qtf_direct = 1: "// &
+                           "the indirect sum-frequency QTF is Phase 6b.")
   call remove_directory(root)
 end subroutine test_qtf_full_sum_only_stops
 
@@ -709,7 +714,7 @@ subroutine test_qtf_direct_key(error)
   call remove_directory(root)
 end subroutine test_qtf_direct_key
 
-!> qtf_direct = 1 needs qtf_terms = body or full (the free-surface forcing since Phase 7b) and qtf = 1 or 3
+!> qtf_direct = 1 needs qtf_terms = body or full (the free-surface forcing since Phase 7b) and qtf = 1, 2 or 3
 subroutine test_qtf_direct_needs_body(error)
   type(error_type), allocatable, intent(out) :: error
   character(len=*), parameter :: root = "hams_test_so_qtf_direct_body"
@@ -726,7 +731,7 @@ subroutine test_qtf_direct_needs_body(error)
   if (allocated(error)) return
   call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 0", "qtf_terms = body", &
                                          "qtf_direct = 1"], &
-                           "qtf_direct = 1 needs the difference QTF (qtf = 1 or 3) in SecondOrder.in.")
+                           "qtf_direct = 1 needs qtf = 1, 2 or 3 in SecondOrder.in.")
   if (allocated(error)) return
   call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 2", "qtf_terms = quadratic", &
                                          "qtf_direct = 1"], &
@@ -835,6 +840,99 @@ subroutine test_qtf_edge_keys(error)
                            'qtf_edge_angle must be between 0 and 180 degrees in SecondOrder.in.')
   call remove_directory(root)
 end subroutine test_qtf_edge_keys
+
+!> Phase 7c-2: qtf = 2 with qtf_direct = 1 is accepted with qtf_terms = body and full; qtf_max_sw is read
+subroutine test_qtf_direct_sum_accepted(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_direct_sum"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+  character(len=8) :: terms(2) = [character(len=8) :: "body", "full"]
+  integer :: it
+
+  call remove_directory(root)
+  call make_directory(root)
+  do it = 1, 2
+    call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 2", "qtf_terms = "//trim(terms(it)), &
+                            "qtf_direct = 1", "qtf_max_sw = 2.5"])
+    call read_second_order_options(root, opts, ok, msg)
+    call check(error, ok, "qtf = 2 with qtf_direct = 1 rejected ("//trim(terms(it))//"): "//trim(msg))
+    if (allocated(error)) exit
+    call check(error, opts%qtf == 2 .and. opts%qtf_direct == 1, "qtf or qtf_direct not read")
+    if (allocated(error)) exit
+    call check(error, opts%qtf_max_sw == 2.5d0, "qtf_max_sw not read")
+    if (allocated(error)) exit
+  end do
+  call remove_directory(root)
+end subroutine test_qtf_direct_sum_accepted
+
+!> Phase 7c-2: qtf = 2 with qtf_terms = body or full and qtf_direct = 0 stops, and the message names qtf_direct = 1
+!> and Phase 6b; with qtf = 3 the difference QTF has its body forcing and the sum stays quadratic, as before
+subroutine test_qtf_sum_indirect_stops(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_sum_indirect"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 2", "qtf_terms = body", "qtf_direct = 0"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, .not. ok, "qtf = 2, body, qtf_direct = 0 accepted")
+  if (allocated(error)) return
+  call check(error, index(msg, "qtf_direct = 1") > 0 .and. index(msg, "Phase 6b") > 0, "message: "//trim(msg))
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 3", "qtf_terms = body", "qtf_direct = 0"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "qtf = 3, body, qtf_direct = 0 rejected: "//trim(msg))
+  call remove_directory(root)
+end subroutine test_qtf_sum_indirect_stops
+
+!> qtf = 2 with qtf_terms = full and qtf_direct = 1 needs a finite depth as the difference QTF does
+subroutine test_qtf_sum_full_deep_stops(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_sum_full_deep"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 2", &
+                          "qtf_terms = full", "qtf_direct = 1"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "qtf = 2, full, qtf_direct = 1 rejected at reading: "//trim(msg))
+  if (allocated(error)) return
+  call validate_second_order(opts, 1, -1d0, 1, 0, .false., ok, msg)
+  call check(error, .not. ok, "deep water accepted with qtf = 2, full, qtf_direct = 1")
+  if (allocated(error)) return
+  call check(error, index(msg, "qtf_terms = full needs a finite water depth") == 1, "message: "//trim(msg))
+  if (allocated(error)) return
+  call validate_second_order(opts, 1, 20d0, 1, 0, .false., ok, msg)
+  call check(error, ok, "finite depth rejected: "//trim(msg))
+  call remove_directory(root)
+end subroutine test_qtf_sum_full_deep_stops
+
+!> qtf_max_sw is 0 by default and must not be negative
+subroutine test_qtf_max_sw_negative(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_max_sw"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok .and. opts%qtf_max_sw == 0d0, "qtf_max_sw default")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 2", "qtf_max_sw = -1"], &
+                           "qtf_max_sw must not be negative in SecondOrder.in.")
+  call remove_directory(root)
+end subroutine test_qtf_max_sw_negative
 
 subroutine expect_read_message(error, root, lines, expected)
   type(error_type), allocatable, intent(out) :: error

@@ -53,7 +53,17 @@ MODULE QTFField
    ! per unit amplitudes, like quad and pot; the amplitude 2 a_i a_j* (i /= j) of the file header multiplies it as well.
    ! direct_at_omega returns phi_D of a pair with Omega < 0 conjugated, i.e. as the pair (j, i) with Omega > 0 would give it
    ! conjugated, and the signed Omega here is the one that goes with it: p_D of the pair (j, i) is the conjugate of that of
-   ! (i, j). Rows the direct solve does not cover (mean rows, i = j, and sum rows) have no direct part: 0 and has_direct = 0.
+   ! (i, j). Rows the direct solve does not cover (mean rows, i = j, and the pairs it did not keep) have no direct part: 0 and
+   ! has_direct = 0.
+   !
+   ! The sum frequency (Phase 7c-2, qtf = 2 or 3 with qtf_direct = 1). The sum columns of direct_at_omega (kernel = KERNEL_SUM,
+   ! Omega = omega_i + omega_j > 0, never conjugated: the ordered pair w1 >= w2 of QTFDriver) go to qfield_keep_direct with the
+   ! kernel. The sum pair is symmetric, phi_D(i, j) = phi_D(j, i) (R6), so one call fills both slots. The pressure and the
+   ! elevation are the same forms with the sum Omega, i rho Omega phi_D and (i Omega/g) phi_D, per unit amplitudes; the
+   ! physical amplitude is 2 a_i a_j (i /= j) or a_i^2 (i = j), the 5b factors above, applied by the reader as for quad and
+   ! pot. A sum row the direct solve did not keep (outside qtf_max_sw, beyond the irregular-frequency cutoff of QTFDriver)
+   ! has 0 and has_direct = 0. The direct part is the body-forced phi_D for both kernels (R4): with qtf_terms = full the
+   ! free-surface forcing is left out of the field, as for the difference.
    ! The value with the direct part is the sum of the Re Im of QTF_FieldPartial.txt and Re_dir Im_dir of QTF_Field.txt; the
    ! first file is written as without qtf_direct, to the byte.
 
@@ -85,9 +95,11 @@ MODULE QTFField
    REAL(8), ALLOCATABLE :: w_store(:, :), k_store(:, :), h_store(:, :), b_store(:, :), rho_store(:, :)   ! (nfreq, nbeta)
    REAL(8), ALLOCATABLE :: oufr_store(:), beta_deg(:)   ! (nfreq), (nbeta)
    ! The direct part: phi_D of the pair (i, j) at the points, heading pair as in QTFDriver (b1 = b2 unless mean_drift = 2)
-   LOGICAL :: direct_on = .FALSE.
+   LOGICAL :: direct_on = .FALSE., direct_diff = .FALSE., direct_sum = .FALSE.   ! any kernel, difference, sum
    COMPLEX(8), ALLOCATABLE :: dir_store(:, :, :, :)     ! (npt, nfreq, nfreq, nheading pairs), phi_D, 0 if not kept
    LOGICAL, ALLOCATABLE :: dir_have(:, :, :)            ! (nfreq, nfreq, nheading pairs), phi_D of the pair was kept
+   COMPLEX(8), ALLOCATABLE :: dir_store_sum(:, :, :, :) ! the same for the sum kernel, both slots of a pair filled
+   LOGICAL, ALLOCATABLE :: dir_have_sum(:, :, :)
 
 CONTAINS
 
@@ -282,8 +294,10 @@ CONTAINS
       kind_qtf = opts%qtf
       max_dw = opts%qtf_max_dw
       all_headings_pairs = MERGE(1, 0, opts%mean_drift == 2)
-      ! The direct solve runs only for the difference QTF (SecondOrderInput stops qtf_direct = 1 without it)
-      direct_on = opts%qtf_direct == 1 .AND. (opts%qtf == 1 .OR. opts%qtf == 3)
+      ! The direct solve gives the difference kernel with qtf = 1 or 3 and the sum kernel with qtf = 2 or 3 (Phase 7c-2)
+      direct_diff = opts%qtf_direct == 1 .AND. (opts%qtf == 1 .OR. opts%qtf == 3)
+      direct_sum = opts%qtf_direct == 1 .AND. (opts%qtf == 2 .OR. opts%qtf == 3)
+      direct_on = direct_diff .OR. direct_sum
       nbeta = SIZE(beta_in_deg)
       npt = pts%n
       nkept = 0
@@ -293,6 +307,7 @@ CONTAINS
       beta_deg = beta_in_deg
       IF (ALLOCATED(phi_store)) DEALLOCATE (phi_store, grad_store, w_store, k_store, h_store, b_store, rho_store, oufr_store)
       IF (ALLOCATED(dir_store)) DEALLOCATE (dir_store, dir_have)
+      IF (ALLOCATED(dir_store_sum)) DEALLOCATE (dir_store_sum, dir_have_sum)
       ALLOCATE (phi_store(npt, nfreq, nbeta), grad_store(3, npt, nfreq, nbeta), w_store(nfreq, nbeta), k_store(nfreq, nbeta), &
                 h_store(nfreq, nbeta), b_store(nfreq, nbeta), rho_store(nfreq, nbeta), oufr_store(nfreq), STAT=st)
       IF (st /= 0) THEN
@@ -309,17 +324,26 @@ CONTAINS
       b_store = 0D0
       rho_store = 0D0
       oufr_store = 0D0
-      IF (direct_on) THEN
+      IF (direct_diff) THEN
          ALLOCATE (dir_store(npt, nfreq, nfreq, MERGE(nbeta*nbeta, nbeta, all_headings_pairs == 1)), STAT=st)
          IF (st == 0) ALLOCATE (dir_have(nfreq, nfreq, SIZE(dir_store, 4)), STAT=st)
-         IF (st /= 0) THEN
-            WRITE (*, '(a)') ' QTF field: not enough memory for phi_D of the direct solve at the field points. Use fewer'
-            WRITE (*, '(a)') ' frequencies, headings or field points, or qtf_direct = 0.'
-            ERROR STOP 1
-         END IF
+         IF (st /= 0) CALL direct_memory_stop()
          dir_store = (0D0, 0D0)
          dir_have = .FALSE.
       END IF
+      IF (direct_sum) THEN
+         ALLOCATE (dir_store_sum(npt, nfreq, nfreq, MERGE(nbeta*nbeta, nbeta, all_headings_pairs == 1)), STAT=st)
+         IF (st == 0) ALLOCATE (dir_have_sum(nfreq, nfreq, SIZE(dir_store_sum, 4)), STAT=st)
+         IF (st /= 0) CALL direct_memory_stop()
+         dir_store_sum = (0D0, 0D0)
+         dir_have_sum = .FALSE.
+      END IF
+   CONTAINS
+      SUBROUTINE direct_memory_stop()
+         WRITE (*, '(a)') ' QTF field: not enough memory for phi_D of the direct solve at the field points. Use fewer'
+         WRITE (*, '(a)') ' frequencies, headings or field points, or qtf_direct = 0.'
+         ERROR STOP 1
+      END SUBROUTINE direct_memory_stop
    END SUBROUTINE qfield_init
 
    REAL(8) FUNCTION qfield_stored_mb(npoints, nfreq, nb, direct_pairs)
@@ -349,16 +373,29 @@ CONTAINS
       x = px
    END SUBROUTINE qfield_direct_points
 
-   SUBROUTINE qfield_keep_direct(i, b1, j, b2, phi_d)
+   SUBROUTINE qfield_keep_direct(i, b1, j, b2, phi_d, kernel)
       ! Keeps phi_D at the points (npt) of the pair of frequencies i, j (in the order of qfield_keep) and headings b1, b2:
       ! as direct_at_omega returns it, e^{-i omega t}, conjugated for omega_i < omega_j (header). No-op unless the direct part
-      ! is kept. The heading pair must be one of the QTFs (b1 = b2 unless mean_drift = 2).
+      ! is kept. The heading pair must be one of the QTFs (b1 = b2 unless mean_drift = 2). kernel (default KERNEL_DIFF, as
+      ! before) = KERNEL_SUM keeps the sum column, not conjugated, in both slots (i, b1, j, b2) and (j, b2, i, b1) (header, R6).
       INTEGER, INTENT(IN) :: i, b1, j, b2
       COMPLEX(8), INTENT(IN) :: phi_d(:)
-      INTEGER :: h
+      INTEGER, INTENT(IN), OPTIONAL :: kernel
+      INTEGER :: h, hm
+      LOGICAL :: is_sum
 
       IF (.NOT. qfield_direct_active()) RETURN
-      IF (i < 1 .OR. j < 1 .OR. i > SIZE(dir_store, 2) .OR. j > SIZE(dir_store, 3) .OR. b1 < 1 .OR. b2 < 1 .OR. &
+      is_sum = .FALSE.
+      IF (PRESENT(kernel)) is_sum = kernel == KERNEL_SUM
+      IF (is_sum .AND. .NOT. direct_sum) THEN
+         WRITE (*, '(a)') ' QTF field: qfield_keep_direct called with the sum kernel for a run without the direct sum.'
+         ERROR STOP 1
+      END IF
+      IF (.NOT. is_sum .AND. .NOT. direct_diff) THEN
+         WRITE (*, '(a)') ' QTF field: qfield_keep_direct called with the difference kernel for a run without it.'
+         ERROR STOP 1
+      END IF
+      IF (i < 1 .OR. j < 1 .OR. i > SIZE(phi_store, 2) .OR. j > SIZE(phi_store, 2) .OR. b1 < 1 .OR. b2 < 1 .OR. &
           b1 > nbeta .OR. b2 > nbeta .OR. SIZE(phi_d) /= npt) THEN
          WRITE (*, '(a)') ' QTF field: qfield_keep_direct called with a pair or a size that is not in the store.'
          ERROR STOP 1
@@ -368,6 +405,14 @@ CONTAINS
          ERROR STOP 1
       END IF
       h = heading_pair_index(b1, b2)
+      IF (is_sum) THEN
+         hm = heading_pair_index(b2, b1)
+         dir_store_sum(:, i, j, h) = phi_d
+         dir_have_sum(i, j, h) = .TRUE.
+         dir_store_sum(:, j, i, hm) = phi_d
+         dir_have_sum(j, i, hm) = .TRUE.
+         RETURN
+      END IF
       dir_store(:, i, j, h) = phi_d
       dir_have(i, j, h) = .TRUE.
    END SUBROUTINE qfield_keep_direct
@@ -456,10 +501,16 @@ CONTAINS
                            ! Only the difference rows of pairs the direct solve gave; the mean rows (i = j), the sum rows
                            ! and the pairs outside qtf_max_dw have none (header)
                            h = heading_pair_index(b1, b2)
-                           have = kn == KERNEL_DIFF .AND. i /= j .AND. dir_have(i, j, h)
+                           have = .FALSE.
+                           IF (kn == KERNEL_DIFF .AND. direct_diff) have = i /= j .AND. dir_have(i, j, h)
+                           IF (kn == KERNEL_SUM .AND. direct_sum) have = dir_have_sum(i, j, h)
                            d = (0D0, 0D0)
-                           IF (have) d = field_direct(w_store(i, b1) - w_store(j, b2), dir_store(ip, i, j, h), &
-                                                      rho_store(i, b1), G, is_surface(ip))
+                           IF (have .AND. kn == KERNEL_DIFF) &
+                              d = field_direct(w_store(i, b1) - w_store(j, b2), dir_store(ip, i, j, h), rho_store(i, b1), G, &
+                                               is_surface(ip))
+                           IF (have .AND. kn == KERNEL_SUM) &
+                              d = field_direct(w_store(i, b1) + w_store(j, b2), dir_store_sum(ip, i, j, h), rho_store(i, b1), &
+                                               G, is_surface(ip))
                            CALL write_field_row(unit_full, oufr_store(i), oufr_store(j), beta_deg(b1), beta_deg(b2), kern, &
                                                 ip, is_surface(ip), quad, pot, refl, d, have)
                         END IF
@@ -474,9 +525,12 @@ CONTAINS
       IF (direct_on) CLOSE (unit_full)
       WRITE (*, '(a,I0,a,I0,a,I0,a)') ' QTF field points: ', nrows, ' rows at ', npt, ' points, ', nkept, ' frequencies'
       DEALLOCATE (phi_store, grad_store, w_store, k_store, h_store, b_store, rho_store, oufr_store, px, is_surface, beta_deg)
-      IF (direct_on) DEALLOCATE (dir_store, dir_have)
+      IF (direct_diff) DEALLOCATE (dir_store, dir_have)
+      IF (direct_sum) DEALLOCATE (dir_store_sum, dir_have_sum)
       active = .FALSE.
       direct_on = .FALSE.
+      direct_diff = .FALSE.
+      direct_sum = .FALSE.
    END SUBROUTINE qfield_finish
 
    SUBROUTINE write_header(unit, complete)
@@ -491,12 +545,24 @@ CONTAINS
             'the rows of QTF_FieldPartial.txt and the direct part'
          WRITE (unit, '(a)') '# Re Im, Re_quad Im_quad and Re_inc Im_inc: as in QTF_FieldPartial.txt, the partial value (the'// &
             ' quadratic part and the second-order incident wave).'
-         WRITE (unit, '(a)') '# Re_dir Im_dir: the direct part, i rho Omega phi_D (pressure) and (i Omega/g) phi_D (elevation),'// &
-            ' Omega = omega_1 - omega_2, per unit amplitude pair, conjugated and scaled as Re Im. Add it to Re Im.'
-         WRITE (unit, '(a)') '# phi_D of the direct solve with body forcing; free-surface forcing not included (it is in .12d with qtf_terms = full);'// &
-            ' radiated wave of the second-order motion not included (Phase 6c)'
-         WRITE (unit, '(a)') '# has_direct: 1 where the direct solve covers the row (difference frequency, omega_1 /='// &
-            ' omega_2), else 0 with Re_dir = Im_dir = 0 (mean rows and sum rows).'
+         IF (.NOT. direct_sum) THEN
+            ! No sum column: the header lines of Phase 7a, so that QTF_Field.txt of qtf = 1 stays as it was, to the byte
+            WRITE (unit, '(a)') '# Re_dir Im_dir: the direct part, i rho Omega phi_D (pressure) and (i Omega/g) phi_D (elevation),'// &
+               ' Omega = omega_1 - omega_2, per unit amplitude pair, conjugated and scaled as Re Im. Add it to Re Im.'
+            WRITE (unit, '(a)') '# phi_D of the direct solve with body forcing; free-surface forcing not included (it is in .12d with qtf_terms = full);'// &
+               ' radiated wave of the second-order motion not included (Phase 6c)'
+            WRITE (unit, '(a)') '# has_direct: 1 where the direct solve covers the row (difference frequency, omega_1 /='// &
+               ' omega_2), else 0 with Re_dir = Im_dir = 0 (mean rows and sum rows).'
+         ELSE
+            WRITE (unit, '(a)') '# Re_dir Im_dir: the direct part, i rho Omega phi_D (pressure) and (i Omega/g) phi_D (elevation),'// &
+               ' Omega = omega_1 - omega_2 (K = 1) or omega_1 + omega_2 (K = 2), per unit amplitude pair, conjugated and scaled'// &
+               ' as Re Im. Add it to Re Im.'
+            WRITE (unit, '(a)') '# phi_D of the direct solve with body forcing, for both kernels; free-surface forcing not'// &
+               ' included (it is in .12d and .12s with qtf_terms = full); radiated wave of the second-order motion not included'// &
+               ' (Phase 6c)'
+            WRITE (unit, '(a)') '# has_direct: 1 where the direct solve covers the row (K = 1: omega_1 /= omega_2; K = 2: the'// &
+               ' sum pairs of QTF_Direct.12s), else 0 with Re_dir = Im_dir = 0 (mean rows and rows outside the direct solve).'
+         END IF
          WRITE (unit, '(a)') '# Columns: PER1 PER2 BETA1 BETA2 K IPT TYPE Mod Pha Re Im Re_quad Im_quad Re_inc Im_inc'// &
             ' Re_dir Im_dir has_direct'
          WRITE (unit, '(a)') '# K: 1 difference frequency (T-), 2 sum frequency (T+). TYPE: 1 pressure, 2 elevation.'

@@ -9,6 +9,8 @@ Usage:
                           [--exclude LO HI]
     python qtf_compare.py <results> --direct [<qtf_potential.csv>] [--max-dw 0.3] [--exclude LO HI] [--by-omega]
                           (the IRSP cases q_sharp_direct_irsp*_m1 need --max-dw 2: their Omega reach 1.6 rad/s)
+    python qtf_compare.py <results> --direct-sum <qtf_potential_sum.csv> [--exclude LO HI]
+                          (the q_*directsum* cases of the sum-frequency direct solve, Phase 7c-2)
     python qtf_compare.py <results> --against-wamit <file.12d> [--hull oc4w] [--reading as-is|conj|-1|-conj]
                           [--max-dw 0.3] [--max-omega 1.90] [--exclude LO HI]
 
@@ -51,6 +53,14 @@ total and .12d - .10d and .11d - .10d against the exact potential part, as --pot
 the sharp ones are compared with the reference columns that include the free-surface integral (total_fs, pot_fs of
 read_potential_reference: the CSV must be from qtf-potential --free-surface, else the case is noted "no FS reference"), plus a row
 FS, FS_inner + FS_outer of the indirect terms against the reference column FS.
+
+Sum frequency (--direct-sum REF). REF is the CSV of `truncated_cylinder_reference.py qtf-potential --kernel sum
+--free-surface` (rows of kernel sum, every pair omega_i <= omega_j, the diagonal included, T+ in the unit-wave convention).
+For each q_*directsum* case (qtf_direct = 1, qtf = 3, qtf_terms = full) QTF_Direct.12s is compared with the exact total, .12s -
+.10s with the exact potential part, and from QTF_DirectTermsSum.txt (16 digits; D_I2, D_D, D_FS, P_BODY, P_FS) D_FS with the
+exact free-surface part and P_BODY + P_FS with the exact potential part. The file holds both orders of an unequal pair with
+the same value, so each pair is read in either order. The last table is the in-run check, D = D_I2 + D_D + D_FS against
+P = P_BODY + P_FS row by row, as --direct does for the difference frequency. `check` tests it (compare_direct_sum).
 
 WAMIT (--against-wamit). A WAMIT numeric .12d (difference QTF; one header line, then PER_i PER_j BETA_i BETA_j I Mod Pha Re
 Im, periods in s, nondimensional by rho g L^k with L = 1 m: the layout HAMS writes for .10d and .11d) is read "as written":
@@ -159,21 +169,22 @@ def errors_of(values, exact, scale=None):
 POTENTIAL_TERMS = qtf_tools.POTENTIAL_TERMS
 
 
-def read_potential_reference(path, max_dw):
+def read_potential_reference(path, max_dw, kernel="diff"):
     """{motion: {"total" | "pot" | term: {(w_i, w_j): {quantity: complex}}}} of a qtf-potential CSV, w_i <= w_j,
     w_j - w_i <= max_dw: the reference total of QTF_Indirect.11d (quadratic + terms), the potential part (sum of the
     terms) and each term, internal e^{-i omega t}, over rho g. A CSV with the free-surface columns (--free-surface) also has
     "FS", the free-surface integral, and "total_fs" and "pot_fs", the total and the potential part with it (those of
-    qtf_terms = full); without the columns these three are empty."""
+    qtf_terms = full); without the columns these three are empty. kernel "sum": the rows of kernel sum (every pair
+    omega_i <= omega_j, the diagonal included; max_dw does not apply)."""
     out = {}
     with open(path, newline="") as f:
         reader = csv.DictReader(f)
         has_fs = "Fx_FS_re" in (reader.fieldnames or ())
         for r in reader:
-            if r["kernel"] != "diff":
+            if r["kernel"] != kernel:
                 continue
             wi, wj = round(float(r["omega_i"]), 4), round(float(r["omega_j"]), 4)
-            if wj - wi > max_dw + 1e-9:
+            if kernel == "diff" and wj - wi > max_dw + 1e-9:
                 continue
             m = out.setdefault(r["motion"], {key: {} for key in ("total", "pot", "total_fs", "pot_fs", "FS") + POTENTIAL_TERMS})
             for q, _ in QUANTITIES:
@@ -452,6 +463,92 @@ def compare_direct(results, path, max_dw, exclude=None, by_omega=False):
                 exact = {p: v for p, v in exact.items() if kept(p)}
                 cells.append(_potential_cell({p: source(p[0], p[1], index) for p in exact}, exact, scale))
             print("%-26s %-5s %18s %18s %18s" % (case, label, *cells))
+    return rows
+
+
+def read_direct_sum_terms(path):
+    """{(w1, w2, beta1, beta2, I): [complex] * n} of QTF_DirectTermsSum.txt, conjugated back to e^{-i omega t}: n = 3
+    (D_I2, D_D, P_BODY) or 5 with qtf_terms = full (D_I2, D_D, D_FS, P_BODY, P_FS), the header of
+    write_direct_sum_terms_header in src/QTFDriver.f90. Both orders of an unequal pair have a row. {} if the file is
+    missing."""
+    out = {}
+    if not os.path.exists(path):
+        return out
+    with open(path) as f:
+        for line in f:
+            if line.lstrip().startswith("#"):
+                continue
+            q = line.split()
+            if len(q) not in (11, 15):
+                continue
+            key = (round(float(q[0]), 6), round(float(q[1]), 6), round(float(q[2]), 6), round(float(q[3]), 6), int(q[4]))
+            out[key] = [complex(float(q[5 + 2 * t]), -float(q[6 + 2 * t])) for t in range((len(q) - 5) // 2)]
+    return out
+
+
+def compare_direct_sum(results, path, exclude=None):
+    """The --direct-sum tables. path: CSV of truncated_cylinder_reference.py qtf-potential --kernel sum (with
+    --free-surface for the q_*_directsum_* cases, which have qtf_terms = full). For each q_*directsum* case: .12s against
+    the exact total (quadratic + P_BODY + P_FS), .12s - .10s against the exact potential part, D_FS
+    (QTF_DirectTermsSum.txt) against the exact free-surface part and P_BODY + P_FS likewise against the potential part, each
+    |HAMS - exact| / max |exact| over the pairs omega_i <= omega_j, max and median, percent (the file holds both orders; the
+    pair is read in either order, T+_ji = T+_ij); then the in-run check, |D - P| / max |P| row by row over the rows of
+    forces and of moments, all modes. Heading pair (0, 0) against the reference. Returns the in-run rows (case, (forces,
+    moments))."""
+    ref = read_potential_reference(path, 0.0, "sum")
+    print("Sum-frequency direct solve (QTF_Direct.12s, qtf_direct = 1) against the exact sharp cylinder (heading 0): "
+          "|HAMS - exact| / max |exact| over the pairs omega_i <= omega_j, max and median, percent")
+    if exclude:
+        print("Pairs with omega_i or omega_j in [%.3f, %.3f] rad/s left out; scales from all the pairs" % tuple(exclude))
+
+    def kept(p):
+        return not exclude or not any(exclude[0] - 1e-9 <= w <= exclude[1] + 1e-9 for w in p)
+
+    def of(table):
+        return lambda wi, wj, index: lookup(table, wi, wj, index, "sum")
+    print("%-26s %-8s %18s %18s %18s" % ("case", "what", "F_x", "F_z", "M_y"))
+    rows = []
+    for case in sorted(os.path.basename(c) for c in glob.glob(os.path.join(results, "q_*directsum*"))):
+        folder = os.path.join(results, case, "output", "Wamit_format")
+        terms = read_direct_sum_terms(os.path.join(folder, "QTF_DirectTermsSum.txt"))
+        direct = read_hams(os.path.join(folder, "QTF_Direct.12s"))
+        quadratic = read_hams(os.path.join(folder, "QTF_Quadratic.10s"))
+        if not terms or not direct or not quadratic:
+            print("%-26s no QTF_DirectTermsSum.txt, QTF_Direct.12s and QTF_Quadratic.10s" % case)
+            continue
+        full = len(next(iter(terms.values()))) == 5
+        motion = "fixed" if "_fixed_" in case else "free_damped" if "_damp_" in case else "free"
+        if case.startswith("q_sharp_") and motion not in ref:
+            print("%-26s no reference for the %s body in %s" % (case, motion, path))
+        elif case.startswith("q_sharp_") and full and not ref[motion]["FS"]:
+            print("%-26s no FS reference (columns Fx_FS_re ... in %s, from qtf-potential --kernel sum --free-surface)"
+                  % (case, path))
+        elif case.startswith("q_sharp_"):
+            total_key, pot_key = ("total_fs", "pot_fs") if full else ("total", "pot")
+            by = {k[:2] + k[4:]: v for k, v in terms.items() if k[2] == 0.0 and k[3] == 0.0}
+
+            def part(columns):
+                return of({k: sum(v[c] for c in columns) for k, v in by.items()})
+            sources = [(".12s", of(direct), total_key), (".12s-10s", _difference(of(direct), of(quadratic)), pot_key),
+                       ("P", part((3, 4) if full else (2,)), pot_key)]
+            if full:
+                sources.append(("D_FS", part((2,)), "FS"))
+            for label, source, key in sources:
+                cells = []
+                for q, index in QUANTITIES:
+                    exact = {pr: v[q] for pr, v in ref[motion][key].items()}
+                    scale = max(abs(v) for v in exact.values())
+                    exact = {pr: v for pr, v in exact.items() if kept(pr)}
+                    cells.append(_potential_cell({pr: source(pr[0], pr[1], index) for pr in exact}, exact, scale))
+                print("%-26s %-8s %18s %18s %18s" % (case, label, *cells))
+        t_dir = {k: sum(v[:3 if full else 2]) for k, v in terms.items()}
+        t_pot = {k: sum(v[3:] if full else v[2:]) for k, v in terms.items()}
+        rows.append((case, direct_against_indirect(t_dir, t_pot, lambda k: kept(k[:2]))))
+    print("\nIn-run check: |T+_dir - T+_pot| / max |T+_pot| over the rows of forces or of moments (all modes, heading "
+          "pairs, both orders), max and median, percent")
+    print("%-26s %18s %18s" % ("case", "forces", "moments"))
+    for case, cells in rows:
+        print("%-26s %18s %18s" % (case, *["%7.2f %7.2f" % (100 * c[0], 100 * c[1]) if c else "-" for c in cells]))
     return rows
 
 
@@ -1139,6 +1236,77 @@ def check_compare_direct_fs():
         exact, 100 * off_rows[case][0][0])
 
 
+def check_compare_direct_sum():
+    """compare_direct_sum on a temporary fixture: a sum-kernel reference CSV (free body, quadratic part, five terms and FS,
+    three pairs of 0.70 and 0.90 rad/s) and a q_sharp_directsum_free_m1 case written from it, both orders of the unequal
+    pair in .10s, .12s and the 15-column terms file, conjugated as HAMS writes them, D_I2 + D_D = P_BODY and D_FS = FS. Then
+    the in-run check reads 0 and the .12s, .12s - .10s, P and D_FS rows read 0.00; with D_FS scaled by 1.01 (terms file and
+    .12s) the in-run error is below 1% and the D_FS row 1% of the largest row, the .10s and P rows stay 0.00. Returns "ok"."""
+    import contextlib
+    import io
+    import tempfile
+    quantities = ("Fx", "Fz", "My")
+    pairs_ = ((0.70, 0.70), (0.70, 0.90), (0.90, 0.90))
+    parts = ("",) + POTENTIAL_TERMS + ("FS",)          # the quadratic part, the five terms, FS
+
+    def value(a, qi, t):
+        return complex(1.0 + 0.3 * a + 0.1 * qi - 0.05 * t, -0.4 + 0.2 * a - 0.07 * qi + 0.03 * t)
+    results = {}
+    for factor in (1.0, 1.01):
+        with tempfile.TemporaryDirectory() as d:
+            ref_path = os.path.join(d, "ref.csv")
+            with open(ref_path, "w", newline="") as f:
+                header = ["motion", "omega_i", "omega_j", "kernel"]
+                for q in quantities:
+                    for t in parts:
+                        header += ["%s_%s_%s" % (q, t, ri) if t else "%s_%s" % (q, ri) for ri in ("re", "im")]
+                w = csv.writer(f)
+                w.writerow(header)
+                for a, (wi, wj) in enumerate(pairs_):
+                    row = ["free", wi, wj, "sum"]
+                    for qi in range(3):
+                        for t in range(len(parts)):
+                            row += [value(a, qi, t).real, value(a, qi, t).imag]
+                    w.writerow(row)
+            folder = os.path.join(d, "results", "q_sharp_directsum_free_m1", "output", "Wamit_format")
+            os.makedirs(folder)
+            files = {n: open(os.path.join(folder, n), "w") for n in ("QTF_Quadratic.10s", "QTF_Direct.12s",
+                                                                    "QTF_DirectTermsSum.txt")}
+            for a, (wi, wj) in enumerate(pairs_):
+                for order in ((wi, wj), (wj, wi)) if wi != wj else ((wi, wj),):
+                    for mode in range(1, 7):
+                        qi = {1: 0, 3: 1, 5: 2}.get(mode)
+                        v = [value(a, qi, t) if qi is not None else 0j for t in range(len(parts))]
+                        quad, pot_body, fs = v[0], sum(v[1:6]), v[6]
+                        d_fs = factor * fs
+                        cols = [0.3 * pot_body, 0.7 * pot_body, d_fs, pot_body, fs]
+                        total = quad + cols[0] + cols[1] + d_fs
+                        head = "%.6f %.6f 0.0 0.0 %d 0 0" % (order[0], order[1], mode)
+                        files["QTF_Quadratic.10s"].write(head + " %.16e %.16e\n" % (quad.real, -quad.imag))
+                        files["QTF_Direct.12s"].write(head + " %.16e %.16e\n" % (total.real, -total.imag))
+                        files["QTF_DirectTermsSum.txt"].write(
+                            "%.6f %.6f 0.0 0.0 %d" % (order[0], order[1], mode)
+                            + "".join(" %.16e %.16e" % (c.real, -c.imag) for c in cols) + "\n")
+            for f in files.values():
+                f.close()
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rows = compare_direct_sum(os.path.join(d, "results"), ref_path)
+            results[factor] = (buf.getvalue(), rows)
+
+    def cell(text, what):
+        return [l for l in text.splitlines() if l.startswith("q_sharp_directsum_free_m1") and l.split()[1] == what][0]
+    text0, rows0 = results[1.0]
+    assert rows0 and rows0[0][1][0][0] < 1e-12 and rows0[0][1][1][0] < 1e-12, rows0
+    for what in (".12s", ".12s-10s", "P", "D_FS"):
+        assert set(cell(text0, what).split()[2:]) == {"0.00"}, cell(text0, what)
+    text1, rows1 = results[1.01]
+    assert 0.0 < rows1[0][1][0][0] < 0.01, rows1
+    assert set(cell(text1, "P").split()[2:]) == {"0.00"}, cell(text1, "P")
+    assert float(cell(text1, "D_FS").split()[2]) > 0.5, cell(text1, "D_FS")
+    return "ok"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     if argv is None and sys.argv[1:2] == ["check"]:
@@ -1148,6 +1316,7 @@ def main(argv=None):
         print("against_wamit        %s" % check_against_wamit())
         print("compare_direct       %s" % check_compare_direct())
         print("compare_direct_fs    %s" % check_compare_direct_fs())
+        print("compare_direct_sum   %s" % check_compare_direct_sum())
         return 0
     parser.add_argument("results")
     parser.add_argument("--reference", help="CSV of truncated_cylinder_reference.py qtf (needed without --potential)")
@@ -1164,6 +1333,9 @@ def main(argv=None):
     parser.add_argument("--direct", nargs="?", const="", metavar="CSV",
                         help="compare QTF_Direct.12d of the q_*direct* cases with QTF_Indirect.11d of the same run, and, "
                              "given the CSV of truncated_cylinder_reference.py qtf-potential, both with the exact reference")
+    parser.add_argument("--direct-sum", metavar="REF",
+                        help="compare QTF_Direct.12s and QTF_DirectTermsSum.txt of the q_*directsum* cases with the CSV of "
+                             "truncated_cylinder_reference.py qtf-potential --kernel sum, and D with P of the same run")
     parser.add_argument("--by-omega", action="store_true",
                         help="with --direct: also the largest direct-indirect error at each difference frequency")
     parser.add_argument("--against-wamit", metavar="FILE",
@@ -1177,6 +1349,9 @@ def main(argv=None):
                              "against the exact reference; never chosen by agreement with HAMS); with --against-wamit: "
                              "WAMIT's (default as-is, as written)")
     args = parser.parse_args(argv)
+    if args.direct_sum:
+        rows = compare_direct_sum(args.results, args.direct_sum, args.exclude)
+        return 0 if rows else 1
     if args.direct is not None:
         rows = compare_direct(args.results, args.direct or None, args.max_dw, args.exclude, args.by_omega)
         return 0 if rows else 1

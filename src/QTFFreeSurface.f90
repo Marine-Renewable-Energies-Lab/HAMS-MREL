@@ -32,10 +32,21 @@ MODULE QTFFreeSurface
    ! fs_inner_steps); outside the circle r = R, the partial waves of the scattered potential (fs_circle_modes), from samples
    ! on the cylinder by the all-centroid route of the boundary integral formula (fs_sample_phi), so that the samples are a
    ! sum of the free-surface modes, with a check that the modes give the samples back (fs_mode_miss, fs_mode_warning).
+   !
+   ! Sum frequency (Phase 7c-2; the optional kernel = KERNEL_SUM of the routines below, KERNEL_DIFF by default and
+   ! bit-identical to the code without it). The sum-frequency phi_D is forced on z = 0 by
+   !   -Omega^2 phi_D + g d phi_D/dz = Q_S,   Q_S = Q[tot_1, tot_2] - Q[inc_1, inc_2],   Omega = w1 + w2,
+   ! Q of free_surface_forcing with KERNEL_SUM (pair_plus), and T_FS = s_FS (i Omega rho / g) int psi_k Q_S dS with psi_k
+   ! at Omega. s_FS carries over: the Green's identity that gives T_FS holds at any Omega > 0 with the outgoing psi_k at
+   ! Omega (QTFPotential header). pair_plus(f1, g1, f2, g2) = (f1 g2 + f2 g1) / 4 is symmetric in the states, so
+   ! Q_S(1, 2) = Q_S(2, 1): the pairs are ordered w1 >= w2 (the diagonal w1 = w2 is a regular pair at Omega = 2 w1) and
+   ! the swap needs no conjugate (fs_pair_terms). Field 2 enters as it is, not conjugated: its modes are reversed for the
+   ! angular sums and ring_coef takes -w2 (derived there), and its propagating part in the tail is H^(1)(k_2 r), which
+   ! gives the phase classes of the sum (derived in fs_outer_tail). Finite depth only, as the difference frequency.
 
    USE SecondOrderIncident, ONLY: free_surface_forcing
-   USE NearFieldDrift, ONLY: KERNEL_DIFF
-   USE SecondOrderTypes, ONLY: panel_mesh, first_order_state, cs_points, cs_fields, CS_FREE
+   USE NearFieldDrift, ONLY: KERNEL_DIFF, KERNEL_SUM
+   USE SecondOrderTypes, ONLY: panel_mesh, first_order_state, cs_points, cs_fields, CS_FREE, surface_geom
    USE PartialWaves, ONLY: pw_set, pw_radial, pw_decompose, pw_eval_point, pw_radial_at, pw_bessel_k_scaled, &
                            pw_bessel_k_scaled_c, pw_hankel_scaled
    USE FieldVelocity, ONLY: incident_at
@@ -48,6 +59,7 @@ MODULE QTFFreeSurface
    PRIVATE
 
    PUBLIC :: fs_point_field, fs_forcing_diff
+   PUBLIC :: fs_wl_fit, fs_waterline_fit_setup, fs_waterline_fit_apply, WLFIT_N
    PUBLIC :: fs_inner_fields, fs_inner_steps, fs_sample_phi, fs_circle_modes, fs_mode_miss, fs_mode_warning, fs_auto_modes
    PUBLIC :: FS_MODE_TOL, fs_mode_scales, fs_auto_evanescent
    PUBLIC :: FS_SIGN, fs_inner_pair, fs_outer_pair, fs_outer_annulus, fs_outer_tail, fs_outer_ring, fs_outer_rfar
@@ -66,6 +78,15 @@ MODULE QTFFreeSurface
    ! The sign s_FS of T_FS = s_FS (i Omega rho / g) int psi_k Q_D dS: +1, settled by the direct solve of the Task 2
    ! reference (fs_sign_from_bvp: 7e-6 with +1, 1.25 with -1)
    REAL(8), PARAMETER :: FS_SIGN = 1D0
+   ! The near-waterline fit of the inner fields (fs_waterline_fit_setup): WLFIT_N Gauss-Legendre samples on [d0, 3 d0],
+   ! WLFIT_NB basis functions (WLFIT_KINDS)
+   INTEGER, PARAMETER :: WLFIT_N = 6, WLFIT_NB = 4
+   ! The basis of each fitted quantity (phi, grad phi, phi_zz), wlfit_basis: 0 keeps the stencil value, 1 is 1, log s, s,
+   ! s log s; 2 is 1, s, s^2, s^3; 3 is 1, s, s log s, s^2. Ruling W4 of the fix wave, from fs_fields_exact_inner and
+   ! fs_fields_exact_integral (sharp m1, exact panel data) over six combinations: phi stays on the stencil (1-2.5 %,
+   ! fitting it gave 28 % at 0.1 m), grad and phi_zz take the cubic (within 4.9 % and 3.5 % at 0.1 m from the
+   ! waterline; the log basis overfits, phi_zz 35 %), inner sum integral 1.9 % off against 42.7 % without the fit
+   INTEGER, PARAMETER :: WLFIT_KINDS(3) = [0, 2, 2]
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
    REAL(8), PARAMETER :: PI = 3.14159265358979323846D0
    ! The outer integral (Task 7): Gauss-Legendre points per radial interval, Gauss-Laguerre points per tail contour, the
@@ -77,12 +98,14 @@ MODULE QTFFreeSurface
    INTEGER, PARAMETER :: MOM_BLOCKS = 64
 
    TYPE :: outer_data
-      ! One pair of the outer integral (outer_setup): modes of 1, 2 and psi; plane-wave modes |n| <= ni1, ni2
-      INTEGER :: m1 = 0, m2 = 0, mp = 0, nk = 0, n1 = 0, n2 = 0, np = 0, ni1 = 0, ni2 = 0, mx = 0
-      REAL(8) :: w1 = 0D0, w2 = 0D0, g = 0D0, k1 = 0D0, k2 = 0D0, kp = 0D0, beta1 = 0D0, beta2 = 0D0
+      ! One pair of the outer integral (outer_setup): modes of 1, 2 and psi; plane-wave modes |n| <= ni1, ni2; the kernel
+      ! (KERNEL_DIFF or KERNEL_SUM) and w2r, the w2 that ring_coef takes (w2, or -w2 for the sum: ring_coef)
+      INTEGER :: m1 = 0, m2 = 0, mp = 0, nk = 0, n1 = 0, n2 = 0, np = 0, ni1 = 0, ni2 = 0, mx = 0, kernel = KERNEL_DIFF
+      REAL(8) :: w1 = 0D0, w2 = 0D0, w2r = 0D0, g = 0D0, k1 = 0D0, k2 = 0D0, kp = 0D0, beta1 = 0D0, beta2 = 0D0
       REAL(8) :: radius = 0D0, h = 0D0, centre(2) = 0D0, dzi1 = 0D0, dzi2 = 0D0
       LOGICAL :: inc1 = .FALSE., inc2 = .FALSE.
-      COMPLEX(8) :: amp1 = (0D0, 0D0), amp2c = (0D0, 0D0)
+      ! The incident amplitudes at the centre: of wave 1, of wave 2, and its conjugate (the difference kernel)
+      COMPLEX(8) :: amp1 = (0D0, 0D0), amp2 = (0D0, 0D0), amp2c = (0D0, 0D0)
       REAL(8), ALLOCATABLE :: kev1(:), kev2(:), kevp(:), d1(:), e1(:), d2(:), e2(:), dp(:), ep(:)
       COMPLEX(8), ALLOCATABLE :: a1(:, :, :), a2(:, :, :), a2c(:, :, :), ap(:, :, :)
       REAL(8), ALLOCATABLE :: kr1(:, :), kr2(:, :), krp(:, :)
@@ -99,6 +122,17 @@ MODULE QTFFreeSurface
       LOGICAL :: on(3) = .FALSE.
       INTEGER :: nalp = 0
    END TYPE outer_work
+
+   TYPE :: fs_wl_fit
+      ! The near-waterline fit of fs_waterline_fit_setup: the n inner points idx(n) (at x(3, n)) within d0 of a waterline,
+      ! their nfit samples each (samp, point k's from (k - 1) nfit + 1) with the offsets delta of fs_inner_steps, and the
+      ! linear fit weights wt(nfit, n); nskip near points kept on the stencil (a sample not clear of a waterplane)
+      INTEGER :: n = 0, nfit = 0, nskip = 0
+      INTEGER, ALLOCATABLE :: idx(:)
+      REAL(8), ALLOCATABLE :: x(:, :), wt(:, :, :), delta(:)   ! wt(nfit, n, 3): phi, grad phi, phi_zz
+      INTEGER :: kinds(3) = 0
+      TYPE(cs_points) :: samp
+   END TYPE fs_wl_fit
 
    TYPE :: fs_point_field
       ! One first-order state at one point of z = 0: potential, gradient, and d^2 phi / dz^2.
@@ -120,6 +154,47 @@ CONTAINS
                         - free_surface_forcing(KERNEL_DIFF, w1, inc1%phi, inc1%grad, inc1%phizz, &
                                                w2, inc2%phi, inc2%grad, inc2%phizz, g)
    END FUNCTION fs_forcing_diff
+
+   PURE COMPLEX(8) FUNCTION fs_forcing(kernel, w1, tot1, inc1, w2, tot2, inc2, g)
+      ! Q[tot1, tot2] - Q[inc1, inc2] under kernel: fs_forcing_diff for KERNEL_DIFF (the same code), Q_S of the sum
+      ! frequency (header) for KERNEL_SUM, field 2 not conjugated
+      INTEGER, INTENT(IN) :: kernel
+      REAL(8), INTENT(IN) :: w1, w2, g
+      TYPE(fs_point_field), INTENT(IN) :: tot1, inc1, tot2, inc2
+
+      IF (kernel == KERNEL_SUM) THEN
+         fs_forcing = free_surface_forcing(KERNEL_SUM, w1, tot1%phi, tot1%grad, tot1%phizz, &
+                                           w2, tot2%phi, tot2%grad, tot2%phizz, g) &
+                      - free_surface_forcing(KERNEL_SUM, w1, inc1%phi, inc1%grad, inc1%phizz, &
+                                             w2, inc2%phi, inc2%grad, inc2%phizz, g)
+      ELSE
+         fs_forcing = fs_forcing_diff(w1, tot1, inc1, w2, tot2, inc2, g)
+      END IF
+   END FUNCTION fs_forcing
+
+   INTEGER FUNCTION kernel_arg(kernel)
+      ! The kernel of an optional argument: KERNEL_DIFF when absent; stops on any other value than the two kernels
+      INTEGER, INTENT(IN), OPTIONAL :: kernel
+
+      kernel_arg = KERNEL_DIFF
+      IF (PRESENT(kernel)) kernel_arg = kernel
+      IF (kernel_arg /= KERNEL_DIFF .AND. kernel_arg /= KERNEL_SUM) THEN
+         WRITE (*, '(a,I0,a)') ' QTF free surface: kernel ', kernel_arg, ' is neither KERNEL_DIFF nor KERNEL_SUM.'
+         ERROR STOP 1
+      END IF
+   END FUNCTION kernel_arg
+
+   PURE REAL(8) FUNCTION pair_omega(kernel, w1, w2)
+      ! The second-order frequency of the pair: w1 - w2 (difference) or w1 + w2 (sum)
+      INTEGER, INTENT(IN) :: kernel
+      REAL(8), INTENT(IN) :: w1, w2
+
+      IF (kernel == KERNEL_SUM) THEN
+         pair_omega = w1 + w2
+      ELSE
+         pair_omega = w1 - w2
+      END IF
+   END FUNCTION pair_omega
 
    SUBROUTINE fs_inner_fields(mesh, pts, states, step, is_multi, f, delta)
       ! The total first-order fields of every state at the inner points of the free surface: phi, grad phi and phi_zz.
@@ -214,7 +289,7 @@ CONTAINS
       END DO
    END SUBROUTINE fs_inner_fields
 
-   SUBROUTINE fs_inner_steps(mesh, pts, step, delta, nshrunk, nfloor)
+   SUBROUTINE fs_inner_steps(mesh, pts, step, delta, nshrunk, nfloor, scale)
       ! The offset delta of each inner point for fs_inner_fields: step x its size, halved until two conditions hold, but not
       ! below DELTA_FLOOR x step x its size (Green-function rounding divided by delta^2 would take over):
       !   - no point of the stencil, x +- delta e_x and x +- delta e_y, lies in a waterplane (body_winding of QTFField 1/2
@@ -226,12 +301,18 @@ CONTAINS
       ! nshrunk counts the points whose delta was shrunk, nfloor those held at the floor (still clear of the waterplane,
       ! but closer than the clearance asks). A stencil still in a waterplane at the floor stops the run, naming the point.
       ! Frequency-independent: the driver calls it once.
+      ! scale (optional, n): the length the step is a fraction of, per point (default pts%psize, bit-identical). With the
+      ! sum frequency the inner mesh is built for the largest sum frequency (ruling R3 a of Phase 7c-2), finer than the
+      ! first-order fields need; the driver then passes max(psize, lambda(omega_max)/10), omega_max the largest first-order
+      ! frequency (R3 c): the first-order fields vary on lambda(omega), and a smaller offset only raises the rounding of
+      ! the Green function divided by delta^2 (fs_laplace_residual: 1.6e-2 at delta = 0.02 psize against 7.2e-4 at 0.1).
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(cs_points), INTENT(IN) :: pts
       REAL(8), INTENT(IN) :: step
       REAL(8), INTENT(OUT) :: delta(pts%n)
       INTEGER, INTENT(OUT) :: nshrunk
       INTEGER, INTENT(OUT), OPTIONAL :: nfloor
+      REAL(8), INTENT(IN), OPTIONAL :: scale(:)
       REAL(8), PARAMETER :: CLEARANCE = 16D0, DELTA_FLOOR = 1D-3
       REAL(8) :: d, d0, dmin
       INTEGER :: i, nf, ibad
@@ -240,10 +321,20 @@ CONTAINS
       nshrunk = 0
       nf = 0
       ibad = 0
+      IF (PRESENT(scale)) THEN
+         IF (SIZE(scale) /= pts%n) THEN
+            WRITE (*, '(a)') ' fs_inner_steps: scale must have one value per inner point.'
+            ERROR STOP 1
+         END IF
+      END IF
       !$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(d, d0, dmin, in_wp, at_floor) REDUCTION(+:nshrunk, nf) &
       !$OMP REDUCTION(MAX:ibad) SCHEDULE(DYNAMIC, 4)
       DO i = 1, pts%n
-         d0 = step*pts%psize(i)
+         IF (PRESENT(scale)) THEN
+            d0 = step*scale(i)
+         ELSE
+            d0 = step*pts%psize(i)
+         END IF
          dmin = DELTA_FLOOR*d0
          d = d0
          at_floor = .FALSE.
@@ -493,15 +584,25 @@ CONTAINS
       msg = TRIM(line)
    END FUNCTION fs_radius_message
 
-   FUNCTION fs_pair_order_message(w1, w2, omega) RESULT(msg)
+   FUNCTION fs_pair_order_message(w1, w2, omega, kernel) RESULT(msg)
       ! The stop message of the outer integral when the pair is not ordered w1 > w2 with Omega = omega > 0 (the
       ! difference frequency; psi_k enters as H^(1)(K r), so the phase class k1 - k2 + K of the tail must be positive),
-      ! else ''. Omega = 0 is not refused here: the routines return 0 for it before asking.
+      ! else ''. Omega = 0 is not refused here: the routines return 0 for it before asking. With kernel = KERNEL_SUM the
+      ! order is w1 >= w2 (the diagonal is a regular pair; every class of the sum is positive, fs_outer_tail), Omega > 0.
       REAL(8), INTENT(IN) :: w1, w2, omega
+      INTEGER, INTENT(IN), OPTIONAL :: kernel
       CHARACTER(LEN=:), ALLOCATABLE :: msg
       CHARACTER(LEN=300) :: line
 
       msg = ''
+      IF (kernel_arg(kernel) == KERNEL_SUM) THEN
+         IF (w1 >= w2 .AND. omega > 0D0) RETURN
+         WRITE (line, '(a,ES12.5,a,ES12.5,a,ES12.5,a)') 'the outer free-surface integral of the sum frequency needs the'// &
+            ' pair ordered w1 >= w2 with Omega > 0 (w1 = ', w1, ', w2 = ', w2, ', Omega = ', omega, &
+            '): the caller must order the pair.'
+         msg = TRIM(line)
+         RETURN
+      END IF
       IF (w1 > w2 .AND. omega > 0D0) RETURN
       WRITE (line, '(a,ES12.5,a,ES12.5,a,ES12.5,a)') 'the outer free-surface integral needs the pair ordered w1 > w2 '// &
          'with Omega > 0 (w1 = ', w1, ', w2 = ', w2, ', Omega = ', omega, '): the caller must order the pair.'
@@ -509,7 +610,7 @@ CONTAINS
    END FUNCTION fs_pair_order_message
 
    SUBROUTINE fs_pair_terms(w1, f1, inc1, pw1, beta1, k1, w2, f2, inc2, pw2, beta2, k2, psi, pw_psi, wts, np, g, rho, &
-                            t_in, t_out, r_far)
+                            t_in, t_out, r_far, kernel)
       ! The free-surface terms of T_pot of the pair of states 1 (omega w1, heading beta1 in radians, incident wave number
       ! k1 = pw1%k0) and 2, as QTFDriver adds them (qtf_terms = full):
       !   t_in   fs_inner_pair over the inner points: total fields f1, f2, incident fields inc1, inc2 (phi_zz = k^2 phi),
@@ -524,6 +625,10 @@ CONTAINS
       !   [derived]: Q_D(2, 1) = conj Q_D(1, 2) (pair_product of KERNEL_DIFF) and psi(-Omega) = conj psi(Omega), as
       !   potential_pair takes for the hull terms (fs_inner_pair_hermitian checks it on the inner sum). So the outer
       !   routines only see ordered pairs.
+      ! kernel (optional, KERNEL_DIFF by default): with KERNEL_SUM the terms of the sum frequency Omega = w1 + w2 (header),
+      ! psi and pw_psi at Omega. The pair is evaluated ordered w1 >= w2, as (2, 1) when w1 < w2, with no conjugate:
+      ! Q_S(2, 1) = Q_S(1, 2) (pair_plus is symmetric) and psi is the same, so T(1, 2) = T(2, 1) (test fs_sum_swap). The
+      ! diagonal w1 = w2 is a regular pair at 2 w1 (test fs_sum_diagonal).
       REAL(8), INTENT(IN) :: w1, beta1, k1, w2, beta2, k2, wts(:), g, rho
       TYPE(fs_point_field), INTENT(IN) :: f1(:), inc1(:), f2(:), inc2(:)
       TYPE(pw_set), INTENT(IN) :: pw1, pw2, pw_psi(:)
@@ -531,10 +636,21 @@ CONTAINS
       INTEGER, INTENT(IN) :: np
       COMPLEX(8), INTENT(OUT) :: t_in(:), t_out(:)
       REAL(8), INTENT(OUT), OPTIONAL :: r_far
+      INTEGER, INTENT(IN), OPTIONAL :: kernel
+      INTEGER :: kn
 
       t_in = (0D0, 0D0)
       t_out = (0D0, 0D0)
       IF (PRESENT(r_far)) r_far = 0D0
+      kn = kernel_arg(kernel)
+      IF (kn == KERNEL_SUM) THEN
+         IF (w1 >= w2) THEN
+            CALL ordered(w1, f1, inc1, pw1, beta1, k1, w2, f2, inc2, pw2, beta2, k2)
+         ELSE
+            CALL ordered(w2, f2, inc2, pw2, beta2, k2, w1, f1, inc1, pw1, beta1, k1)
+         END IF
+         RETURN
+      END IF
       IF (w1 == w2) RETURN
       IF (w1 > w2) THEN
          CALL ordered(w1, f1, inc1, pw1, beta1, k1, w2, f2, inc2, pw2, beta2, k2)
@@ -547,18 +663,18 @@ CONTAINS
    CONTAINS
 
       SUBROUTINE ordered(wa, fa, ia, pa, ba, ka, wb, fb, ib, pb, bb, kb)
-         ! The terms of the pair (a, b) with wa > wb
+         ! The terms of the pair (a, b) with wa > wb (wa >= wb for the sum)
          REAL(8), INTENT(IN) :: wa, ba, ka, wb, bb, kb
          TYPE(fs_point_field), INTENT(IN) :: fa(:), ia(:), fb(:), ib(:)
          TYPE(pw_set), INTENT(IN) :: pa, pb
          COMPLEX(8) :: sl(SIZE(t_out))
          REAL(8) :: rf
 
-         CALL fs_inner_pair(wa, fa, ia, wb, fb, ib, psi, wts, g, rho, t_in)
-         rf = fs_outer_rfar(pa, ka, pb, kb, pw_psi)
-         CALL fs_outer_pair(wa, pa, ba, ka, wb, pb, bb, kb, pw_psi, wa - wb, g, rho, rf, t_out)
+         CALL fs_inner_pair(wa, fa, ia, wb, fb, ib, psi, wts, g, rho, t_in, kernel=kn)
+         rf = fs_outer_rfar(pa, ka, pb, kb, pw_psi, kernel=kn)
+         CALL fs_outer_pair(wa, pa, ba, ka, wb, pb, bb, kb, pw_psi, pair_omega(kn, wa, wb), g, rho, rf, t_out, kernel=kn)
          IF (np >= 3) THEN
-            CALL fs_outer_sliver(wa, pa, ba, ka, wb, pb, bb, kb, pw_psi, wa - wb, g, rho, np, sl)
+            CALL fs_outer_sliver(wa, pa, ba, ka, wb, pb, bb, kb, pw_psi, pair_omega(kn, wa, wb), g, rho, np, sl, kernel=kn)
             t_out = t_out + sl
          END IF
          IF (PRESENT(r_far)) r_far = rf
@@ -605,34 +721,37 @@ CONTAINS
       END IF
    END SUBROUTINE fs_coverage_check
 
-   SUBROUTINE fs_inner_pair(w1, f1, inc1, w2, f2, inc2, psi, wts, g, rho, t_in)
+   SUBROUTINE fs_inner_pair(w1, f1, inc1, w2, f2, inc2, psi, wts, g, rho, t_in, kernel)
       ! The inner part of T_FS for the pair of states 1 (omega w1) and 2 (omega w2): the sum over the inner points of
       !   t_in(k) = s_FS (i Omega rho / g) sum_i wts(i) psi(i, k) Q_D(x_i),   Omega = w1 - w2,
       ! Q_D = fs_forcing_diff of the total fields f1, f2 and the incident fields inc1, inc2 at the points (fs_inner_fields,
       ! incident_at). psi(n, 6 nbody) holds psi_k at the points (or, for Phase 7b, any modal potential); wts the panel areas.
+      ! kernel (optional, KERNEL_DIFF by default): KERNEL_SUM gives Q_S and Omega = w1 + w2 (header).
       REAL(8), INTENT(IN) :: w1, w2, g, rho, wts(:)
       TYPE(fs_point_field), INTENT(IN) :: f1(:), inc1(:), f2(:), inc2(:)
       COMPLEX(8), INTENT(IN) :: psi(:, :)
       COMPLEX(8), INTENT(OUT) :: t_in(:)
+      INTEGER, INTENT(IN), OPTIONAL :: kernel
       COMPLEX(8) :: q
-      INTEGER :: i, k
+      INTEGER :: i, k, kn
 
       IF (SIZE(f1) /= SIZE(wts) .OR. SIZE(f2) /= SIZE(wts) .OR. SIZE(inc1) /= SIZE(wts) .OR. SIZE(inc2) /= SIZE(wts) &
           .OR. SIZE(psi, 1) /= SIZE(wts) .OR. SIZE(t_in) /= SIZE(psi, 2)) THEN
          WRITE (*, '(a)') ' fs_inner_pair: the fields, psi, the weights and t_in do not match in size.'
          ERROR STOP 1
       END IF
+      kn = kernel_arg(kernel)
       t_in = (0D0, 0D0)
       DO i = 1, SIZE(wts)
-         q = wts(i)*fs_forcing_diff(w1, f1(i), inc1(i), w2, f2(i), inc2(i), g)
+         q = wts(i)*fs_forcing(kn, w1, f1(i), inc1(i), w2, f2(i), inc2(i), g)
          DO k = 1, SIZE(t_in)
             t_in(k) = t_in(k) + psi(i, k)*q
          END DO
       END DO
-      t_in = FS_SIGN*CI*(w1 - w2)*rho/g*t_in
+      t_in = FS_SIGN*CI*pair_omega(kn, w1, w2)*rho/g*t_in
    END SUBROUTINE fs_inner_pair
 
-   SUBROUTINE fs_outer_pair(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, omega, g, rho, r_far, t_out)
+   SUBROUTINE fs_outer_pair(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, omega, g, rho, r_far, t_out, kernel)
       ! The outer part of T_FS, r > R, for the pair of states 1 and 2:
       !   t_out(k) = s_FS (i Omega rho / g) int_{r > R} psi_k Q_D dS,
       ! from the partial waves of the scattered potentials pw1 (at w1) and pw2 (at w2), the incident waves (heading beta1 in
@@ -645,29 +764,36 @@ CONTAINS
       ! the triples of modes with a - b + c = 0 (fs_outer_ring); for a part with a plane wave this is
       ! 2 pi sum_n g_n i^n J_n(kr) e^{+in beta}. Radially: Gauss-Legendre from R to r_far (fs_outer_annulus), then the
       ! propagating tail from r_far to infinity on rotated contours per phase class (fs_outer_tail). r_far from
-      ! fs_outer_rfar, or larger. Omega = 0 gives 0.
+      ! fs_outer_rfar, or larger. Omega = 0 gives 0. kernel (optional, KERNEL_DIFF by default): KERNEL_SUM gives the sum
+      ! frequency, Q_S with pair_plus and Omega = w1 + w2, the pair ordered w1 >= w2 (header).
       REAL(8), INTENT(IN) :: w1, beta1, k1, w2, beta2, k2, omega, g, rho, r_far
       TYPE(pw_set), INTENT(IN) :: pw1, pw2, pw_psi(:)
       COMPLEX(8), INTENT(OUT) :: t_out(:)
+      INTEGER, INTENT(IN), OPTIONAL :: kernel
       COMPLEX(8) :: tail(SIZE(t_out))
 
       IF (.NOT. r_far > pw1%radius) THEN
          WRITE (*, '(a)') ' fs_outer_pair: r_far must exceed the radius R of the partial waves.'
          ERROR STOP 1
       END IF
-      CALL fs_outer_annulus(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, omega, g, rho, pw1%radius, r_far, t_out)
-      CALL fs_outer_tail(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, omega, g, rho, r_far, tail)
+      CALL fs_outer_annulus(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, omega, g, rho, pw1%radius, r_far, t_out, &
+                            kernel=kernel_arg(kernel))
+      CALL fs_outer_tail(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, omega, g, rho, r_far, tail, kernel=kernel_arg(kernel))
       t_out = t_out + tail
    END SUBROUTINE fs_outer_pair
 
-   REAL(8) FUNCTION fs_outer_rfar(pw1, k1, pw2, k2, pw_psi)
+   REAL(8) FUNCTION fs_outer_rfar(pw1, k1, pw2, k2, pw_psi, kernel)
       ! The radius where the outer integral turns from the real axis to the tail contours: the slowest evanescent mode of
       ! all sets has decayed below 1e-12, e^{-k_1 (r_far - R)} = 1e-12 (the Task 2 reference: 5e-4 was left at 150 m beyond
       ! R in 100 m of water), and r_far - R is at least 20 periods 2 pi / kappa_min of the slowest phase class of the tail:
       ! kappa = k_1 - k_2 + K always, -k_1 - k_2 + K with incident wave 1 (k1 > 0), k_1 + k_2 + K with incident wave 2.
       ! Only the classes that occur count (k_1 - k_2 - K, for one, never does; it tends to 0 in shallow water).
+      ! kernel = KERNEL_SUM (optional; KERNEL_DIFF by default): the classes of the sum (fs_outer_tail), k_1 + k_2 + K
+      ! always, -k_1 + k_2 + K with incident wave 1, k_1 - k_2 + K with incident wave 2, the least of those that occur;
+      ! the pair ordered w1 >= w2.
       TYPE(pw_set), INTENT(IN) :: pw1, pw2, pw_psi(:)
       REAL(8), INTENT(IN) :: k1, k2
+      INTEGER, INTENT(IN), OPTIONAL :: kernel
       REAL(8) :: kevmin, kmin, ka, kb, kp
 
       kevmin = HUGE(1D0)
@@ -680,27 +806,38 @@ CONTAINS
       END IF
       ka = pw1%k0
       kb = pw2%k0
-      IF (.NOT. ka > kb) THEN
-         WRITE (*, '(a)') ' fs_outer_rfar: the pair must be ordered w1 > w2 (k1 > k2); the caller must order the pair.'
-         ERROR STOP 1
+      IF (kernel_arg(kernel) == KERNEL_SUM) THEN
+         IF (.NOT. ka >= kb) THEN
+            WRITE (*, '(a)') ' fs_outer_rfar: the sum pair must be ordered w1 >= w2 (k1 >= k2); the caller must order it.'
+            ERROR STOP 1
+         END IF
+         kmin = ABS(ka + kb + kp)
+         IF (k1 > 0D0) kmin = MIN(kmin, ABS(-ka + kb + kp))
+         IF (k2 > 0D0) kmin = MIN(kmin, ABS(ka - kb + kp))
+      ELSE
+         IF (.NOT. ka > kb) THEN
+            WRITE (*, '(a)') ' fs_outer_rfar: the pair must be ordered w1 > w2 (k1 > k2); the caller must order the pair.'
+            ERROR STOP 1
+         END IF
+         kmin = ABS(ka - kb + kp)
+         IF (k1 > 0D0) kmin = MIN(kmin, ABS(-ka - kb + kp))
+         IF (k2 > 0D0) kmin = MIN(kmin, ABS(ka + kb + kp))
       END IF
-      kmin = ABS(ka - kb + kp)
-      IF (k1 > 0D0) kmin = MIN(kmin, ABS(-ka - kb + kp))
-      IF (k2 > 0D0) kmin = MIN(kmin, ABS(ka + kb + kp))
       fs_outer_rfar = pw1%radius + RFAR_WAVES*2D0*PI/kmin
       IF (kevmin < HUGE(1D0)) fs_outer_rfar = MAX(fs_outer_rfar, pw1%radius + RFAR_DECAY/kevmin)
    END FUNCTION fs_outer_rfar
 
-   SUBROUTINE fs_outer_annulus(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, omega, g, rho, r_a, r_b, t)
+   SUBROUTINE fs_outer_annulus(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, omega, g, rho, r_a, r_b, t, kernel)
       ! s_FS (i Omega rho / g) int_{r_a < r < r_b} psi_k Q_D r dr dtheta (the arguments of fs_outer_pair), r_a >= R: the
       ! ring integral of fs_outer_ring by Gauss-Legendre of order NGL on intervals of at most 1/8 of the shortest
       ! wavelength of the integrand, 2 pi / (k_1 + k_2 + K), at most 2 / k_n of the fastest evanescent mode still alive (a
       ! mode is dropped where it has decayed by e^-40), and at most 2 r / (M + 1). OpenMP over the intervals; each interval
       ! keeps its own sum, and these are added in order after the parallel loop, so that the result does not depend on the
-      ! threads or the schedule (the same bits run to run).
+      ! threads or the schedule (the same bits run to run). kernel: as fs_outer_pair.
       REAL(8), INTENT(IN) :: w1, beta1, k1, w2, beta2, k2, omega, g, rho, r_a, r_b
       TYPE(pw_set), INTENT(IN) :: pw1, pw2, pw_psi(:)
       COMPLEX(8), INTENT(OUT) :: t(:)
+      INTEGER, INTENT(IN), OPTIONAL :: kernel
       TYPE(outer_data) :: od
       REAL(8), ALLOCATABLE :: edge(:)
       COMPLEX(8), ALLOCATABLE :: part(:, :)
@@ -709,8 +846,8 @@ CONTAINS
 
       t = (0D0, 0D0)
       IF (omega == 0D0 .OR. .NOT. r_b > r_a .OR. SIZE(t) == 0) RETURN
-      CALL stop_if_unordered(w1, w2, omega)
-      CALL outer_setup(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, g, od)
+      CALL stop_if_unordered(w1, w2, omega, kernel_arg(kernel))
+      CALL outer_setup(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, g, od, kernel_arg(kernel))
       IF (SIZE(t) /= od%nk) THEN
          WRITE (*, '(a)') ' fs_outer_annulus: t must have one entry per set of pw_psi.'
          ERROR STOP 1
@@ -759,7 +896,7 @@ CONTAINS
       !$OMP END DO
    END SUBROUTINE annulus_worker
 
-   SUBROUTINE fs_outer_tail(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, omega, g, rho, r_far, t)
+   SUBROUTINE fs_outer_tail(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, omega, g, rho, r_far, t, kernel)
       ! s_FS (i Omega rho / g) int_{r > r_far} psi_k Q_D dS (the arguments of fs_outer_pair): the propagating modes only (the
       ! evanescent ones have decayed, fs_outer_rfar). Writing J_n = (H^(1)_n + H^(2)_n) / 2 for the plane waves, and
       ! conj(H^(1)(k_2 r)) = H^(2)(k_2 r) (analytic in r) for state 2, the ring integral is a sum of three phase classes
@@ -771,9 +908,23 @@ CONTAINS
       !   int_{r_far}^inf e^{i kappa r} G r dr = i s e^{i kappa r_far} int_0^inf e^{-|kappa| t} G(r) r dt,
       ! by Gauss-Laguerre of order NLAG, with the exponential factors of the Hankel functions taken out (pw_hankel_scaled),
       ! as the Task 2 reference does. Checked against the real-axis integral in fs_outer_tail (r_far against 2 r_far).
+      !
+      ! The sum frequency (kernel = KERNEL_SUM; R3 of the 7c-2 plan) [derived]. Field 2 now enters as it is, so its
+      ! propagating part is a_2 H^(1)(k_2 r) ~ e^{+i k_2 r}, where the difference had conj(a_2) H^(2)(k_2 r) ~ e^{-i k_2 r};
+      ! I_2 = (H^(1) + H^(2))(k_2 r) / 2 as before, and psi_k at Omega = w1 + w2 is H^(1)(K r), K = k(w1 + w2). The
+      ! asymptotic phases of H^(1) and H^(2) are e^{+ix} and e^{-ix} (Abramowitz and Stegun 9.2.3, 9.2.4), so each product
+      ! carries e^{i kappa r} with kappa the sum of its wave numbers, + for H^(1) and - for H^(2):
+      !   kappa_a = k_1 + k_2 + K: S_1 S_2 psi, (H^(1) part of I_1) S_2 psi, S_1 (H^(1) part of I_2) psi;
+      !   kappa_b = -k_1 + k_2 + K: (H^(2) part of I_1) S_2 psi;   kappa_c = k_1 - k_2 + K: S_1 (H^(2) part of I_2) psi,
+      ! the classes of the difference with k_2 -> -k_2 (the class index keeps its parts: a the main one, b with the H^(2)
+      ! half of I_1, c with the other half of I_2). All three are positive in finite depth: k(w) increases with w, so
+      ! K = k(w1 + w2) > k(w1) = k_1 >= k_2 > 0, and then k_1 - k_2 + K > 0 and -k_1 + k_2 + K > k_2 > 0 (test
+      ! fs_sum_classes_positive). So no class is near 0, where the contour rotation would fail, unlike k_1 - k_2 - K of
+      ! the difference. The rotation is that of the difference with these kappa.
       REAL(8), INTENT(IN) :: w1, beta1, k1, w2, beta2, k2, omega, g, rho, r_far
       TYPE(pw_set), INTENT(IN) :: pw1, pw2, pw_psi(:)
       COMPLEX(8), INTENT(OUT) :: t(:)
+      INTEGER, INTENT(IN), OPTIONAL :: kernel
       TYPE(outer_data) :: od
       TYPE(outer_work) :: wk
       REAL(8) :: xl(NLAG), wl(NLAG), kap(3), s, tq
@@ -782,15 +933,15 @@ CONTAINS
 
       t = (0D0, 0D0)
       IF (omega == 0D0 .OR. SIZE(t) == 0) RETURN
-      CALL stop_if_unordered(w1, w2, omega)
-      CALL outer_setup(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, g, od)
+      CALL stop_if_unordered(w1, w2, omega, kernel_arg(kernel))
+      CALL outer_setup(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, g, od, kernel_arg(kernel))
       IF (SIZE(t) /= od%nk) THEN
          WRITE (*, '(a)') ' fs_outer_tail: t must have one entry per set of pw_psi.'
          ERROR STOP 1
       END IF
       CALL work_alloc(od, wk)
       CALL gauss_laguerre(NLAG, xl, wl)
-      kap = [od%k1 - od%k2 + od%kp, -od%k1 - od%k2 + od%kp, od%k1 + od%k2 + od%kp]
+      kap = tail_kappa(od)
       DO cls = 1, 3
          IF (cls == 2 .AND. .NOT. od%inc1) CYCLE
          IF (cls == 3 .AND. .NOT. od%inc2) CYCLE
@@ -811,7 +962,7 @@ CONTAINS
       t = FS_SIGN*CI*omega*rho/g*t
    END SUBROUTINE fs_outer_tail
 
-   SUBROUTINE fs_outer_ring(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, g, r, ring)
+   SUBROUTINE fs_outer_ring(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, g, r, ring, kernel)
       ! The ring integral ring(k) = int_0^2pi psi_k Q_D dtheta at radius r >= R (the integrand of the radial integral, without
       ! r and the factor s_FS i Omega rho / g), the arguments as fs_outer_pair. With the modal amplitudes at r of field 1,
       ! X_a e^{ia theta}, of conj(field 2), C_b e^{-ib theta}, and of psi_k, P_c e^{ic theta},
@@ -819,14 +970,17 @@ CONTAINS
       ! Q(a, b) = free_surface_forcing (KERNEL_DIFF) of the mode pair (gradient (d_r, i a / r, d_z) of each; pair_product
       ! conjugates state 2, so it is given conj(C_b)). Exact for the band-limited modal fields: the same as sampling theta at
       ! enough points; for the plane waves, a runs over |a| <= M_2 + M_psi, all that the triples reach (Jacobi-Anger).
+      ! kernel (optional, KERNEL_DIFF by default): KERNEL_SUM gives the ring of Q_S, with C_b the modes of field 2 itself
+      ! reversed, C_b = X2_{-b} (ring_coef; test fs_sum_ring_sampled), the pair ordered w1 >= w2.
       REAL(8), INTENT(IN) :: w1, beta1, k1, w2, beta2, k2, g, r
       TYPE(pw_set), INTENT(IN) :: pw1, pw2, pw_psi(:)
       COMPLEX(8), INTENT(OUT) :: ring(:)
+      INTEGER, INTENT(IN), OPTIONAL :: kernel
       TYPE(outer_data) :: od
       TYPE(outer_work) :: wk
 
-      CALL stop_if_unordered(w1, w2, w1 - w2)
-      CALL outer_setup(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, g, od)
+      CALL stop_if_unordered(w1, w2, pair_omega(kernel_arg(kernel), w1, w2), kernel_arg(kernel))
+      CALL outer_setup(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, g, od, kernel_arg(kernel))
       IF (SIZE(ring) /= od%nk) THEN
          WRITE (*, '(a)') ' fs_outer_ring: ring must have one entry per set of pw_psi.'
          ERROR STOP 1
@@ -835,17 +989,18 @@ CONTAINS
       CALL ring_real(od, r, ring, wk)
    END SUBROUTINE fs_outer_ring
 
-   SUBROUTINE fs_outer_sliver(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, omega, g, rho, np, t)
+   SUBROUTINE fs_outer_sliver(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, omega, g, rho, np, t, kernel)
       ! s_FS (i Omega rho / g) int psi_k Q_D dS over the gap between the circle R and the polygon of np chords inscribed in
       ! it with vertices at theta_j = 2 pi (j - 1) / np about the centre: the outer edge of the generated inner mesh
       ! (build_fs_inner, np_circle). The partial waves are used a little inside R there (at most R (1 - cos(pi/np))), where
       ! their series still converge. Per chord: Gauss-Legendre of order NSL_TH in theta and NSL_R in r from the chord to the
       ! circle; the fields pointwise from the modal amplitudes at r, Q_D by fs_forcing_diff. np < 3 (a mesh from
-      ! FSInnerMesh.pnl, np_circle = 0): t = 0.
+      ! FSInnerMesh.pnl, np_circle = 0): t = 0. kernel: as fs_outer_pair (Q_S by fs_forcing for the sum).
       REAL(8), INTENT(IN) :: w1, beta1, k1, w2, beta2, k2, omega, g, rho
       TYPE(pw_set), INTENT(IN) :: pw1, pw2, pw_psi(:)
       INTEGER, INTENT(IN) :: np
       COMPLEX(8), INTENT(OUT) :: t(:)
+      INTEGER, INTENT(IN), OPTIONAL :: kernel
       TYPE(outer_data) :: od
       TYPE(outer_work) :: wk
       TYPE(fs_point_field) :: s1, s2, i1, i2, t1, t2
@@ -855,8 +1010,8 @@ CONTAINS
 
       t = (0D0, 0D0)
       IF (omega == 0D0 .OR. np < 3 .OR. SIZE(t) == 0) RETURN
-      CALL stop_if_unordered(w1, w2, omega)
-      CALL outer_setup(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, g, od)
+      CALL stop_if_unordered(w1, w2, omega, kernel_arg(kernel))
+      CALL outer_setup(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, g, od, kernel_arg(kernel))
       IF (SIZE(t) /= od%nk) THEN
          WRITE (*, '(a)') ' fs_outer_sliver: t must have one entry per set of pw_psi.'
          ERROR STOP 1
@@ -874,17 +1029,17 @@ CONTAINS
                r = rho_c + xr(ir)*(od%radius - rho_c)
                CALL modes_real(od, r, wk)
                s1 = modal_point(od%m1, wk%f1, r, th, .FALSE.)
-               s2 = modal_point(od%m2, wk%c2, r, th, .TRUE.)
+               s2 = field2_point(od, wk%c2, r, th)
                dxy = [r*COS(th), r*SIN(th)]
                i1 = plane_point(od%inc1, od%amp1, od%k1, od%beta1, od%dzi1, dxy)
-               i2 = plane_point(od%inc2, CONJG(od%amp2c), od%k2, od%beta2, od%dzi2, dxy)
+               i2 = plane_point(od%inc2, od%amp2, od%k2, od%beta2, od%dzi2, dxy)
                t1%phi = s1%phi + i1%phi
                t1%grad = s1%grad + i1%grad
                t1%phizz = s1%phizz + i1%phizz
                t2%phi = s2%phi + i2%phi
                t2%grad = s2%grad + i2%grad
                t2%phizz = s2%phizz + i2%phizz
-               q = fs_forcing_diff(od%w1, t1, i1, od%w2, t2, i2, od%g)*(wt(it)*dth*wr(ir)*(od%radius - rho_c)*r)
+               q = fs_forcing(od%kernel, od%w1, t1, i1, od%w2, t2, i2, od%g)*(wt(it)*dth*wr(ir)*(od%radius - rho_c)*r)
                DO k = 1, od%nk
                   e = (0D0, 0D0)
                   DO c = -od%mp, od%mp
@@ -898,27 +1053,30 @@ CONTAINS
       t = FS_SIGN*CI*omega*rho/g*t
    END SUBROUTINE fs_outer_sliver
 
-   SUBROUTINE fs_forcing_points(w1, f1, inc1, w2, f2, inc2, g, q)
+   SUBROUTINE fs_forcing_points(w1, f1, inc1, w2, f2, inc2, g, q, kernel)
       ! Q_D at the inner points of the pair of states 1 (omega w1) and 2 (omega w2): q(i) = fs_forcing_diff of the total
       ! fields f1(i), f2(i) and the incident fields inc1(i), inc2(i) (fs_inner_fields, incident_at). No weight and no
       ! factor: the direct solve of Phase 7b applies its own (fs_inner_pair is sum_i wts(i) psi(i, k) q(i) times
-      ! s_FS i Omega rho / g, test outer_moments_contract_psi).
+      ! s_FS i Omega rho / g, test outer_moments_contract_psi). kernel (optional, KERNEL_DIFF by default): KERNEL_SUM gives
+      ! Q_S (fs_forcing; test fs_sum_moments_contract_psi).
       REAL(8), INTENT(IN) :: w1, w2, g
       TYPE(fs_point_field), INTENT(IN) :: f1(:), inc1(:), f2(:), inc2(:)
       COMPLEX(8), INTENT(OUT) :: q(:)
-      INTEGER :: i
+      INTEGER, INTENT(IN), OPTIONAL :: kernel
+      INTEGER :: i, kn
 
       IF (SIZE(f1) /= SIZE(q) .OR. SIZE(f2) /= SIZE(q) .OR. SIZE(inc1) /= SIZE(q) .OR. SIZE(inc2) /= SIZE(q)) THEN
          WRITE (*, '(a)') ' fs_forcing_points: the fields and q do not match in size.'
          ERROR STOP 1
       END IF
+      kn = kernel_arg(kernel)
       DO i = 1, SIZE(q)
-         q(i) = fs_forcing_diff(w1, f1(i), inc1(i), w2, f2(i), inc2(i), g)
+         q(i) = fs_forcing(kn, w1, f1(i), inc1(i), w2, f2(i), inc2(i), g)
       END DO
    END SUBROUTINE fs_forcing_points
 
    SUBROUTINE fs_outer_moments(w1, pw1, beta1, k1, w2, pw2, beta2, k2, k0, kev, h, centre, radius, mg, nev, omega, g, np, &
-                               r_far, mom)
+                               r_far, mom, kernel)
       ! The outer moments of the free-surface forcing of the pair of states 1 and 2 (Phase 7b): on z = 0, over the free
       ! surface outside the inner mesh (the annulus R..r_far, the propagating tail to infinity, and the sliver between the
       ! polygon of np chords and the circle; np < 3: no sliver),
@@ -942,10 +1100,14 @@ CONTAINS
       ! partition of the radial intervals into at most MOM_BLOCKS blocks, summed in order: the same bits for any number
       ! of threads. An order m whose H_m(k0 R) or K_m(kn R) overflows gives a moment that is not finite; the caller
       ! contracts only the orders its amplitudes represent (mcut of pw_green_modes).
+      ! kernel (optional, KERNEL_DIFF by default): KERNEL_SUM gives the moments of Q_S at Omega = w1 + w2, the pair ordered
+      ! w1 >= w2, k0 and kev those of Omega; the tail classes are those of the sum (fs_outer_tail). The contraction is
+      ! unchanged (test fs_sum_moments_contract_psi).
       REAL(8), INTENT(IN) :: w1, beta1, k1, w2, beta2, k2, k0, kev(:), h, centre(2), radius, omega, g, r_far
       TYPE(pw_set), INTENT(IN) :: pw1, pw2
       INTEGER, INTENT(IN) :: mg, nev, np
       COMPLEX(8), INTENT(OUT) :: mom(-mg:mg, 0:nev)
+      INTEGER, INTENT(IN), OPTIONAL :: kernel
       TYPE(pw_set) :: basis(1)
       TYPE(outer_data) :: od
       REAL(8), ALLOCATABLE :: edge(:)
@@ -955,7 +1117,7 @@ CONTAINS
 
       mom = (0D0, 0D0)
       IF (omega == 0D0) RETURN
-      CALL stop_if_unordered(w1, w2, omega)
+      CALL stop_if_unordered(w1, w2, omega, kernel_arg(kernel))
       IF (mg < 0 .OR. nev < 0 .OR. SIZE(kev) < nev) THEN
          WRITE (*, '(a)') ' fs_outer_moments: mg and nev must not be negative, and kev must hold nev wave numbers.'
          ERROR STOP 1
@@ -975,7 +1137,7 @@ CONTAINS
       ALLOCATE (basis(1)%kev(nev), basis(1)%a(-mg:mg, 0:nev))
       basis(1)%kev = kev(1:nev)
       basis(1)%a = (0D0, 0D0)
-      CALL outer_setup(w1, pw1, beta1, k1, w2, pw2, beta2, k2, basis, g, od)
+      CALL outer_setup(w1, pw1, beta1, k1, w2, pw2, beta2, k2, basis, g, od, kernel_arg(kernel))
 
       ! The annulus R..r_far
       CALL radial_intervals(od, radius, r_far, edge, ni)
@@ -994,17 +1156,19 @@ CONTAINS
 
    ! ------------------------------------------------------------------------------------------ outer integral, internals
 
-   SUBROUTINE outer_setup(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, g, od)
+   SUBROUTINE outer_setup(w1, pw1, beta1, k1, w2, pw2, beta2, k2, pw_psi, g, od, kernel)
       ! The data of the outer integral of one pair: mode counts, wave numbers, the incident amplitudes at the centre
       ! (-i g_w / omega e^{i k (c . e_beta)}, g_w = wave_gravity as incident_at), the vertical factors per mode
       ! (phi_z = d phi, phi_zz = e phi on z = 0: d = k0 tanh k0 h and -k_n tan k_n h, e = k0^2 and -k_n^2), and the
       ! evanescent amplitudes at R, a(m, n) K_m(k_n R), with e^{k_n R} K_m(k_n R), so that the radial factor
       ! K_m(k_n r) / K_m(k_n R) = [e^x K_m](k_n r) / [e^x K_m](k_n R) e^{-k_n (r - R)} needs no K_m beyond 600 however far out
       ! r is (review M3 of Task 5). Stops if the sets do not share the circle and depth, the psi sets their modes, or an
-      ! incident wave number differs from that of its partial waves.
+      ! incident wave number differs from that of its partial waves. kernel: KERNEL_DIFF or KERNEL_SUM (od%kernel); for
+      ! the sum the tail amplitudes a2c of field 2 are its own, not conjugated (fs_outer_tail).
       REAL(8), INTENT(IN) :: w1, beta1, k1, w2, beta2, k2, g
       TYPE(pw_set), INTENT(IN) :: pw1, pw2, pw_psi(:)
       TYPE(outer_data), INTENT(OUT) :: od
+      INTEGER, INTENT(IN) :: kernel
       REAL(8) :: gw
       INTEGER :: k
 
@@ -1024,8 +1188,11 @@ CONTAINS
             ERROR STOP 1
          END IF
       END DO
+      od%kernel = kernel
       od%w1 = w1
       od%w2 = w2
+      od%w2r = w2
+      IF (kernel == KERNEL_SUM) od%w2r = -w2
       od%g = g
       od%m1 = pw1%mmax
       od%m2 = pw2%mmax
@@ -1061,7 +1228,8 @@ CONTAINS
             ERROR STOP 1
          END IF
          gw = wave_gravity(w2, od%k2, od%h)
-         od%amp2c = CONJG(-CI*gw/w2*EXP(CI*od%k2*(od%centre(1)*COS(beta2) + od%centre(2)*SIN(beta2))))
+         od%amp2 = -CI*gw/w2*EXP(CI*od%k2*(od%centre(1)*COS(beta2) + od%centre(2)*SIN(beta2)))
+         od%amp2c = CONJG(od%amp2)
          od%dzi2 = od%k2*TANH(od%k2*od%h)
       END IF
       ALLOCATE (od%a1(-od%m1:od%m1, 0:od%n1, 1), od%a2(-od%m2:od%m2, 0:od%n2, 1), od%a2c(-od%m2:od%m2, 0:od%n2, 1))
@@ -1071,17 +1239,23 @@ CONTAINS
       DO k = 1, od%nk
          CALL set_amplitudes(pw_psi(k), od%ap(:, :, k), od%kevp, od%krp, od%dp, od%ep)
       END DO
-      ! State 2 enters conjugated: in the tail its propagating amplitudes are conj(a2) on H^(2) (analytic in r)
+      ! State 2 enters conjugated: in the tail its propagating amplitudes are conj(a2) on H^(2) (analytic in r). For the
+      ! sum it enters as it is: a2 on H^(1)
       od%a2c = (0D0, 0D0)
-      od%a2c(:, 0, 1) = CONJG(od%a2(:, 0, 1))
+      IF (kernel == KERNEL_SUM) THEN
+         od%a2c(:, 0, 1) = od%a2(:, 0, 1)
+      ELSE
+         od%a2c(:, 0, 1) = CONJG(od%a2(:, 0, 1))
+      END IF
    END SUBROUTINE outer_setup
 
-   SUBROUTINE stop_if_unordered(w1, w2, omega)
-      ! ERROR STOP with fs_pair_order_message unless w1 > w2 and omega > 0
+   SUBROUTINE stop_if_unordered(w1, w2, omega, kernel)
+      ! ERROR STOP with fs_pair_order_message unless w1 > w2 (w1 >= w2 for the sum) and omega > 0
       REAL(8), INTENT(IN) :: w1, w2, omega
+      INTEGER, INTENT(IN) :: kernel
       CHARACTER(LEN=:), ALLOCATABLE :: msg
 
-      msg = fs_pair_order_message(w1, w2, omega)
+      msg = fs_pair_order_message(w1, w2, omega, kernel)
       IF (LEN(msg) > 0) THEN
          WRITE (*, '(a,a)') ' QTF free surface: ', msg
          ERROR STOP 1
@@ -1302,6 +1476,19 @@ CONTAINS
       !             + [-i w1 p (-w2^2 q_z + g q_zz) + i w2 q (-w1^2 p_z + g p_zz)] / (4 g),
       ! a sum of five products u_t(a) v_t(b): evaluated as such, not by a call per pair (the cost of the moments, test
       ! outer_moments_cost). Against the call per pair the results agree to rounding: 9e-16 relative on fs_outer_pair.
+      !
+      ! The sum frequency: called with w2 -> -w2 and c2(b, :) = the modes -b of field 2 itself (R3 of the 7c-2 plan)
+      ! [derived]. Field 2 is sum_m X2_m e^{im theta}; with c2(b) = X2_{-b} it is sum_b c2(b) e^{-ib theta}, the form of
+      ! conj(field 2) above, so its angular derivative is again (-i b / r) c2(b) and mode pair (a, b) again carries
+      ! e^{i(a - b) theta}. pair_plus has field 2 where pair_minus has its conjugate: the gradient terms are
+      ! (1/2) sum_j g1_j g2_j = (1/2) [p_r q_r + (i a / r)(-i b / r) p q + p_z q_z], as before; with f = -i w phi and
+      ! s = -w^2 phi_z + g phi_zz, pair_plus(f1, s1, f2, s2) = (f1 s2 + f2 s1) / 4 has f2 = -i w2 q where pair_minus had
+      ! conj f2 = +i w2 q, and s2 = -w2^2 q_z + g q_zz unchanged. With Omega = w1 + w2:
+      !   Q(a, b) = (i Omega / 2) [p_r q_r + (a b / r^2) p q + p_z q_z]
+      !             + [-i w1 p (-w2^2 q_z + g q_zz) - i w2 q (-w1^2 p_z + g p_zz)] / (4 g),
+      ! the difference formula with w2 -> -w2 throughout (w2 enters it only through Omega = w1 - w2, the factor i w2 and
+      ! w2^2). The vertical factors d, e are real (finite depth), so q_z, q_zz of the modes need no change. Pinned against
+      ! theta sampling of free_surface_forcing (KERNEL_SUM) in test fs_sum_ring_sampled.
       COMPLEX(8), INTENT(IN) :: r
       REAL(8), INTENT(IN) :: w1, w2, g
       INTEGER, INTENT(IN) :: m1, m2, mc
@@ -1351,8 +1538,8 @@ CONTAINS
    END SUBROUTINE ring_add
 
    SUBROUTINE modes_real(od, r, wk)
-      ! The modal amplitudes at real r of field 1 (wk%f1), conj(field 2) (wk%c2) and the psi_k (wk%ps), evanescent modes
-      ! included
+      ! The modal amplitudes at real r of field 1 (wk%f1), conj(field 2) (wk%c2; for the sum field 2 itself, its modes
+      ! reversed, ring_coef) and the psi_k (wk%ps), evanescent modes included
       TYPE(outer_data), INTENT(IN) :: od
       REAL(8), INTENT(IN) :: r
       TYPE(outer_work), INTENT(INOUT) :: wk
@@ -1362,7 +1549,11 @@ CONTAINS
       CALL apply_modes(od%m1, od%n1, 1, 1, od%a1, od%k1, wk%h1, wk%kq1, wk%dkq1, nal, od%d1, od%e1, wk%f1)
       CALL radial_real(od%k2, od%kev2, od%n2, od%m2, od%radius, od%kr2, r, wk%h2, wk%kq2, wk%dkq2, nal, wk%kc)
       CALL apply_modes(od%m2, od%n2, 1, 1, od%a2, od%k2, wk%h2, wk%kq2, wk%dkq2, nal, od%d2, od%e2, wk%c2)
-      wk%c2 = CONJG(wk%c2)
+      IF (od%kernel == KERNEL_SUM) THEN
+         CALL reverse_modes(od%m2, wk%c2)
+      ELSE
+         wk%c2 = CONJG(wk%c2)
+      END IF
       CALL radial_real(od%kp, od%kevp, od%np, od%mp, od%radius, od%krp, r, wk%hp, wk%kqp, wk%dkqp, nal, wk%kc)
       wk%nalp = nal
       DO k = 1, od%nk
@@ -1377,7 +1568,8 @@ CONTAINS
       ! The coefficients of Q_D on e^{-ic theta}, |c| <= od%mp, at real r >= R, per part (ring_coef): wk%tq(:, 1) S_1 S_2,
       ! wk%tq(:, 2) I_1 S_2 and wk%tq(:, 3) S_1 I_2 (the plane waves by their Jacobi-Anger modes, |n| <= M + od%mp, all
       ! that |c| <= od%mp reaches, J_n by one call of the array form of the intrinsic); wk%on(p) whether part p is
-      ! present. The modal amplitudes at r (modes_real) stay in wk.
+      ! present. The modal amplitudes at r (modes_real) stay in wk. For the sum, field 2 and I_2 as they are, their modes
+      ! reversed, and ring_coef with w2 -> -w2 (od%w2r; ring_coef).
       TYPE(outer_data), INTENT(IN) :: od
       REAL(8), INTENT(IN) :: r
       TYPE(outer_work), INTENT(INOUT) :: wk
@@ -1386,16 +1578,16 @@ CONTAINS
       CALL modes_real(od, r, wk)
       rc = CMPLX(r, 0D0, KIND=8)
       wk%on = [.TRUE., od%inc1, od%inc2]
-      CALL ring_coef(rc, od%w1, od%m1, wk%f1, od%w2, od%m2, wk%c2, od%mp, od%g, wk%tq(:, 1))
+      CALL ring_coef(rc, od%w1, od%m1, wk%f1, od%w2r, od%m2, wk%c2, od%mp, od%g, wk%tq(:, 1))
       IF (od%inc1) THEN
          wk%j1 = BESSEL_JN(0, od%ni1 + 1, od%k1*r)
          CALL plane_modes(od%ni1, od%amp1, od%k1, od%beta1, 1D0, wk%j1, od%dzi1, wk%fi)
-         CALL ring_coef(rc, od%w1, od%ni1, wk%fi, od%w2, od%m2, wk%c2, od%mp, od%g, wk%tq(:, 2))
+         CALL ring_coef(rc, od%w1, od%ni1, wk%fi, od%w2r, od%m2, wk%c2, od%mp, od%g, wk%tq(:, 2))
       END IF
       IF (od%inc2) THEN
          wk%j2 = BESSEL_JN(0, od%ni2 + 1, od%k2*r)
-         CALL plane_modes(od%ni2, od%amp2c, od%k2, od%beta2, -1D0, wk%j2, od%dzi2, wk%ci)
-         CALL ring_coef(rc, od%w1, od%m1, wk%f1, od%w2, od%ni2, wk%ci, od%mp, od%g, wk%tq(:, 3))
+         CALL plane2_modes(od, wk%j2, wk%ci)
+         CALL ring_coef(rc, od%w1, od%m1, wk%f1, od%w2r, od%ni2, wk%ci, od%mp, od%g, wk%tq(:, 3))
       END IF
    END SUBROUTINE coef_real
 
@@ -1420,17 +1612,23 @@ CONTAINS
       ! every Hankel function scaled (pw_hankel_scaled), the propagating modes only: class 1 (kappa_a) S_1 S_2, the H^(1)
       ! half of I_1 with S_2, S_1 with the H^(2) half of I_2; class 2 (kappa_b) the H^(2) half of I_1 with S_2; class 3
       ! (kappa_c) S_1 with the H^(1) half of I_2. psi (wk%ps, wk%hp) is not touched.
+      ! The sum (fs_outer_tail): S_2 is a_2 H^(1)(k_2 r) and the halves of I_2 swap, class a with the H^(1) half and class
+      ! c with the H^(2) half; field 2 and I_2 reversed in their modes and ring_coef with -w2, as coef_real.
       TYPE(outer_data), INTENT(IN) :: od
       INTEGER, INTENT(IN) :: cls
       COMPLEX(8), INTENT(IN) :: r
       TYPE(outer_work), INTENT(INOUT) :: wk
-      INTEGER :: n
+      INTEGER :: n, kind2
 
       wk%on = .FALSE.
-      ! conj(S_2): conj(a_2) H^(2)(k_2 r), in classes a and b
+      ! The Hankel kind of field 2 (S_2, and the half of I_2 of class a): 2 for its conjugate, 1 for the sum
+      kind2 = 2
+      IF (od%kernel == KERNEL_SUM) kind2 = 1
+      ! conj(S_2): conj(a_2) H^(2)(k_2 r), in classes a and b (the sum: a_2 H^(1)(k_2 r), reversed)
       IF (cls == 1 .OR. cls == 2) THEN
-         CALL pw_hankel_scaled(2, od%m2 + 1, od%k2*r, wk%h2)
+         CALL pw_hankel_scaled(kind2, od%m2 + 1, od%k2*r, wk%h2)
          CALL apply_modes(od%m2, od%n2, 1, 1, od%a2c, od%k2, wk%h2, wk%kq2, wk%dkq2, 0, od%d2, od%e2, wk%c2)
+         IF (od%kernel == KERNEL_SUM) CALL reverse_modes(od%m2, wk%c2)
       END IF
       ! S_1: a_1 H^(1)(k_1 r), in classes a and c
       IF (cls == 1 .OR. cls == 3) THEN
@@ -1440,7 +1638,7 @@ CONTAINS
       SELECT CASE (cls)
       CASE (1)
          wk%on(1) = .TRUE.
-         CALL ring_coef(r, od%w1, od%m1, wk%f1, od%w2, od%m2, wk%c2, od%mp, od%g, wk%tq(:, 1))
+         CALL ring_coef(r, od%w1, od%m1, wk%f1, od%w2r, od%m2, wk%c2, od%mp, od%g, wk%tq(:, 1))
          IF (od%inc1) THEN
             wk%on(2) = .TRUE.
             CALL pw_hankel_scaled(1, od%ni1 + 1, od%k1*r, wk%j1)
@@ -1448,16 +1646,16 @@ CONTAINS
                wk%j1(n) = 0.5D0*wk%j1(n)
             END DO
             CALL plane_modes(od%ni1, od%amp1, od%k1, od%beta1, 1D0, wk%j1, od%dzi1, wk%fi)
-            CALL ring_coef(r, od%w1, od%ni1, wk%fi, od%w2, od%m2, wk%c2, od%mp, od%g, wk%tq(:, 2))
+            CALL ring_coef(r, od%w1, od%ni1, wk%fi, od%w2r, od%m2, wk%c2, od%mp, od%g, wk%tq(:, 2))
          END IF
          IF (od%inc2) THEN
             wk%on(3) = .TRUE.
-            CALL pw_hankel_scaled(2, od%ni2 + 1, od%k2*r, wk%j2)
+            CALL pw_hankel_scaled(kind2, od%ni2 + 1, od%k2*r, wk%j2)
             DO n = 0, od%ni2 + 1
                wk%j2(n) = 0.5D0*wk%j2(n)
             END DO
-            CALL plane_modes(od%ni2, od%amp2c, od%k2, od%beta2, -1D0, wk%j2, od%dzi2, wk%ci)
-            CALL ring_coef(r, od%w1, od%m1, wk%f1, od%w2, od%ni2, wk%ci, od%mp, od%g, wk%tq(:, 3))
+            CALL plane2_modes(od, wk%j2, wk%ci)
+            CALL ring_coef(r, od%w1, od%m1, wk%f1, od%w2r, od%ni2, wk%ci, od%mp, od%g, wk%tq(:, 3))
          END IF
       CASE (2)
          wk%on(2) = .TRUE.
@@ -1466,15 +1664,15 @@ CONTAINS
             wk%j1(n) = 0.5D0*wk%j1(n)
          END DO
          CALL plane_modes(od%ni1, od%amp1, od%k1, od%beta1, 1D0, wk%j1, od%dzi1, wk%fi)
-         CALL ring_coef(r, od%w1, od%ni1, wk%fi, od%w2, od%m2, wk%c2, od%mp, od%g, wk%tq(:, 2))
+         CALL ring_coef(r, od%w1, od%ni1, wk%fi, od%w2r, od%m2, wk%c2, od%mp, od%g, wk%tq(:, 2))
       CASE (3)
          wk%on(3) = .TRUE.
-         CALL pw_hankel_scaled(1, od%ni2 + 1, od%k2*r, wk%j2)
+         CALL pw_hankel_scaled(3 - kind2, od%ni2 + 1, od%k2*r, wk%j2)
          DO n = 0, od%ni2 + 1
             wk%j2(n) = 0.5D0*wk%j2(n)
          END DO
-         CALL plane_modes(od%ni2, od%amp2c, od%k2, od%beta2, -1D0, wk%j2, od%dzi2, wk%ci)
-         CALL ring_coef(r, od%w1, od%m1, wk%f1, od%w2, od%ni2, wk%ci, od%mp, od%g, wk%tq(:, 3))
+         CALL plane2_modes(od, wk%j2, wk%ci)
+         CALL ring_coef(r, od%w1, od%m1, wk%f1, od%w2r, od%ni2, wk%ci, od%mp, od%g, wk%tq(:, 3))
       END SELECT
    END SUBROUTINE coef_tail
 
@@ -1545,7 +1743,7 @@ CONTAINS
       INTEGER :: cls, q
 
       CALL gauss_laguerre(NLAG, xl, wl)
-      kap = [od%k1 - od%k2 + od%kp, -od%k1 - od%k2 + od%kp, od%k1 + od%k2 + od%kp]
+      kap = tail_kappa(od)
       DO cls = 1, 3
          IF (cls == 2 .AND. .NOT. od%inc1) CYCLE
          IF (cls == 3 .AND. .NOT. od%inc2) CYCLE
@@ -1669,18 +1867,78 @@ CONTAINS
       r = rho_c + xr*(od%radius - rho_c)
       CALL modes_real(od, r, wk)
       s1 = modal_point(od%m1, wk%f1, r, th, .FALSE.)
-      s2 = modal_point(od%m2, wk%c2, r, th, .TRUE.)
+      s2 = field2_point(od, wk%c2, r, th)
       dxy = [r*COS(th), r*SIN(th)]
       i1 = plane_point(od%inc1, od%amp1, od%k1, od%beta1, od%dzi1, dxy)
-      i2 = plane_point(od%inc2, CONJG(od%amp2c), od%k2, od%beta2, od%dzi2, dxy)
+      i2 = plane_point(od%inc2, od%amp2, od%k2, od%beta2, od%dzi2, dxy)
       t1%phi = s1%phi + i1%phi
       t1%grad = s1%grad + i1%grad
       t1%phizz = s1%phizz + i1%phizz
       t2%phi = s2%phi + i2%phi
       t2%grad = s2%grad + i2%grad
       t2%phizz = s2%phizz + i2%phizz
-      q = fs_forcing_diff(od%w1, t1, i1, od%w2, t2, i2, od%g)*(wt*dth*wr*(od%radius - rho_c)*r)
+      q = fs_forcing(od%kernel, od%w1, t1, i1, od%w2, t2, i2, od%g)*(wt*dth*wr*(od%radius - rho_c)*r)
    END SUBROUTINE sliver_point
+
+   FUNCTION tail_kappa(od) RESULT(kap)
+      ! The phase classes kappa_a, kappa_b, kappa_c of the tail (fs_outer_tail): k_1 - k_2 + K, -k_1 - k_2 + K,
+      ! k_1 + k_2 + K for the difference; k_2 -> -k_2 for the sum
+      TYPE(outer_data), INTENT(IN) :: od
+      REAL(8) :: kap(3)
+
+      IF (od%kernel == KERNEL_SUM) THEN
+         kap = [od%k1 + od%k2 + od%kp, -od%k1 + od%k2 + od%kp, od%k1 - od%k2 + od%kp]
+      ELSE
+         kap = [od%k1 - od%k2 + od%kp, -od%k1 - od%k2 + od%kp, od%k1 + od%k2 + od%kp]
+      END IF
+   END FUNCTION tail_kappa
+
+   PURE SUBROUTINE reverse_modes(m, f)
+      ! f(b, :) <- f(-b, :), |b| <= m: the amplitudes on e^{ib theta} as amplitudes on e^{-ib theta} (ring_coef, the sum)
+      INTEGER, INTENT(IN) :: m
+      COMPLEX(8), INTENT(INOUT) :: f(-m:m, 4)
+      COMPLEX(8) :: t(4)
+      INTEGER :: b
+
+      DO b = 1, m
+         t = f(b, :)
+         f(b, :) = f(-b, :)
+         f(-b, :) = t
+      END DO
+   END SUBROUTINE reverse_modes
+
+   SUBROUTINE plane2_modes(od, jv, ci)
+      ! The modes of incident wave 2 for ring_coef, with jv(0:ni2+1) the radial function (plane_modes): for the
+      ! difference its conjugate continued in r (amp2c, s = -1), for the sum the wave itself, reversed (reverse_modes)
+      TYPE(outer_data), INTENT(IN) :: od
+      COMPLEX(8), INTENT(IN) :: jv(0:)
+      COMPLEX(8), INTENT(OUT) :: ci(-od%ni2:od%ni2, 4)
+
+      IF (od%kernel == KERNEL_SUM) THEN
+         CALL plane_modes(od%ni2, od%amp2, od%k2, od%beta2, 1D0, jv, od%dzi2, ci)
+         CALL reverse_modes(od%ni2, ci)
+      ELSE
+         CALL plane_modes(od%ni2, od%amp2c, od%k2, od%beta2, -1D0, jv, od%dzi2, ci)
+      END IF
+   END SUBROUTINE plane2_modes
+
+   FUNCTION field2_point(od, c2, r, th) RESULT(p)
+      ! The point field of the scattered field 2 at (r, theta) from its modal amplitudes c2 of modes_real: the conjugates
+      ! on e^{-im theta} for the difference, the field's own reversed for the sum
+      TYPE(outer_data), INTENT(IN) :: od
+      COMPLEX(8), INTENT(IN) :: c2(-od%m2:od%m2, 4)
+      REAL(8), INTENT(IN) :: r, th
+      TYPE(fs_point_field) :: p
+      COMPLEX(8) :: f(-od%m2:od%m2, 4)
+
+      IF (od%kernel == KERNEL_SUM) THEN
+         f = c2
+         CALL reverse_modes(od%m2, f)
+         p = modal_point(od%m2, f, r, th, .FALSE.)
+      ELSE
+         p = modal_point(od%m2, c2, r, th, .TRUE.)
+      END IF
+   END FUNCTION field2_point
 
    FUNCTION modal_point(mmax, f, r, th, conj_field) RESULT(p)
       ! The point field at (r, theta) of modal amplitudes f (modes_real): phi, Cartesian gradient, phi_zz. conj_field: f
@@ -1868,5 +2126,197 @@ CONTAINS
 
       val = 2D0*(q0*i0 + qg(1)*mom(1) + qg(2)*mom(2))
    END SUBROUTINE fs_local_rankine
+
+   SUBROUTINE fs_waterline_fit_setup(mesh, geom, pts, step, fit, scale)
+      ! The near-waterline fit of the inner fields (Phase 7c-2 fix wave, validation-runs/snellius-qtf-directsum/findings.md
+      ! section 9). Within about one hull panel of a waterline the 5-point stencil of fs_inner_fields differences the field
+      ! of constant panels below the scale on which it is smooth (fs_inner_steps shrinks its offsets to millimetres there):
+      ! with exact panel data on the sharp m1 hull grad phi is 3-105 % and phi_zz 20-450 % off within 1 m of the
+      ! waterline, phi itself 1-2.5 % (fs_fields_exact_inner), and that metre carries a third of the sum free-surface
+      ! term at high Omega+. Such a point x gets its perturbation fields from a least-squares fit along the line from the
+      ! nearest waterline point p through x, at s = |x - p|: the values at WLFIT_N Gauss-Legendre samples p + s_j e,
+      ! s_j in [d0, 3 d0], fitted per quantity to the basis of WLFIT_KINDS (grad phi and phi_zz: 1, s, s^2, s^3; phi keeps
+      ! the stencil, which is accurate there; ruling W4). d0 is the
+      ! length of the nearest waterline segment, about one hull panel (ruling W1: on the sharp m1 hull, 1.96 m segments,
+      ! the stencil is within 2 % from 2 m out and 3-26 % off at 1 m). The fit is linear, fit%wt(j, k, q) its weights.
+      ! A point whose samples are not clear of every waterplane by d0 (another body, or a concave waterline of the same
+      ! body, in the way: closer than d0 the stencil itself is 3-26 % off, and the fit would amplify it, review I-2) keeps
+      ! the stencil, counted in fit%nskip. The extrapolation gain sum |w_j| is 2 at s = d0 and about 40 at s -> 0 (cubic,
+      ! six samples), so a stencil error e at the samples gives up to about 40 e at the point: the 1 % of the stencil
+      ! from d0 out is the floor of the 3.5-4.9 % near the waterline (review M-2). The samples get their offsets as the inner points do (fs_inner_steps with step, and the
+      ! scale(i) of their point if given). Frequency-independent: the driver calls it once.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(surface_geom), INTENT(IN) :: geom
+      TYPE(cs_points), INTENT(IN) :: pts
+      REAL(8), INTENT(IN) :: step
+      TYPE(fs_wl_fit), INTENT(OUT) :: fit
+      REAL(8), INTENT(IN), OPTIONAL :: scale(:)
+      REAL(8) :: xg(WLFIT_N), wg(WLFIT_N), p(2), s, d0, a(WLFIT_N, WLFIT_NB), ata(WLFIT_NB, WLFIT_NB), c(WLFIT_NB), &
+                 sig(WLFIT_N), xs(3, WLFIT_N), best
+      REAL(8), ALLOCATABLE :: sscale(:), wt(:, :, :), xsamp(:, :), psz(:), xpt(:, :)
+      INTEGER, ALLOCATABLE :: idx(:)
+      LOGICAL :: ok
+      INTEGER :: i, j, iw, n, m, nshr, info, ipiv(WLFIT_NB), q
+      EXTERNAL :: DGESV
+
+      IF (PRESENT(scale)) THEN
+         IF (SIZE(scale) /= pts%n) THEN
+            WRITE (*, '(a)') ' fs_waterline_fit_setup: scale must have one value per inner point.'
+            ERROR STOP 1
+         END IF
+      END IF
+      CALL gauss_legendre01(WLFIT_N, xg, wg)
+      sig = 1D0 + 2D0*xg                                      ! sigma = s/d0 in [1, 3]
+      ALLOCATE (idx(pts%n), wt(WLFIT_N, pts%n, 3), xsamp(3, WLFIT_N*pts%n), psz(WLFIT_N*pts%n), sscale(WLFIT_N*pts%n), &
+                xpt(3, pts%n))
+      n = 0
+      fit%nskip = 0
+      DO i = 1, pts%n
+         best = HUGE(1D0)
+         d0 = 0D0
+         DO iw = 1, geom%nwl
+            CALL nearest_on_segment(pts%x(1:2, i), geom%wl_x1(1:2, iw), geom%wl_x2(1:2, iw), p)
+            s = NORM2(pts%x(1:2, i) - p)
+            IF (s < best) THEN
+               best = s
+               d0 = geom%wl_len(iw)
+               xs(1:2, 1) = p
+            END IF
+         END DO
+         s = best
+         IF (geom%nwl == 0 .OR. .NOT. (s > 0D0 .AND. s < d0)) CYCLE
+         p = xs(1:2, 1)
+         ok = .TRUE.
+         DO j = 1, WLFIT_N
+            xs(1:2, j) = p + sig(j)*d0*(pts%x(1:2, i) - p)/s
+            xs(3, j) = 0D0
+            IF (stencil_in_waterplane(mesh, xs(:, j), 0D0) .OR. clearance_in_waterplane(mesh, xs(:, j), d0)) ok = .FALSE.
+         END DO
+         IF (.NOT. ok) THEN
+            fit%nskip = fit%nskip + 1
+            CYCLE
+         END IF
+         n = n + 1
+         idx(n) = i
+         xpt(:, n) = pts%x(:, i)
+         ! weights b(sigma)^T (A^T A)^{-1} A^T at sigma = s/d0, per fitted quantity (kind 0: none)
+         wt(:, n, :) = 0D0
+         DO q = 1, 3
+            IF (WLFIT_KINDS(q) == 0) CYCLE
+            DO j = 1, WLFIT_N
+               a(j, :) = wlfit_basis(sig(j), WLFIT_KINDS(q))
+            END DO
+            ata = MATMUL(TRANSPOSE(a), a)
+            c = wlfit_basis(s/d0, WLFIT_KINDS(q))
+            m = WLFIT_NB
+            CALL DGESV(m, 1, ata, m, ipiv, c, m, info)
+            IF (info /= 0) THEN
+               WRITE (*, '(a)') ' fs_waterline_fit_setup: singular fit matrix.'
+               ERROR STOP 1
+            END IF
+            wt(:, n, q) = MATMUL(a, c)
+         END DO
+         DO j = 1, WLFIT_N
+            xsamp(:, (n - 1)*WLFIT_N + j) = xs(:, j)
+            psz((n - 1)*WLFIT_N + j) = pts%psize(i)
+            IF (PRESENT(scale)) THEN
+               sscale((n - 1)*WLFIT_N + j) = scale(i)
+            ELSE
+               sscale((n - 1)*WLFIT_N + j) = pts%psize(i)
+            END IF
+         END DO
+      END DO
+      fit%n = n
+      fit%nfit = WLFIT_N
+      fit%idx = idx(1:n)
+      fit%wt = wt(:, 1:n, :)
+      fit%kinds = WLFIT_KINDS
+      fit%x = xpt(:, 1:n)
+      m = n*WLFIT_N
+      fit%samp%n = m
+      ALLOCATE (fit%samp%x(3, m), fit%samp%nrm(3, m), fit%samp%w(m), fit%samp%psize(m), fit%samp%kind(m), &
+                fit%samp%body(m), fit%delta(m))
+      fit%samp%x = xsamp(:, 1:m)
+      fit%samp%nrm = 0D0
+      fit%samp%nrm(3, :) = -1D0
+      fit%samp%w = 0D0
+      fit%samp%psize = psz(1:m)
+      fit%samp%kind = CS_FREE
+      fit%samp%body = 0
+      IF (m > 0) CALL fs_inner_steps(mesh, fit%samp, step, fit%delta, nshr, scale=sscale(1:m))
+   END SUBROUTINE fs_waterline_fit_setup
+
+   SUBROUTINE fs_waterline_fit_apply(mesh, fit, states, step, is_multi, f)
+      ! Replaces the fields of the near-waterline points of fit (fs_waterline_fit_setup) in f(pts%n, SIZE(states)), the
+      ! output of fs_inner_fields for the same points, by the fit of the perturbation fields at their samples
+      ! (fs_inner_fields at the samples, with their offsets) plus the exact incident wave at the point (incident_at,
+      ! phi_zz = k^2 phi_I, as fs_inner_fields). All states at the current global frequency.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(fs_wl_fit), INTENT(IN) :: fit
+      TYPE(first_order_state), INTENT(IN) :: states(:)
+      REAL(8), INTENT(IN) :: step
+      LOGICAL, INTENT(IN) :: is_multi
+      TYPE(fs_point_field), INTENT(INOUT) :: f(:, :)
+      TYPE(fs_point_field), ALLOCATABLE :: fs(:, :)
+      COMPLEX(8) :: phi_i, grad_i(3), phi_s, grad_s(3), ap, ag(3), az
+      INTEGER :: k, j, ist, js
+
+      IF (fit%n == 0) RETURN
+      ALLOCATE (fs(fit%samp%n, SIZE(states)))
+      CALL fs_inner_fields(mesh, fit%samp, states, step, is_multi, fs, fit%delta)
+      DO ist = 1, SIZE(states)
+         DO k = 1, fit%n
+            ap = (0D0, 0D0)
+            ag = (0D0, 0D0)
+            az = (0D0, 0D0)
+            DO j = 1, fit%nfit
+               js = (k - 1)*fit%nfit + j
+               CALL incident_at(states(ist), fit%samp%x(:, js), phi_s, grad_s)
+               IF (fit%kinds(1) /= 0) ap = ap + fit%wt(j, k, 1)*(fs(js, ist)%phi - phi_s)
+               IF (fit%kinds(2) /= 0) ag = ag + fit%wt(j, k, 2)*(fs(js, ist)%grad - grad_s)
+               IF (fit%kinds(3) /= 0) az = az + fit%wt(j, k, 3)*(fs(js, ist)%phizz - states(ist)%k**2*phi_s)
+            END DO
+            CALL incident_at(states(ist), fit%x(:, k), phi_i, grad_i)
+            IF (fit%kinds(1) /= 0) f(fit%idx(k), ist)%phi = phi_i + ap
+            ! Only the horizontal gradient: on z = 0, d phi_P/dz = nu phi_P exactly (fs_inner_fields), so phi_z follows phi
+            ! (review I-1); with phi from the stencil it stays the stencil's
+            IF (fit%kinds(2) /= 0) f(fit%idx(k), ist)%grad(1:2) = grad_i(1:2) + ag(1:2)
+            IF (fit%kinds(1) /= 0) f(fit%idx(k), ist)%grad(3) = states(ist)%nu*(f(fit%idx(k), ist)%phi - phi_i) + grad_i(3)
+            IF (fit%kinds(3) /= 0) f(fit%idx(k), ist)%phizz = states(ist)%k**2*phi_i + az
+         END DO
+      END DO
+   END SUBROUTINE fs_waterline_fit_apply
+
+   PURE FUNCTION wlfit_basis(sig, kind) RESULT(b)
+      ! The basis of the near-waterline fit in sigma = s/d0 (fs_waterline_fit_setup, WLFIT_KINDS): kind 1 is 1, log sigma,
+      ! sigma, sigma log sigma; 2 is 1, sigma, sigma^2, sigma^3; 3 is 1, sigma, sigma log sigma, sigma^2
+      REAL(8), INTENT(IN) :: sig
+      INTEGER, INTENT(IN) :: kind
+      REAL(8) :: b(WLFIT_NB)
+
+      SELECT CASE (kind)
+      CASE (1)
+         b = [1D0, LOG(sig), sig, sig*LOG(sig)]
+      CASE (2)
+         b = [1D0, sig, sig**2, sig**3]
+      CASE DEFAULT
+         b = [1D0, sig, sig*LOG(sig), sig**2]
+      END SELECT
+   END FUNCTION wlfit_basis
+
+   PURE SUBROUTINE nearest_on_segment(x, a, b, p)
+      ! The point p of the segment a-b nearest to x (2D)
+      REAL(8), INTENT(IN) :: x(2), a(2), b(2)
+      REAL(8), INTENT(OUT) :: p(2)
+      REAL(8) :: t, l2
+
+      l2 = SUM((b - a)**2)
+      IF (l2 <= 0D0) THEN
+         p = a
+         RETURN
+      END IF
+      t = MIN(1D0, MAX(0D0, SUM((x - a)*(b - a))/l2))
+      p = a + t*(b - a)
+   END SUBROUTINE nearest_on_segment
 
 END MODULE QTFFreeSurface

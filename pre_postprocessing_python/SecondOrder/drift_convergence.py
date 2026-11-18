@@ -481,6 +481,7 @@ def qtf_potential_cases():
                        extra_options=dict(DIRECT_OPTIONS, qtf_max_dw=0)))
     chosen += qtf_full_cases(grid)
     chosen += qtf_directfs_cases(grid)
+    chosen += qtf_directsum_cases(grid)
     return chosen
 
 
@@ -550,6 +551,46 @@ def qtf_directfs_cases(grid):
         chosen.append(Case("q_sharp_directfs_free_%s" % tag(m), "D", "7b", "sharp", m, "free", "source", frequencies=grid,
                            headings=(0.0,), qtf=1, qtf_terms="full", qtf_max_dw=QTF_POTENTIAL_MAX_DW,
                            extra_options=dict(CS_FIXED_M1 if m > 1 else {}, qtf_direct=1)))
+    return chosen
+
+
+# The 21-frequency grid of R7, 0.40 to 1.40 rad/s by 0.05 (not the 101 points of QTF_FREQUENCY_RANGE: the sum then costs 3 to 4
+# times more)
+QTF_SUM_FREQUENCIES = tuple(round(0.40 + 0.05 * i, 2) for i in range(21))
+
+
+def qtf_directsum_cases(grid):
+    """The cases of the sum-frequency direct solve (Phase 7c-2, R7 of the plan): qtf = 3 (both quadratic QTFs, so the sum
+    frequency is on) with qtf_direct = 1 and qtf_terms = full, free body, IRSP = 1 with velocity_method = differencing (the
+    lid mesh from make_mesh, as q_sharp_direct_irsp_m1). q_round_directsum_free_m{1,2,3}: the rounded hull of
+    q_round_directfs_free_* (DIRECT_ROUND_FREQUENCIES, headings 0 and 30). q_sharp_directsum_free_m{1,2,3}: the sharp hull
+    on the 21-frequency grid 0.40 to 1.40 rad/s (step 0.05), heading 0. qtf_compare.py --direct-sum compares .12s, .12s -
+    .10s, the free-surface part and the potential with the exact reference (qtf-potential --kernel sum) and the
+    direct solve with the indirect one."""
+    chosen = []
+    for m in (1, 2, 3):
+        chosen.append(Case("q_round_directsum_free_%s" % tag(m), "D", "7c2", "round", m, "free", "differencing",
+                           frequencies=DIRECT_ROUND_FREQUENCIES, headings=(0.0, 30.0), irsp=1, qtf=3, qtf_terms="full",
+                           qtf_max_dw=QTF_POTENTIAL_MAX_DW, extra_options=DIRECT_OPTIONS))
+    for m in (1, 2, 3):
+        chosen.append(Case("q_sharp_directsum_free_%s" % tag(m), "D", "7c2", "sharp", m, "free", "differencing",
+                           frequencies=QTF_SUM_FREQUENCIES, headings=(0.0,), irsp=1, qtf=3, qtf_terms="full",
+                           qtf_max_dw=QTF_POTENTIAL_MAX_DW, extra_options=dict(CS_FIXED_M1 if m > 1 else {}, qtf_direct=1)))
+    # Inner-mesh check of the sum free-surface part (Snellius stage 2: D_FS = P_FS to 1.8 % but both 9 % median off the exact
+    # part at m2, growing with Omega+, while the generated mesh did not refine with the hull, 2600 / 2496 / 2880 points): m2
+    # with qtf_fs_panel 0.55 m against the default lambda(2.80 rad/s)/10 = 0.786 m (depth 100 m), about 1.5 times the
+    # points. With qtf_fs_panel given the phi_zz offsets follow the panel size, not the first-order scale (setup in
+    # SecondOrderDriver), as in the 6a fsP cases
+    chosen.append(Case("q_sharp_directsum_free_fsP055_m2", "D", "7c2", "sharp", 2, "free", "differencing",
+                       frequencies=QTF_SUM_FREQUENCIES, headings=(0.0,), irsp=1, qtf=3, qtf_terms="full",
+                       qtf_max_dw=QTF_POTENTIAL_MAX_DW, extra_options=dict(CS_FIXED_M1, qtf_direct=1, qtf_fs_panel=0.55)))
+    # Fixed-body check of the sum free-surface part (Snellius stage 3: the inner mesh and the phi_zz offsets are not the cause;
+    # the free-body error follows the first-order omega above the resonance). The stage 2 m2 case held fixed: without motions
+    # the free-surface forcing has no radiated waves, so this separates diffraction from radiation (qtfdirectsum_reference
+    # has the fixed rows)
+    chosen.append(Case("q_sharp_directsum_fixed_m2", "D", "7c2", "sharp", 2, "fixed", "differencing",
+                       frequencies=QTF_SUM_FREQUENCIES, headings=(0.0,), irsp=1, qtf=3, qtf_terms="full",
+                       qtf_max_dw=QTF_POTENTIAL_MAX_DW, extra_options=dict(CS_FIXED_M1, qtf_direct=1)))
     return chosen
 
 

@@ -27,7 +27,7 @@ module test_qtf_direct
   use FirstOrderState, only : image_signs, radiation_psi, wave_gravity
   use QTFPotential, only : potential_pair, psi_surface_gradient, psi_waterline, NPOT_TERMS
   use SurfaceVelocity, only : tangential_fit
-  use NearFieldDrift, only : pair_product, rigid_displacement, KERNEL_DIFF
+  use NearFieldDrift, only : pair_product, rigid_displacement, KERNEL_DIFF, KERNEL_SUM
   use QTFDirect, only : direct_rhs_b2, b2_stokes_densities, b2_stokes_at_point, green_panel_integrals, rankine_moments, &
                         sharp_edge_panels, direct_rhs_b2_block, direct_setup, direct_edge_mask, direct_factor, &
                         direct_solve, direct_at_omega, direct_lid_points
@@ -102,6 +102,38 @@ module test_qtf_direct
   ! rhs_b2_lid_rows: the lid rows of the half mesh against the whole mesh, both fresh: 1.05e-8 measured (the hull rows of
   ! rhs_b2_half_matches_whole have half_limit), 2x measured, rounded up
   real(8), parameter :: lid_half_limit = 2.1d-8
+  ! Phase 7c-2, the sum kernel. T+_dir against T+_pot on the 512-panel sphere: the mesh error, 2.11e-3 measured for the
+  ! pairs at Omega+ = 1.5 and 8.42e-3 for the diagonal at 1.6 (128, 512, 2048 panels: 7.9e-3, 2.1e-3, 3.6e-4 and 3.9e-2,
+  ! 8.4e-3, 1.4e-3, so it falls with the mesh). 1.3x measured, rounded up to two digits
+  real(8), parameter :: sum_indirect_limit = 2.8d-3, sum_diagonal_limit = 1.1d-2
+  ! A sum and two difference pairs of one Omega in one call against each pair alone: the same columns, rounding only
+  real(8), parameter :: mixed_limit = 1d-13
+  ! direct_kernels_default: tdir, parts and phi_field of default_direct from the code before the sum kernel (dfd9c78),
+  ! 17 digits
+  complex(8), parameter :: stored_t(6, 2) = reshape([ &
+    (8.19564701816332253d+000, 1.31973508315715617d+003), (-5.00742599403366029d+001, -1.74615610050944406d+003), &
+    (-9.05417845418167417d+003, -1.46829777591996304d+002), (-4.68858624517729581d+001, -2.80050804649763131d+003), &
+    (6.13465031058695160d+001, -2.09996731049357140d+003), (8.51317706908181858d-013, 4.57884381239400404d-013), &
+    (8.19564701816332253d+000, -1.31973508315715617d+003), (-5.00742599403366029d+001, 1.74615610050944406d+003), &
+    (-9.05417845418167417d+003, 1.46829777591996304d+002), (-4.68858624517729581d+001, 2.80050804649763131d+003), &
+    (6.13465031058695160d+001, 2.09996731049357140d+003), (8.51317706908181858d-013, -4.57884381239400404d-013)], [6, 2])
+  complex(8), parameter :: stored_p1(6, 2) = reshape([ &
+    (9.10382880192629120d-014, 8.36242770738124705d+002), (4.77951012101130295d-013, -1.12182538314642193d+003), &
+    (-9.71553215626062411d+003, -2.27595720048157280d-014), (1.91180404840452118d-012, -1.52672822966142508d+003), &
+    (1.27453603226968072d-012, -1.13806967119547062d+003), (8.47019595960436449d-013, 2.87511768570018863d-013), &
+    (9.10382880192629120d-014, -8.36242770738124705d+002), (4.77951012101130295d-013, 1.12182538314642193d+003), &
+    (-9.71553215626062411d+003, 2.27595720048157280d-014), (1.91180404840452118d-012, 1.52672822966142508d+003), &
+    (1.27453603226968072d-012, 1.13806967119547062d+003), (8.47019595960436449d-013, -2.87511768570018863d-013)], [6, 2])
+  complex(8), parameter :: stored_p2(6, 2) = reshape([ &
+    (8.19564701816323193d+000, 4.83492312419031407d+002), (-5.00742599403370789d+001, -6.24330717363022245d+002), &
+    (6.61353702078951642d+002, -1.46829777591996276d+002), (-4.68858624517748694d+001, -1.27377981683620646d+003), &
+    (6.13465031058682371d+001, -9.61897639298100444d+002), (4.29811094774549210d-015, 1.70372612669381491d-013), &
+    (8.19564701816323193d+000, -4.83492312419031407d+002), (-5.00742599403370789d+001, 6.24330717363022245d+002), &
+    (6.61353702078951642d+002, 1.46829777591996276d+002), (-4.68858624517748694d+001, 1.27377981683620646d+003), &
+    (6.13465031058682371d+001, 9.61897639298100444d+002), (4.29811094774549210d-015, -1.70372612669381491d-013)], [6, 2])
+  complex(8), parameter :: stored_f(2, 2) = reshape([ &
+    (-2.25717572692418905d-002, -1.82507459028452106d-002), (2.75611794670484918d-002, -3.51862006562045915d-002), &
+    (-2.25717572692418905d-002, 1.82507459028452106d-002), (2.75611794670484918d-002, 3.51862006562045915d-002)], [2, 2])
 
 contains
 
@@ -124,7 +156,10 @@ contains
       new_unittest("direct_irr_accepted", test_direct_irr_accepted), &
       new_unittest("direct_irr_unit_normal", test_direct_irr_unit_normal), &
       new_unittest("rhs_b2_lid_rows", test_b2_lid_rows), &
-      new_unittest("direct_vs_indirect_irr", test_direct_vs_indirect_irr) &
+      new_unittest("direct_vs_indirect_irr", test_direct_vs_indirect_irr), &
+      new_unittest("direct_kernels_default", test_direct_kernels_default), &
+      new_unittest("direct_sum_matches_indirect_pair", test_direct_sum_vs_indirect), &
+      new_unittest("direct_sum_mixed_block", test_direct_sum_mixed_block) &
       ]
   end subroutine collect_qtf_direct
 
@@ -1890,5 +1925,195 @@ contains
       end do
     end do
   end subroutine make_rounded_cylinder
+
+  ! ------------------------------------------------------------------------------------- sum kernel (Phase 7c-2)
+
+  !> The direct load of the default path on a fixed fixture, for direct_kernels_default: the cylinder of
+  !> direct_zero_forcing (radius 5, draft 5, 112 panels, depth 10) with the motions, Omega = w1 - w2, the pairs (1, 2)
+  !> (Omega > 0) and (2, 1) (Omega < 0, the conjugate branch): tdir, parts (6, 2, 3) and phi_field at two points.
+  subroutine default_direct(t, parts, f, error, kernels)
+    complex(8), intent(out) :: t(6, 2), parts(6, 2, 3), f(2, 2)
+    type(error_type), allocatable, intent(out) :: error
+    integer, intent(in), optional :: kernels(2)
+    real(8), parameter :: xp(3, 2) = reshape([9d0, 1d0, -2d0, -3d0, 8d0, -6d0], [3, 2])
+    type(panel_mesh) :: full, mesh
+    type(surface_geom) :: geom
+    type(first_order_state), allocatable :: store(:, :)
+    complex(8), allocatable :: store_wl(:, :, :)
+    integer, allocatable :: pairs(:, :)
+    complex(8) :: x1(6, 1), x2(6, 1)
+
+    call make_cylinder(5d0, 5d0, 16, 4, 3, full, .true.)
+    call set_wave(10d0)
+    NTHREAD = 4
+    ISOLV = 1
+    call load_panels(full, 0, 0, mesh)
+    call geometry(mesh, geom, error)
+    if (allocated(error)) return
+    call radiation_at(w1 - w2, .false., mesh%nbase)
+    call direct_setup(mesh, DEFAULT_EDGE_DEG)
+    call motions(x1, x2)
+    call two_state_store(mesh, geom, 10d0, x1, x2, store, store_wl, pairs)
+    if (present(kernels)) then
+      call direct_at_omega(mesh, geom, w1 - w2, store, store_wl, pairs, t, parts=parts, field_points=xp, phi_field=f, &
+                           kernels=kernels)
+    else
+      call direct_at_omega(mesh, geom, w1 - w2, store, store_wl, pairs, t, parts=parts, field_points=xp, phi_field=f)
+    end if
+  end subroutine default_direct
+
+  !> Without kernels direct_at_omega is the difference path of Phases 7a to 7c-1 to the bit: tdir, the parts and
+  !> phi_field of default_direct equal the values stored from the code before the sum kernel was added (commit dfd9c78,
+  !> printed with 17 digits, which round-trip a double), and kernels = KERNEL_DIFF gives the same bits.
+  subroutine test_direct_kernels_default(error)
+    type(error_type), allocatable, intent(out) :: error
+    complex(8) :: t(6, 2), parts(6, 2, 3), f(2, 2), tk(6, 2), pk(6, 2, 3), fk(2, 2)
+    logical :: same
+    integer :: i, j
+
+    call default_direct(t, parts, f, error)
+    if (allocated(error)) return
+    same = all(t == stored_t) .and. all(parts(:, :, 1) == stored_p1) .and. all(parts(:, :, 2) == stored_p2) .and. &
+           all(parts(:, :, 3) == (0d0, 0d0)) .and. all(f == stored_f)
+    if (.not. same) then
+      do j = 1, 2
+        do i = 1, 6
+          write(*, '(4x,a,es25.17e3,a,es25.17e3,a,es25.17e3,a,es25.17e3,a,es25.17e3,a,es25.17e3,a)') "t p1 p2 (", &
+            real(t(i, j)), ", ", aimag(t(i, j)), ") (", real(parts(i, j, 1)), ", ", aimag(parts(i, j, 1)), ") (", &
+            real(parts(i, j, 2)), ", ", aimag(parts(i, j, 2)), ")"
+        end do
+      end do
+      do j = 1, 2
+        do i = 1, 2
+          write(*, '(4x,a,es25.17e3,a,es25.17e3,a)') "f (", real(f(i, j)), ", ", aimag(f(i, j)), ")"
+        end do
+      end do
+    end if
+    call check(error, same, "the default path differs from the stored values of the difference path")
+    if (allocated(error)) return
+    call default_direct(tk, pk, fk, error, kernels=[KERNEL_DIFF, KERNEL_DIFF])
+    if (allocated(error)) return
+    call check(error, all(tk == t) .and. all(pk == parts) .and. all(fk == f), "kernels = KERNEL_DIFF differs from the default")
+  end subroutine test_direct_kernels_default
+
+  !> End to end for the sum kernel: T+_dir of direct_at_omega (kernels = KERNEL_SUM) against T+_pot of potential_pair
+  !> with KERNEL_SUM (qtf_b2 = body, psi_k of the radiation solve at Omega+) on the submerged sphere of
+  !> direct_matches_indirect_pair (512 panels, depth 50), states 0.8 and 0.7 rad/s at different headings: the pairs
+  !> (1, 2) and (2, 1) at Omega+ = 1.5, and the diagonal (0.8, 0.8) at Omega+ = 1.6 in its own call. The two methods are
+  !> equal by Green's theorem at Omega+ (QTFPotential), so they differ by the mesh error of the first-order fields only;
+  !> a conjugated forcing, a wrong kernel or the difference Omega in B3 or the load would be of order 1.
+  subroutine test_direct_sum_vs_indirect(error)
+    type(error_type), allocatable, intent(out) :: error
+    type(panel_mesh) :: full, mesh
+    type(surface_geom) :: geom
+    type(first_order_state), allocatable :: store(:, :)
+    complex(8), allocatable :: store_wl(:, :, :), psi(:, :), gpsi(:, :, :), pwl(:, :)
+    integer, allocatable :: pairs(:, :)
+    complex(8) :: x1(6, 1), x2(6, 1), terms(6, NPOT_TERMS), t(6, 2), tp(6, 2), td(6, 1), tpd(6, 1)
+    real(8) :: om, rel(2), sym
+    integer :: p
+    character(len=300) :: line
+
+    call set_wave(50d0)
+    NTHREAD = 4
+    ISOLV = 1
+    call make_sphere(5d0, [0d0, 0d0, -20d0], sph_nlat(2), full)
+    call load_panels(full, 0, 0, mesh)
+    call geometry(mesh, geom, error)
+    if (allocated(error)) return
+    allocate(psi(mesh%n, 6), gpsi(3, mesh%n, 6), pwl(geom%nwl, 6))
+    call motions(x1, x2)
+    call two_state_store(mesh, geom, 50d0, x1, x2, store, store_wl, pairs)
+    call direct_setup(mesh, DEFAULT_EDGE_DEG)
+
+    ! The pairs (1, 2) and (2, 1) at Omega+ = w1 + w2
+    om = w1 + w2
+    call radiation_at(om, .false., mesh%nbase)
+    call radiation_psi(mesh, om, MXPOT, psi)
+    call psi_surface_gradient(mesh, geom, psi, gpsi)
+    call psi_waterline(mesh, geom, psi, gpsi, pwl)
+    call direct_at_omega(mesh, geom, om, store, store_wl, pairs, t, kernels=[KERNEL_SUM, KERNEL_SUM])
+    do p = 1, 2
+      associate (s1 => store(pairs(1, p), 1), s2 => store(pairs(3, p), 1))
+        call potential_pair(mesh, geom, s1, s2, store_wl(:, pairs(1, p), 1), store_wl(:, pairs(3, p), 1), psi, gpsi, &
+                            pwl, om, s1%rho, wave_gravity(s1%omega, s1%k, s1%h), terms, kernel=KERNEL_SUM)
+      end associate
+      tp(:, p) = sum(terms, dim=2)
+    end do
+    rel(1) = maxval(abs(t - tp))/maxval(abs(tp))
+    sym = maxval(abs(t(:, 2) - t(:, 1)))/maxval(abs(t(:, 1)))
+
+    ! The diagonal (w1, w1) at Omega+ = 2 w1, in its own call
+    om = 2d0*w1
+    call radiation_at(om, .false., mesh%nbase)
+    call radiation_psi(mesh, om, MXPOT, psi)
+    call psi_surface_gradient(mesh, geom, psi, gpsi)
+    call psi_waterline(mesh, geom, psi, gpsi, pwl)
+    call direct_at_omega(mesh, geom, om, store, store_wl, reshape([1, 1, 1, 1], [4, 1]), td, &
+                         kernels=[KERNEL_SUM])
+    associate (s1 => store(1, 1))
+      call potential_pair(mesh, geom, s1, s1, store_wl(:, 1, 1), store_wl(:, 1, 1), psi, gpsi, pwl, om, s1%rho, &
+                          wave_gravity(s1%omega, s1%k, s1%h), terms, kernel=KERNEL_SUM)
+    end associate
+    tpd(:, 1) = sum(terms, dim=2)
+    rel(2) = maxval(abs(td - tpd))/maxval(abs(tpd))
+    write(line, '(a,es10.3,a,es10.3,a,es10.2,a,2es10.2,a,2es10.2)') &
+      "T+_dir against T+_pot over max |T+_pot|: pairs at Omega+ = 1.5 ", &
+      rel(1), ", diagonal at 1.6 ", rel(2), "; T+_dir(2, 1) against (1, 2) ", sym, &
+      " (max |T+_pot| ", maxval(abs(tp)), maxval(abs(tpd)), "); limits ", sum_indirect_limit, sum_diagonal_limit
+    print '(4x,a)', trim(line)
+    call check(error, rel(1) <= sum_indirect_limit .and. rel(2) <= sum_diagonal_limit .and. sym <= 1d-12, line)
+    call direct_setup(mesh, DEFAULT_EDGE_DEG)
+  end subroutine test_direct_sum_vs_indirect
+
+  !> One block of mixed kernels: states 1.2 and 0.4 rad/s, Omega = 0.8, the sum pair (0.4, 0.4), the difference pair
+  !> (1.2, 0.4) (Omega > 0) and (0.4, 1.2) (Omega < 0, conjugated) in one call against each solved in its own call, on
+  !> the cylinder of direct_zero_forcing (112 panels, depth 10, with a waterline), with parts and phi_field at two
+  !> points. The columns of one call share the factorisation only, so each column must carry its own kernel, Omega and
+  !> conjugation: tdir, parts and phi_field agree to rounding.
+  subroutine test_direct_sum_mixed_block(error)
+    type(error_type), allocatable, intent(out) :: error
+    real(8), parameter :: xp(3, 2) = reshape([9d0, 1d0, -2d0, -3d0, 8d0, -6d0], [3, 2])
+    type(panel_mesh) :: full, mesh
+    type(surface_geom) :: geom
+    type(first_order_state), allocatable :: store(:, :)
+    complex(8), allocatable :: store_wl(:, :, :)
+    integer, allocatable :: pairs(:, :)
+    complex(8) :: x1(6, 1), x2(6, 1), t(6, 3), parts(6, 3, 3), f(2, 3), t1(6, 1), p1(6, 1, 3), f1(2, 1)
+    complex(8) :: ts(6, 3), ps(6, 3, 3), fs_(2, 3)
+    integer :: mp(4, 3), kn(3), p
+    real(8) :: et, ep, ef
+    character(len=250) :: line
+
+    call make_cylinder(5d0, 5d0, 16, 4, 3, full, .true.)
+    call set_wave(10d0)
+    NTHREAD = 4
+    ISOLV = 1
+    call load_panels(full, 0, 0, mesh)
+    call geometry(mesh, geom, error)
+    if (allocated(error)) return
+    call radiation_at(0.8d0, .false., mesh%nbase)
+    call direct_setup(mesh, DEFAULT_EDGE_DEG)
+    call motions(x1, x2)
+    call two_state_store(mesh, geom, 10d0, x1, x2, store, store_wl, pairs, wa=1.2d0, wb=0.4d0)
+    mp = reshape([2, 1, 2, 1, 1, 1, 2, 1, 2, 1, 1, 1], [4, 3])
+    kn = [KERNEL_SUM, KERNEL_DIFF, KERNEL_DIFF]
+    call direct_at_omega(mesh, geom, 0.8d0, store, store_wl, mp, t, parts=parts, field_points=xp, phi_field=f, kernels=kn)
+    do p = 1, 3
+      call direct_at_omega(mesh, geom, 0.8d0, store, store_wl, mp(:, p:p), t1, parts=p1, field_points=xp, phi_field=f1, &
+                           kernels=kn(p:p))
+      ts(:, p) = t1(:, 1)
+      ps(:, p, :) = p1(:, 1, :)
+      fs_(:, p) = f1(:, 1)
+    end do
+    et = maxval(abs(t - ts))/maxval(abs(ts))
+    ep = maxval(abs(parts - ps))/maxval(abs(ps))
+    ef = maxval(abs(f - fs_))/maxval(abs(fs_))
+    write(line, '(a,es10.2,a,es10.2,a,es10.2,a,3es10.2)') "one block against single calls: tdir ", et, ", parts ", ep, &
+      ", phi_field ", ef, "; max |tdir| per pair ", maxval(abs(ts), dim=1)
+    print '(4x,a)', trim(line)
+    call check(error, et <= mixed_limit .and. ep <= mixed_limit .and. ef <= mixed_limit .and. &
+               minval(maxval(abs(ts), dim=1)) > 0d0, line)
+  end subroutine test_direct_sum_mixed_block
 
 end module test_qtf_direct

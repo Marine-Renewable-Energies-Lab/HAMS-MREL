@@ -58,6 +58,7 @@ MODULE SecondOrderTypes
       ! Quadratic part of the QTFs (near-field method)
       INTEGER :: qtf = 0                 ! 0 off, 1 difference frequency, 2 sum frequency, 3 both
       REAL(8) :: qtf_max_dw = 0D0        ! rad/s, largest |omega_i - omega_j| of QTF_Quadratic.10d; 0: all pairs
+      REAL(8) :: qtf_max_sw = 0D0        ! rad/s, largest omega_i + omega_j of QTF_Direct.12s (Phase 7c-2); 0: all pairs
       INTEGER :: qtf_terms = QTF_TERMS_QUADRATIC
       INTEGER :: qtf_b2 = QTF_B2_CONTROL ! used with qtf_terms = body or full only
       ! Free-surface integral (qtf_terms = full only); 0 sets the automatic value
@@ -70,7 +71,7 @@ MODULE SecondOrderTypes
       ! by more than qtf_edge_angle degrees. Off by default: on the sharp-cylinder fixture they moved B2 F_x and F_z away
       ! from the exact reference (15.1% to 17.2%, 30.0% to 37.4%) for an M_y gain of 11.9% to 11.1%
       ! qtf_direct: 1 also solves the second-order boundary-value problem for the diffracted and radiated potential at each
-      ! difference frequency (Phase 7a); needs qtf_terms = body (or full) and qtf = 1 or 3
+      ! difference frequency (Phase 7a), and with qtf = 2 or 3 at the sum frequencies (Phase 7c-2); needs qtf_terms = body (or full)
       INTEGER :: qtf_direct = 0
       LOGICAL :: qtf_edge_weights = .FALSE.
       REAL(8) :: qtf_edge_angle = 45D0

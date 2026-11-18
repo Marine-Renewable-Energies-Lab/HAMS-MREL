@@ -4,12 +4,13 @@
 module test_qtf_free_surface
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use SecondOrderIncident, only : incident2, incident2_pair, incident2_phi, incident2_grad, free_surface_forcing
-  use NearFieldDrift, only : KERNEL_DIFF
+  use NearFieldDrift, only : KERNEL_DIFF, KERNEL_SUM
   use QTFFreeSurface, only : fs_point_field, fs_forcing_diff, fs_inner_fields, fs_inner_steps, fs_circle_modes, &
                              fs_mode_warning, fs_auto_modes, FS_MODE_TOL, fs_sample_phi, fs_mode_scales, fs_auto_evanescent, &
                              fs_inner_pair, fs_outer_pair, fs_outer_annulus, fs_outer_tail, fs_outer_ring, fs_outer_rfar, &
                              fs_outer_sliver, fs_radius_message, FS_SIGN, fs_pair_order_message, fs_pair_terms, &
-                             fs_coverage_check, fs_outer_moments, fs_forcing_points, fs_local_rankine
+                             fs_coverage_check, fs_outer_moments, fs_forcing_points, fs_local_rankine, &
+                             fs_wl_fit, fs_waterline_fit_setup, fs_waterline_fit_apply
   use HAMS_mod, only : NTHREAD, ISOL, IRSP
   use WaveDyn_mod, only : AMP, BETA, H, NK, TP, V, W1, WK, WVN
   use Body_mod, only : XW
@@ -21,7 +22,7 @@ module test_qtf_free_surface
   use FirstOrderState, only : incident_phi, incident_grad, wave_gravity
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use ControlSurfaceMesh, only : build_fs_inner
-  use second_order_fixtures, only : make_cylinder, maccamy_fuchs_state
+  use second_order_fixtures, only : make_cylinder, maccamy_fuchs_state, read_pnl_hull
   use test_waterline_field, only : set_wave, load_panels
   use Const_mod, only : g_const => G
   use, intrinsic :: ieee_arithmetic, only : ieee_is_finite
@@ -35,6 +36,20 @@ module test_qtf_free_surface
   real(8), parameter :: g = 9.81d0, pi = 3.14159265358979323846d0, deg = pi / 180d0
   ! Depth of the cylinder fixture of the field tests (as pw_hams_field: 5 m of water under the keel)
   real(8), parameter :: fx_depth = 15d0
+  ! fs_inner_steps_scale (Phase 7c-2): the residual of Laplace's equation at delta = step x lambda(omega_max)/10 = 0.195 m,
+  ! measured 1.21e-3, 2.32e-3 and 1.10e-3 at r = 12, 14.5 and 19 m, as fs_laplace_residual found at delta = 0.2 m
+  ! (1.4e-3, 2.4e-3, 1.5e-3). This is the offset that the difference run has at its circle (panel size lambda/10 there),
+  ! so the sum keeps it; the 1e-3 of the brief was the value at delta = 0.1 m. Limit 1.3x measured, rounded up
+  real(8), parameter :: scale_residual_limit = 3.1d-3
+  ! fs_fields_exact_inner with the near-waterline fit (Phase 7c-2 fix wave): measured worst 4.89e-2 (grad phi at 0.1 m
+  ! from the waterline, 1.4 rad/s; phi_zz 3.46e-2, phi 2.44e-2), against 1.05 and 4.51 without the fit; 1.3x, rounded
+  real(8), parameter :: WLGATE = 6.5d-2
+  ! fs_fields_exact_integral: measured 2.05e-2 (M_y) with the fit (grad phi horizontal only, review I-1), 0.427 without;
+  ! 1.3x, rounded up
+  real(8), parameter :: WLINT_GATE = 2.7d-2
+  ! fs_fields_exact_integral_diff (difference pair (1.4, 1.0), Omega- = 0.4): measured 2.28e-2 with the fit, 0.240
+  ! without; 1.3x, rounded
+  real(8), parameter :: WLINT_DIFF_GATE = 3.0d-2
   ! The synthetic partial waves of the outer-integral tests (Task 7): depth, circle, angular and evanescent modes
   real(8), parameter :: rho = 1025d0
   real(8), parameter :: sy_h = 20d0, sy_radius = 12d0, sy_centre(2) = [1.5d0, -0.7d0]
@@ -71,10 +86,24 @@ subroutine collect_qtf_free_surface(testsuite)
     new_unittest("outer_moments_contract_psi", test_moments_contract_psi), &
     new_unittest("outer_moments_contract_green", test_moments_contract_green), &
     new_unittest("outer_moments_cost", test_moments_cost), &
+    new_unittest("fs_kernel_default", test_kernel_default), &
+    new_unittest("fs_sum_ring_sampled", test_sum_ring_sampled), &
+    new_unittest("fs_sum_tail_contour", test_sum_tail_contour), &
+    new_unittest("fs_sum_classes_positive", test_sum_classes_positive), &
+    new_unittest("fs_sum_swap", test_sum_swap), &
+    new_unittest("fs_sum_diagonal", test_sum_diagonal), &
+    new_unittest("fs_sum_moments_contract_psi", test_sum_moments_contract_psi), &
     new_unittest("fs_local_polygon_centre", test_local_polygon_centre), &
     new_unittest("fs_local_corner_and_edge", test_local_corner_and_edge), &
     new_unittest("fs_local_linear", test_local_linear), &
-    new_unittest("fs_local_limit", test_local_limit) &
+    new_unittest("fs_local_limit", test_local_limit), &
+    new_unittest("fs_inner_steps_scale", test_inner_steps_scale), &
+    new_unittest("fs_sum_exact_inner", test_sum_exact_inner), &
+    new_unittest("fs_sum_exact_outer", test_sum_exact_outer), &
+    new_unittest("fs_fields_exact_inner", test_fields_exact_inner), &
+    new_unittest("fs_fields_exact_circle", test_fields_exact_circle), &
+    new_unittest("fs_fields_exact_integral", test_fields_exact_integral), &
+    new_unittest("fs_fields_exact_integral_diff", test_fields_exact_integral_diff) &
     ]
 end subroutine collect_qtf_free_surface
 
@@ -1522,6 +1551,356 @@ subroutine test_moments_cost(error)
   call check(error, t_mom <= 5d0 * t_pair, trim(info))
 end subroutine test_moments_cost
 
+!> The difference kernel is the default, bit for bit (Phase 7c-2 Task 3): on the synthetic fields of fs_pair_terms_order
+!> (both incident waves, 12 chords), fs_pair_terms (t_in, t_out, r_far), fs_forcing_points and three outer moments of the
+!> basis of psi against the values printed from the code before the kernel argument (47a088c, 17 digits, round-trip),
+!> without the kernel argument and with kernel = KERNEL_DIFF. A mismatch prints the values.
+subroutine test_kernel_default(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om1 = 1d0, om2 = 0.8d0, b1 = 0.3d0, b2 = -0.5d0
+  integer, parameter :: npoly = 12
+  real(8), parameter :: rf_ref = 2.69884203762059587d+003
+  complex(8), parameter :: ref(9) = [ &
+    (-7.24342032070703468d+000, 1.53559242799299533d+000), (1.23854798148363354d+001, -4.44698132104596322d+000), &
+    (-1.03223975586585220d+003, -5.33975601675838107d+002), (-8.37712822663757038d+002, -7.07227326613316677d+002), &
+    (-8.23949933467954532d-002, 2.12136804605483759d-001), (-3.97114099000321741d-001, 2.17977241832092911d-001), &
+    (-3.00338205537782450d+001, -1.76014593334371412d+001), (-2.76434867007945728d-001, -5.50332129958162231d+000), &
+    (-3.39774989672709353d+003, 4.65917953875059652d+002)]
+  type(fs_point_field) :: f1(4), i1(4), f2(4), i2(4)
+  type(pw_set) :: pw1, pw2, pwp(2)
+  complex(8) :: psi(4, 2), tin(2), tout(2), q(4), mom(-sy_mmax:sy_mmax, 0:sy_nev), got(9)
+  real(8) :: wts(4), rf
+  integer :: j, pass
+  character(len=120) :: info
+
+  call pseudo_inner(4, f1, i1, f2, i2, psi, wts)
+  call synthetic_set(om1, om2, pw1, pw2, pwp)
+  do pass = 1, 2
+    if (pass == 1) then
+      call fs_pair_terms(om1, f1, i1, pw1, b1, pw1%k0, om2, f2, i2, pw2, b2, pw2%k0, psi, pwp, wts, npoly, g, rho, tin, &
+                         tout, r_far=rf)
+      call fs_forcing_points(om1, f1, i1, om2, f2, i2, g, q)
+      call fs_outer_moments(om1, pw1, b1, pw1%k0, om2, pw2, b2, pw2%k0, pwp(1)%k0, pwp(1)%kev, sy_h, sy_centre, &
+                            sy_radius, sy_mmax, sy_nev, om1 - om2, g, npoly, rf, mom)
+    else
+      call fs_pair_terms(om1, f1, i1, pw1, b1, pw1%k0, om2, f2, i2, pw2, b2, pw2%k0, psi, pwp, wts, npoly, g, rho, tin, &
+                         tout, r_far=rf, kernel=KERNEL_DIFF)
+      call fs_forcing_points(om1, f1, i1, om2, f2, i2, g, q, kernel=KERNEL_DIFF)
+      call fs_outer_moments(om1, pw1, b1, pw1%k0, om2, pw2, b2, pw2%k0, pwp(1)%k0, pwp(1)%kev, sy_h, sy_centre, &
+                            sy_radius, sy_mmax, sy_nev, om1 - om2, g, npoly, rf, mom, kernel=KERNEL_DIFF)
+    end if
+    got = [tin, tout, q(1), q(4), mom(0, 0), mom(2, 1), mom(-3, 0)]
+    if (.not. (all(got == ref) .and. rf == rf_ref)) then
+      print '(4x,a,i0,a,es25.17e3)', "pass ", pass, ": r_far ", rf
+      do j = 1, 9
+        print '(4x,a,i0,a,2es25.17e3)', "value ", j, ": ", got(j)
+      end do
+    end if
+    write (info, '(a,i0,a)') "pass ", pass, " (1: no kernel argument, 2: KERNEL_DIFF) is not bit-identical to 47a088c"
+    call check(error, all(got == ref) .and. rf == rf_ref, trim(info))
+    if (allocated(error)) return
+  end do
+end subroutine test_kernel_default
+
+! ---------------------------------------------------------------------------------------------- Phase 7c-2, Task 3
+
+!> The synthetic fields of the sum-frequency tests: states 1 and 2 at om1 and om2 (seeds 1, 2, as synthetic_set), and
+!> two psi at Omega = om1 + om2 (seeds 3, 4).
+subroutine synthetic_sum_set(om1, om2, pw1, pw2, psi)
+  real(8), intent(in) :: om1, om2
+  type(pw_set), intent(out) :: pw1, pw2, psi(2)
+
+  call synthetic_pw(om1, sy_mmax, sy_nev, 1, pw1)
+  call synthetic_pw(om2, sy_mmax, sy_nev, 2, pw2)
+  call synthetic_pw(om1 + om2, sy_mmax, sy_nev, 3, psi(1))
+  call synthetic_pw(om1 + om2, sy_mmax, sy_nev, 4, psi(2))
+end subroutine synthetic_sum_set
+
+!> The ring integral of the sum (ring_coef with -w2 and the modes of field 2 reversed) against theta sampling: on the
+!> synthetic fields (M = 3, one evanescent mode, both incident waves) at r = 1.2 R (the evanescent modes alive) and 3 R,
+!> fs_outer_ring with KERNEL_SUM against the trapezoid rule on 720 angles of psi Q_S, Q_S = Q[t1, t2] - Q[i1, i2] from
+!> free_surface_forcing (KERNEL_SUM) of the fields at each point (pw_eval_surface, the exact incident waves). The
+!> integrand is band-limited up to the Jacobi-Anger tails, so 720 points give it to rounding: 1e-11 relative.
+subroutine test_sum_ring_sampled(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om1 = 1d0, om2 = 0.8d0, b1 = 0.3d0, b2 = -0.5d0, rs(2) = [1.2d0, 3d0]
+  integer, parameter :: nth = 720
+  type(pw_set) :: pw1, pw2, psi(2)
+  type(fs_point_field) :: s1, s2, i1, i2, t1, t2
+  complex(8) :: ring(2), direct(2), q, ps, gr(3), zz
+  real(8) :: r, x(3), th, err, worst
+  integer :: ir, j, l
+  character(len=200) :: info
+
+  call synthetic_sum_set(om1, om2, pw1, pw2, psi)
+  worst = 0d0
+  do ir = 1, 2
+    r = rs(ir) * sy_radius
+    call fs_outer_ring(om1, pw1, b1, pw1%k0, om2, pw2, b2, pw2%k0, psi, g, r, ring, kernel=KERNEL_SUM)
+    direct = (0d0, 0d0)
+    do j = 0, nth - 1
+      th = 2d0 * pi * j / nth
+      x = [sy_centre(1) + r * cos(th), sy_centre(2) + r * sin(th), 0d0]
+      i1 = incident_point(om1, pw1%k0, b1, x)
+      i2 = incident_point(om2, pw2%k0, b2, x)
+      s1 = scattered_point(pw1, x)
+      s2 = scattered_point(pw2, x)
+      t1 = add_fields(s1, i1)
+      t2 = add_fields(s2, i2)
+      q = free_surface_forcing(KERNEL_SUM, om1, t1%phi, t1%grad, t1%phizz, om2, t2%phi, t2%grad, t2%phizz, g) &
+          - free_surface_forcing(KERNEL_SUM, om1, i1%phi, i1%grad, i1%phizz, om2, i2%phi, i2%grad, i2%phizz, g)
+      do l = 1, 2
+        call pw_eval_surface(psi(l), x, ps, gr, zz)
+        direct(l) = direct(l) + ps * q * (2d0 * pi / nth)
+      end do
+    end do
+    err = maxval(abs(ring - direct)) / maxval(abs(direct))
+    print '(4x,a,f4.1,a,2es12.4,a,es10.2)', "sum ring at r =", rs(ir), " R: |ring| ", abs(ring), ", relative error ", err
+    worst = max(worst, err)
+  end do
+  write (info, '(a,es10.3)') "sum ring against 720-point theta sampling of psi Q_S, worst relative ", worst
+  call check(error, worst <= 1d-11, trim(info))
+end subroutine test_sum_ring_sampled
+
+!> The tail of the sum (the classes k1 + k2 + K, -k1 + k2 + K, k1 - k2 + K on rotated contours, field 2 on H^(1))
+!> against the real axis: tail(r_far) = annulus(r_far, 2 r_far) + tail(2 r_far) to 1e-8 relative of the outer integral
+!> annulus(R, r_far) + tail(r_far), with both incident waves, for the pair (1.0, 0.8) and the diagonal (0.8, 0.8). The
+!> annulus r_far..2 r_far is above 1e-4 of the total, so a wrong tail cannot pass.
+subroutine test_sum_tail_contour(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: wa(2) = [1d0, 0.8d0], wb(2) = [0.8d0, 0.8d0], b1 = 0.3d0, b2 = -0.5d0
+  type(pw_set) :: pw1, pw2, psi(2)
+  complex(8) :: a_in(2), a_mid(2), tl1(2), tl2(2), t1(2)
+  real(8) :: rf, err, sig, worst_err, least_sig, om
+  integer :: ip
+  character(len=200) :: info
+
+  worst_err = 0d0
+  least_sig = huge(1d0)
+  do ip = 1, 2
+    om = wa(ip) + wb(ip)
+    call synthetic_sum_set(wa(ip), wb(ip), pw1, pw2, psi)
+    rf = fs_outer_rfar(pw1, pw1%k0, pw2, pw2%k0, psi, kernel=KERNEL_SUM)
+    call fs_outer_annulus(wa(ip), pw1, b1, pw1%k0, wb(ip), pw2, b2, pw2%k0, psi, om, g, rho, sy_radius, rf, a_in, &
+                          kernel=KERNEL_SUM)
+    call fs_outer_annulus(wa(ip), pw1, b1, pw1%k0, wb(ip), pw2, b2, pw2%k0, psi, om, g, rho, rf, 2d0 * rf, a_mid, &
+                          kernel=KERNEL_SUM)
+    call fs_outer_tail(wa(ip), pw1, b1, pw1%k0, wb(ip), pw2, b2, pw2%k0, psi, om, g, rho, rf, tl1, kernel=KERNEL_SUM)
+    call fs_outer_tail(wa(ip), pw1, b1, pw1%k0, wb(ip), pw2, b2, pw2%k0, psi, om, g, rho, 2d0 * rf, tl2, kernel=KERNEL_SUM)
+    t1 = a_in + tl1
+    err = maxval(abs(tl1 - a_mid - tl2)) / maxval(abs(t1))
+    sig = maxval(abs(a_mid)) / maxval(abs(t1))
+    print '(4x,a,f5.2,a,f10.1,a,2es12.4,a,es10.2,a,es10.2,a,es10.2)', "sum tail, Omega", om, ": r_far", rf, &
+      " m, |T| ", abs(t1), ", |tail(r_far)| / |T| ", maxval(abs(tl1)) / maxval(abs(t1)), ", r_far vs 2 r_far ", err, &
+      ", annulus r_far..2 r_far ", sig
+    worst_err = max(worst_err, err)
+    least_sig = min(least_sig, sig)
+  end do
+  write (info, '(a,es10.3,a,es10.3)') "sum: outer integral with r_far against 2 r_far, worst relative ", worst_err, &
+    "; least annulus share ", least_sig
+  call check(error, worst_err <= 1d-8 .and. least_sig > 1d-4, trim(info))
+end subroutine test_sum_tail_contour
+
+!> A pw_set of no amplitude at omega in depth h (circle sy_radius about sy_centre) with nev evanescent modes: what
+!> fs_outer_rfar reads (k0, kev(1), the circle)
+subroutine rfar_set(omega, h, nev, pw)
+  real(8), intent(in) :: omega, h
+  integer, intent(in) :: nev
+  type(pw_set), intent(out) :: pw
+  real(8) :: wvn_l(nev + 1)
+  external :: DISPERSION
+
+  call DISPERSION(wvn_l, nev + 1, omega, h)
+  pw%mmax = 0
+  pw%nev = nev
+  pw%k0 = wvn_l(1)
+  pw%h = h
+  pw%radius = sy_radius
+  pw%centre = sy_centre
+  allocate (pw%kev(nev), pw%a(0:0, 0:nev))
+  pw%kev = wvn_l(2:nev + 1)
+  pw%a = (0d0, 0d0)
+end subroutine rfar_set
+
+!> The phase classes of the sum tail are positive (fs_outer_tail: K = k(w1 + w2) > k1 >= k2), and the propagating rule of
+!> r_far of the sum (20 periods of its slowest class) is not beyond that of the difference for the same ordered states
+!> (both incident waves): on the grid 0.3 to 1.5 rad/s in steps of 0.1, every ordered pair w1 >= w2 (the diagonal for the
+!> classes; w1 > w2 for r_far), h = 15 and 100 m. The classes of the sum exceed those of the difference: k1 + k2 + K+ and
+!> k1 - k2 + K+ since K+ > K-, and -k1 + k2 + K+ >= k1 + k2 - K- (the class -k1 - k2 + K- of the difference, negative)
+!> since K+ + K- >= 2 k1 (k(w) is convex). The sets have no evanescent mode there, so r_far is the class rule alone.
+!> With one evanescent mode r_far may be larger for the sum: the evanescent rule R + 27.6 / kev(1) takes the slowest
+!> mode of all sets, and kev(1) falls as Omega rises (kev(1) h from pi as Omega -> 0 to pi / 2 as Omega -> infinity,
+!> the roots of -Omega^2 / g = k tan(k h)), so psi at Omega+ can decay slower than psi at Omega-. That ratio of
+!> r_far - R, sum over difference, is gated at 1.39: 1.3x the measured largest, 1.065 (ruling R-c of fix round 1).
+subroutine test_sum_classes_positive(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: hs(2) = [15d0, 100d0]
+  integer, parameter :: nw = 13
+  type(pw_set) :: pa, pb, ps(1), pd(1)
+  real(8) :: w(nw), ka, kb, kk, cmin, rs, rd, worst_ratio, worst_ev
+  integer :: ih, i, j, nbad_cls, nbad_rfar, iev
+  character(len=200) :: info
+
+  do i = 1, nw
+    w(i) = 0.3d0 + 0.1d0 * (i - 1)
+  end do
+  nbad_cls = 0
+  nbad_rfar = 0
+  cmin = huge(1d0)
+  worst_ratio = 0d0
+  worst_ev = 0d0
+  do ih = 1, 2
+    do i = 1, nw
+      do j = 1, i
+        ka = wave_number(w(i), hs(ih))
+        kb = wave_number(w(j), hs(ih))
+        kk = wave_number(w(i) + w(j), hs(ih))
+        cmin = min(cmin, ka + kb + kk, -ka + kb + kk, ka - kb + kk)
+        if (.not. (ka + kb + kk > 0d0 .and. -ka + kb + kk > 0d0 .and. ka - kb + kk > 0d0)) nbad_cls = nbad_cls + 1
+        if (i == j) cycle
+        do iev = 0, 1
+          call rfar_set(w(i), hs(ih), iev, pa)
+          call rfar_set(w(j), hs(ih), iev, pb)
+          call rfar_set(w(i) + w(j), hs(ih), iev, ps(1))
+          call rfar_set(w(i) - w(j), hs(ih), iev, pd(1))
+          rs = fs_outer_rfar(pa, pa%k0, pb, pb%k0, ps, kernel=KERNEL_SUM)
+          rd = fs_outer_rfar(pa, pa%k0, pb, pb%k0, pd)
+          if (iev == 0) then
+            worst_ratio = max(worst_ratio, (rs - sy_radius) / (rd - sy_radius))
+            if (.not. rs <= rd) nbad_rfar = nbad_rfar + 1
+          else
+            worst_ev = max(worst_ev, (rs - sy_radius) / (rd - sy_radius))
+          end if
+        end do
+      end do
+    end do
+  end do
+  write (info, '(a,i0,a,es10.3,a,i0,a,f7.4)') "sum classes not positive: ", nbad_cls, " (least class ", cmin, &
+    " 1/m); sum r_far beyond the difference: ", nbad_rfar, " (largest (r_far - R) ratio sum / difference ", worst_ratio
+  print '(4x,a,a)', trim(info), ")"
+  print '(4x,a,f7.4)', "with one evanescent mode, largest (r_far - R) ratio sum / difference ", worst_ev
+  call check(error, nbad_cls == 0 .and. nbad_rfar == 0, trim(info))
+  if (allocated(error)) return
+  write (info, '(a,f7.4,a)') "with one evanescent mode the sum r_far - R exceeds 1.39 times the difference one: ", &
+    worst_ev, " (measured 1.065)"
+  call check(error, worst_ev <= 1.39d0, trim(info))
+end subroutine test_sum_classes_positive
+
+!> fs_pair_terms of the sum is symmetric: the pair given as (2, 1) is evaluated as (1, 2), with no conjugate
+!> (Q_S(2, 1) = Q_S(1, 2), pair_plus symmetric), so T(1, 2) = T(2, 1) to 1e-12 relative (r_far too); the synthetic fields
+!> with both incident waves and the sliver of 12 chords. The difference kernel gives the conjugate instead
+!> (fs_pair_terms_order), so a conjugate on the sum swap fails.
+subroutine test_sum_swap(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om1 = 1d0, om2 = 0.8d0, b1 = 0.3d0, b2 = -0.5d0
+  integer, parameter :: npoly = 12
+  type(fs_point_field) :: f1(4), i1(4), f2(4), i2(4)
+  complex(8) :: psi(4, 2), tin(2), tout(2), sin_(2), sout(2)
+  real(8) :: wts(4), rf, rf2, err, conj_err
+  type(pw_set) :: pw1, pw2, pwp(2)
+  character(len=200) :: info
+
+  call pseudo_inner(4, f1, i1, f2, i2, psi, wts)
+  call synthetic_sum_set(om1, om2, pw1, pw2, pwp)
+  call fs_pair_terms(om1, f1, i1, pw1, b1, pw1%k0, om2, f2, i2, pw2, b2, pw2%k0, psi, pwp, wts, npoly, g, rho, tin, tout, &
+                     r_far=rf, kernel=KERNEL_SUM)
+  call fs_pair_terms(om2, f2, i2, pw2, b2, pw2%k0, om1, f1, i1, pw1, b1, pw1%k0, psi, pwp, wts, npoly, g, rho, sin_, sout, &
+                     r_far=rf2, kernel=KERNEL_SUM)
+  err = max(maxval(abs(sin_ - tin)), maxval(abs(sout - tout))) / max(maxval(abs(tin)), maxval(abs(tout)))
+  conj_err = max(maxval(abs(sin_ - conjg(tin))), maxval(abs(sout - conjg(tout)))) / max(maxval(abs(tin)), maxval(abs(tout)))
+  write (info, '(a,es10.3,a,es10.3,a,2es12.4)') "sum T(2, 1) against T(1, 2), relative ", err, " (against conj: ", &
+    conj_err, "); |t_in|, |t_out| ", maxval(abs(tin)), maxval(abs(tout))
+  print '(4x,a)', trim(info)
+  call check(error, err <= 1d-12 .and. rf2 == rf .and. conj_err > 1d-3 .and. rf > sy_radius, trim(info))
+end subroutine test_sum_swap
+
+!> The diagonal of the sum, w1 = w2 = 0.8 (two states of one frequency, headings 0.3 and -0.5): t_in and t_out are
+!> finite and not zero (no Omega = 0 return), and within 1e-4 of the pair (w, w + 1e-5), whose fields, psi and Omega
+!> differ by O(1e-5): the diagonal is a regular point of the sum, not a special case.
+subroutine test_sum_diagonal(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: w = 0.8d0, dw = 1d-5, b1 = 0.3d0, b2 = -0.5d0
+  integer, parameter :: npoly = 12
+  type(fs_point_field) :: f1(4), i1(4), f2(4), i2(4)
+  complex(8) :: psi(4, 2), tin(2), tout(2), nin(2), nout(2)
+  real(8) :: wts(4), e_in, e_out
+  type(pw_set) :: pa, pb, pp(2), qb, qp(2)
+  logical :: finite
+  character(len=250) :: info
+
+  call pseudo_inner(4, f1, i1, f2, i2, psi, wts)
+  call synthetic_pw(w, sy_mmax, sy_nev, 1, pa)
+  call synthetic_pw(w, sy_mmax, sy_nev, 2, pb)
+  call synthetic_pw(2d0 * w, sy_mmax, sy_nev, 3, pp(1))
+  call synthetic_pw(2d0 * w, sy_mmax, sy_nev, 4, pp(2))
+  call synthetic_pw(w + dw, sy_mmax, sy_nev, 2, qb)
+  call synthetic_pw(2d0 * w + dw, sy_mmax, sy_nev, 3, qp(1))
+  call synthetic_pw(2d0 * w + dw, sy_mmax, sy_nev, 4, qp(2))
+  call fs_pair_terms(w, f1, i1, pa, b1, pa%k0, w, f2, i2, pb, b2, pb%k0, psi, pp, wts, npoly, g, rho, tin, tout, &
+                     kernel=KERNEL_SUM)
+  call fs_pair_terms(w + dw, f2, i2, qb, b2, qb%k0, w, f1, i1, pa, b1, pa%k0, psi, qp, wts, npoly, g, rho, nin, nout, &
+                     kernel=KERNEL_SUM)
+  finite = all(ieee_is_finite(abs(tin))) .and. all(ieee_is_finite(abs(tout)))
+  e_in = maxval(abs(nin - tin)) / maxval(abs(tin))
+  e_out = maxval(abs(nout - tout)) / maxval(abs(tout))
+  write (info, '(a,2es12.4,a,2es12.4,a,es10.3,a,es10.3)') "sum diagonal at 0.8: |t_in| ", abs(tin), ", |t_out| ", &
+    abs(tout), "; against (w, w + 1e-5): inner ", e_in, ", outer ", e_out
+  print '(4x,a)', trim(info)
+  call check(error, finite .and. minval(abs(tin)) > 0d0 .and. minval(abs(tout)) > 0d0 .and. e_in <= 1d-4 .and. &
+             e_out <= 1d-4, trim(info))
+end subroutine test_sum_diagonal
+
+!> As outer_moments_contract_psi, with the sum kernel: the moments of the basis of psi at Omega = om1 + om2 (mg = 3,
+!> nev = 1, K and kev of psi), contracted with the amplitudes of each psi, give fs_outer_pair + fs_outer_sliver (12 chords)
+!> of the sum to 1e-10 relative (annulus, the three tail classes of the sum, sliver), with both incident waves and with
+!> none; and fs_forcing_points (KERNEL_SUM) weighted by the panel areas and psi is fs_inner_pair of the sum (1e-14).
+subroutine test_sum_moments_contract_psi(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om1 = 1d0, om2 = 0.8d0, b1 = 0.3d0, b2 = -0.5d0
+  integer, parameter :: npoly = 12
+  type(pw_set) :: pw1, pw2, psi(2)
+  type(fs_point_field) :: f1(4), i1(4), f2(4), i2(4)
+  complex(8) :: tp(2), sl(2), t(2), mom(-sy_mmax:sy_mmax, 0:sy_nev), ap(-sy_mmax:sy_mmax, 0:sy_nev), q(4), pin(4, 2)
+  complex(8) :: tin(2), tq(2)
+  real(8) :: kk1, kk2, rf, err, worst, wts(4), om
+  integer :: ic, k
+  character(len=200) :: info
+
+  om = om1 + om2
+  call synthetic_sum_set(om1, om2, pw1, pw2, psi)
+  worst = 0d0
+  do ic = 1, 2
+    kk1 = merge(pw1%k0, 0d0, ic == 1)
+    kk2 = merge(pw2%k0, 0d0, ic == 1)
+    rf = fs_outer_rfar(pw1, kk1, pw2, kk2, psi, kernel=KERNEL_SUM)
+    call fs_outer_pair(om1, pw1, b1, kk1, om2, pw2, b2, kk2, psi, om, g, rho, rf, tp, kernel=KERNEL_SUM)
+    call fs_outer_sliver(om1, pw1, b1, kk1, om2, pw2, b2, kk2, psi, om, g, rho, npoly, sl, kernel=KERNEL_SUM)
+    call fs_outer_moments(om1, pw1, b1, kk1, om2, pw2, b2, kk2, psi(1)%k0, psi(1)%kev, sy_h, sy_centre, sy_radius, &
+                          sy_mmax, sy_nev, om, g, npoly, rf, mom, kernel=KERNEL_SUM)
+    do k = 1, 2
+      call scaled_amplitudes(psi(k), sy_mmax, ap)
+      t(k) = contract(ap, mom, sy_mmax, sy_nev, sy_mmax, om)
+    end do
+    err = maxval(abs(t - (tp + sl))) / maxval(abs(tp + sl))
+    print '(4x,a,i0,a,2es12.4,a,es10.2)', "sum moments contracted with psi, case ", ic, ": |T_out| ", abs(tp + sl), &
+      ", relative error ", err
+    worst = max(worst, err)
+  end do
+  write (info, '(a,es10.3)') "sum: the moments contracted with psi against fs_outer_pair + fs_outer_sliver, worst ", worst
+  call check(error, worst <= 1d-10, trim(info))
+  if (allocated(error)) return
+  call pseudo_inner(4, f1, i1, f2, i2, pin, wts)
+  call fs_forcing_points(om1, f1, i1, om2, f2, i2, g, q, kernel=KERNEL_SUM)
+  call fs_inner_pair(om1, f1, i1, om2, f2, i2, pin, wts, g, rho, tin, kernel=KERNEL_SUM)
+  do k = 1, 2
+    tq(k) = FS_SIGN * cmplx(0d0, om * rho / g, 8) * sum(wts * pin(:, k) * q)
+  end do
+  err = maxval(abs(tq - tin)) / maxval(abs(tin))
+  write (info, '(a,es10.3)') "sum: fs_forcing_points weighted by psi against fs_inner_pair, relative ", err
+  print '(4x,a)', trim(info)
+  call check(error, err <= 1d-14, trim(info))
+end subroutine test_sum_moments_contract_psi
+
 !> Reference for fs_local_rankine, by quadrature in polar coordinates about x: the polygon is the union of the triangles
 !> (x, P_e, P_e+1), and in each the integral of (2/sqrt(rho^2 + eps^2)) (q0 + qg . rho u) rho drho dtheta is done over rho in
 !> closed form (the kernel at the elevation eps below x, where 1/r1 = 1/r) and over theta by composite 4-point Gauss-Legendre
@@ -1759,5 +2138,637 @@ subroutine test_local_limit(error)
   if (allocated(sncn)) call move_alloc(sncn, pm_ncn)
   if (allocated(sncon)) call move_alloc(sncon, pm_ncon)
 end subroutine test_local_limit
+
+!> Phase 7c-2, ruling R3 c: the offsets of phi_zz on the inner mesh of the sum. The 448-panel cylinder of the 6a tests
+!> (depth 15, omega_max = 1.1 rad/s), its inner mesh built for Omega+ = 2.2 rad/s as fs_setup builds it with the sum on,
+!> and scale = max(psize, lambda(1.1)/10) as fs_setup passes it, with the driver's step 0.04 (2 x cs_fd_step):
+!>   - the points whose stencil is not shrunk have delta = step x scale, and those with psize < lambda/10 away from the
+!>     waterline (16 offsets clear) have delta = step x lambda(1.1)/10 exactly;
+!>   - without scale the offsets are step x psize, so smaller there (the mesh of 2.2 rad/s is finer);
+!>   - at that delta the residual of Laplace's equation of fs_laplace_residual (5-point horizontal Laplacian of
+!>     fs_inner_fields plus the 3-point d2/dz2, below z = 0 at the points of that test) relative to |lap_h phi| stays at
+!>     the level of the difference run (scale_residual_limit).
+subroutine test_inner_steps_scale(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: step = 0.04d0, om_fo = 1.1d0, om_sum = 2.2d0, zp = -2d0
+  real(8), parameter :: rp(3) = [12d0, 14.5d0, 19d0], thp(3) = [0.3d0, 2.0d0, -1.9d0]
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(so_options) :: opts
+  type(first_order_state) :: states(1)
+  type(cs_points) :: pts, rpts, vp
+  type(fs_point_field) :: f(3, 1)
+  complex(8) :: ph(9, 1), lap_h, phizz_fd
+  real(8), allocatable :: scale(:), delta(:), delta0(:)
+  real(8) :: centre(2), radius, lam10, d, x(3, 3), xv(3, 9), dec(3, 9), worst, rr
+  integer :: nshrunk, nfloor, ns0, i, nfar, nbad, nthread_saved
+  logical :: ok
+  character(len=:), allocatable :: msg
+  character(len=250) :: info
+
+  call cylinder_fixture(mesh, states, error)
+  if (allocated(error)) return
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call check(error, ok, "geometry: "//msg)
+  if (allocated(error)) return
+  call build_fs_inner(mesh, geom, opts, fx_depth, 'fs_7c2_no_input_dir', pts, centre, radius, ok, msg, omega_max=om_sum)
+  call check(error, ok, "inner mesh: "//msg)
+  if (allocated(error)) return
+  lam10 = 0.1d0 * 2d0 * pi / wave_number(om_fo, fx_depth)
+  allocate (scale(pts%n), delta(pts%n), delta0(pts%n))
+  scale = max(pts%psize, lam10)
+  nthread_saved = NTHREAD
+  NTHREAD = 4
+  call fs_inner_steps(mesh, pts, step, delta, nshrunk, nfloor, scale=scale)
+  call fs_inner_steps(mesh, pts, step, delta0, ns0)
+  nfar = 0
+  nbad = 0
+  do i = 1, pts%n
+    rr = norm2(pts%x(1:2, i))
+    if (delta(i) < step * scale(i)) cycle
+    if (pts%psize(i) < lam10 .and. rr > 10d0 + 16d0 * step * lam10) then
+      nfar = nfar + 1
+      if (delta(i) /= step * lam10) nbad = nbad + 1
+      if (.not. delta0(i) < delta(i)) nbad = nbad + 1
+    end if
+  end do
+  print '(4x,a,i0,a,f8.4,a,i0,a,i0,a,i0)', "fs_inner_steps_scale: ", pts%n, " inner points, lambda(1.1)/10 =", lam10, &
+    " m; ", nfar, " finer points away from the waterline, ", nshrunk, " shrunk, ", nfloor, " at the floor"
+  call check(error, nfar > 0 .and. nbad == 0, "away from the waterline delta is not step x lambda(omega_max)/10")
+  if (allocated(error)) then
+    NTHREAD = nthread_saved
+    return
+  end if
+
+  ! The residual of Laplace's equation at delta = step x lambda/10 (the method of fs_laplace_residual)
+  d = step * lam10
+  do i = 1, 3
+    x(:, i) = [rp(i) * cos(thp(i)), rp(i) * sin(thp(i)), zp]
+    xv(:, 3 * i - 2) = x(:, i)
+    xv(:, 3 * i - 1) = x(:, i) + [0d0, 0d0, d]
+    xv(:, 3 * i) = x(:, i) - [0d0, 0d0, d]
+    dec(:, 3 * i - 2:3 * i) = spread(x(:, i), 2, 3)
+  end do
+  call free_points(x, lam10, rpts)
+  call free_points(xv, lam10, vp)
+  call fs_inner_fields(mesh, rpts, states, step, .false., f, delta=[d, d, d])
+  call fs_sample_phi(mesh, vp, states, .false., ph, decide=dec)
+  NTHREAD = nthread_saved
+  worst = 0d0
+  do i = 1, 3
+    lap_h = -f(i, 1)%phizz
+    phizz_fd = (ph(3 * i - 1, 1) + ph(3 * i, 1) - 2d0 * ph(3 * i - 2, 1)) / d**2
+    print '(4x,a,f6.3,a,f6.2,a,es10.2)', "fs_inner_steps_scale: delta", d, " m at r =", rp(i), ", residual relative ", &
+      abs(lap_h + phizz_fd) / max(abs(lap_h), tiny(1d0))
+    worst = max(worst, abs(lap_h + phizz_fd) / max(abs(lap_h), tiny(1d0)))
+  end do
+  write (info, '(a,es10.3,a,es10.3)') "lap_h phi + phi_zz relative to |lap_h phi| at delta = step x lambda/10 ", worst, &
+    "; limit ", scale_residual_limit
+  call check(error, worst <= scale_residual_limit, trim(info))
+end subroutine test_inner_steps_scale
+
+! ------------------------------------------------------------------- the sum assembly with exact fields (7c-2 debugging)
+
+!> The fixture of the fs_sum_exact tests (test/data/fs_sum_exact/fs_sum_exact.txt, written by
+!> make_fs_sum_exact_fixture.py, whose header has the conventions): block ip of the file (1: (1.2, 1.2) rad/s,
+!> 2: (1.4, 1.0) rad/s, Omega+ = 2.4), sharp truncated cylinder, fixed body, exact first-order fields and psi_k.
+subroutine read_sum_exact(ip, w, k, g_ex, h_ex, xy, sc1, sc2, psi, exp_in, radius, pw, exp_out, ok)
+  integer, intent(in) :: ip
+  real(8), intent(out) :: w(3), k(3), g_ex, h_ex, radius
+  real(8), allocatable, intent(out) :: xy(:, :)
+  complex(8), allocatable, intent(out) :: sc1(:, :), sc2(:, :), psi(:, :)
+  complex(8), intent(out) :: exp_in(3), exp_out(3)
+  type(pw_set), intent(out) :: pw(5)
+  logical, intent(out) :: ok
+  character(len=64) :: tag
+  character(len=8192) :: buf
+  real(8) :: v(28), kv0   ! x, y, 10 complex fields, 3 complex psi
+  integer :: u, ios, iblock, n, i, j, mmax, nev, iset, m, nn
+
+  ok = .false.
+  open (newunit=u, file='test/data/fs_sum_exact/fs_sum_exact.txt', status='old', action='read', iostat=ios)
+  if (ios /= 0) return
+  iblock = 0
+  do
+    read (u, '(a)', iostat=ios) buf
+    if (ios /= 0) exit
+    read (buf, *, iostat=ios) tag
+    if (ios /= 0) cycle
+    select case (trim(tag))
+    case ('PAIR')
+      iblock = iblock + 1
+      if (iblock /= ip) cycle
+      read (buf, *) tag, w(1), w(2), w(3), k(1), k(2), k(3), g_ex, h_ex
+    case ('INNER')
+      if (iblock /= ip) cycle
+      read (buf, *) tag, n
+      allocate (xy(2, n), sc1(5, n), sc2(5, n), psi(n, 3))
+      do i = 1, n
+        read (u, *) v
+        xy(:, i) = v(1:2)
+        do j = 1, 5
+          sc1(j, i) = cmplx(v(1 + 2*j), v(2 + 2*j), 8)
+          sc2(j, i) = cmplx(v(11 + 2*j), v(12 + 2*j), 8)
+        end do
+        do j = 1, 3
+          psi(i, j) = cmplx(v(21 + 2*j), v(22 + 2*j), 8)
+        end do
+      end do
+    case ('EXPECT_INNER')
+      if (iblock /= ip) cycle
+      read (buf, *) tag, v(1:6)
+      exp_in = [(cmplx(v(2*j - 1), v(2*j), 8), j = 1, 3)]
+    case ('OUTER')
+      if (iblock /= ip) cycle
+      read (buf, *) tag, radius, mmax, nev
+      do iset = 1, 5
+        pw(iset)%mmax = mmax
+        pw(iset)%nev = nev
+        pw(iset)%h = h_ex
+        pw(iset)%radius = radius
+        pw(iset)%centre = 0d0
+        allocate (pw(iset)%kev(nev), pw(iset)%a(-mmax:mmax, 0:nev))
+        pw(iset)%a = (0d0, 0d0)
+      end do
+    case ('KEV')
+      if (iblock /= ip) cycle
+      read (buf, *) tag, iset, kv0
+      pw(iset)%k0 = kv0
+      read (buf, *) tag, iset, kv0, pw(iset)%kev
+    case ('A')
+      if (iblock /= ip) cycle
+      read (buf, *) tag, iset, m, nn, v(1:2)
+      pw(iset)%a(m, nn) = cmplx(v(1), v(2), 8)
+    case ('EXPECT_OUTER')
+      if (iblock /= ip) cycle
+      read (buf, *) tag, v(1:6)
+      exp_out = [(cmplx(v(2*j - 1), v(2*j), 8), j = 1, 3)]
+    case ('END')
+      if (iblock == ip) then
+        ok = .true.
+        exit
+      end if
+    end select
+  end do
+  close (u)
+end subroutine read_sum_exact
+
+!> The inner assembly of the sum: fs_inner_pair (KERNEL_SUM) with the exact scattered fields of the sharp truncated
+!> cylinder (fixed) at 360 points on five rings (r = 10.3 ... 13.5 m), HAMS's own incident waves, and the exact psi_1,
+!> psi_3, psi_5 at Omega+ = 2.4 rad/s, weight 1, against the reference formula on the same points (the fixture), for
+!> (1.2, 1.2) and (1.4, 1.0) rad/s. It tests Q_S and the assembly with fields that are not plane waves (evanescent
+!> parts, phi_zz /= k^2 phi), not the stencil or the inner mesh.
+subroutine test_sum_exact_inner(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8) :: w(3), k(3), g_ex, h_ex, radius, worst, x(3), gw
+  real(8), allocatable :: xy(:, :), wts(:)
+  complex(8), allocatable :: sc1(:, :), sc2(:, :), psi(:, :)
+  complex(8) :: exp_in(3), exp_out(3), t_in(3), phi, grad(3)
+  type(pw_set) :: pw(5)
+  type(fs_point_field), allocatable :: f1(:), f2(:), i1(:), i2(:)
+  logical :: ok
+  integer :: ip, i, n, j
+  character(len=300) :: info
+
+  worst = 0d0
+  do ip = 1, 2
+    call read_sum_exact(ip, w, k, g_ex, h_ex, xy, sc1, sc2, psi, exp_in, radius, pw, exp_out, ok)
+    call check(error, ok, "fs_sum_exact: cannot read block of test/data/fs_sum_exact/fs_sum_exact.txt")
+    if (allocated(error)) return
+    n = size(xy, 2)
+    allocate (f1(n), f2(n), i1(n), i2(n), wts(n))
+    wts = 1d0
+    do i = 1, n
+      x = [xy(1, i), xy(2, i), 0d0]
+      gw = wave_gravity(w(1), k(1), h_ex)
+      phi = incident_phi(x, w(1), k(1), h_ex, 1d0, 0d0, gw)
+      call incident_grad(x, w(1), k(1), h_ex, 1d0, 0d0, gw, grad)
+      i1(i)%phi = phi
+      i1(i)%grad = grad
+      i1(i)%phizz = k(1)**2*phi
+      f1(i)%phi = phi + sc1(1, i)
+      f1(i)%grad = grad + sc1(2:4, i)
+      f1(i)%phizz = i1(i)%phizz + sc1(5, i)
+      gw = wave_gravity(w(2), k(2), h_ex)
+      phi = incident_phi(x, w(2), k(2), h_ex, 1d0, 0d0, gw)
+      call incident_grad(x, w(2), k(2), h_ex, 1d0, 0d0, gw, grad)
+      i2(i)%phi = phi
+      i2(i)%grad = grad
+      i2(i)%phizz = k(2)**2*phi
+      f2(i)%phi = phi + sc2(1, i)
+      f2(i)%grad = grad + sc2(2:4, i)
+      f2(i)%phizz = i2(i)%phizz + sc2(5, i)
+    end do
+    call fs_inner_pair(w(1), f1, i1, w(2), f2, i2, psi, wts, g_ex, rho, t_in, KERNEL_SUM)
+    t_in = t_in/(rho*g_ex)
+    do j = 1, 3
+      print '(4x,a,2f5.2,a,i0,a,2es14.6,a,2es14.6,a,es9.2)', "(", w(1:2), ") inner psi_", 2*j - 1, ": HAMS ", t_in(j), &
+        ", exact ", exp_in(j), ", rel ", abs(t_in(j) - exp_in(j))/maxval(abs(exp_in))
+    end do
+    worst = max(worst, maxval(abs(t_in - exp_in))/maxval(abs(exp_in)))
+    deallocate (f1, f2, i1, i2, wts)
+  end do
+  write (info, '(a,es9.2)') "inner sum assembly with exact fields against the reference formula: worst ", worst
+  call check(error, worst <= 1d-8, trim(info))
+end subroutine test_sum_exact_inner
+
+!> The outer assembly of the sum: fs_outer_rfar and fs_outer_pair (KERNEL_SUM: annulus R .. r_far, then the tail
+!> contours of the three sum classes) with the exact partial waves of the scattered states and of psi_k on R = 15 m,
+!> against the reference's outer nodes and tail contours on a grid of radius 15 m (the fixture), (1.2, 1.2) and
+!> (1.4, 1.0) rad/s, Omega+ = 2.4.
+subroutine test_sum_exact_outer(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8) :: w(3), k(3), g_ex, h_ex, radius, worst, rf
+  real(8), allocatable :: xy(:, :)
+  complex(8), allocatable :: sc1(:, :), sc2(:, :), psi(:, :)
+  complex(8) :: exp_in(3), exp_out(3), t_out(3)
+  type(pw_set) :: pw(5)
+  logical :: ok
+  integer :: ip, j, nthread_saved
+  character(len=300) :: info
+
+  nthread_saved = NTHREAD
+  NTHREAD = 8
+  worst = 0d0
+  do ip = 1, 2
+    call read_sum_exact(ip, w, k, g_ex, h_ex, xy, sc1, sc2, psi, exp_in, radius, pw, exp_out, ok)
+    call check(error, ok, "fs_sum_exact: cannot read block of test/data/fs_sum_exact/fs_sum_exact.txt")
+    if (allocated(error)) exit
+    rf = fs_outer_rfar(pw(1), k(1), pw(2), k(2), pw(3:5), KERNEL_SUM)
+    call fs_outer_pair(w(1), pw(1), 0d0, k(1), w(2), pw(2), 0d0, k(2), pw(3:5), w(3), g_ex, rho, rf, t_out, KERNEL_SUM)
+    t_out = t_out/(rho*g_ex)
+    do j = 1, 3
+      print '(4x,a,2f5.2,a,i0,a,2es14.6,a,2es14.6,a,es9.2,a,f7.1)', "(", w(1:2), ") outer psi_", 2*j - 1, ": HAMS ", &
+        t_out(j), ", exact ", exp_out(j), ", rel ", abs(t_out(j) - exp_out(j))/maxval(abs(exp_out)), ", r_far ", rf
+    end do
+    worst = max(worst, maxval(abs(t_out - exp_out))/maxval(abs(exp_out)))
+  end do
+  NTHREAD = nthread_saved
+  if (allocated(error)) return
+  write (info, '(a,es9.2)') "outer sum assembly with exact partial waves against the reference: worst ", worst
+  call check(error, worst <= 1d-4, trim(info))
+end subroutine test_sum_exact_outer
+
+! ------------------------------------------------------- HAMS's field evaluation with exact panel data (7c-2 debugging)
+
+!> Block ib (1: 1.0 rad/s, 2: 1.4 rad/s) of test/data/fs_sum_exact/fs_fields_exact.txt (make_fs_fields_exact_fixture.py,
+!> whose header has the conventions): the exact scattered potential at the 448 panels of the sharp m1 hull
+!> (HullMesh_sharp_m1.pnl), and the exact fields (phi, grad, phi_zz; total at the points, scattered on the circle).
+subroutine read_fields_exact(ib, w, k, g_ex, h_ex, phip, xp, fp, xc, fc, ok)
+  integer, intent(in) :: ib
+  real(8), intent(out) :: w, k, g_ex, h_ex
+  complex(8), allocatable, intent(out) :: phip(:), fp(:, :), fc(:, :)
+  real(8), allocatable, intent(out) :: xp(:, :), xc(:, :)
+  logical, intent(out) :: ok
+  character(len=64) :: tag
+  character(len=2048) :: buf
+  real(8) :: v(12)
+  integer :: u, ios, iblock, n, i, j
+
+  ok = .false.
+  open (newunit=u, file='test/data/fs_sum_exact/fs_fields_exact.txt', status='old', action='read', iostat=ios)
+  if (ios /= 0) return
+  iblock = 0
+  do
+    read (u, '(a)', iostat=ios) buf
+    if (ios /= 0) exit
+    read (buf, *, iostat=ios) tag
+    if (ios /= 0) cycle
+    select case (trim(tag))
+    case ('FREQ')
+      iblock = iblock + 1
+      if (iblock == ib) read (buf, *) tag, w, k, g_ex, h_ex
+    case ('PANELS')
+      if (iblock /= ib) cycle
+      read (buf, *) tag, n
+      allocate (phip(n))
+      do i = 1, n
+        read (u, *) v(1:2)
+        phip(i) = cmplx(v(1), v(2), 8)
+      end do
+    case ('POINTS', 'CIRCLE')
+      if (iblock /= ib) cycle
+      read (buf, *) tag, n
+      if (trim(tag) == 'POINTS') then
+        allocate (xp(2, n), fp(5, n))
+      else
+        allocate (xc(2, n), fc(5, n))
+      end if
+      do i = 1, n
+        read (u, *) v
+        if (trim(tag) == 'POINTS') then
+          xp(:, i) = v(1:2)
+          fp(:, i) = [(cmplx(v(1 + 2*j), v(2 + 2*j), 8), j = 1, 5)]
+        else
+          xc(:, i) = v(1:2)
+          fc(:, i) = [(cmplx(v(1 + 2*j), v(2 + 2*j), 8), j = 1, 5)]
+        end if
+      end do
+    case ('END')
+      if (iblock == ib) then
+        ok = .true.
+        exit
+      end if
+    end select
+  end do
+  close (u)
+end subroutine read_fields_exact
+
+!> The sharp m1 hull with the exact scattered potential of block ib on its panels (fixed body: d phi_P/dn = -d phi_I/dn,
+!> as maccamy_fuchs_state), and the wave globals at its frequency in 100 m of water. The state's k is the exact one and
+!> its g the gravity of that wave (wave_gravity), so that HAMS's incident wave is the fixture's.
+subroutine exact_hull_state(ib, mesh, st, w, k, h_ex, xp, fp, xc, fc, error)
+  integer, intent(in) :: ib
+  type(panel_mesh), intent(out) :: mesh
+  type(first_order_state), intent(out) :: st(1)
+  real(8), intent(out) :: w, k, h_ex
+  real(8), allocatable, intent(out) :: xp(:, :), xc(:, :)
+  complex(8), allocatable, intent(out) :: fp(:, :), fc(:, :)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: full
+  complex(8), allocatable :: phip(:)
+  real(8) :: g_ex
+  logical :: ok
+  integer :: i
+
+  call read_fields_exact(ib, w, k, g_ex, h_ex, phip, xp, fp, xc, fc, ok)
+  call check(error, ok, "fs_fields_exact: cannot read test/data/fs_sum_exact/fs_fields_exact.txt")
+  if (allocated(error)) return
+  call read_pnl_hull('test/data/fs_sum_exact/HullMesh_sharp_m1.pnl', [0d0, 0d0, -5d0], full, ok)
+  call check(error, ok .and. full%n == size(phip), "fs_fields_exact: cannot read the sharp m1 hull")
+  if (allocated(error)) return
+  call load_panels(full, 0, 0, mesh)
+  call set_frequency(w, 0d0, h_ex)
+  associate (s => st(1))
+    s%omega = w
+    s%k = k
+    s%nu = w**2/g_const
+    s%h = h_ex
+    s%amp = 1d0
+    s%beta = 0d0
+    s%g = wave_gravity(w, k, h_ex)
+    s%rho = rho
+    allocate (s%phi_i(mesh%n), s%phi_p(mesh%n), s%dphi_p_dn(mesh%n), s%dphi_dn(mesh%n))
+    allocate (s%grad_i(3, mesh%n), s%grad_p(3, mesh%n), s%xi(6, mesh%nbody))
+    s%xi = (0d0, 0d0)
+    s%dphi_dn = (0d0, 0d0)
+    s%grad_p = (0d0, 0d0)
+    do i = 1, mesh%n
+      s%phi_i(i) = incident_phi(mesh%xc(:, i), w, k, h_ex, 1d0, 0d0, s%g)
+      call incident_grad(mesh%xc(:, i), w, k, h_ex, 1d0, 0d0, s%g, s%grad_i(:, i))
+      s%phi_p(i) = phip(i)
+      s%dphi_p_dn(i) = -sum(s%grad_i(:, i)*mesh%nrm(:, i))
+    end do
+  end associate
+end subroutine exact_hull_state
+
+!> fs_inner_fields (5-point stencil, offsets of fs_inner_steps with the driver's step 2 cs_fd_step = 0.04 and the sum's
+!> scale max(psize, lambda(1.4)/10)) with the exact scattered potential on the sharp m1 hull (no BEM solve), at rings
+!> 0.1 to 3.5 m from the waterline, against the exact total phi, grad phi and phi_zz; 1.0 and 1.4 rad/s. Measured
+!> (findings section 9): without the near-waterline fit, phi 0.3-2.5 % at every ring, grad and phi_zz 0.6-1.9 % from
+!> 2 m out, but within 1 m of the waterline, where fs_inner_steps shrinks the offset to 4-31 mm, grad 3-105 % and
+!> phi_zz 20-450 % off (that metre holds 37 % of the exact F_x free-surface term at (1.2, 1.2) rad/s: the cause of the
+!> 7c-2 sum error). With the fit (fs_waterline_fit_setup) every ring is within WLGATE.
+subroutine test_fields_exact_inner(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: st(1)
+  type(cs_points) :: pts
+  type(fs_point_field), allocatable :: f(:, :)
+  real(8), allocatable :: xp(:, :), xc(:, :), delta(:), scale(:), x3(:, :)
+  complex(8), allocatable :: fp(:, :), fc(:, :)
+  real(8) :: w, k, h_ex, e(3), worst(3), worst_far(3), lam, rr
+  integer :: ib, i, n, nshrunk, nthread_saved, ir, j
+  character(len=300) :: info
+  type(surface_geom) :: geom
+  type(fs_wl_fit) :: fit
+  logical :: ok
+  character(len=:), allocatable :: msg
+
+  nthread_saved = NTHREAD
+  NTHREAD = 8
+  worst = 0d0
+  worst_far = 0d0
+  do ib = 1, 2
+    call exact_hull_state(ib, mesh, st, w, k, h_ex, xp, fp, xc, fc, error)
+    if (allocated(error)) exit
+    n = size(xp, 2)
+    allocate (x3(3, n), delta(n), scale(n), f(n, 1))
+    x3(1:2, :) = xp
+    x3(3, :) = 0d0
+    call free_points(x3, 0.786d0, pts)
+    lam = 2d0*pi/0.19986437774367391d0      ! lambda at 1.4 rad/s, h = 100 m
+    scale = max(0.786d0, lam/10d0)
+    call fs_inner_steps(mesh, pts, 0.04d0, delta, nshrunk, scale=scale)
+    call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+    call check(error, ok, "fs_fields_exact_inner: geometry: "//msg)
+    if (allocated(error)) exit
+    call fs_waterline_fit_setup(mesh, geom, pts, 0.04d0, fit, scale)
+    call fs_inner_fields(mesh, pts, st, 0.04d0, .false., f, delta)
+    call fs_waterline_fit_apply(mesh, fit, st, 0.04d0, .false., f)
+    do ir = 1, n/5
+      e = 0d0
+      do j = 5*(ir - 1) + 1, 5*ir
+        e(1) = max(e(1), abs(f(j, 1)%phi - fp(1, j))/maxval(abs(fp(1, 5*(ir - 1) + 1:5*ir))))
+        e(2) = max(e(2), norm2(abs(f(j, 1)%grad - fp(2:4, j)))/maxval([(norm2(abs(fp(2:4, i))), i = 5*(ir - 1) + 1, 5*ir)]))
+        e(3) = max(e(3), abs(f(j, 1)%phizz - fp(5, j))/maxval(abs(fp(5, 5*(ir - 1) + 1:5*ir))))
+      end do
+      rr = norm2(xp(:, 5*ir - 4))
+      print '(4x,a,f4.1,a,f5.2,a,f7.4,a,3es10.2)', "omega ", w, ", r - a = ", rr - 10d0, " m, delta ", &
+        minval(delta(5*(ir - 1) + 1:5*ir)), ": phi, grad, phi_zz ", e
+      worst = max(worst, e)
+      if (rr - 10d0 >= 1.99d0) worst_far = max(worst_far, e)
+    end do
+    deallocate (x3, delta, scale, f)
+  end do
+  NTHREAD = nthread_saved
+  if (allocated(error)) return
+  write (info, '(a,3es10.2)') "first-order fields at the inner points 0.1 to 3.5 m from the waterline, exact panel "// &
+    "data, with the near-waterline fit: worst phi, grad, phi_zz ", worst
+  call check(error, maxval(worst) <= WLGATE, trim(info))
+  if (allocated(error)) return
+  write (info, '(a,3es10.2)') "first-order fields 2 m and more from the waterline (the stencil, no fit there): "// &
+    "worst phi, grad, phi_zz ", worst_far
+  call check(error, maxval(worst_far) <= 3d-2, trim(info))
+end subroutine test_fields_exact_inner
+
+!> fs_circle_modes (samples by the centroid route on R = 15 m, M and N_ev as the driver for the sum run) with the exact
+!> scattered potential on the sharp m1 hull, evaluated by pw_eval_surface at r = 15.5 and 20 m, against the exact
+!> scattered phi, grad phi and phi_zz there; 1.0 and 1.4 rad/s. Measured 0.7-2.6 % (gate 3 %), mode check 4e-6.
+subroutine test_fields_exact_circle(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: st(1)
+  type(cs_points) :: circle
+  type(pw_set) :: pw(1)
+  real(8), allocatable :: xp(:, :), xc(:, :), kev(:)
+  complex(8), allocatable :: fp(:, :), fc(:, :)
+  complex(8) :: phi, grad(3), phizz
+  real(8) :: w, k, h_ex, e(3), worst(3), miss(1), k0max, sc(3)
+  integer :: ib, i, mmax, nev, nthread_saved
+  character(len=300) :: info
+
+  nthread_saved = NTHREAD
+  NTHREAD = 8
+  worst = 0d0
+  do ib = 1, 2
+    call exact_hull_state(ib, mesh, st, w, k, h_ex, xp, fp, xc, fc, error)
+    if (allocated(error)) exit
+    call set_frequency(2.8d0, 0d0, h_ex)
+    k0max = WK
+    call set_frequency(w, 0d0, h_ex)
+    mmax = fs_auto_modes(0, k0max, 15d0)
+    nev = fs_auto_evanescent(0, h_ex, 15d0, 10d0)
+    if (allocated(kev)) deallocate (kev)
+    allocate (kev(nev))
+    call pw_sample_points([0d0, 0d0], 15d0, h_ex, mmax, nev, circle)
+    call pw_evanescent_from_wvn(nev, kev)
+    call fs_circle_modes(mesh, circle, st, .false., [0d0, 0d0], 15d0, h_ex, WK, kev, mmax, nev, pw, miss)
+    sc = [maxval(abs(fc(1, :))), maxval([(norm2(abs(fc(2:4, i))), i = 1, size(xc, 2))]), maxval(abs(fc(5, :)))]
+    e = 0d0
+    do i = 1, size(xc, 2)
+      call pw_eval_surface(pw(1), [xc(1, i), xc(2, i), 0d0], phi, grad, phizz)
+      e(1) = max(e(1), abs(phi - fc(1, i))/sc(1))
+      e(2) = max(e(2), norm2(abs(grad - fc(2:4, i)))/sc(2))
+      e(3) = max(e(3), abs(phizz - fc(5, i))/sc(3))
+    end do
+    print '(4x,a,f4.1,a,i0,a,i0,a,es9.2,a,3es10.2)', "omega ", w, ": M ", mmax, ", N_ev ", nev, ", mode check ", miss(1), &
+      "; at r = 15.5, 20 m: phi, grad, phi_zz ", e
+    worst = max(worst, e)
+  end do
+  NTHREAD = nthread_saved
+  if (allocated(error)) return
+  write (info, '(a,3es10.2)') "partial waves of the circle with exact panel data: worst phi, grad, phi_zz ", worst
+  call check(error, maxval(worst) <= 3d-2, trim(info))
+end subroutine test_fields_exact_circle
+
+!> The inner free-surface integral of the sum pair (1.4, 1.0) rad/s over a < r < a + 5 m, with HAMS's own fields
+!> (fs_inner_fields from the exact scattered potential on the sharp m1 hull, the driver's offsets) and the exact psi_k at
+!> Omega+ = 2.4, against the same integral of the exact fields (test/data/fs_sum_exact/fs_fields_exact_grid.txt, 408
+!> points graded to 0.017 m from the waterline). It measures what the field evaluation next to the waterline does to the
+!> free-surface term of the 7c-2 sum QTF (findings section 9).
+subroutine test_fields_exact_integral(error)
+  type(error_type), allocatable, intent(out) :: error
+  call run_fields_integral('test/data/fs_sum_exact/fs_fields_exact_grid.txt', KERNEL_SUM, WLINT_GATE, 'sum', error)
+end subroutine test_fields_exact_integral
+
+!> The same at the difference frequency, Omega- = 0.4 rad/s, exact psi_k at Omega- (fs_fields_exact_grid_diff.txt): the
+!> effect of the near-waterline fit on the free-surface term of the difference QTF (Phases 6a and 7b), printed with
+!> and without the fit; gated with it.
+subroutine test_fields_exact_integral_diff(error)
+  type(error_type), allocatable, intent(out) :: error
+  call run_fields_integral('test/data/fs_sum_exact/fs_fields_exact_grid_diff.txt', KERNEL_DIFF, WLINT_DIFF_GATE, &
+    'difference', error)
+end subroutine test_fields_exact_integral_diff
+
+!> The inner free-surface integral of the grid file (kernel), with and without the near-waterline fit; gate on the fit.
+subroutine run_fields_integral(file, kernel, gate, label, error)
+  character(len=*), intent(in) :: file, label
+  integer, intent(in) :: kernel
+  real(8), intent(in) :: gate
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: st(1)
+  type(cs_points) :: pts
+  type(fs_point_field), allocatable :: f(:, :), fa(:), fb(:), ia(:), ib_(:), fa0(:), fb0(:)
+  real(8), allocatable :: xp(:, :), xc(:, :), delta(:), scale(:), x3(:, :), wts(:)
+  complex(8), allocatable :: fp(:, :), fc(:, :), psi(:, :)
+  complex(8) :: expect(3), t_in(3), t_nofit(3), phi, grad(3)
+  real(8) :: w, k, h_ex, wpair(2), kpair(2), g_ex, v(9), lam, gw, err, err0
+  character(len=64) :: tag
+  character(len=4096) :: buf
+  integer :: u, ios, n, i, j, nshrunk, nthread_saved, iw
+  character(len=300) :: info
+  type(surface_geom) :: geom
+  type(fs_wl_fit) :: fit
+  logical :: ok
+  character(len=:), allocatable :: msg
+
+  open (newunit=u, file=file, status='old', action='read', iostat=ios)
+  call check(error, ios == 0, "fs_fields_exact_integral: cannot open "//file)
+  if (allocated(error)) return
+  do
+    read (u, '(a)', iostat=ios) buf
+    if (ios /= 0) exit
+    read (buf, *, iostat=ios) tag
+    if (ios /= 0) cycle
+    select case (trim(tag))
+    case ('GRIDPAIR')
+      read (buf, *) tag, wpair, kpair, g_ex, h_ex
+    case ('GRID')
+      read (buf, *) tag, n
+      allocate (x3(3, n), wts(n), psi(n, 3))
+      do i = 1, n
+        read (u, *) v
+        x3(:, i) = [v(1), v(2), 0d0]
+        wts(i) = v(3)
+        psi(i, :) = [(cmplx(v(2 + 2*j), v(3 + 2*j), 8), j = 1, 3)]
+      end do
+    case ('EXPECT_GRID')
+      read (buf, *) tag, v(1:6)
+      expect = [(cmplx(v(2*j - 1), v(2*j), 8), j = 1, 3)]
+    end select
+  end do
+  close (u)
+
+  nthread_saved = NTHREAD
+  NTHREAD = 8
+  allocate (fa(n), fb(n), ia(n), ib_(n), fa0(n), fb0(n), delta(n), scale(n), f(n, 1))
+  call free_points(x3, 0.786d0, pts)
+  lam = 2d0*pi/kpair(1)                  ! lambda at 1.4 rad/s
+  scale = max(0.786d0, lam/10d0)
+  ! block 2 of fs_fields_exact.txt is 1.4 rad/s (state a), block 1 is 1.0 rad/s (state b)
+  do iw = 2, 1, -1
+    call exact_hull_state(iw, mesh, st, w, k, h_ex, xp, fp, xc, fc, error)
+    if (allocated(error)) exit
+    if (iw == 2) then
+      call fs_inner_steps(mesh, pts, 0.04d0, delta, nshrunk, scale=scale)
+      call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+      call check(error, ok, "fs_fields_exact_integral: geometry: "//msg)
+      if (allocated(error)) exit
+      call fs_waterline_fit_setup(mesh, geom, pts, 0.04d0, fit, scale)
+      print '(4x,a,i0,a,i0,a,i0,a)', "near-waterline fit: ", fit%n, " of ", n, " points, ", fit%nskip, " kept on the stencil"
+    end if
+    call fs_inner_fields(mesh, pts, st, 0.04d0, .false., f, delta)
+    if (iw == 2) then
+      fa0 = f(:, 1)
+    else
+      fb0 = f(:, 1)
+    end if
+    call fs_waterline_fit_apply(mesh, fit, st, 0.04d0, .false., f)
+    gw = wave_gravity(w, k, h_ex)
+    do i = 1, n
+      phi = incident_phi(x3(:, i), w, k, h_ex, 1d0, 0d0, gw)
+      call incident_grad(x3(:, i), w, k, h_ex, 1d0, 0d0, gw, grad)
+      if (iw == 2) then
+        fa(i) = f(i, 1)
+        ia(i)%phi = phi; ia(i)%grad = grad; ia(i)%phizz = k**2*phi
+      else
+        fb(i) = f(i, 1)
+        ib_(i)%phi = phi; ib_(i)%grad = grad; ib_(i)%phizz = k**2*phi
+      end if
+    end do
+  end do
+  NTHREAD = nthread_saved
+  if (allocated(error)) return
+  call check(error, n > 0 .and. fit%n > 0, "fs_fields_exact_integral: no grid points or none near the waterline")
+  if (allocated(error)) return
+  call fs_inner_pair(wpair(1), fa, ia, wpair(2), fb, ib_, psi, wts, g_ex, rho, t_in, kernel)
+  t_in = t_in/(rho*g_ex)
+  call fs_inner_pair(wpair(1), fa0, ia, wpair(2), fb0, ib_, psi, wts, g_ex, rho, t_nofit, kernel)
+  t_nofit = t_nofit/(rho*g_ex)
+  do j = 1, 3
+    print '(4x,a,i0,a,2es13.5,a,2es13.5,a,f8.2,a)', "psi_", 2*j - 1, ": HAMS fields ", t_in(j), ", exact ", &
+      expect(j), ", off ", 100d0*abs(t_in(j) - expect(j))/maxval(abs(expect)), " % of the largest"
+  end do
+  err = maxval(abs(t_in - expect))/maxval(abs(expect))
+  err0 = maxval(abs(t_nofit - expect))/maxval(abs(expect))
+  print '(4x,a,a,a,f8.2,a,f8.2,a)', "inner ", label, " FS integral off the exact: ", 100d0*err0, " % without the fit, ", &
+    100d0*err, " % with it"
+  write (info, '(a,a,a,f7.2,a,f5.2,a)') "inner ", label, " FS integral (a < r < a + 5 m) from HAMS's fields with exact "// &
+    "panel data is ", 100d0*err, " % off the exact one; gate ", 100d0*gate, " %"
+  call check(error, err <= gate, trim(info))
+end subroutine run_fields_integral
+
 
 end module test_qtf_free_surface

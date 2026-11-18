@@ -79,6 +79,19 @@ MODULE QTFDriver
    ! has the slots of tpot. With qtf_terms = full (Phase 7b) the caller passes the free-surface data of direct_fs_setup,
    ! which qtf_direct_at_omega points to the free-surface store, so that T_dir has the free-surface forcing too.
    !
+   ! The sum frequency (Phase 7c-2, qtf = 2 or 3 with qtf_direct = 1 and qtf_terms = body or full): the list psi_need is
+   ! the union of the difference and the sum frequencies Omega = omega_i + omega_j (qtf_omega_list), and psi, grad psi on
+   ! C and F and psi on the inner free surface are kept at every one of them, indexed like psi_store. qtf_direct_at_omega
+   ! solves every difference pair and every sum pair of an Omega with one factorisation, the sum pairs in a
+   ! direct_at_omega call of their own, so that the difference results keep the bits of a run without the sum.
+   ! T+ is symmetric, T+(i, b1, j, b2) = T+(j, b2, i, b1) (pair_plus; ruling R6 of the plan), so only the canonical half of
+   ! the sum pairs is solved (qtf_direct_sum_pairs: i < j, or i = j with b1 <= b2) and each result fills both slots of
+   ! tdir_sum. qtf_finish then writes QTF_Direct.12s: the rows of .10s whose sum is kept (sum_pair_index > 0), in its
+   ! order, each .10s + T+_dir, the diagonal included (Omega = 2 omega_i is a regular pair of the sum). It also computes
+   ! the indirect sum load T+_pot of the same pairs from the same psi (potential_part_sum, into tpot_sum; ruling R1), and
+   ! with write_terms >= 1 writes it beside the parts of T+_dir in QTF_DirectTermsSum.txt, the in-run check of .12s.
+   ! The difference stores (tpot, tdir and their parts) are allocated only with the difference QTF (qtf = 1 or 3).
+   !
    ! A psi with NaN or Inf (a radiation solve that failed) is kept, but counted and logged by qtf_keep_psi, and every pair
    ! whose terms are not finite is counted by potential_part. The files are still written (.10d does not use psi); the main
    ! program ends with exit code 1 when qtf_nonfinite_psi() or qtf_nonfinite_pairs() is not zero, as for first-order NaN.
@@ -89,7 +102,8 @@ MODULE QTFDriver
    USE FieldVelocity, ONLY: incident_at
    USE PartialWaves, ONLY: pw_set
    USE NearFieldDrift, ONLY: near_field_pair, KERNEL_DIFF, KERNEL_SUM
-   USE SecondOrderOutput, ONLY: write_qtf_row, write_qtf_terms_row, write_qtf_terms_header, write_direct_terms_header
+   USE SecondOrderOutput, ONLY: write_qtf_row, write_qtf_terms_row, write_qtf_terms_header, write_direct_terms_header, &
+                                write_direct_sum_terms_header
    USE QTFPotential, ONLY: potential_pair, psi_surface_gradient, psi_waterline, NPOT_TERMS
    USE QTFDirect, ONLY: direct_at_omega, direct_fs_data
    USE QTFField, ONLY: qfield_direct_active, qfield_direct_points, qfield_keep_direct
@@ -99,9 +113,11 @@ MODULE QTFDriver
    PRIVATE
 
    PUBLIC :: qtf_init, qtf_keep, qtf_pair_load, qtf_finish, qtf_stored_mb, qtf_kept
+   PUBLIC :: qtf_omega_list, irregular_frequency_estimate, sum_pair_index, qtf_sum_limits
    PUBLIC :: qtf_radiation_list, qtf_radiation_omegas, qtf_direct_omegas, qtf_omega_on_grid, qtf_keep_psi, qtf_psi_index, qtf_psi_count, qtf_psi_tolerance
    PUBLIC :: qtf_nonfinite_psi, qtf_nonfinite_pairs
-   PUBLIC :: qtf_direct_at_omega, qtf_direct_pairs, qtf_direct_missing
+   PUBLIC :: qtf_direct_at_omega, qtf_direct_pairs, qtf_direct_missing, qtf_diff_omega, qtf_direct_sum_pairs, qtf_sum_omega
+   PUBLIC :: qtf_direct_sum_load, qtf_direct_diff_load
    PUBLIC :: qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, qtf_set_edge_weights
    PUBLIC :: qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active
 
@@ -119,6 +135,12 @@ MODULE QTFDriver
    ! Relative tolerance of the difference frequencies: rounding only. Differences of distinct grid values that are closer
    ! than this are not merged into one psi (a period grid has many that differ by 1e-6 and more)
    REAL(8), PARAMETER :: PSI_REL_TOL = 1D-9
+   ! Phase 7c-2: the list is the union of the difference frequencies (is_diff) and, with the sum on, of the sum frequencies
+   ! omega_i + omega_j (is_sum). sum_cut_irr is the estimate of the lowest irregular frequency (HUGE: none applies): sums at
+   ! or above it are left out. max_sw is qtf_max_sw (0: all).
+   LOGICAL, ALLOCATABLE :: psi_is_diff(:), psi_is_sum(:) ! (nneed)
+   LOGICAL :: diff_on = .FALSE., sum_on = .FALSE.        ! the difference and the sum kernel of the direct solve
+   REAL(8) :: sum_cut_irr = HUGE(1D0), max_sw = 0D0
    COMPLEX(8), ALLOCATABLE :: psi_store(:, :, :)         ! (n_panels, 6*nbody, nneed)
    LOGICAL, ALLOCATABLE :: psi_kept(:)                   ! (nneed)
    ! Potential part of the difference QTF (qtf_terms = body)
@@ -136,6 +158,11 @@ MODULE QTFDriver
    ! forcing (tdir_fs), the third column pair of QTF_DirectTerms.txt
    COMPLEX(8), ALLOCATABLE :: tdir_fs(:, :, :, :)                       ! as tdir
    LOGICAL :: direct_terms = .FALSE.                     ! QTF_DirectTerms.txt is written
+   ! The sum frequency (Phase 7c-2): T+_dir and T+_pot of each pair, both slots of a symmetric pair filled (R6), and with
+   ! write_terms >= 1 the parts of T+_dir, as those of tdir, for QTF_DirectTermsSum.txt
+   COMPLEX(8), ALLOCATABLE :: tdir_sum(:, :, :, :), tpot_sum(:, :, :, :)          ! (6*nbody, nfreq, nfreq, heading pairs)
+   COMPLEX(8), ALLOCATABLE :: tdir_sum_i2(:, :, :, :), tdir_sum_d(:, :, :, :), tdir_sum_fs(:, :, :, :)   ! as tdir_sum
+   LOGICAL :: sum_terms = .FALSE.                        ! QTF_DirectTermsSum.txt is written (write_terms >= 1)
    ! qtf_b2 = control: points of C and F of every body, and the fields there
    LOGICAL :: b2_control = .FALSE.
    TYPE(cs_points) :: cs
@@ -168,7 +195,7 @@ MODULE QTFDriver
 CONTAINS
 
    SUBROUTINE qtf_init(opts, nfreq, beta_in_deg, nwl, n_panels, nbody, outputdir, omegas_main, fs_pts, fs_centre, fs_radius, &
-                       fs_depth, fs_mmax, fs_nev, fs_np_circle)
+                       fs_depth, fs_mmax, fs_nev, fs_np_circle, geom, g, irsp)
       ! Allocates the whole store for up to nfreq frequencies, the headings beta_in_deg, n_panels panels and nbody bodies,
       ! so that a run that does not fit stops here, before the first-order solves. outputdir holds Wamit_format.
       ! omegas_main (rad/s), the nfreq frequencies of the QTF grid, is needed for qtf_terms = body: the store then also holds
@@ -176,6 +203,9 @@ CONTAINS
       ! (fs_centre, fs_radius), the depth fs_depth and the mode counts fs_mmax, fs_nev of the partial waves, for the
       ! free-surface store, and fs_np_circle, the chords of the polygon a generated inner mesh ends on (build_fs_inner; 0 or
       ! absent for a mesh from FSInnerMesh.pnl, which gets no sliver).
+      ! geom, g and irsp (Phase 7c-2, the sum frequency of the direct solve): with irsp = 0 the sum pairs at or above the
+      ! estimate of the lowest irregular frequency (irregular_frequency_estimate) are left out of the list and of the pairs,
+      ! with a warning. Without them no such cutoff applies.
       TYPE(so_options), INTENT(IN) :: opts
       INTEGER, INTENT(IN) :: nfreq, nwl, n_panels, nbody
       REAL(8), INTENT(IN) :: beta_in_deg(:)
@@ -184,11 +214,19 @@ CONTAINS
       TYPE(cs_points), INTENT(IN), OPTIONAL :: fs_pts
       REAL(8), INTENT(IN), OPTIONAL :: fs_centre(2), fs_radius, fs_depth
       INTEGER, INTENT(IN), OPTIONAL :: fs_mmax, fs_nev, fs_np_circle
+      TYPE(surface_geom), INTENT(IN), OPTIONAL :: geom
+      REAL(8), INTENT(IN), OPTIONAL :: g
+      INTEGER, INTENT(IN), OPTIONAL :: irsp
       INTEGER :: st, i, b
+      REAL(8) :: sum_top
 
       active = opts%qtf > 0
       IF (.NOT. active) RETURN
-      body_active = opts%qtf_terms >= QTF_TERMS_BODY .AND. (opts%qtf == 1 .OR. opts%qtf == 3)
+      ! The sum is on for qtf = 2 or 3 with the direct solve; with qtf_direct = 0 the sum has no potential part in this phase
+      ! (the indirect one is Phase 6b) and nothing changes
+      diff_on = opts%qtf == 1 .OR. opts%qtf == 3
+      sum_on = opts%qtf >= 2 .AND. opts%qtf_direct == 1 .AND. opts%qtf_terms >= QTF_TERMS_BODY
+      body_active = opts%qtf_terms >= QTF_TERMS_BODY .AND. (diff_on .OR. sum_on)
       IF (body_active) THEN
          IF (.NOT. PRESENT(omegas_main)) THEN
             WRITE (*, '(a)') ' QTF: qtf_init needs the main-grid frequencies for qtf_terms = body.'
@@ -199,7 +237,16 @@ CONTAINS
          IF (ALLOCATED(psi_reuse)) DEALLOCATE (psi_reuse)
          psi_tol = qtf_psi_tolerance(omegas_main)
          CALL check_grid(omegas_main)
-         CALL qtf_radiation_list(omegas_main, opts%qtf_max_dw, psi_tol, psi_need, psi_reuse)
+         max_sw = opts%qtf_max_sw
+         sum_cut_irr = HUGE(1D0)
+         sum_top = 0D0
+         IF (sum_on) THEN
+            CALL qtf_sum_limits(opts, geom, g, irsp, sum_cut_irr, sum_top)
+            CALL sum_warnings(omegas_main)
+         END IF
+         IF (ALLOCATED(psi_is_diff)) DEALLOCATE (psi_is_diff, psi_is_sum)
+         CALL qtf_omega_list(omegas_main, opts%qtf_max_dw, sum_top, psi_tol, diff_on, sum_on, psi_need, psi_reuse, &
+                             psi_is_diff, psi_is_sum)
          CALL check_pairs(omegas_main)
       END IF
       kind_qtf = opts%qtf
@@ -234,6 +281,7 @@ CONTAINS
       IF (.NOT. body_active) THEN
          IF (ALLOCATED(psi_need)) DEALLOCATE (psi_need)
          IF (ALLOCATED(psi_reuse)) DEALLOCATE (psi_reuse)
+         IF (ALLOCATED(psi_is_diff)) DEALLOCATE (psi_is_diff, psi_is_sum)
       END IF
       IF (ALLOCATED(psi_store)) DEALLOCATE (psi_store)
       IF (ALLOCATED(psi_kept)) DEALLOCATE (psi_kept)
@@ -242,16 +290,19 @@ CONTAINS
       IF (ALLOCATED(tdir_kept)) DEALLOCATE (tdir_kept)
       IF (ALLOCATED(tdir_i2)) DEALLOCATE (tdir_i2, tdir_d)
       IF (ALLOCATED(tdir_fs)) DEALLOCATE (tdir_fs)
+      CALL free_sum_stores()
       CALL free_control_surface()
       CALL free_free_surface()
       n_bad_psi = 0
       n_bad_pairs = 0
-      pot_terms = body_active .AND. opts%write_terms >= 1
+      pot_terms = body_active .AND. diff_on .AND. opts%write_terms >= 1
       IF (body_active) THEN
          ALLOCATE (psi_store(n_panels, 6*nbody, SIZE(psi_need)), psi_kept(SIZE(psi_need)), STAT=st)
          IF (st /= 0) CALL out_of_memory(body=.TRUE.)
          psi_store = (0D0, 0D0)
          psi_kept = .FALSE.
+      END IF
+      IF (body_active .AND. diff_on) THEN
          ALLOCATE (tpot(6*nbody, nfreq, nfreq, heading_pairs(nbeta)), STAT=st)
          IF (st /= 0) CALL out_of_memory(body=.TRUE.)
          tpot = (0D0, 0D0)
@@ -259,12 +310,38 @@ CONTAINS
       IF (body_active .AND. opts%qtf_terms == QTF_TERMS_FULL) CALL init_free_surface()
       direct_active = body_active .AND. opts%qtf_direct == 1
       IF (direct_active) THEN
-         ALLOCATE (tdir(6*nbody, nfreq, nfreq, heading_pairs(nbeta)), tdir_kept(SIZE(psi_need)), STAT=st)
+         ALLOCATE (tdir_kept(SIZE(psi_need)), STAT=st)
          IF (st /= 0) CALL out_of_memory(body=.TRUE.)
-         tdir = (0D0, 0D0)
          tdir_kept = .FALSE.
       END IF
-      direct_terms = direct_active .AND. opts%write_terms >= 1
+      IF (direct_active .AND. diff_on) THEN
+         ALLOCATE (tdir(6*nbody, nfreq, nfreq, heading_pairs(nbeta)), STAT=st)
+         IF (st /= 0) CALL out_of_memory(body=.TRUE.)
+         tdir = (0D0, 0D0)
+      END IF
+      ! sum_on needs qtf_direct = 1, so the sum stores come with the direct solve (tdir_sum, R6) and its indirect check
+      ! (tpot_sum, R1); with write_terms >= 1 also the parts of tdir_sum for QTF_DirectTermsSum.txt
+      IF (direct_active .AND. sum_on) THEN
+         ALLOCATE (tdir_sum(6*nbody, nfreq, nfreq, heading_pairs(nbeta)), tpot_sum(6*nbody, nfreq, nfreq, &
+                   heading_pairs(nbeta)), STAT=st)
+         IF (st /= 0) CALL out_of_memory(body=.TRUE.)
+         tdir_sum = (0D0, 0D0)
+         tpot_sum = (0D0, 0D0)
+      END IF
+      sum_terms = direct_active .AND. sum_on .AND. opts%write_terms >= 1
+      IF (sum_terms) THEN
+         ALLOCATE (tdir_sum_i2(6*nbody, nfreq, nfreq, heading_pairs(nbeta)), tdir_sum_d(6*nbody, nfreq, nfreq, &
+                   heading_pairs(nbeta)), STAT=st)
+         IF (st /= 0) CALL out_of_memory(body=.TRUE.)
+         tdir_sum_i2 = (0D0, 0D0)
+         tdir_sum_d = (0D0, 0D0)
+         IF (fs_active) THEN
+            ALLOCATE (tdir_sum_fs(6*nbody, nfreq, nfreq, heading_pairs(nbeta)), STAT=st)
+            IF (st /= 0) CALL out_of_memory(body=.TRUE., fs=.TRUE.)
+            tdir_sum_fs = (0D0, 0D0)
+         END IF
+      END IF
+      direct_terms = direct_active .AND. diff_on .AND. opts%write_terms >= 1
       IF (direct_terms) THEN
          ALLOCATE (tdir_i2(6*nbody, nfreq, nfreq, heading_pairs(nbeta)), tdir_d(6*nbody, nfreq, nfreq, heading_pairs(nbeta)), &
                    STAT=st)
@@ -360,6 +437,17 @@ CONTAINS
 
          DO i = 1, SIZE(w)
             DO j = 1, SIZE(w)
+               IF (sum_on .AND. j >= i) THEN
+                  IF (sum_pair_kept(w(i) + w(j))) THEN
+                     IF (qtf_psi_index(w(i) + w(j)) == 0) THEN
+                        WRITE (*, '(a,ES22.14,a,ES14.6,a,ES14.6,a)') ' QTF: Omega =', w(i) + w(j), ' rad/s of the pair', w(i), &
+                           ',', w(j), ' rad/s is not among the frequencies of psi.'
+                        WRITE (*, '(a)') ' This is a bug: please report it with the frequency list.'
+                        ERROR STOP 1
+                     END IF
+                  END IF
+               END IF
+               IF (.NOT. diff_on) CYCLE
                dw = w(i) - w(j)
                IF (dw <= 0D0) CYCLE
                IF (opts%qtf_max_dw > 0D0 .AND. dw > opts%qtf_max_dw*(1D0 + 1D-9)) CYCLE
@@ -373,7 +461,132 @@ CONTAINS
          END DO
       END SUBROUTINE check_pairs
 
+      SUBROUTINE sum_warnings(w)
+         ! The log of what the sum leaves out (spec 4.1, rulings R2 and R5 of the Phase 7c-2 plan)
+         REAL(8), INTENT(IN) :: w(:)
+         INTEGER :: i, j, nleft, ntot
+
+         IF (opts%qtf_terms == QTF_TERMS_BODY) THEN
+            WRITE (*, '(a)') ' QTF warning: qtf_terms = body with the sum frequency leaves out the free-surface integral. The'
+            WRITE (*, '(a)') ' sum QTF without it is not usable (WAMIT advises against it); use qtf_terms = full.'
+         END IF
+         IF (sum_cut_irr < HUGE(1D0)) THEN
+            nleft = 0
+            ntot = 0
+            DO i = 1, SIZE(w)
+               DO j = i, SIZE(w)
+                  ntot = ntot + 1
+                  IF (w(i) + w(j) >= sum_cut_irr) nleft = nleft + 1
+               END DO
+            END DO
+            IF (nleft > 0) THEN
+               WRITE (*, '(a,F8.4,a,I0,a,I0,a)') ' QTF warning: the sum frequencies at or above', sum_cut_irr, &
+                  ' rad/s, the estimate of the lowest irregular frequency, are left out of QTF_Direct.12s: ', nleft, ' of ', &
+                  ntot, ' pairs (i <= j).'
+               WRITE (*, '(a)') ' Set If_remove_irr_freq = 1 to keep them. The estimate is a lower bound for a wall-sided hull'// &
+                  ' only; near the true irregular frequency a row can still show a spike.'
+            END IF
+         END IF
+      END SUBROUTINE sum_warnings
+
    END SUBROUTINE qtf_init
+
+   LOGICAL FUNCTION sum_pair_kept(omega)
+      ! The sum Omega = omega_i + omega_j is inside the cutoff of the sum: not above qtf_max_sw (inclusive, to rounding, as
+      ! qtf_max_dw) and below the estimate of the lowest irregular frequency
+      REAL(8), INTENT(IN) :: omega
+
+      sum_pair_kept = omega < sum_cut_irr
+      IF (max_sw > 0D0 .AND. omega > max_sw*(1D0 + 1D-9)) sum_pair_kept = .FALSE.
+   END FUNCTION sum_pair_kept
+
+   SUBROUTINE qtf_sum_limits(opts, geom, g, irsp, cut_irr, sum_top)
+      ! The cutoffs of the sum frequencies (Phase 7c-2): cut_irr, the estimate of the lowest irregular frequency, when
+      ! irsp = 0 and geom and g are given (HUGE otherwise: no cutoff); sum_top, the largest sum Omega that has a psi, for
+      ! qtf_omega_list: the smaller of qtf_max_sw (when above 0) and cut_irr (a hair below it, as sums at it are left out),
+      ! 0 when neither applies. qtf_init and the driver log call it, so that the list is one.
+      TYPE(so_options), INTENT(IN) :: opts
+      TYPE(surface_geom), INTENT(IN), OPTIONAL :: geom
+      REAL(8), INTENT(IN), OPTIONAL :: g
+      INTEGER, INTENT(IN), OPTIONAL :: irsp
+      REAL(8), INTENT(OUT) :: cut_irr, sum_top
+
+      cut_irr = HUGE(1D0)
+      sum_top = 0D0
+      IF (PRESENT(geom) .AND. PRESENT(g) .AND. PRESENT(irsp)) THEN
+         IF (irsp == 0) cut_irr = irregular_frequency_estimate(geom, g)
+      END IF
+      IF (opts%qtf_max_sw > 0D0) sum_top = opts%qtf_max_sw
+      IF (cut_irr < HUGE(1D0)) THEN
+         IF (sum_top > 0D0) THEN
+            sum_top = MIN(sum_top, cut_irr*(1D0 - 1D-9))
+         ELSE
+            sum_top = cut_irr*(1D0 - 1D-9)
+         END IF
+      END IF
+   END SUBROUTINE qtf_sum_limits
+
+   REAL(8) FUNCTION irregular_frequency_estimate(geom, g)
+      ! Estimate of the lowest irregular frequency (rad/s) of the closed waterline loops of geom, for the cutoff of the sum
+      ! frequencies (ruling R2): the minimum over the loops of every body of sqrt(g j01 / a_eq), with j01 = 2.404826 the first
+      ! zero of J_0 and a_eq = sqrt(A / pi), A the shoelace area of the loop. Why: for a wall-sided hull the interior
+      ! eigenfunction J_m(kr) sinh k(z + d) has omega^2 = g k coth(k d) with coth >= 1 [derived], so omega^2 >= g k;
+      ! by Faber-Krahn the disc of equal area has the smallest first Dirichlet eigenvalue (Polya and Szego, 1951), so
+      ! k >= j01 / a_eq and the value is a lower bound. A hull that is not wall-sided (flare, rounded bilge) is not covered.
+      ! It gives 1.536 rad/s for a cylinder of radius 10 m (exact 1.548) and 1.983 for the OC4 hull. HUGE(1D0) if there is
+      ! no closed loop. A loop is closed when wl_next leads back to its first segment; open chains are skipped.
+      TYPE(surface_geom), INTENT(IN) :: geom
+      REAL(8), INTENT(IN) :: g
+      REAL(8), PARAMETER :: J01 = 2.404826D0
+      LOGICAL, ALLOCATABLE :: seen(:)
+      REAL(8) :: area, a_eq
+      INTEGER :: iw, j, nseg
+
+      irregular_frequency_estimate = HUGE(1D0)
+      IF (.NOT. ALLOCATED(geom%wl_next) .OR. geom%nwl < 1) RETURN
+      ALLOCATE (seen(geom%nwl))
+      seen = .FALSE.
+      DO iw = 1, geom%nwl
+         IF (seen(iw)) CYCLE
+         ! Walk wl_next from iw: a closed loop returns to iw, a chain ends at 0 or runs into a segment already seen
+         area = 0D0
+         nseg = 0
+         j = iw
+         DO
+            seen(j) = .TRUE.
+            area = area + geom%wl_x1(1, j)*geom%wl_x2(2, j) - geom%wl_x2(1, j)*geom%wl_x1(2, j)
+            nseg = nseg + 1
+            j = geom%wl_next(j)
+            IF (j == 0 .OR. nseg > geom%nwl) EXIT
+            IF (j == iw) EXIT
+            IF (seen(j)) THEN
+               j = 0
+               EXIT
+            END IF
+         END DO
+         IF (j /= iw) CYCLE
+         area = 0.5D0*ABS(area)
+         IF (area <= 0D0) CYCLE
+         a_eq = SQRT(area/ACOS(-1D0))
+         irregular_frequency_estimate = MIN(irregular_frequency_estimate, SQRT(g*J01/a_eq))
+      END DO
+   END FUNCTION irregular_frequency_estimate
+
+   INTEGER FUNCTION sum_pair_index(i, j)
+      ! The pair rule of the sum QTF, as difference_pair_index is that of the difference QTF: 0 when omega_i + omega_j is
+      ! beyond the cutoff of the sum (qtf_max_sw, inclusive to rounding, or the estimate of the lowest irregular frequency
+      ! with IRSP = 0, exclusive: sums at or above it are left out), else the index of omega_i + omega_j in psi_need
+      ! (qtf_psi_index), or -1 if it is not there. 0 as well when the sum is not on.
+      INTEGER, INTENT(IN) :: i, j
+      REAL(8) :: w
+
+      sum_pair_index = 0
+      IF (.NOT. sum_on) RETURN
+      w = store(i, 1)%omega + store(j, 1)%omega
+      IF (.NOT. sum_pair_kept(w)) RETURN
+      sum_pair_index = qtf_psi_index(w)
+      IF (sum_pair_index == 0) sum_pair_index = -1
+   END FUNCTION sum_pair_index
 
    REAL(8) PURE FUNCTION qtf_psi_tolerance(omegas_main)
       ! The tolerance of the difference frequencies of the grid omegas_main (rad/s): qtf_radiation_list puts every Omega
@@ -600,30 +813,63 @@ CONTAINS
    END FUNCTION heading_pair
 
    SUBROUTINE qtf_radiation_list(omegas_main, max_dw_in, tol, need, reuse_index)
-      ! The distinct difference frequencies Omega = omega_i - omega_j > 0 of the grid omegas_main, ascending, with
-      ! Omega <= max_dw_in (all of them for max_dw_in = 0), as in qtf_finish. Every difference is within tol of its need(m):
-      ! the differences within tol/2 of the smallest of them are one, and reuse_index(m) is the main-grid index whose
-      ! frequency is need(m) within tol/2, else 0; need(m) is then that frequency exactly, so that the radiation solve of the
-      ! main grid finds it. qtf_init passes qtf_psi_tolerance, which merges rounding only.
+      ! The difference frequencies only: qtf_omega_list without the sum, which returns exactly this
       REAL(8), INTENT(IN) :: omegas_main(:), max_dw_in, tol
       REAL(8), ALLOCATABLE, INTENT(OUT) :: need(:)
       INTEGER, ALLOCATABLE, INTENT(OUT) :: reuse_index(:)
-      REAL(8), ALLOCATABLE :: d(:)
+      LOGICAL, ALLOCATABLE :: is_diff(:), is_sum(:)
+
+      CALL qtf_omega_list(omegas_main, max_dw_in, 0D0, tol, .TRUE., .FALSE., need, reuse_index, is_diff, is_sum)
+   END SUBROUTINE qtf_radiation_list
+
+   SUBROUTINE qtf_omega_list(omegas_main, max_dw_in, sum_top, tol, want_diff, want_sum, need, reuse_index, is_diff, is_sum)
+      ! The distinct frequencies Omega at which psi is needed, ascending: with want_diff the differences
+      ! Omega = omega_i - omega_j > 0 of the grid omegas_main with Omega <= max_dw_in (all of them for max_dw_in = 0), as in
+      ! qtf_finish; with want_sum the sums omega_i + omega_j (i <= j) with Omega <= sum_top (all of them for sum_top = 0).
+      ! Every one is within tol of its need(m): the values within tol/2 of the smallest of a cluster are one, and
+      ! reuse_index(m) is the main-grid index whose frequency is need(m) within tol/2, else 0; need(m) is then that frequency
+      ! exactly, so that the radiation solve of the main grid finds it. is_diff(m) and is_sum(m) say which kernels use
+      ! need(m): a frequency that is both a difference and a sum (0.6 from 0.9 - 0.3 and 0.3 + 0.3) has one solve.
+      ! qtf_init passes qtf_psi_tolerance, which merges rounding only. With want_sum = .FALSE. the list is the one of the
+      ! Phases 6 and 7a to the bit.
+      REAL(8), INTENT(IN) :: omegas_main(:), max_dw_in, sum_top, tol
+      LOGICAL, INTENT(IN) :: want_diff, want_sum
+      REAL(8), ALLOCATABLE, INTENT(OUT) :: need(:)
+      INTEGER, ALLOCATABLE, INTENT(OUT) :: reuse_index(:)
+      LOGICAL, ALLOCATABLE, INTENT(OUT) :: is_diff(:), is_sum(:)
+      REAL(8), ALLOCATABLE :: d(:), first(:), raw(:)
       REAL(8) :: dw
-      INTEGER :: n, i, j, m, nd
+      INTEGER :: n, i, j, m, nd, ns, lo, hi, mid
 
       n = SIZE(omegas_main)
-      ALLOCATE (d(n*n))
+      ALLOCATE (d(n*n + n*(n + 1)/2))
       nd = 0
-      DO i = 1, n
-         DO j = 1, n
-            dw = omegas_main(i) - omegas_main(j)
-            IF (dw <= tol) CYCLE
-            IF (max_dw_in > 0D0 .AND. dw > max_dw_in*(1D0 + 1D-9)) CYCLE
-            nd = nd + 1
-            d(nd) = dw
+      IF (want_diff) THEN
+         DO i = 1, n
+            DO j = 1, n
+               dw = omegas_main(i) - omegas_main(j)
+               IF (dw <= tol) CYCLE
+               IF (max_dw_in > 0D0 .AND. dw > max_dw_in*(1D0 + 1D-9)) CYCLE
+               nd = nd + 1
+               d(nd) = dw
+            END DO
          END DO
-      END DO
+      END IF
+      ns = nd
+      IF (want_sum) THEN
+         DO i = 1, n
+            DO j = i, n
+               dw = omegas_main(i) + omegas_main(j)
+               IF (sum_top > 0D0 .AND. dw > sum_top*(1D0 + 1D-9)) CYCLE
+               nd = nd + 1
+               d(nd) = dw
+            END DO
+         END DO
+      END IF
+      ! raw keeps the values in the order of d, the differences first (d(1:ns)) and the sums after them; the flags of a
+      ! cluster come from the values that fall in it
+      ALLOCATE (raw(nd))
+      raw = d(1:nd)
       CALL heap_sort(d(1:nd))
       ALLOCATE (need(nd))
       m = 0
@@ -635,6 +881,28 @@ CONTAINS
          need(m) = d(i)
       END DO
       need = need(1:m)
+      first = need
+      ALLOCATE (is_diff(m), is_sum(m))
+      is_diff = .FALSE.
+      is_sum = .FALSE.
+      DO i = 1, nd
+         ! The cluster of a value is the last one whose first value is at or below it (bisection)
+         lo = 1
+         hi = m
+         DO WHILE (lo < hi)
+            mid = (lo + hi + 1)/2
+            IF (first(mid) <= raw(i)) THEN
+               lo = mid
+            ELSE
+               hi = mid - 1
+            END IF
+         END DO
+         IF (i <= ns) THEN
+            is_diff(lo) = .TRUE.
+         ELSE
+            is_sum(lo) = .TRUE.
+         END IF
+      END DO
       ALLOCATE (reuse_index(m))
       reuse_index = 0
       DO i = 1, m
@@ -646,7 +914,7 @@ CONTAINS
             END IF
          END DO
       END DO
-   END SUBROUTINE qtf_radiation_list
+   END SUBROUTINE qtf_omega_list
 
    PURE SUBROUTINE heap_sort(a)
       ! Ascending, in place
@@ -821,7 +1089,7 @@ CONTAINS
       INTEGER :: m, i, j, b1, b2, np
 
       ALLOCATE (pairs(4, 0))
-      IF (.NOT. direct_active) RETURN
+      IF (.NOT. direct_active .OR. .NOT. diff_on) RETURN
       m = qtf_psi_index(omega)
       IF (m == 0) RETURN
       ALLOCATE (tmp(4, nkept*nkept*heading_pairs(nbeta)))
@@ -858,77 +1126,245 @@ CONTAINS
       IF (difference_pair_index == 0) difference_pair_index = -1
    END FUNCTION difference_pair_index
 
-   SUBROUTINE qtf_direct_at_omega(mesh, geom, omega, npair, seconds, fs)
-      ! The direct method at the difference frequency omega (qtf_direct = 1): T_dir of every pair with that Omega
-      ! (qtf_direct_pairs), by direct_at_omega, into tdir. Call after the frequency loop, when every frequency is kept,
-      ! with the solver at omega after its radiation solve (RadiationOnlySolves). Pairs with NaN or Inf are counted in
-      ! qtf_nonfinite_pairs() and logged. npair and seconds (optional): the number of pairs, and the times of
-      ! direct_at_omega (4: forcing, B2, solve and load, field evaluation), for the log.
+   LOGICAL FUNCTION qtf_diff_omega(omega)
+      ! The frequency omega of the list is a difference frequency that the difference kernel of the direct solve uses. False
+      ! for a sum-only frequency (Phase 7c-2), and when qtf_init has not built the list.
+      REAL(8), INTENT(IN) :: omega
+      INTEGER :: m
+
+      qtf_diff_omega = .FALSE.
+      IF (.NOT. ALLOCATED(psi_is_diff)) RETURN
+      m = qtf_psi_index(omega)
+      IF (m > 0) qtf_diff_omega = diff_on .AND. psi_is_diff(m)
+   END FUNCTION qtf_diff_omega
+
+   LOGICAL FUNCTION qtf_sum_omega(omega)
+      ! The frequency omega of the list is a sum frequency that the sum kernel of the direct solve uses (Phase 7c-2). False
+      ! when the sum is off, and when qtf_init has not built the list.
+      REAL(8), INTENT(IN) :: omega
+      INTEGER :: m
+
+      qtf_sum_omega = .FALSE.
+      IF (.NOT. ALLOCATED(psi_is_sum)) RETURN
+      m = qtf_psi_index(omega)
+      IF (m > 0) qtf_sum_omega = sum_on .AND. psi_is_sum(m)
+   END FUNCTION qtf_sum_omega
+
+   SUBROUTINE qtf_direct_sum_pairs(omega, pairs)
+      ! The canonical half of the sum pairs whose omega_i + omega_j is the sum frequency omega (sum_pair_index), as
+      ! pairs(4, npair) = frequency and heading of state 1, then of state 2, in the store: i < j, or i = j with b1 <= b2
+      ! (ruling R6). T+ is symmetric (pair_plus = (f1 g2 + f2 g1)/4 in every term, and the sum Omega and psi do not depend
+      ! on the order), so the other half is the same pair and is not solved again. The diagonal i = j, b1 = b2 is a pair
+      ! of its own. Empty unless the sum is on with qtf_direct = 1, or before the frequencies are kept.
+      REAL(8), INTENT(IN) :: omega
+      INTEGER, ALLOCATABLE, INTENT(OUT) :: pairs(:, :)
+      INTEGER, ALLOCATABLE :: tmp(:, :)
+      INTEGER :: m, i, j, b1, b2, np
+
+      ALLOCATE (pairs(4, 0))
+      IF (.NOT. direct_active .OR. .NOT. sum_on) RETURN
+      m = qtf_psi_index(omega)
+      IF (m == 0) RETURN
+      ALLOCATE (tmp(4, nkept*nkept*heading_pairs(nbeta)))
+      np = 0
+      DO b1 = 1, nbeta
+         DO b2 = 1, nbeta
+            IF (all_headings_pairs == 0 .AND. b1 /= b2) CYCLE
+            DO i = 1, nkept
+               DO j = i, nkept
+                  IF (i == j .AND. b1 > b2) CYCLE
+                  IF (sum_pair_index(i, j) /= m) CYCLE
+                  np = np + 1
+                  tmp(:, np) = [i, b1, j, b2]
+               END DO
+            END DO
+         END DO
+      END DO
+      pairs = tmp(:, 1:np)
+   END SUBROUTINE qtf_direct_sum_pairs
+
+   SUBROUTINE qtf_direct_sum_load(i, b1, j, b2, t)
+      ! T+_dir(6 nbody) of the stored pair (frequency i, heading b1; frequency j, heading b2) as tdir_sum holds it, for the
+      ! tests of the slots (R6); zero before the direct solve at omega_i + omega_j, and when the sum is off
+      INTEGER, INTENT(IN) :: i, b1, j, b2
+      COMPLEX(8), INTENT(OUT) :: t(:)
+
+      t = (0D0, 0D0)
+      IF (ALLOCATED(tdir_sum)) t = tdir_sum(:, i, j, heading_pair(b1, b2))
+   END SUBROUTINE qtf_direct_sum_load
+
+   SUBROUTINE qtf_direct_diff_load(i, b1, j, b2, t, p_i2, p_d)
+      ! T_dir(6 nbody) of the stored difference pair as tdir holds it, and its parts from phi_I2 and phi_D (write_terms
+      ! >= 1, zero otherwise), for the test that qtf = 3 leaves the difference results of qtf = 1 unchanged
+      INTEGER, INTENT(IN) :: i, b1, j, b2
+      COMPLEX(8), INTENT(OUT) :: t(:), p_i2(:), p_d(:)
+
+      t = (0D0, 0D0)
+      p_i2 = (0D0, 0D0)
+      p_d = (0D0, 0D0)
+      IF (ALLOCATED(tdir)) t = tdir(:, i, j, heading_pair(b1, b2))
+      IF (ALLOCATED(tdir_i2)) p_i2 = tdir_i2(:, i, j, heading_pair(b1, b2))
+      IF (ALLOCATED(tdir_d)) p_d = tdir_d(:, i, j, heading_pair(b1, b2))
+   END SUBROUTINE qtf_direct_diff_load
+
+   SUBROUTINE free_sum_stores()
+      IF (ALLOCATED(tdir_sum)) DEALLOCATE (tdir_sum)
+      IF (ALLOCATED(tpot_sum)) DEALLOCATE (tpot_sum)
+      IF (ALLOCATED(tdir_sum_i2)) DEALLOCATE (tdir_sum_i2)
+      IF (ALLOCATED(tdir_sum_d)) DEALLOCATE (tdir_sum_d)
+      IF (ALLOCATED(tdir_sum_fs)) DEALLOCATE (tdir_sum_fs)
+   END SUBROUTINE free_sum_stores
+
+   SUBROUTINE qtf_direct_at_omega(mesh, geom, omega, npair, seconds, fs, nsum)
+      ! The direct method at the frequency omega of the list (qtf_direct = 1): T_dir of every difference pair with that
+      ! Omega (qtf_direct_pairs) and, with the sum on (Phase 7c-2), T+_dir of the canonical half of its sum pairs
+      ! (qtf_direct_sum_pairs), with one factorisation: two direct_at_omega calls, the difference columns as without the
+      ! sum, then the sum columns. The difference results go into tdir, each sum result into both slots of tdir_sum
+      ! (R6). Call after the frequency loop, when every frequency is kept, with the solver at omega after its radiation solve
+      ! (RadiationOnlySolves). Pairs with NaN or Inf are counted in qtf_nonfinite_pairs() and logged. npair, nsum and
+      ! seconds (optional): the number of difference and of sum pairs solved, and the times of direct_at_omega (4: forcing,
+      ! B2, solve and load, field evaluation), for the log. A frequency with neither kind of pair is only marked as done.
       ! fs (optional, qtf_terms = full): the free-surface data of direct_fs_setup at omega; its pointers are set here to
       ! the free-surface store (fields and incident fields at the inner points, partial waves) and the sliver chords, so
       ! that T_dir has the free-surface forcing. Stops if a free-surface field was not stored.
       ! With qtf_field = 1 the field points get phi_D of the body forcing only (direct_at_omega solves the free-surface
-      ! part apart when both are present), as the header of QTF_Field.txt says.
+      ! part apart when both are present), as the header of QTF_Field.txt says; only the difference columns are kept there
+      ! (the sum rows of QTF_Field.txt are Task 5 of Phase 7c-2).
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       REAL(8), INTENT(IN) :: omega
       INTEGER, INTENT(OUT), OPTIONAL :: npair
       REAL(8), INTENT(OUT), OPTIONAL :: seconds(4)
       TYPE(direct_fs_data), INTENT(INOUT), OPTIONAL :: fs
-      REAL(8) :: sec(4)
-      INTEGER, ALLOCATABLE :: pairs(:, :)
+      INTEGER, INTENT(OUT), OPTIONAL :: nsum
+      REAL(8) :: sec(4), sec2(4)
+      INTEGER, ALLOCATABLE :: pd(:, :), ps(:, :), kernels(:)
       COMPLEX(8), ALLOCATABLE :: t(:, :), parts(:, :, :), phi_field(:, :)
       REAL(8), ALLOCATABLE :: xfield(:, :)
-      INTEGER :: m, p, nbad, h
+      INTEGER :: m, p, nbad, h, hm, nd, ns
 
       IF (PRESENT(npair)) npair = 0
+      IF (PRESENT(nsum)) nsum = 0
       IF (PRESENT(seconds)) seconds = 0D0
       IF (.NOT. direct_active) RETURN
       m = qtf_psi_index(omega)
       IF (m == 0) THEN
-         WRITE (*, '(a,ES14.6,a)') ' QTF direct: omega =', omega, ' rad/s is not a difference frequency of the grid.'
+         WRITE (*, '(a,ES14.6,a)') ' QTF direct: omega =', omega, ' rad/s is not a difference or sum frequency of the grid.'
          ERROR STOP 1
+      END IF
+      IF (.NOT. (qtf_diff_omega(omega) .OR. qtf_sum_omega(omega))) THEN
+         ! Neither kernel has a pair here (a sum frequency of a run without the sum cannot occur: the list is built
+         ! with the kernels that are on), so there is nothing to solve
+         tdir_kept(m) = .TRUE.
+         RETURN
       END IF
       IF (nkept /= SIZE(store, 1)) THEN
          WRITE (*, '(a,I0,a,I0,a)') ' QTF direct: ', nkept, ' of ', SIZE(store, 1), &
             ' frequencies are kept; the direct solve runs after the frequency loop.'
          ERROR STOP 1
       END IF
-      CALL qtf_direct_pairs(omega, pairs)
-      ALLOCATE (t(6*mesh%nbody, SIZE(pairs, 2)))
-      IF (PRESENT(fs)) THEN
-         CALL direct_fs_store(fs)
-         ! The third slice keeps the free-surface part apart, for QTF_DirectTerms.txt
-         ALLOCATE (parts(6*mesh%nbody, SIZE(pairs, 2), MERGE(3, 2, direct_terms)))
+      IF (qtf_diff_omega(omega)) THEN
+         CALL qtf_direct_pairs(omega, pd)
       ELSE
-         ALLOCATE (parts(6*mesh%nbody, SIZE(pairs, 2), 2))
+         ALLOCATE (pd(4, 0))
       END IF
-      ! An absent fs is passed on as absent: the direct solve of Phase 7a
-      IF (qfield_direct_active()) THEN
-         ! qtf_field = 1 with qtf_direct = 1: phi_D of every pair at the field points, for QTF_Field.txt (QTFField)
-         CALL qfield_direct_points(xfield)
-         ALLOCATE (phi_field(SIZE(xfield, 2), SIZE(pairs, 2)))
-         CALL direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, omega_tol=psi_tol, seconds=sec, parts=parts, &
-                              fs=fs, field_points=xfield, phi_field=phi_field)
-         DO p = 1, SIZE(pairs, 2)
-            CALL qfield_keep_direct(pairs(1, p), pairs(2, p), pairs(3, p), pairs(4, p), phi_field(:, p))
-         END DO
+      IF (qtf_sum_omega(omega)) THEN
+         CALL qtf_direct_sum_pairs(omega, ps)
       ELSE
-         CALL direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, omega_tol=psi_tol, seconds=sec, parts=parts, fs=fs)
+         ALLOCATE (ps(4, 0))
       END IF
-      IF (PRESENT(npair)) npair = SIZE(pairs, 2)
-      IF (PRESENT(seconds)) seconds = sec
+      nd = SIZE(pd, 2)
+      ns = SIZE(ps, 2)
+      ! Two calls of direct_at_omega with one factorisation (review of Task 4, fix round 1): first the difference columns,
+      ! exactly as without the sum (the call of 3f00f4d, so the same column blocks, ZGETRS and ZGEMM sizes and bits; MKL
+      ! does not promise column p to be the same for another number of right sides), then the sum columns with
+      ! factored = .TRUE. (the factors of the first call; with no difference pair the second call factors)
+      sec = 0D0
+      sec2 = 0D0
+      IF (PRESENT(fs)) CALL direct_fs_store(fs)
       nbad = 0
-      DO p = 1, SIZE(pairs, 2)
-         h = heading_pair(pairs(2, p), pairs(4, p))
-         tdir(:, pairs(1, p), pairs(3, p), h) = t(:, p)
-         IF (direct_terms) THEN
-            tdir_i2(:, pairs(1, p), pairs(3, p), h) = parts(:, p, 1)
-            tdir_d(:, pairs(1, p), pairs(3, p), h) = parts(:, p, 2)
-            IF (SIZE(parts, 3) == 3) tdir_fs(:, pairs(1, p), pairs(3, p), h) = parts(:, p, 3)
+      IF (nd > 0) THEN
+         ALLOCATE (t(6*mesh%nbody, nd))
+         IF (PRESENT(fs)) THEN
+            ! The third slice keeps the free-surface part apart, for QTF_DirectTerms.txt
+            ALLOCATE (parts(6*mesh%nbody, nd, MERGE(3, 2, direct_terms)))
+         ELSE
+            ALLOCATE (parts(6*mesh%nbody, nd, 2))
          END IF
-         IF (.NOT. ALL(IEEE_IS_FINITE(REAL(t(:, p), 8)) .AND. IEEE_IS_FINITE(AIMAG(t(:, p))))) nbad = nbad + 1
-      END DO
+         ! An absent fs is passed on as absent: the direct solve of Phase 7a
+         IF (qfield_direct_active()) THEN
+            ! qtf_field = 1 with qtf_direct = 1: phi_D of every pair at the field points, for QTF_Field.txt (QTFField)
+            CALL qfield_direct_points(xfield)
+            ALLOCATE (phi_field(SIZE(xfield, 2), nd))
+            CALL direct_at_omega(mesh, geom, omega, store, store_wl, pd, t, omega_tol=psi_tol, seconds=sec, parts=parts, &
+                                 fs=fs, field_points=xfield, phi_field=phi_field)
+            DO p = 1, nd
+               CALL qfield_keep_direct(pd(1, p), pd(2, p), pd(3, p), pd(4, p), phi_field(:, p))
+            END DO
+            DEALLOCATE (phi_field, xfield)
+         ELSE
+            CALL direct_at_omega(mesh, geom, omega, store, store_wl, pd, t, omega_tol=psi_tol, seconds=sec, parts=parts, &
+                                 fs=fs)
+         END IF
+         DO p = 1, nd
+            h = heading_pair(pd(2, p), pd(4, p))
+            tdir(:, pd(1, p), pd(3, p), h) = t(:, p)
+            IF (direct_terms) THEN
+               tdir_i2(:, pd(1, p), pd(3, p), h) = parts(:, p, 1)
+               tdir_d(:, pd(1, p), pd(3, p), h) = parts(:, p, 2)
+               IF (SIZE(parts, 3) == 3) tdir_fs(:, pd(1, p), pd(3, p), h) = parts(:, p, 3)
+            END IF
+            IF (.NOT. ALL(IEEE_IS_FINITE(REAL(t(:, p), 8)) .AND. IEEE_IS_FINITE(AIMAG(t(:, p))))) nbad = nbad + 1
+         END DO
+         DEALLOCATE (t, parts)
+      END IF
+      IF (ns > 0) THEN
+         ALLOCATE (t(6*mesh%nbody, ns), kernels(ns))
+         kernels = KERNEL_SUM
+         IF (PRESENT(fs)) THEN
+            ALLOCATE (parts(6*mesh%nbody, ns, MERGE(3, 2, sum_terms)))
+         ELSE
+            ALLOCATE (parts(6*mesh%nbody, ns, 2))
+         END IF
+         IF (qfield_direct_active()) THEN
+            ! qtf_field = 1 with qtf_direct = 1: phi_D of every sum pair at the field points for the sum rows of
+            ! QTF_Field.txt (QTFField), body-forced as for the difference columns (R4). Not conjugated: Omega+ > 0.
+            CALL qfield_direct_points(xfield)
+            ALLOCATE (phi_field(SIZE(xfield, 2), ns))
+            CALL direct_at_omega(mesh, geom, omega, store, store_wl, ps, t, omega_tol=psi_tol, seconds=sec2, parts=parts, &
+                                 fs=fs, kernels=kernels, factored=nd > 0, field_points=xfield, phi_field=phi_field)
+            DO p = 1, ns
+               ! One call fills both slots of the symmetric pair (R6)
+               CALL qfield_keep_direct(ps(1, p), ps(2, p), ps(3, p), ps(4, p), phi_field(:, p), KERNEL_SUM)
+            END DO
+            DEALLOCATE (phi_field, xfield)
+         ELSE
+            CALL direct_at_omega(mesh, geom, omega, store, store_wl, ps, t, omega_tol=psi_tol, seconds=sec2, parts=parts, &
+                                 fs=fs, kernels=kernels, factored=nd > 0)
+         END IF
+         sec = sec + sec2
+         DO p = 1, ns
+            ! Both slots of the symmetric pair (R6): (i, b1, j, b2) and its mirror (j, b2, i, b1), the same values
+            h = heading_pair(ps(2, p), ps(4, p))
+            hm = heading_pair(ps(4, p), ps(2, p))
+            tdir_sum(:, ps(1, p), ps(3, p), h) = t(:, p)
+            tdir_sum(:, ps(3, p), ps(1, p), hm) = t(:, p)
+            IF (sum_terms) THEN
+               tdir_sum_i2(:, ps(1, p), ps(3, p), h) = parts(:, p, 1)
+               tdir_sum_i2(:, ps(3, p), ps(1, p), hm) = parts(:, p, 1)
+               tdir_sum_d(:, ps(1, p), ps(3, p), h) = parts(:, p, 2)
+               tdir_sum_d(:, ps(3, p), ps(1, p), hm) = parts(:, p, 2)
+               IF (SIZE(parts, 3) == 3 .AND. ALLOCATED(tdir_sum_fs)) THEN
+                  tdir_sum_fs(:, ps(1, p), ps(3, p), h) = parts(:, p, 3)
+                  tdir_sum_fs(:, ps(3, p), ps(1, p), hm) = parts(:, p, 3)
+               END IF
+            END IF
+            IF (.NOT. ALL(IEEE_IS_FINITE(REAL(t(:, p), 8)) .AND. IEEE_IS_FINITE(AIMAG(t(:, p))))) nbad = nbad + 1
+         END DO
+      END IF
+      IF (PRESENT(npair)) npair = nd
+      IF (PRESENT(nsum)) nsum = ns
+      IF (PRESENT(seconds)) seconds = sec
       tdir_kept(m) = .TRUE.
       IF (nbad > 0) THEN
          n_bad_pairs = n_bad_pairs + nbad
@@ -1043,7 +1479,7 @@ CONTAINS
       qtf_kept = nkept
    END FUNCTION qtf_kept
 
-   REAL(8) FUNCTION qtf_stored_mb(n_panels, nwl, nbody, nfreq, nb, npsi, npairs, ncs, nfs, npw)
+   REAL(8) FUNCTION qtf_stored_mb(n_panels, nwl, nbody, nfreq, nb, npsi, npairs, ncs, nfs, npw, nsum_pairs)
       ! Size of the store in MB for nfreq frequencies and nb headings: 8 complex values per panel, 6 per body, 1 per segment.
       ! With npsi, also psi at npsi difference frequencies: 6*nbody complex values per panel. With npairs heading pairs, also
       ! T_pot: 6*nbody complex values per frequency pair and heading pair. With ncs points of C and F (qtf_b2 = control, with
@@ -1051,12 +1487,16 @@ CONTAINS
       ! and difference frequency). With nfs inner free-surface points and npw = (2M + 1)(N_ev + 1) partial-wave coefficients
       ! (qtf_terms = full), also the fields there (5 complex values per point) and a pw_set per frequency and heading, and, with
       ! npsi, psi_k at the points (1 per point) and a pw_set per mode and difference frequency.
+      ! With nsum_pairs (Phase 7c-2), the sum stores tdir_sum and tpot_sum: 6*nbody complex values per frequency pair and
+      ! per slice, nsum_pairs = 2 x the heading pairs. npsi then counts the sum frequencies of the list too, and nfs the
+      ! points of the inner mesh built for the largest sum frequency.
       INTEGER, INTENT(IN) :: n_panels, nwl, nbody, nfreq, nb
-      INTEGER, INTENT(IN), OPTIONAL :: npsi, npairs, ncs, nfs, npw
+      INTEGER, INTENT(IN), OPTIONAL :: npsi, npairs, ncs, nfs, npw, nsum_pairs
 
       qtf_stored_mb = 16D0*REAL(8*n_panels + 6*nbody + nwl, 8)*REAL(nfreq, 8)*REAL(nb, 8)/1D6
       IF (PRESENT(npsi)) qtf_stored_mb = qtf_stored_mb + 16D0*REAL(n_panels, 8)*REAL(6*nbody, 8)*REAL(npsi, 8)/1D6
       IF (PRESENT(npairs)) qtf_stored_mb = qtf_stored_mb + 16D0*REAL(6*nbody, 8)*REAL(nfreq, 8)**2*REAL(npairs, 8)/1D6
+      IF (PRESENT(nsum_pairs)) qtf_stored_mb = qtf_stored_mb + 16D0*REAL(6*nbody, 8)*REAL(nfreq, 8)**2*REAL(nsum_pairs, 8)/1D6
       IF (PRESENT(ncs)) THEN
          qtf_stored_mb = qtf_stored_mb + 16D0*3D0*REAL(ncs, 8)*REAL(nfreq, 8)*REAL(nb, 8)/1D6
          IF (PRESENT(npsi)) qtf_stored_mb = qtf_stored_mb + 16D0*3D0*REAL(ncs, 8)*REAL(6*nbody, 8)*REAL(npsi, 8)/1D6
@@ -1087,36 +1527,49 @@ CONTAINS
       REAL(8), INTENT(IN) :: refl
 
       IF (.NOT. active) RETURN
-      IF (body_active) CALL potential_part(mesh, geom, refl)
+      IF (body_active .AND. diff_on) CALL potential_part(mesh, geom, refl)
       IF (direct_active) THEN
          CALL check_direct_kept()
          IF (direct_terms) CALL write_direct_terms(refl)
+         ! After the direct solves: QTF_DirectTermsSum.txt has the parts of tdir_sum beside T+_pot
+         IF (sum_on) CALL potential_part_sum(mesh, geom, refl)
       END IF
       IF (kind_qtf == 1 .OR. kind_qtf == 3) CALL write_file('/Wamit_format/QTF_Quadratic.10d', KERNEL_DIFF)
       IF (kind_qtf == 2 .OR. kind_qtf == 3) CALL write_file('/Wamit_format/QTF_Quadratic.10s', KERNEL_SUM)
       WRITE (*, '(a,I0,a,I0,a)') ' QTF quadratic part: ', nkept, ' frequencies and ', nbeta, ' headings'
       DEALLOCATE (store, store_wl, store_oufr)
       IF (ALLOCATED(psi_store)) DEALLOCATE (psi_store, psi_kept, psi_need, psi_reuse)
+      IF (ALLOCATED(psi_is_diff)) DEALLOCATE (psi_is_diff, psi_is_sum)
       IF (ALLOCATED(tpot)) DEALLOCATE (tpot)
-      IF (ALLOCATED(tdir)) DEALLOCATE (tdir, tdir_kept)
+      IF (ALLOCATED(tdir)) DEALLOCATE (tdir)
+      IF (ALLOCATED(tdir_kept)) DEALLOCATE (tdir_kept)
       IF (ALLOCATED(tdir_i2)) DEALLOCATE (tdir_i2, tdir_d)
       IF (ALLOCATED(tdir_fs)) DEALLOCATE (tdir_fs)
+      CALL free_sum_stores()
       CALL free_control_surface()
       CALL free_free_surface()
       active = .FALSE.
       body_active = .FALSE.
       direct_active = .FALSE.
       direct_terms = .FALSE.
+      sum_terms = .FALSE.
+      diff_on = .FALSE.
+      sum_on = .FALSE.
+      sum_cut_irr = HUGE(1D0)
+      max_sw = 0D0
 
    CONTAINS
 
       SUBROUTINE write_file(name, kernel)
          ! With qtf_terms = body, the difference kernel also writes QTF_Indirect.11d, row for row with .10d, and with
-         ! qtf_direct = 1 QTF_Direct.12d, the same with T_dir in place of T_pot
+         ! qtf_direct = 1 QTF_Direct.12d, the same with T_dir in place of T_pot. With the sum on (Phase 7c-2) the sum kernel
+         ! writes QTF_Direct.12s: the rows of .10s whose sum is kept (sum_pair_index > 0), in the order of .10s, each
+         ! .10s + T+_dir, the diagonal included
          CHARACTER(LEN=*), INTENT(IN) :: name
          INTEGER, INTENT(IN) :: kernel
          COMPLEX(8) :: total(6, mesh%nbody)
-         INTEGER :: unit, unit_indirect, unit_direct, b1, b2, i, j, b, c
+         INTEGER :: unit, unit_indirect, unit_direct, unit_dsum, b1, b2, i, j, b, c, k
+         LOGICAL :: sum_row
 
          OPEN (NEWUNIT=unit, FILE=outdir//name, STATUS='REPLACE', ACTION='WRITE')
          unit_indirect = 0
@@ -1127,6 +1580,10 @@ CONTAINS
          IF (kernel == KERNEL_DIFF .AND. direct_active) THEN
             OPEN (NEWUNIT=unit_direct, FILE=outdir//'/Wamit_format/QTF_Direct.12d', STATUS='REPLACE', ACTION='WRITE')
          END IF
+         unit_dsum = 0
+         IF (kernel == KERNEL_SUM .AND. direct_active .AND. sum_on) THEN
+            OPEN (NEWUNIT=unit_dsum, FILE=outdir//'/Wamit_format/QTF_Direct.12s', STATUS='REPLACE', ACTION='WRITE')
+         END IF
          DO b1 = 1, nbeta
             DO b2 = 1, nbeta
                IF (all_headings_pairs == 0 .AND. b1 /= b2) CYCLE
@@ -1136,10 +1593,15 @@ CONTAINS
                         IF (ABS(store(i, b1)%omega - store(j, b2)%omega) > max_dw*(1D0 + 1D-9)) CYCLE
                      END IF
                      CALL qtf_pair_load(mesh, geom, kernel, i, b1, j, b2, total)
+                     sum_row = .FALSE.
+                     IF (unit_dsum /= 0) sum_row = sum_pair_index(i, j) > 0
                      DO b = 1, mesh%nbody
                         DO c = 1, 6
+                           k = 6*(b - 1) + c
                            CALL write_qtf_row(unit, store_oufr(i), store_oufr(j), beta_deg(b1), beta_deg(b2), &
-                                              6*(b - 1) + c, total(c, b), refl, c > 3)
+                                              k, total(c, b), refl, c > 3)
+                           IF (sum_row) CALL write_qtf_row(unit_dsum, store_oufr(i), store_oufr(j), beta_deg(b1), &
+                              beta_deg(b2), k, total(c, b) + tdir_sum(k, i, j, heading_pair(b1, b2)), refl, c > 3)
                            ! On the diagonal T_pot = T_dir = 0 and .11d, .12d are .10d to the bit (adding a zero could
                            ! flip a -0)
                            IF (unit_indirect /= 0) CALL write_sum(unit_indirect, tpot, total(c, b), i, j, b1, b2, 6*(b - 1) + c, c > 3)
@@ -1153,6 +1615,7 @@ CONTAINS
          CLOSE (unit)
          IF (unit_indirect /= 0) CLOSE (unit_indirect)
          IF (unit_direct /= 0) CLOSE (unit_direct)
+         IF (unit_dsum /= 0) CLOSE (unit_dsum)
 
       END SUBROUTINE write_file
 
@@ -1176,7 +1639,7 @@ CONTAINS
          missing = qtf_direct_missing()
          IF (missing > 0D0) THEN
             WRITE (*, '(a,ES14.6,a)') ' QTF direct: qtf_direct = 1, but the direct solve did not run at Omega =', &
-               missing, ' rad/s; QTF_Direct.12d would be incomplete.'
+               missing, ' rad/s; QTF_Direct.12d or .12s would be incomplete.'
             ERROR STOP 1
          END IF
       END SUBROUTINE check_direct_kept
@@ -1380,6 +1843,150 @@ CONTAINS
       END SUBROUTINE fs_pair
 
    END SUBROUTINE potential_part
+
+   SUBROUTINE potential_part_sum(mesh, geom, refl)
+      ! The indirect sum load T+_pot (Phase 7c-2, ruling R1 of its plan) of the canonical half of the sum pairs
+      ! (qtf_direct_sum_pairs), Omega by Omega over the sum frequencies of the list, into both slots of tpot_sum (R6):
+      ! potential_pair with KERNEL_SUM from the same psi, grad psi, psi at the waterline, psi on C and F and psi on the
+      ! inner free surface as potential_part, indexed by the union list, and with qtf_terms = full the free-surface terms
+      ! of fs_pair_terms with KERNEL_SUM (ordered w1 >= w2 there, no conjugate on the swap). With write_terms >= 1 every
+      ! row of .12s goes to QTF_DirectTermsSum.txt: the parts of T+_dir (D_I2, D_D and with full D_FS) beside P_BODY, the
+      ! sum of the five body-forcing terms, and with full P_FS = FS_inner + FS_outer, in ascending Omega; a pair and its
+      ! mirror (j, b2, i, b1) both have a row, with the same values. Stops if psi of a needed Omega, or a free-surface
+      ! field, was not stored. Pairs with NaN or Inf are counted in qtf_nonfinite_pairs() and logged per Omega.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(surface_geom), INTENT(IN) :: geom
+      REAL(8), INTENT(IN) :: refl
+      INTEGER, ALLOCATABLE :: pairs(:, :)
+      COMPLEX(8), ALLOCATABLE :: grad(:, :, :), pwl(:, :), terms(:, :), tfs_in(:), tfs_out(:)
+      TYPE(fs_point_field), ALLOCATABLE :: fs_inc(:, :, :)   ! (n_fs, nkept, nbeta), incident fields at the inner points
+      REAL(8) :: g_wave, rf, rf_max, fs_seconds
+      INTEGER(8) :: t0, t1, rate
+      INTEGER :: unit, m, p, i, j, b1, b2, h, hm, nmode, nbad
+
+      nmode = 6*mesh%nbody
+      unit = 0
+      IF (sum_terms) THEN
+         OPEN (NEWUNIT=unit, FILE=outdir//'/Wamit_format/QTF_DirectTermsSum.txt', STATUS='REPLACE', ACTION='WRITE')
+         CALL write_direct_sum_terms_header(unit, fs_active)
+      END IF
+      IF (fs_active) CALL fs_incident_all(fs_inc)
+      ALLOCATE (grad(3, mesh%n, nmode), pwl(geom%nwl, nmode), terms(nmode, NPOT_TERMS), tfs_in(nmode), tfs_out(nmode))
+      tfs_in = (0D0, 0D0)
+      tfs_out = (0D0, 0D0)
+      fs_seconds = 0D0
+      DO m = 1, SIZE(psi_need)
+         IF (.NOT. psi_is_sum(m)) CYCLE
+         CALL qtf_direct_sum_pairs(psi_need(m), pairs)
+         IF (SIZE(pairs, 2) == 0) CYCLE
+         CALL check_stored(m)
+         CALL psi_surface_gradient(mesh, geom, psi_store(:, :, m), grad)
+         CALL psi_waterline(mesh, geom, psi_store(:, :, m), grad, pwl)
+         nbad = 0
+         rf_max = 0D0
+         IF (fs_active) CALL SYSTEM_CLOCK(t0, rate)
+         DO p = 1, SIZE(pairs, 2)
+            i = pairs(1, p)
+            b1 = pairs(2, p)
+            j = pairs(3, p)
+            b2 = pairs(4, p)
+            ASSOCIATE (s1 => store(i, b1), s2 => store(j, b2))
+               ! phi_I2 with the gravity of the first-order incident wave, as potential_part (ruling R8 of Phase 6)
+               g_wave = wave_gravity(s1%omega, s1%k, s1%h)
+               IF (b2_control .AND. ALLOCATED(edge_w)) THEN
+                  CALL potential_pair(mesh, geom, s1, s2, store_wl(:, i, b1), store_wl(:, j, b2), psi_store(:, :, m), grad, &
+                                      pwl, psi_need(m), s1%rho, g_wave, terms, cs=cs, grad_psi_cs=cs_gpsi(:, :, :, m), &
+                                      u1_cs=cs_u(:, :, i, b1), u2_cs=cs_u(:, :, j, b2), edge_w=edge_w, omega_tol=psi_tol, &
+                                      kernel=KERNEL_SUM)
+               ELSE IF (b2_control) THEN
+                  CALL potential_pair(mesh, geom, s1, s2, store_wl(:, i, b1), store_wl(:, j, b2), psi_store(:, :, m), grad, &
+                                      pwl, psi_need(m), s1%rho, g_wave, terms, cs=cs, grad_psi_cs=cs_gpsi(:, :, :, m), &
+                                      u1_cs=cs_u(:, :, i, b1), u2_cs=cs_u(:, :, j, b2), omega_tol=psi_tol, kernel=KERNEL_SUM)
+               ELSE
+                  CALL potential_pair(mesh, geom, s1, s2, store_wl(:, i, b1), store_wl(:, j, b2), psi_store(:, :, m), grad, &
+                                      pwl, psi_need(m), s1%rho, g_wave, terms, omega_tol=psi_tol, kernel=KERNEL_SUM)
+               END IF
+               IF (fs_active) THEN
+                  CALL fs_pair_terms(s1%omega, fs_f(:, i, b1), fs_inc(:, i, b1), fs_pw(i, b1), s1%beta, s1%k, &
+                                     s2%omega, fs_f(:, j, b2), fs_inc(:, j, b2), fs_pw(j, b2), s2%beta, s2%k, &
+                                     fs_psi(:, :, m), fs_pw_psi(:, m), fs_store_pts%w, fs_store_np, s1%g, s1%rho, tfs_in, &
+                                     tfs_out, rf, kernel=KERNEL_SUM)
+                  rf_max = MAX(rf_max, rf)
+               END IF
+            END ASSOCIATE
+            h = heading_pair(b1, b2)
+            hm = heading_pair(b2, b1)
+            tpot_sum(:, i, j, h) = SUM(terms, DIM=2) + tfs_in + tfs_out
+            tpot_sum(:, j, i, hm) = tpot_sum(:, i, j, h)
+            IF (.NOT. (ALL(IEEE_IS_FINITE(REAL(terms, 8)) .AND. IEEE_IS_FINITE(AIMAG(terms))) .AND. &
+                       ALL(IEEE_IS_FINITE(REAL(tpot_sum(:, i, j, h), 8)) .AND. IEEE_IS_FINITE(AIMAG(tpot_sum(:, i, j, h)))))) &
+               nbad = nbad + 1
+            IF (unit == 0) CYCLE
+            CALL write_rows(i, b1, j, b2)
+            IF (i /= j .OR. b1 /= b2) CALL write_rows(j, b2, i, b1)
+         END DO
+         IF (fs_active) THEN
+            CALL SYSTEM_CLOCK(t1)
+            fs_seconds = fs_seconds + REAL(t1 - t0, 8)/REAL(rate, 8)
+            WRITE (*, '(a,F10.5,a,I0,a,F10.1,a,F10.2,a)') ' QTF sum indirect check: Omega', psi_need(m), ' rad/s, ', &
+               SIZE(pairs, 2), ' pairs, r_far up to', rf_max, ' m,', REAL(t1 - t0, 8)/REAL(rate, 8), ' s'
+         END IF
+         IF (nbad > 0) THEN
+            n_bad_pairs = n_bad_pairs + nbad
+            WRITE (*, '(a,I0,a,ES14.6,a)') ' QTF error: T+_pot has NaN or Inf at ', nbad, ' frequency and heading pairs'// &
+               ' with Omega =', psi_need(m), ' rad/s; those rows of QTF_DirectTermsSum.txt are not valid.'
+         END IF
+      END DO
+      IF (unit /= 0) CLOSE (unit)
+      IF (fs_active) WRITE (*, '(a,F10.2,a)') ' QTF sum indirect check: ', fs_seconds, ' s in all (body terms included)'
+
+   CONTAINS
+
+      SUBROUTINE write_rows(ia, ba, ja, bb)
+         ! The rows of the pair (ia, ba, ja, bb) in QTF_DirectTermsSum.txt, one per mode, the values of slot h
+         INTEGER, INTENT(IN) :: ia, ba, ja, bb
+         INTEGER :: b, c, k
+
+         DO b = 1, mesh%nbody
+            DO c = 1, 6
+               k = 6*(b - 1) + c
+               IF (fs_active) THEN
+                  CALL write_qtf_terms_row(unit, store_oufr(ia), store_oufr(ja), beta_deg(ba), beta_deg(bb), k, &
+                     [tdir_sum_i2(k, i, j, h), tdir_sum_d(k, i, j, h), tdir_sum_fs(k, i, j, h), SUM(terms(k, :)), &
+                      tfs_in(k) + tfs_out(k)], refl, c > 3)
+               ELSE
+                  CALL write_qtf_terms_row(unit, store_oufr(ia), store_oufr(ja), beta_deg(ba), beta_deg(bb), k, &
+                     [tdir_sum_i2(k, i, j, h), tdir_sum_d(k, i, j, h), SUM(terms(k, :))], refl, c > 3)
+               END IF
+            END DO
+         END DO
+      END SUBROUTINE write_rows
+
+      SUBROUTINE check_stored(mm)
+         ! psi and the fields the pairs of the sum frequency mm read were stored
+         INTEGER, INTENT(IN) :: mm
+
+         IF (.NOT. psi_kept(mm)) THEN
+            WRITE (*, '(a,ES14.6,a)') ' QTF: psi at the sum frequency Omega =', psi_need(mm), ' rad/s was not stored.'
+            ERROR STOP 1
+         END IF
+         IF (b2_control) THEN
+            IF (.NOT. (cs_psi_kept(mm) .AND. ALL(cs_u_kept))) THEN
+               WRITE (*, '(a,ES14.6,a)') ' QTF: the fields on the control surface at the sum frequency Omega =', &
+                  psi_need(mm), ' rad/s, or of a kept frequency, were not stored.'
+               ERROR STOP 1
+            END IF
+         END IF
+         IF (fs_active) THEN
+            IF (.NOT. (fs_psi_kept(mm) .AND. ALL(fs_kept))) THEN
+               WRITE (*, '(a,ES14.6,a)') ' QTF: the free-surface fields at the sum frequency Omega =', psi_need(mm), &
+                  ' rad/s, or of a kept frequency, were not stored.'
+               ERROR STOP 1
+            END IF
+         END IF
+      END SUBROUTINE check_stored
+
+   END SUBROUTINE potential_part_sum
 
    SUBROUTINE out_of_memory(body, fs)
       ! body: the store of qtf_terms = body (psi, T_pot, the fields on C and F), whose size the log gave before; fs: also

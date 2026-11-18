@@ -14,11 +14,14 @@ module test_qtf_direct_fs
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use ControlSurfaceMesh, only : build_fs_inner
   use FinGreen3D_Open, only : FINGREEN3D
+  use INFG3D_Open, only : INFGREEN3D
+  use direct_sum_green_mod, only : direct_sum_green
   use PartialWaves, only : pw_set, pw_bessel_k, pw_green_mmax, pw_eval_surface
   use QTFFreeSurface, only : fs_point_field, fs_forcing_diff, fs_outer_moments
+  use QTFDirectFS, only : fs_remainder_order
   use QTFDirectFS, only : direct_fs_data, direct_fs_setup, direct_fs_rhs, direct_fs_rfar, DIRECT_FS_SIGN, DIRECT_FS_TOL, &
     direct_fs_estimate, direct_fs_array_mb
-  use second_order_fixtures, only : make_cylinder, set_panel, maccamy_fuchs_state
+  use second_order_fixtures, only : make_cylinder, set_panel, maccamy_fuchs_state, read_pnl_hull
   use test_waterline_field, only : set_wave, load_panels
   ! The direct solve with the free-surface forcing (Task 4)
   use HAMS_mod, only : ISOLV
@@ -32,7 +35,7 @@ module test_qtf_direct_fs
   use SecondOrderTypes, only : first_order_state
   use FirstOrderState, only : radiation_psi, wave_gravity
   use FieldVelocity, only : incident_at
-  use NearFieldDrift, only : waterline_extrapolate
+  use NearFieldDrift, only : waterline_extrapolate, KERNEL_DIFF, KERNEL_SUM
   use QTFPotential, only : potential_pair, psi_surface_gradient, psi_waterline, NPOT_TERMS
   use QTFFreeSurface, only : fs_inner_fields, fs_inner_steps, fs_sample_phi, fs_circle_modes, fs_auto_modes, &
                              fs_auto_evanescent, fs_pair_terms
@@ -66,6 +69,11 @@ module test_qtf_direct_fs
   ! direct_fs_pair_order: a pair with Omega < 0 against the conjugate of the swapped pair, and the load without parts
   ! (the free-surface right side added to the body one) against the sum of the parts
   real(8), parameter :: pair_order_limit = 1d-12
+  ! direct_fs_sum_equals_indirect: as fs_indirect_limit, for the sum pair (0.70, 0.70) at Omega = 1.40 (headings 0 and
+  ! 30 deg) over max |T+_pot|, with the inner mesh built for Omega+ = 1.40. Measured 6.0e-3 (max |T_FS| is 0.77 of
+  ! max |T+_pot|); 1.3x that, rounded up. On the inner mesh of 1.1 rad/s (100 points, too coarse for psi at Omega+) the
+  ! gap is 1.54e-2, on that of 2.0 rad/s 4.5e-3: it falls with the inner mesh. With the opposite s_D: 1.55
+  real(8), parameter :: fs_sum_indirect_limit = 7.9d-3
 
 contains
 
@@ -84,7 +92,11 @@ subroutine collect_qtf_direct_fs(testsuite)
     new_unittest("fs_memory_estimate", test_memory_estimate), &
     new_unittest("direct_fs_pair_order", test_direct_fs_pair_order), &
     new_unittest("direct_fs_equals_indirect_full", test_direct_fs_equals_indirect), &
-    new_unittest("direct_fs_field_body_only", test_direct_fs_field_body_only) &
+    new_unittest("direct_fs_field_body_only", test_direct_fs_field_body_only), &
+    new_unittest("direct_fs_kernel_default", test_direct_fs_kernel_default), &
+    new_unittest("fs_green_matrix_large_kh", test_green_matrix_large_kh), &
+    new_unittest("direct_fs_mixed_block", test_direct_fs_mixed_block), &
+    new_unittest("direct_fs_sum_equals_indirect", test_direct_fs_sum_equals_indirect) &
     ]
 end subroutine collect_qtf_direct_fs
 
@@ -879,67 +891,9 @@ subroutine read_hull(path, c_in, mesh, error)
   real(8), intent(in) :: c_in(3)
   type(panel_mesh), intent(out) :: mesh
   type(error_type), allocatable, intent(out) :: error
-  character(len=200) :: line
-  real(8) :: v(3, 4), d1(3), d2(3), c(3), nrm(3), xc(3)
-  integer :: u, ios, npan, nnode, i, m, id, nv
-
-  open (newunit=u, file=path, status='old', action='read', iostat=ios)
-  call check(error, ios == 0, "cannot open "//path)
-  if (allocated(error)) return
-  do
-    read (u, '(a)') line
-    if (index(line, 'Number of Panels') > 0) exit
-  end do
-  read (u, *) npan, nnode
-  mesh%n = npan
-  mesh%nbase = npan
-  mesh%nnode = nnode
-  mesh%nbody = 1
-  mesh%nsys = 1
-  allocate (mesh%xc(3, npan), mesh%nrm(3, npan), mesh%area(npan), mesh%psize(npan), mesh%nj(6, npan))
-  allocate (mesh%xnode(3, nnode), mesh%ncn(npan), mesh%ncon(4, npan), mesh%body(npan), mesh%base(npan), mesh%image(npan))
-  allocate (mesh%xr(3, 1))
-  mesh%xr = 0d0
-  mesh%body = 1
-  mesh%image = 1
-  mesh%base = [(i, i = 1, npan)]
-  mesh%ncon = 0
-  do
-    read (u, '(a)') line
-    if (index(line, 'Start Definition of Node Coordinates') > 0) exit
-  end do
-  do i = 1, nnode
-    read (u, *) id, mesh%xnode(:, i)
-  end do
-  do
-    read (u, '(a)') line
-    if (index(line, 'Start Definition of Node Relations') > 0) exit
-  end do
-  do i = 1, npan
-    read (u, '(a)') line
-    read (line, *) id, nv
-    mesh%ncn(i) = nv
-    read (line, *) id, nv, mesh%ncon(1:nv, i)
-  end do
-  close (u)
-  do i = 1, npan
-    nv = mesh%ncn(i)
-    do m = 1, nv
-      v(:, m) = mesh%xnode(:, mesh%ncon(m, i))
-    end do
-    xc = sum(v(:, 1:nv), dim=2) / real(nv, 8)
-    if (nv == 4) then
-      d1 = v(:, 3) - v(:, 1)
-      d2 = v(:, 4) - v(:, 2)
-    else
-      d1 = v(:, 2) - v(:, 1)
-      d2 = v(:, 3) - v(:, 1)
-    end if
-    c = [d1(2) * d2(3) - d1(3) * d2(2), d1(3) * d2(1) - d1(1) * d2(3), d1(1) * d2(2) - d1(2) * d2(1)]
-    nrm = c / norm2(c)
-    if (sum(nrm * (c_in - xc)) < 0d0) nrm = -nrm
-    call set_panel(mesh, i, nrm)
-  end do
+  logical :: ok
+  call read_pnl_hull(path, c_in, mesh, ok)
+  call check(error, ok, "cannot open "//path)
 end subroutine read_hull
 
 !> The geometry, the inner free surface of build_fs_inner (largest first-order frequency omega_max, default radius) with
@@ -1204,6 +1158,392 @@ subroutine test_direct_fs_field_body_only(error)
   print '(4x,a)', trim(info)
   call check(error, all(f1 == f0) .and. all(t1 == t2) .and. maxval(abs(f0)) > 0d0 .and. fs_share > 1d-3, trim(info))
 end subroutine test_direct_fs_field_body_only
+
+!> The difference kernel stays the default of the free-surface block, bit for bit (Phase 7c-2 Task 3): the setup of
+!> test_direct_fs_pair_order (448-panel cylinder in depth 15, Omega = 0.3, the pair with Omega < 0 and its swap), the
+!> free-surface part of the load (parts slice 3) of both columns against the values printed from the code before the
+!> kernel argument (47a088c, 17 digits, round-trip).
+subroutine test_direct_fs_kernel_default(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om(2) = [1.1d0, 0.8d0], be(2) = [0.6d0, 0.2d0]
+  type(panel_mesh) :: full, mesh, fm
+  type(surface_geom) :: geom
+  type(cs_points) :: pts, circle
+  type(direct_fs_data) :: dfs
+  type(first_order_state), allocatable :: store(:, :)
+  complex(8), allocatable :: store_wl(:, :, :)
+  type(fs_point_field), allocatable, target :: fa(:, :, :), ia(:, :, :)
+  type(pw_set), allocatable, target :: pwa(:, :)
+  real(8), allocatable :: delta(:)
+  complex(8), parameter :: ref(6, 2) = reshape([ &
+    (-9.28011862284723793d+003, -1.58996225652049793d+003), (-5.53128512487465105d+003, -5.60546249834230548d+003), &
+    (-9.64951827467202929d+003, 2.44785001101434909d+003), (-1.59831547302308281d+004, -1.54319340405809598d+004), &
+    (2.72171741392803997d+004, 1.61880845966158904d+003), (-5.10208002063424919d-013, -2.20115977439925862d-012), &
+    (-9.28011862284723793d+003, 1.58996225652049793d+003), (-5.53128512487465105d+003, 5.60546249834230548d+003), &
+    (-9.64951827467202929d+003, -2.44785001101434909d+003), (-1.59831547302308281d+004, 1.54319340405809598d+004), &
+    (2.72171741392803997d+004, -1.61880845966158904d+003), (-5.10208002063424919d-013, 2.20115977439925862d-012)], [6, 2])
+  complex(8) :: t(6, 2), parts(6, 2, 3), xis(6, 2), parts_k(6, 2, 3), t_k(6, 2)
+  integer :: pairs(4, 2), npc, mmax, nev, p, k
+  real(8) :: centre(2), radius, omega
+
+  call make_cylinder(10d0, 10d0, 32, 8, 6, full, .true.)
+  call set_omega(fx_omega, fx_depth)
+  call load_panels(full, 0, 0, mesh)
+  call fs_common(mesh, fx_depth, fx_omax, geom, pts, fm, centre, radius, npc, delta, circle, mmax, nev, error)
+  if (allocated(error)) return
+  xis = rd_motions_two()
+  call fs_states(mesh, geom, pts, delta, circle, centre, radius, fx_depth, mmax, nev, om, be, xis, 8, store, store_wl, &
+                 fa, ia, pwa)
+  omega = om(1) - om(2)
+  pairs(:, 1) = [2, 1, 1, 1]
+  pairs(:, 2) = [1, 1, 2, 1]
+  call radiation_at(omega, mesh%nbase)
+  NTHREAD = 8
+  call direct_setup(mesh, DEFAULT_EDGE_DEG)
+  call direct_fs_setup(mesh, pts, fm, centre, radius, fx_depth, omega, .false., dfs)
+  dfs%f => fa
+  dfs%inc => ia
+  dfs%pw => pwa
+  dfs%np = npc
+  call direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, parts=parts, fs=dfs)
+  call direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t_k, parts=parts_k, fs=dfs, kernels=[KERNEL_DIFF, &
+                       KERNEL_DIFF])
+  NTHREAD = 1
+  if (.not. all(parts(:, :, 3) == ref)) then
+    do p = 1, 2
+      do k = 1, 6
+        print '(4x,a,i0,a,i0,a,2es25.17e3)', "pair ", p, " mode ", k, ": ", parts(k, p, 3)
+      end do
+    end do
+  end if
+  call check(error, all(parts(:, :, 3) == ref), "the free-surface part of the load is not bit-identical to 47a088c")
+  if (allocated(error)) return
+  call check(error, all(parts_k == parts) .and. all(t_k == t), "kernels = KERNEL_DIFF is not the default bit for bit")
+end subroutine test_direct_fs_kernel_default
+
+!> (1 / w_j) int_j G dS over inner panel p of fm by n x n Gauss-Legendre (as green_quadrature) of a reference G at the
+!> solver globals: deep = .false., the eigenfunction series of finite depth summed directly (direct_sum_green, checked
+!> against 30-digit mpmath to 3e-11) plus the 1/r + 1/r1 it leaves out; deep = .true., INFGREEN3D (flag 0)
+complex(8) function green_quadrature_ref(fm, p, x, n, deep) result(s)
+  type(panel_mesh), intent(in) :: fm
+  integer, intent(in) :: p, n
+  real(8), intent(in) :: x(3)
+  logical, intent(in) :: deep
+  real(8) :: gx(n), gw(n), xv(3, 4), xq(3), du(3), ds(3), c(3), u, t, rh
+  complex(8) :: grn(4), gd(3)
+  integer :: k, iu, iv
+
+  call gauss(n, gx, gw)
+  do k = 1, 4
+    xv(:, k) = fm%xnode(:, fm%ncon(min(k, fm%ncn(p)), p))
+  end do
+  s = (0d0, 0d0)
+  do iu = 1, n
+    u = gx(iu)
+    do iv = 1, n
+      t = gx(iv)
+      xq = 0.25d0 * ((1 - u) * (1 - t) * xv(:, 1) + (1 + u) * (1 - t) * xv(:, 2) + (1 + u) * (1 + t) * xv(:, 3) &
+                     + (1 - u) * (1 + t) * xv(:, 4))
+      du = 0.25d0 * ((1 - t) * (xv(:, 2) - xv(:, 1)) + (1 + t) * (xv(:, 3) - xv(:, 4)))
+      ds = 0.25d0 * ((1 - u) * (xv(:, 4) - xv(:, 1)) + (1 + u) * (xv(:, 3) - xv(:, 2)))
+      c = [du(2) * ds(3) - du(3) * ds(2), du(3) * ds(1) - du(1) * ds(3), du(1) * ds(2) - du(2) * ds(1)]
+      if (deep) then
+        call INFGREEN3D(xq(1), x(1), xq(2), x(2), xq(3), x(3), V, grn, 0)
+      else
+        rh = hypot(xq(1) - x(1), xq(2) - x(2))
+        call direct_sum_green(rh, xq(3), x(3), V, WVN(1), H, gd)
+        grn(1) = gd(1) + 1d0 / norm2(xq - x) + 1d0 / sqrt(rh**2 + (xq(3) + x(3))**2)
+      end if
+      s = s + grn(1) * gw(iu) * gw(iv) * norm2(c)
+    end do
+  end do
+end function green_quadrature_ref
+
+!> int over inner panel p of fm of the rest G - 1/r - 1/r1 by n x n Gauss-Legendre (as green_quadrature): of the
+!> eigenfunction series summed directly (series = .true., direct_sum_green), or of FINGREEN3D (flag 1, which leaves out
+!> 1/r) less 1/r1, as panel_green of QTFDirectFS takes it
+complex(8) function rest_quad(fm, p, x, n, series) result(s)
+  type(panel_mesh), intent(in) :: fm
+  integer, intent(in) :: p, n
+  real(8), intent(in) :: x(3)
+  logical, intent(in) :: series
+  real(8) :: gx(n), gw(n), xv(3, 4), xq(3), du(3), ds(3), c(3), u, t, rh
+  complex(8) :: grn(4), gd(3), val
+  integer :: k, iu, iv
+
+  call gauss(n, gx, gw)
+  do k = 1, 4
+    xv(:, k) = fm%xnode(:, fm%ncon(min(k, fm%ncn(p)), p))
+  end do
+  s = (0d0, 0d0)
+  do iu = 1, n
+    u = gx(iu)
+    do iv = 1, n
+      t = gx(iv)
+      xq = 0.25d0 * ((1 - u) * (1 - t) * xv(:, 1) + (1 + u) * (1 - t) * xv(:, 2) + (1 + u) * (1 + t) * xv(:, 3) &
+                     + (1 - u) * (1 + t) * xv(:, 4))
+      du = 0.25d0 * ((1 - t) * (xv(:, 2) - xv(:, 1)) + (1 + t) * (xv(:, 3) - xv(:, 4)))
+      ds = 0.25d0 * ((1 - u) * (xv(:, 4) - xv(:, 1)) + (1 + u) * (xv(:, 3) - xv(:, 2)))
+      c = [du(2) * ds(3) - du(3) * ds(2), du(3) * ds(1) - du(1) * ds(3), du(1) * ds(2) - du(2) * ds(1)]
+      rh = hypot(xq(1) - x(1), xq(2) - x(2))
+      if (series) then
+        call direct_sum_green(rh, xq(3), x(3), V, WVN(1), H, gd)
+        val = gd(1)
+      else
+        call FINGREEN3D(xq(1), x(1), xq(2), x(2), xq(3), x(3), V, WVN, NK, H, grn, 1)
+        val = grn(1) - 1d0 / sqrt(rh**2 + (xq(3) + x(3))**2)
+      end if
+      s = s + val * gw(iu) * gw(iv) * norm2(c)
+    end do
+  end do
+end function rest_quad
+
+!> The inner Green matrix at large K h (Review Focus 3 of the 7c-2 plan: the sum frequencies reach K h far beyond those
+!> of the difference): direct_fs_setup at Omega = 2.2 rad/s in h = 100 m (K h = 2.2^2 / 9.81 x 100 = 49, just below
+!> the nu h = 50 limit of the series choice of FINGREEN3D) on the 448-panel cylinder and its inner mesh, gfs(i, j) at 5
+!> (row, panel) pairs away from the waterline (as fs_green_matrix_matches) against (1 / w_j) int_j G dS by 20 x 20
+!> Gauss-Legendre of the eigenfunction series summed directly (direct_sum_green). Measured 1.1e-7 to 7.8e-7 at three
+!> pairs, but 2.3e-5 and 1.40e-4 at the two pairs of the smallest R/h (0.05 and 0.04). That is FINGREEN3D, not the
+!> panel rule (fix round 1 of Task 3, the reviewer's question whether the Gauss order of fs_remainder_order, from d / a
+!> alone, misses the oscillation of the rest on the scale 1 / K = 2 m, K a = 1.24 here):
+!>   - the rule's own order (3 to 6 here) on the rest of the series is within 1.2e-7 of 40 x 40 points at all five
+!>     pairs (1.3e-12 at the worst pair), so the order resolves the rest at this K a; gated at 1.6e-7 (1.3x, rounded up);
+!>   - FINGREEN3D is what does not converge: on the worst pair its rest at the rule's order differs from 40 x 40 points by
+!>     7.8e-5 and 20 x 20 from 40 x 40 by 4.0e-6 (it is not smooth on the panel), and at 40 x 40 it is 2.2e-4 off the
+!>     series (1.9e-7 to 7.8e-7 at the three good pairs, 2.3e-5 at the other); the plain 20 x 20 Gauss of FINGREEN3D
+!>     (flag 0) that the review proposed as the reference differs from gfs by 7.4e-5 there for the same reason;
+!>   - at the centroids FINGREEN3D is off the series by 2.5e-5 and 1.3e-5 (1.6e-7 to 6.8e-7 at the other three), and at
+!>     the R/h = 0.04 centroid its error grows with nu h: 3.4e-7, 8.5e-6 and 3.4e-5 at nu h = 1.6, 26 and 59.
+!> All of these are printed per pair. The gate on gfs is 1.3x the worst, rounded up, 2e-4 (not the 1e-6 of
+!> fs_green_matrix_matches; rulings T3-a and T3-c of the 7c-2 ledger).
+!> INFGREEN3D, the deep-water Green function, is printed beside it but not held to 1e-6: it is
+!> the global approximation of Wu et al. (2017, Eur. J. Mech. B 65, 54-64), about 7e-4 off the exact function (measured
+!> 6e-4 to 9e-4 against FINGREEN3D at K h = 11 to 47, where the depth changes G by O(e^{-2 K h}) only [derived: the
+!> bottom enters through cosh(k (z + h)) cosh(k (zeta + h)) / cosh^2(k h) = e^{k (z + zeta)} (1 + O(e^{-2 k (h + z)}))
+!> per wave number, and nu = K tanh(K h) = K (1 + O(e^{-2 K h})) at the pole], so it is gated at 1e-2: the deep limit.
+subroutine test_green_matrix_large_kh(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: omega = 2.2d0, depth = 100d0
+  type(panel_mesh) :: mesh, fm
+  type(cs_points) :: pts
+  type(direct_fs_data) :: fs
+  real(8) :: centre(2), radius, err, worst, err_deep, worst_deep, rh, pr, dd, gw_ij, e_rule, e_fin, e_fin_ser, worst_rule
+  complex(8) :: ref, ref_deep, gp(4), gd(3), gc
+  integer :: rows(5), cols(5), k, i, j, kk, nr
+  character(len=250) :: info
+
+  call fixture(32, 8, 6, 0, 0d0, mesh, pts, fm, centre, radius, error)
+  if (allocated(error)) return
+  call set_omega(omega, depth)
+  print '(4x,a,f8.2)', "K h ", WVN(1) * depth
+  call direct_fs_setup(mesh, pts, fm, centre, radius, depth, omega, .false., fs)
+  rows = 0
+  k = 0
+  do i = 1, mesh%n
+    if (mesh%xc(3, i) > wl_row_z) cycle
+    if (mod(i, 37) /= 5) cycle
+    k = k + 1
+    rows(k) = i
+    if (k == 5) exit
+  end do
+  call check(error, k == 5, "fewer than 5 rows away from the waterline")
+  if (allocated(error)) return
+  cols = [1, pts%n / 4, pts%n / 2, (3 * pts%n) / 4, pts%n]
+  worst = 0d0
+  worst_deep = 0d0
+  worst_rule = 0d0
+  do k = 1, 5
+    i = rows(k)
+    j = cols(k)
+    ref = green_quadrature_ref(fm, j, mesh%xc(:, i), 20, .false.) / pts%w(j)
+    ref_deep = green_quadrature_ref(fm, j, mesh%xc(:, i), 20, .true.) / pts%w(j)
+    err = abs(fs%gfs(i, j) - ref) / abs(ref)
+    err_deep = abs(fs%gfs(i, j) - ref_deep) / abs(ref_deep)
+    print '(4x,a,i0,a,i0,a,2es14.6,a,es10.2,a,es10.2)', "row ", i, ", inner panel ", j, ": gfs ", fs%gfs(i, j), &
+      ", against the direct series ", err, ", against INFGREEN3D ", err_deep
+    worst = max(worst, err)
+    worst_deep = max(worst_deep, err_deep)
+    ! The panel rule: its Gauss order (fs_remainder_order of d and the panel radius) on the rest G - 1/r - 1/r1 of the
+    ! series, against 40 x 40 points; and the same with the rest of FINGREEN3D, as panel_green takes it
+    pr = 0d0
+    do kk = 1, fm%ncn(j)
+      pr = max(pr, norm2(fm%xnode(:, fm%ncon(kk, j)) - pts%x(:, j)))
+    end do
+    dd = norm2(mesh%xc(:, i) - pts%x(:, j))
+    nr = fs_remainder_order(dd, pr)
+    gw_ij = abs(fs%gfs(i, j) * pts%w(j))
+    e_rule = abs(rest_quad(fm, j, mesh%xc(:, i), nr, .true.) - rest_quad(fm, j, mesh%xc(:, i), 40, .true.)) / gw_ij
+    e_fin = abs(rest_quad(fm, j, mesh%xc(:, i), nr, .false.) - rest_quad(fm, j, mesh%xc(:, i), 40, .false.)) / gw_ij
+    e_fin_ser = abs(rest_quad(fm, j, mesh%xc(:, i), 40, .false.) - rest_quad(fm, j, mesh%xc(:, i), 40, .true.)) / gw_ij
+    print '(6x,a,f6.2,a,f5.2,a,i0,a,es10.2,a,es10.2,a,es10.2)', "d / a ", dd / pr, ", K a ", WVN(1) * pr, ", order ", nr, &
+      ": rule on the series ", e_rule, ", rule on FINGREEN3D ", e_fin, "; FINGREEN3D against the series (40 x 40) ", e_fin_ser
+    worst_rule = max(worst_rule, e_rule)
+    ! FINGREEN3D itself at the centroids against the series: the error of the Green function, not of the panel rule
+    call FINGREEN3D(fm%xc(1, j), mesh%xc(1, i), fm%xc(2, j), mesh%xc(2, i), fm%xc(3, j), mesh%xc(3, i), V, WVN, NK, H, &
+                    gp, 0)
+    rh = hypot(fm%xc(1, j) - mesh%xc(1, i), fm%xc(2, j) - mesh%xc(2, i))
+    call direct_sum_green(rh, fm%xc(3, j), mesh%xc(3, i), V, WVN(1), H, gd)
+    gc = gd(1) + 1d0 / norm2(fm%xc(:, j) - mesh%xc(:, i)) + 1d0 / sqrt(rh**2 + (fm%xc(3, j) + mesh%xc(3, i))**2)
+    print '(6x,a,f7.4,a,es10.2)', "R/h ", rh / depth, ": FINGREEN3D at the centroid against the series ", &
+      abs(gp(1) - gc) / abs(gc)
+  end do
+  write (info, '(a,es10.3,a,es10.3,a,es10.3)') "gfs at K h = 49 against 20 x 20 Gauss of the direct eigenfunction "// &
+    "series, worst relative ", worst, "; against INFGREEN3D ", worst_deep, "; the panel rule on the series ", worst_rule
+  print '(4x,a)', trim(info)
+  call check(error, worst <= 2d-4 .and. worst_deep <= 1d-2 .and. worst_rule <= 1.6d-7, trim(info))
+end subroutine test_green_matrix_large_kh
+
+!> A block that mixes sum and difference columns with the free-surface forcing (the stop of Task 2 removed, Phase 7c-2
+!> Task 3): on the 448-panel cylinder in depth 15 with the states at 0.3, 0.5 and 1.1 rad/s (headings 0.6, 0.2, -0.4),
+!> Omega = 0.8: the sum pair (0.3, 0.5), given with w1 < w2, the difference pair (1.1, 0.3) and its swap (0.3, 1.1),
+!> and the sum pair (0.5, 0.3). Each column of the mixed block equals the same pair solved alone (a block of its own
+!> kernel) to 1e-13 of the largest load (tdir and the three parts); the two orders of the sum pair agree to 1e-13
+!> (direct_fs_block orders a sum pair by frequency, no conjugate), the two orders of the difference pair are conjugate;
+!> and the free-surface part of the sum columns is present (above 1e-3 of the load), so the checks do not hold for
+!> nothing.
+subroutine test_direct_fs_mixed_block(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om(3) = [0.3d0, 0.5d0, 1.1d0], be(3) = [0.6d0, 0.2d0, -0.4d0], omega = 0.8d0
+  type(panel_mesh) :: full, mesh, fm
+  type(surface_geom) :: geom
+  type(cs_points) :: pts, circle
+  type(direct_fs_data) :: dfs
+  type(first_order_state), allocatable :: store(:, :)
+  complex(8), allocatable :: store_wl(:, :, :)
+  type(fs_point_field), allocatable, target :: fa(:, :, :), ia(:, :, :)
+  type(pw_set), allocatable, target :: pwa(:, :)
+  real(8), allocatable :: delta(:)
+  complex(8) :: t(6, 4), parts(6, 4, 3), ts(6, 2), ps(6, 2, 3), td(6, 2), pd(6, 2, 3), xis(6, 3)
+  integer :: pairs(4, 4), npc, mmax, nev
+  real(8) :: centre(2), radius, big, e_alone, e_sum_swap, e_diff_swap, fs_share
+  character(len=400) :: info
+
+  call make_cylinder(10d0, 10d0, 32, 8, 6, full, .true.)
+  call set_omega(fx_omega, fx_depth)
+  call load_panels(full, 0, 0, mesh)
+  call fs_common(mesh, fx_depth, fx_omax, geom, pts, fm, centre, radius, npc, delta, circle, mmax, nev, error)
+  if (allocated(error)) return
+  xis = rd_motions()
+  call fs_states(mesh, geom, pts, delta, circle, centre, radius, fx_depth, mmax, nev, om, be, xis, 8, store, store_wl, &
+                 fa, ia, pwa)
+  pairs(:, 1) = [1, 1, 2, 1]
+  pairs(:, 2) = [3, 1, 1, 1]
+  pairs(:, 3) = [1, 1, 3, 1]
+  pairs(:, 4) = [2, 1, 1, 1]
+  call radiation_at(omega, mesh%nbase)
+  NTHREAD = 8
+  call direct_setup(mesh, DEFAULT_EDGE_DEG)
+  call direct_fs_setup(mesh, pts, fm, centre, radius, fx_depth, omega, .false., dfs)
+  dfs%f => fa
+  dfs%inc => ia
+  dfs%pw => pwa
+  dfs%np = npc
+  call direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, parts=parts, fs=dfs, &
+                       kernels=[KERNEL_SUM, KERNEL_DIFF, KERNEL_DIFF, KERNEL_SUM])
+  call direct_at_omega(mesh, geom, omega, store, store_wl, pairs(:, [1, 4]), ts, parts=ps, fs=dfs, &
+                       kernels=[KERNEL_SUM, KERNEL_SUM])
+  call direct_at_omega(mesh, geom, omega, store, store_wl, pairs(:, [2, 3]), td, parts=pd, fs=dfs)
+  NTHREAD = 1
+  big = maxval(abs(t))
+  e_alone = max(maxval(abs(t(:, [1, 4]) - ts)), maxval(abs(t(:, [2, 3]) - td)), maxval(abs(parts(:, [1, 4], :) - ps)), &
+                maxval(abs(parts(:, [2, 3], :) - pd))) / big
+  e_sum_swap = max(maxval(abs(t(:, 1) - t(:, 4))), maxval(abs(parts(:, 1, :) - parts(:, 4, :)))) / big
+  e_diff_swap = maxval(abs(t(:, 2) - conjg(t(:, 3)))) / big
+  fs_share = maxval(abs(parts(:, [1, 4], 3))) / maxval(abs(t(:, [1, 4])))
+  write (info, '(a,es10.2,a,es10.2,a,es10.2,a,es10.2)') "mixed block against each kernel alone ", e_alone, &
+    "; sum (1, 2) against (2, 1) ", e_sum_swap, "; difference against conj of its swap ", e_diff_swap, &
+    "; free-surface share of the sum columns ", fs_share
+  print '(4x,a)', trim(info)
+  call check(error, e_alone <= 1d-13 .and. e_sum_swap <= 1d-13 .and. e_diff_swap <= 1d-12 .and. fs_share > 1d-3, &
+             trim(info))
+end subroutine test_direct_fs_mixed_block
+
+!> The free-surface part of the direct load of the sum against that of the indirect method (Phase 7c-2 Task 3): the
+!> fixture of direct_fs_equals_indirect_full (the 480-panel rounded cylinder in depth 100,
+!> but the inner mesh of build_fs_inner for Omega+ = 1.40), the states (0.70, heading 0) and (0.70, heading 30 deg), the
+!> sum pair at Omega = 1.40 in both orders. By Green's
+!> theorem with psi_k at Omega (QTFPotential header, the sum),
+!>    i Omega rho int_S phi_D,FS n_k dS = s_FS (i Omega rho / g) int_F psi_k Q_S dS = FS_inner + FS_outer,
+!> so parts slice 3 of direct_at_omega (KERNEL_SUM) equals FS_inner + FS_outer of fs_pair_terms (KERNEL_SUM) to the mesh
+!> error, measured over max |T+_pot| (the body terms of potential_pair with KERNEL_SUM plus the free-surface terms).
+!> With the opposite s_D the slice changes sign: the gap must then be of order 1 (above 10x the limit), so s_D carries
+!> over to the sum.
+subroutine test_direct_fs_sum_equals_indirect(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om(2) = [0.70d0, 0.70d0], be(2) = [0d0, 0.5235987755982988d0], omega = 1.40d0
+  type(panel_mesh) :: full, mesh, fm
+  type(surface_geom) :: geom
+  type(cs_points) :: pts, circle
+  type(direct_fs_data) :: dfs
+  type(first_order_state), allocatable :: store(:, :)
+  complex(8), allocatable :: store_wl(:, :, :), psi(:, :), psi_pts(:, :), gpsi(:, :, :), pwl(:, :)
+  type(fs_point_field), allocatable, target :: fa(:, :, :), ia(:, :, :)
+  type(pw_set), allocatable, target :: pwa(:, :)
+  type(pw_set) :: pwp(6)
+  real(8), allocatable :: delta(:)
+  complex(8) :: t(6, 2), parts(6, 2, 3), terms(6, NPOT_TERMS), tin(6), tout(6), tfs(6, 2), tpot(6, 2)
+  integer :: pairs(4, 2), npc, mmax, nev, p
+  real(8) :: centre(2), radius, gap, opp, rel_fs, body_gap
+  integer(8) :: c0, c1, rate
+  character(len=400) :: info
+
+  call system_clock(c0, rate)
+  call read_hull(round_mesh, [0d0, 0d0, -5d0], full, error)
+  if (allocated(error)) return
+  call set_omega(rd_omegas(3), rd_depth)
+  call load_panels(full, 0, 0, mesh)
+  call check(error, mesh%n == 480, "the fixture is not the 480-panel rounded cylinder")
+  if (allocated(error)) return
+  ! The inner mesh for Omega+ (panels of a tenth of the wavelength of psi at Omega+), not for the first-order 1.1 rad/s
+  call fs_common(mesh, rd_depth, omega, geom, pts, fm, centre, radius, npc, delta, circle, mmax, nev, error)
+  if (allocated(error)) return
+  print '(4x,a,i0,a,i0,a,i0)', "inner points ", pts%n, ", M ", mmax, ", N_ev ", nev
+  call fs_states(mesh, geom, pts, delta, circle, centre, radius, rd_depth, mmax, nev, om, be, rd_motions_two(), 8, &
+                 store, store_wl, fa, ia, pwa)
+  allocate (gpsi(3, mesh%n, 6), pwl(geom%nwl, 6))
+  pairs(:, 1) = [1, 1, 2, 1]
+  pairs(:, 2) = [2, 1, 1, 1]
+  call radiation_at(omega, mesh%nbase)
+  NTHREAD = 8
+  call psi_fs(mesh, pts, circle, centre, radius, rd_depth, mmax, nev, omega, psi, psi_pts, pwp)
+  call psi_surface_gradient(mesh, geom, psi, gpsi)
+  call psi_waterline(mesh, geom, psi, gpsi, pwl)
+  do p = 1, 2
+    associate (s1 => store(pairs(1, p), 1), s2 => store(pairs(3, p), 1), i1 => pairs(1, p), i2 => pairs(3, p))
+      call potential_pair(mesh, geom, s1, s2, store_wl(:, i1, 1), store_wl(:, i2, 1), psi, gpsi, pwl, omega, s1%rho, &
+                          wave_gravity(s1%omega, s1%k, s1%h), terms, kernel=KERNEL_SUM)
+      call fs_pair_terms(s1%omega, fa(:, i1, 1), ia(:, i1, 1), pwa(i1, 1), s1%beta, s1%k, &
+                         s2%omega, fa(:, i2, 1), ia(:, i2, 1), pwa(i2, 1), s2%beta, s2%k, &
+                         psi_pts, pwp, pts%w, npc, s1%g, s1%rho, tin, tout, kernel=KERNEL_SUM)
+    end associate
+    tfs(:, p) = tin + tout
+    tpot(:, p) = sum(terms, dim=2) + tfs(:, p)
+  end do
+  call direct_setup(mesh, DEFAULT_EDGE_DEG)
+  call direct_fs_setup(mesh, pts, fm, centre, radius, rd_depth, omega, .false., dfs)
+  dfs%f => fa
+  dfs%inc => ia
+  dfs%pw => pwa
+  dfs%np = npc
+  call direct_at_omega(mesh, geom, omega, store, store_wl, pairs, t, parts=parts, fs=dfs, kernels=[KERNEL_SUM, KERNEL_SUM])
+  NTHREAD = 1
+  gap = maxval(abs(parts(:, :, 3) - tfs)) / maxval(abs(tpot))
+  opp = maxval(abs(-parts(:, :, 3) - tfs)) / maxval(abs(tpot))
+  rel_fs = maxval(abs(tfs)) / maxval(abs(tpot))
+  ! The body-forced part alone (direct slices 1 + 2 against the body terms), the mesh error of Task 2 at this Omega
+  body_gap = maxval(abs(parts(:, :, 1) + parts(:, :, 2) - (tpot - tfs))) / maxval(abs(tpot))
+  do p = 1, 2
+    print '(6x,a,i0,a,6es11.3)', "pair ", p, " slice 3 ", abs(parts(:, p, 3))
+    print '(6x,a,i0,a,6es11.3)', "pair ", p, " T_FS    ", abs(tfs(:, p))
+  end do
+  call system_clock(c1)
+  write (info, '(a,es10.3,a,es9.2,a,es10.3,a,es10.3,a,es10.3,a,i0,a,i0,a,i0,a,f7.1,a)') &
+    "sum at Omega 1.40: |slice 3 - (FS_inner + FS_outer)| / max |T+_pot| ", gap, " (limit ", fs_sum_indirect_limit, &
+    "); opposite s_D ", opp, "; max |T_FS| / max |T+_pot| ", rel_fs, "; body part gap ", body_gap, "; mg ", dfs%mg, &
+    ", nev ", dfs%nev, ", mcut ", dfs%mcut, "; ", real(c1 - c0, 8) / real(rate, 8), " s"
+  print '(4x,a)', trim(info)
+  call check(error, gap <= fs_sum_indirect_limit .and. gap <= 1d-2 .and. opp > 10d0 * fs_sum_indirect_limit, trim(info))
+end subroutine test_direct_fs_sum_equals_indirect
 
 !> Rigid motions of two states (6, 2), the first two of rd_motions
 function rd_motions_two() result(x)
