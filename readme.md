@@ -4,11 +4,20 @@ HAMS-MREL (Hydrodynamic Analysis of Marine Structures – Marine Renewable Energ
 
 HAMS-MREL is developed as an extension of the original [HAMS solver](https://github.com/YingyiLiu/HAMS). While HAMS focuses on single-body hydrodynamic analysis, HAMS-MREL expands the framework to handle interactions among multiple bodies. Other features include free surface elevation and pressure fields, suppression of irregular frequencies, global symmetry, generalized modes, an optional GMRES iterative solver with H-matrix acceleration for large multi-body problems, and integration with WEC-Sim.
 
-Current version: 2.3.3 (The repository has migrated from https://github.com/vaibhavraghavan/HAMS-MREL to keep all open source tools from MREL under one unbrella. For v2.0 to v2.2, got to the old repository.)
+Current version: 2.3.4 (The repository has migrated from https://github.com/vaibhavraghavan/HAMS-MREL to keep all open source tools from MREL under one unbrella. For v2.0 to v2.2, got to the old repository.)
 
 The binary for Windows is available in the [Releases](https://github.com/Marine-Renewable-Energies-Lab/HAMS-MREL/releases). This was compiled using OneAPI 2022 (ifort) and Visual Studio 2019. 
 
 ## Release notes
+
+v2.3.4 corrects these errors:
+
+- **Irregular-frequency removal (`IRSP = 1`), lid points near the waterline.** The wave part of the Green function is now integrated over nearby panels for lid rows, instead of taken at the panel centre. Lids made of thin triangles at the wall gave large errors at short periods. Hull rows, runs without a lid, and the zero- and infinite-frequency limits do not change. See [lid mesh requirements](docs/input_files.md#lid-mesh-requirements).
+- **Irregular-frequency removal, least squares.** The lid system is now solved with the conjugate transpose, Aᴴ A x = Aᴴ b, which is the least-squares solution for complex A. Runs without a lid do not change.
+- **Reference length in the WAMIT-format files.** `.1`, `.3`, `.4` and `.hst` now use the WAMIT powers of the reference length L. Only runs with L ≠ 1 change.
+- **Phase in `ExcForce.3`.** The phase is now in degrees; it was 57.3 times too large. Magnitude, real and imaginary parts were already right.
+
+The docs now give the lid mesh rules and say what `ISOL` selects.
 
 v2.3.3 corrects these errors in first-order results:
 
