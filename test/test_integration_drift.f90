@@ -305,11 +305,12 @@ module test_integration_drift
     ! The indirect sum QTF .11s against the direct .12s of qtf_directsum_irsp: 1.3 x the 7c-2 gap of direct_sum_irsp_full
     ! (1.375e-1 measured, directsum_irsp_limit), Phase 6b Task 3
     real(8), parameter :: indsum_vs_direct_limit = 1.79d-1
-    ! The half mesh against the whole mesh in T+_pot (indirect_sum_half_matches_full): 2 x measured, at most 1e-5
+    ! The half mesh against the whole mesh in T+_pot (indirect_sum_half_matches_full): 3.278e-8 measured, limit 1e-6 as
+    ! directsum_half_limit (same reason), within the plan's "at most 1e-5"
+    real(8), parameter :: indsum_half_limit = 1d-6
     ! The GMRES solve against the LU solve in T+_pot (indirect_sum_isolv_factored): GMRES stops at ITER_TOL = 1e-4 (relative,
     ! test_integration_gmres), so the radiation solutions differ at that level; 6.886e-4 measured, here 1.45 x
     real(8), parameter :: indsum_gmres_limit = 1d-3
-    real(8), parameter :: indsum_half_limit = 6.6d-8   ! 3.278e-8 measured
     integer, parameter :: directsum_half_rows = 108
     ! The sums of qtf_directsum_round that are kept are below the estimate of the lowest irregular frequency, 1.538 rad/s
     real(8), parameter :: sum_cutoff_bound = 1.54d0
@@ -6549,8 +6550,8 @@ contains
     subroutine run_qtf_indsum_cases(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=21), parameter :: cases(9) = [character(len=21) :: "qtf_indsum_round", "qtf_indsum_irsp", &
-            "qtf_indsum_gmres", "qtf_indsum_gmres_dir", "qtf_indsum_half", "qtf_indsum_halfref", "qtf_indsum_two", "qtf_indsum_two_dir", &
-            "qtf_indsum_two1"]
+            "qtf_indsum_gmres", "qtf_indsum_gmres_dir", "qtf_indsum_half", "qtf_indsum_halfref", "qtf_indsum_two", &
+            "qtf_indsum_two_dir", "qtf_indsum_two1"]
         type(error_type), allocatable :: one
         integer(8) :: t0, t1, rate
         integer :: c

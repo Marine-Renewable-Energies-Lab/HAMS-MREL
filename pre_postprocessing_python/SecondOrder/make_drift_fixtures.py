@@ -980,9 +980,9 @@ def write_qtf_directsum_fixtures(data):
 def write_qtf_indsum_fixtures(data):
     """Fixtures of the indirect sum frequency QTF (qtf_direct = 0, QTF_Indirect.11s), Phase 6b Task 3: the 7c-2 sum fixtures
     with qtf_direct = 0 (qtf_indsum_round, _irsp, _half, _halfref), qtf_indsum_gmres and _gmres_dir (qtf_indsum_irsp with the
-    GMRES solve, Solver_type 2, without and with the direct solve), and the two hulls of qtf_directfs_two with qtf = 3: qtf_indsum_two, its qtf_direct = 1 twin
-    qtf_indsum_two_dir and its qtf = 1 twin qtf_indsum_two1. The two-hull cases set qtf_fs_panel and qtf_fs_modes, so that the
-    difference files do not depend on qtf = 3 (7c-2 final review)."""
+    GMRES solve, Solver_type 2, without and with the direct solve), and the two hulls of qtf_directfs_two with qtf = 3:
+    qtf_indsum_two, its qtf_direct = 1 twin qtf_indsum_two_dir and its qtf = 1 twin qtf_indsum_two1. The two-hull
+    cases set qtf_fs_panel and qtf_fs_modes, so that the difference files do not depend on qtf = 3 (7c-2 final review)."""
     inputs = ("HullMesh.pnl", "Hydrostatic.in", "ControlFile.in")
     # qtf_directsum_round and qtf_directsum_irsp with qtf_direct = 0
     target = case_dir(data, "qtf_indsum_round")
