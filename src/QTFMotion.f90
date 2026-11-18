@@ -44,6 +44,7 @@ MODULE QTFMotion
    !    [-Omega^2 (M + A) - i Omega (B + B_ext) + C + K_ext] xi = F_ext                                    (2)
    ! motion_matrix returns the matrix of (2). SolveMotion writes +i omega (BDMP + BLNR) because HAMS's first-order motions
    ! are in e^{+i omega t} (build_state of FirstOrderState conjugates DSPL); here everything is e^{-i Omega t}.
+   ! motion_solve_omega solves (2) for all force columns at one Omega and flags an ill-conditioned matrix.
    !
    ! Source: Newman, J.N. (1977). Marine Hydrodynamics. MIT Press. Chapter 6: the radiation force and the equations of
    ! motion, and section 6.15, reciprocity (A and B symmetric).
@@ -51,7 +52,7 @@ MODULE QTFMotion
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: radiation_coefficients, motion_matrix
+   PUBLIC :: radiation_coefficients, motion_matrix, motion_solve_omega
 
 CONTAINS
 
@@ -109,5 +110,64 @@ CONTAINS
       END IF
       lhs = CMPLX(-omega**2*(mass + a) + c + k_ext, -omega*(b + b_ext), KIND=8)
    END SUBROUTINE motion_matrix
+
+   SUBROUTINE motion_solve_omega(lhs, forces, xi, ok, rcond)
+      ! The motion xi of (2) at one Omega for all npair force columns: lhs xi = forces, lhs of motion_matrix, forces
+      ! the e^{-i Omega t} exciting forces (unscaled). One LU factorisation (ZGETRF) of a copy of lhs, then ZGETRS on all
+      ! columns at once. The reciprocal condition number in the 1-norm, rcond = 1/(||lhs||_1 ||lhs^-1||_1), is estimated
+      ! by ZGECON from the LU factors and ||lhs||_1 (ZLANGE '1' before factoring), LAPACK Users' Guide, 3rd ed. (Anderson
+      ! et al. 1999), section 4.4 (error bounds for linear equation solving), and the ZGECON reference.
+      ! ok = rcond >= RCOND_MIN. When not ok, or when ZGETRF finds an exactly zero pivot (info > 0, rcond = 0), xi is
+      ! zero (R6): a free body with no restoring in some mode at Omega -> 0 has no bounded motion there, and the caller
+      ! flags the frequency instead of writing a meaningless value.
+      !   lhs(n, n), forces(n, npair), xi(n, npair)
+      COMPLEX(8), INTENT(IN) :: lhs(:, :), forces(:, :)
+      COMPLEX(8), INTENT(OUT) :: xi(:, :)
+      LOGICAL, INTENT(OUT) :: ok
+      REAL(8), INTENT(OUT) :: rcond
+      ! Below this the solve loses more than 12 of the 16 digits of the forces
+      REAL(8), PARAMETER :: RCOND_MIN = 1D-12
+      REAL(8), EXTERNAL :: ZLANGE
+      EXTERNAL :: ZGETRF, ZGETRS, ZGECON
+      COMPLEX(8), ALLOCATABLE :: lu(:, :), work(:)
+      REAL(8), ALLOCATABLE :: rwork(:)
+      INTEGER, ALLOCATABLE :: ipiv(:)
+      REAL(8) :: anorm
+      INTEGER :: n, npair, info
+
+      n = SIZE(lhs, 1)
+      npair = SIZE(forces, 2)
+      IF (n < 1 .OR. SIZE(lhs, 2) /= n .OR. SIZE(forces, 1) /= n .OR. ANY(SHAPE(xi) /= [n, npair])) THEN
+         WRITE (*, *) 'motion_solve_omega: lhs is not square, or forces or xi does not have its size'
+         ERROR STOP 1
+      END IF
+      ALLOCATE (lu(n, n), ipiv(n), work(2*n), rwork(2*n))
+      lu = lhs
+      anorm = ZLANGE('1', n, n, lu, n, rwork)
+      CALL ZGETRF(n, n, lu, n, ipiv, info)
+      IF (info < 0) THEN
+         WRITE (*, *) 'motion_solve_omega: ZGETRF argument ', -info, ' is illegal'
+         ERROR STOP 1
+      ELSE IF (info > 0) THEN
+         rcond = 0D0
+      ELSE
+         CALL ZGECON('1', n, lu, n, anorm, rcond, work, rwork, info)
+         IF (info /= 0) THEN
+            WRITE (*, *) 'motion_solve_omega: ZGECON argument ', -info, ' is illegal'
+            ERROR STOP 1
+         END IF
+      END IF
+      ok = rcond >= RCOND_MIN
+      IF (.NOT. ok .OR. npair == 0) THEN
+         xi = (0D0, 0D0)
+         RETURN
+      END IF
+      xi = forces
+      CALL ZGETRS('N', n, npair, lu, n, ipiv, xi, n, info)
+      IF (info /= 0) THEN
+         WRITE (*, *) 'motion_solve_omega: ZGETRS argument ', -info, ' is illegal'
+         ERROR STOP 1
+      END IF
+   END SUBROUTINE motion_solve_omega
 
 END MODULE QTFMotion

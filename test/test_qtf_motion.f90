@@ -1,21 +1,25 @@
 !> Unit tests of the second-order motion of free bodies (Phase 6c, QTFMotion): the added mass and damping at Omega from
 !> the stored radiation potentials psi (radiation_coefficients) against RFORCE and RFORCE_MULTI of the first-order solve,
 !> on a half mesh, for reciprocity, at two sum frequencies against the semi-analytical sharp cylinder, and the matrix of
-!> the equation of motion (motion_matrix).
+!> the equation of motion (motion_matrix); the motion solve per Omega (motion_solve_omega) against SolveMotion at a
+!> main-grid frequency, a closed form, the static limit, a singular system and column by column.
 !> The radiation solves set module globals (the mesh arrays, the stored Green function, the wave), so the suite runs
 !> serially (see unit_tester.f90).
 module test_qtf_motion
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use HAMS_mod, only : NTHREAD, ISOLV
-  use WaveDyn_mod, only : WK, W1, TP
+  use WaveDyn_mod, only : WK, W1, TP, BETA, AMP, OUFR, BLNR, BQDR
+  use Body_mod, only : MATX, CRS, KSTF, REFL
   use Const_mod, only : RHO
-  use PanelMesh_mod, only : ISX, ISY, NSYS
+  use PanelMesh_mod, only : ISX, ISY, NSYS, IPIV
   use Potentials_mod, only : MXPOT, MXPOT_MULTI_COMB
-  use PotentWavForce, only : RFORCE
+  use LinearMatrix_mod, only : AMAT
+  use AssbMatx, only : ASSB_DBC, DIFFRACTION_SOLVER
+  use PotentWavForce, only : RFORCE, EFORCE
   use PotentWavForceMulti, only : RFORCE_MULTI
   use SecondOrderTypes, only : panel_mesh
   use FirstOrderState, only : radiation_psi
-  use QTFMotion, only : radiation_coefficients, motion_matrix
+  use QTFMotion, only : radiation_coefficients, motion_matrix, motion_solve_omega
   use second_order_fixtures, only : read_pnl_hull
   use test_waterline_field, only : set_wave, load_panels, load_multi
   use test_qtf_direct, only : radiation_at
@@ -71,6 +75,25 @@ module test_qtf_motion
   ! order agree, and the gap is the mesh error of the 448 panels, not larger at the sum frequencies than on the grid
   ! except for B at 2.8 rad/s.
   real(8), parameter :: sum_limit_a = 5.24d-2, sum_limit_b = 1.68d-1
+  ! The first-order limit (R4): motion_solve_omega at omega = 0.7 rad/s against conj(DSPL) of SolveMotion, relative to
+  ! max |DSPL|. The two sides differ only by a, b of radiation_coefficients against AMAS, BDMP of RFORCE (rounding, see
+  ! rforce_limit) and the two LU solves
+  real(8), parameter :: first_order_limit = 1d-10
+  ! The closed form of one degree of freedom and the static diagonal: rounding of one complex division per entry
+  real(8), parameter :: closed_limit = 1d-14
+  ! The free body of the first-order limit: M and C of qtf_round_body/input/Hydrostatic.in (the hull of round_mesh), an
+  ! external spring in surge, sway, heave and yaw so that C + K_ext is regular, and an external linear damper in surge
+  ! and heave so that the sign of -i omega B_ext is pinned as well. BQDR = 0 (SolveMotion's linear branch).
+  real(8), parameter :: round_mass(6, 6) = reshape([ &
+    3.00895d+06, 0d0, 0d0, 0d0, -1.45599d+07, 0d0, &
+    0d0, 3.00895d+06, 0d0, 1.45599d+07, 0d0, 0d0, &
+    0d0, 0d0, 3.00895d+06, 0d0, 0d0, 0d0, &
+    0d0, 1.45599d+07, 0d0, 1.66881d+08, 0d0, 0d0, &
+    -1.45599d+07, 0d0, 0d0, 0d0, 1.66881d+08, 0d0, &
+    0d0, 0d0, 0d0, 0d0, 0d0, 1.45239d+08], [6, 6])
+  real(8), parameter :: round_c_diag(6) = [0d0, 0d0, 3.06109d+06, 7.60372d+07, 7.60372d+07, 0d0]
+  real(8), parameter :: round_k_diag(6) = [1d6, 1d6, 5d5, 0d0, 0d0, 1d8]
+  real(8), parameter :: round_blnr_diag(6) = [2d5, 0d0, 1d5, 0d0, 0d0, 0d0]
 
 contains
 
@@ -84,7 +107,12 @@ contains
       new_unittest("radiation_coefficients_two_bodies", test_two_bodies), &
       new_unittest("radiation_coefficients_symmetric", test_symmetric), &
       new_unittest("motion_damping_includes_blnr", test_blnr), &
-      new_unittest("radiation_coefficients_sum_frequency", test_sum_frequency) &
+      new_unittest("radiation_coefficients_sum_frequency", test_sum_frequency), &
+      new_unittest("motion_first_order_limit", test_first_order_limit), &
+      new_unittest("motion_one_dof", test_one_dof), &
+      new_unittest("motion_static_diagonal", test_static_diagonal), &
+      new_unittest("motion_singular_flagged", test_singular_flagged), &
+      new_unittest("motion_columns_independent", test_columns_independent) &
     ]
   end subroutine collect_qtf_motion
 
@@ -371,5 +399,236 @@ contains
       " (limit ", sum_limit_a, "), of B ", worst_b, " (limit ", sum_limit_b
     call check(error, worst_a <= sum_limit_a .and. worst_b <= sum_limit_b, trim(line)//")")
   end subroutine test_sum_frequency
+
+  !> The first-order limit (R4). At the main-grid frequency 0.7 rad/s of qtf_round_body, HAMS_Prog's sequence in-process
+  !> (the radiation solve, RFORCE, ASSB_DBC and DIFFRACTION_SOLVER on the factored AMAT, EFORCE, SolveMotion) gives DSPL
+  !> in e^{+i omega t}. SolveMotion solves LEFT DSPL = RIGHT with
+  !>    LEFT = -omega^2 (MATX + AMAS) + i omega (BDMP + BLNR) + CRS + KSTF,   RIGHT = -Im EXFC - i Re EXFC = -i conj(EXFC).
+  !> The conjugate of that system is conj(LEFT) conj(DSPL) = i EXFC, and conj(LEFT) is the e^{-i omega t} matrix (2) of
+  !> QTFMotion. So the internal exciting force in e^{-i Omega t} is F = i EXFC, and motion_solve_omega of motion_matrix
+  !> (on a, b of radiation_coefficients of the same solve) with F gives xi = conj(DSPL). The e^{-i Omega t} side is built
+  !> by motion_matrix alone, so this pins its -i Omega (B + B_ext) against SolveMotion's +i omega.
+  subroutine test_first_order_limit(error)
+    type(error_type), allocatable, intent(out) :: error
+    interface
+      subroutine SolveMotion(w, t, oufr_in, beta_in, amp_in, amas_in, bdmp_in, blnr_in, bqdr_in, exfc_in, dspl_out)
+        real(8), intent(in) :: w, t, oufr_in, beta_in, amp_in
+        real(8), intent(in) :: amas_in(6, 6), bdmp_in(6, 6), blnr_in(6, 6), bqdr_in(6, 6)
+        complex(8), intent(in) :: exfc_in(6)
+        complex(8), intent(out) :: dspl_out(6)
+      end subroutine SolveMotion
+    end interface
+    ! Units written by EFORCE (21-26, 62) and SolveMotion (63), opened by InputFiles in a run
+    integer, parameter :: units(8) = [21, 22, 23, 24, 25, 26, 62, 63]
+    real(8), parameter :: om = 0.7d0
+    type(panel_mesh) :: mesh
+    real(8), allocatable :: a(:, :), b(:, :), amas(:, :), bdmp(:, :)
+    complex(8), allocatable :: psi(:, :), bdmat(:, :)
+    real(8) :: saved(6, 6, 5), refl_saved, rcond, worst, scale
+    complex(8) :: exfc(6), dspl(6), lhs(6, 6), force(6, 1), xi(6, 1)
+    logical :: was_open(size(units)), ok
+    integer :: md, u
+    character(len=200) :: line
+
+    call load_hull(round_mesh, round_depth, 0, mesh, error)
+    if (allocated(error)) return
+    call coefficients_at(mesh, om, .false., a, b, psi)
+    call rforce_reference(0, mesh%nbase, amas, bdmp)
+    allocate(bdmat(mesh%nbase, NSYS))
+    call ASSB_DBC(bdmat, mesh%nbase, NSYS)
+    call DIFFRACTION_SOLVER(AMAT, bdmat, IPIV, MXPOT, mesh%nbase, NSYS)
+    ! The free body in HAMS's globals, as ReadHydroStatic sets them; the old values are put back at the end
+    saved(:, :, 1) = MATX
+    saved(:, :, 2) = CRS
+    saved(:, :, 3) = KSTF
+    saved(:, :, 4) = BLNR
+    saved(:, :, 5) = BQDR
+    refl_saved = REFL
+    MATX = round_mass
+    CRS = 0d0
+    KSTF = 0d0
+    BLNR = 0d0
+    do md = 1, 6
+      CRS(md, md) = round_c_diag(md)
+      KSTF(md, md) = round_k_diag(md)
+      BLNR(md, md) = round_blnr_diag(md)
+    end do
+    BQDR = 0d0
+    REFL = 1d0
+    do u = 1, size(units)
+      inquire(unit=units(u), opened=was_open(u))
+      if (.not. was_open(u)) open(unit=units(u), status="scratch")
+    end do
+    call EFORCE(WK, W1, TP, BETA, AMP, exfc)
+    call SolveMotion(W1, TP, OUFR, BETA, AMP, amas, bdmp, BLNR, BQDR, exfc, dspl)
+    do u = 1, size(units)
+      if (.not. was_open(u)) close(units(u))
+    end do
+    ! The e^{-i Omega t} side: Task 2's matrix on the stored psi, and F = i EXFC
+    call motion_matrix(om, MATX, a, b, BLNR, CRS, KSTF, lhs)
+    force(:, 1) = (0d0, 1d0)*exfc
+    call motion_solve_omega(lhs, force, xi, ok, rcond)
+    MATX = saved(:, :, 1)
+    CRS = saved(:, :, 2)
+    KSTF = saved(:, :, 3)
+    BLNR = saved(:, :, 4)
+    BQDR = saved(:, :, 5)
+    REFL = refl_saved
+    call restore_symmetry()
+    scale = maxval(abs(dspl))
+    worst = maxval(abs(xi(:, 1) - conjg(dspl)))/scale
+    do md = 1, 6
+      write(line, '(a,i0,a,es24.16,a,es24.16,a,es10.2)') "FIRSTORDER mode ", md, ", |conj(DSPL)| ", abs(dspl(md)), &
+        ", |xi| ", abs(xi(md, 1)), ", relative ", abs(xi(md, 1) - conjg(dspl(md)))/max(abs(dspl(md)), tiny(1d0))
+      print '(4x,a)', trim(line)
+    end do
+    write(line, '(a,l1,a,es10.2,a,es10.2)') "omega 0.7: ok ", ok, ", rcond ", rcond, &
+      ", |xi - conj(DSPL)| relative to max |DSPL| ", worst
+    print '(4x,a)', trim(line)
+    call check(error, ok .and. worst <= first_order_limit, line)
+  end subroutine test_first_order_limit
+
+  !> One degree of freedom, m = 2, a = 0.5, b = 0.3, c = 4 at Omega = 1.1 with F = 1 + 2i, against the closed form
+  !> xi = F/(c - Omega^2 (m + a) - i Omega b)
+  subroutine test_one_dof(error)
+    type(error_type), allocatable, intent(out) :: error
+    real(8), parameter :: m = 2d0, am = 0.5d0, bm = 0.3d0, cm = 4d0, om = 1.1d0
+    complex(8), parameter :: f = (1d0, 2d0)
+    real(8) :: zero(1, 1), rcond, w
+    complex(8) :: lhs(1, 1), force(1, 1), xi(1, 1), expected
+    logical :: ok
+    character(len=200) :: line
+
+    zero = 0d0
+    call motion_matrix(om, reshape([m], [1, 1]), reshape([am], [1, 1]), reshape([bm], [1, 1]), zero, &
+                       reshape([cm], [1, 1]), zero, lhs)
+    force = f
+    call motion_solve_omega(lhs, force, xi, ok, rcond)
+    expected = f/cmplx(cm - om**2*(m + am), -om*bm, kind=8)
+    w = abs(xi(1, 1) - expected)/abs(expected)
+    write(line, '(a,l1,a,es10.2,a,es10.2)') "one dof: ok ", ok, ", rcond ", rcond, ", relative to the closed form ", w
+    print '(4x,a)', trim(line)
+    call check(error, ok .and. w <= closed_limit, line)
+  end subroutine test_one_dof
+
+  !> Omega = 0 with C + K_ext regular and diagonal: xi = (C + K_ext)^-1 F, whatever M, A and B are
+  subroutine test_static_diagonal(error)
+    type(error_type), allocatable, intent(out) :: error
+    integer, parameter :: n = 6, npair = 2
+    real(8) :: mass(n, n), a(n, n), b(n, n), b_ext(n, n), c(n, n), k_ext(n, n), rcond, w
+    complex(8) :: lhs(n, n), force(n, npair), xi(n, npair), expected(n, npair)
+    logical :: ok
+    integer :: i, j
+    character(len=200) :: line
+
+    c = 0d0
+    k_ext = 0d0
+    do j = 1, n
+      do i = 1, n
+        mass(i, j) = 1d3*sin(0.3d0*i + 0.7d0*j)
+        a(i, j) = 1d2*cos(1.1d0*i - 0.4d0*j)
+        b(i, j) = 1d2*sin(0.9d0*i*j)
+        b_ext(i, j) = 1d1*cos(0.2d0*i + 1.3d0*j)
+      end do
+      c(j, j) = 1d5*j
+      k_ext(j, j) = 3d4 + 1d3*j*j
+      do i = 1, npair
+        force(j, i) = cmplx(cos(1.7d0*i*j), sin(0.4d0*i + j), kind=8)
+      end do
+    end do
+    call motion_matrix(0d0, mass, a, b, b_ext, c, k_ext, lhs)
+    call motion_solve_omega(lhs, force, xi, ok, rcond)
+    do j = 1, n
+      expected(j, :) = force(j, :)/(c(j, j) + k_ext(j, j))
+    end do
+    w = maxval(abs(xi - expected)/abs(expected))
+    write(line, '(a,l1,a,es10.2,a,es10.2)') "static diagonal: ok ", ok, ", rcond ", rcond, &
+      ", relative to (C + K_ext)^-1 F ", w
+    print '(4x,a)', trim(line)
+    call check(error, ok .and. w <= closed_limit, line)
+  end subroutine test_static_diagonal
+
+  !> Omega = 0 with no stiffness in surge: flagged (ok = .false.) with xi = 0. Once with C(1, 1) = 0 (exactly singular,
+  !> ZGETRF info > 0) and once with C(1, 1) = 1e-8 against 1e6 to 6e6 of the others (factored, rcond about 2e-15, below
+  !> the bound 1e-12)
+  subroutine test_singular_flagged(error)
+    type(error_type), allocatable, intent(out) :: error
+    integer, parameter :: n = 6
+    real(8) :: zero(n, n), c(n, n), rcond_exact, rcond_near
+    complex(8) :: lhs(n, n), force(n, 2), xi_exact(n, 2), xi_near(n, 2)
+    logical :: ok_exact, ok_near
+    integer :: j
+    character(len=200) :: line
+
+    zero = 0d0
+    c = 0d0
+    do j = 1, n
+      c(j, j) = 1d6*j
+      force(j, :) = [(1d0, 1d0), (2d0, -1d0)]
+    end do
+    c(1, 1) = 0d0
+    call motion_matrix(0d0, zero, zero, zero, zero, c, zero, lhs)
+    xi_exact = (9d0, 9d0)
+    call motion_solve_omega(lhs, force, xi_exact, ok_exact, rcond_exact)
+    c(1, 1) = 1d-8
+    call motion_matrix(0d0, zero, zero, zero, zero, c, zero, lhs)
+    xi_near = (9d0, 9d0)
+    call motion_solve_omega(lhs, force, xi_near, ok_near, rcond_near)
+    write(line, '(a,l1,a,es10.2,a,l1,a,es10.2)') "C(1, 1) = 0: ok ", ok_exact, ", rcond ", rcond_exact, &
+      "; C(1, 1) = 1e-8: ok ", ok_near, ", rcond ", rcond_near
+    print '(4x,a)', trim(line)
+    call check(error, .not. ok_exact .and. rcond_exact == 0d0 .and. all(xi_exact == (0d0, 0d0)) .and. &
+               .not. ok_near .and. rcond_near < 1d-12 .and. all(xi_near == (0d0, 0d0)), line)
+  end subroutine test_singular_flagged
+
+  !> Each force column is solved on its own. Bit for bit: ok and rcond of a three-column call equal those of the single
+  !> calls, lhs is left as it was, and changing column 2 changes no bit of columns 1 and 3 (no mixing between columns).
+  !> Against the three single-column calls, xi agrees to rounding only (column_limit): MKL's ZGETRS takes other kernels
+  !> for one right-hand side than for three (2.3e-15 measured), so the columns are equal to the bit only within one call.
+  subroutine test_columns_independent(error)
+    type(error_type), allocatable, intent(out) :: error
+    integer, parameter :: n = 12, npair = 3
+    ! Rounding of the two triangular solves, relative to max |xi| of the column: 1e-14 (2.3e-15 measured, 1/rcond = 360)
+    real(8), parameter :: column_limit = 1d-14
+    real(8) :: mass(n, n), a(n, n), b(n, n), b_ext(n, n), c(n, n), k_ext(n, n), rcond, rcond1, rcond2, w
+    complex(8) :: lhs(n, n), lhs_in(n, n), force(n, npair), xi(n, npair), xi1(n, 1), xi2(n, npair)
+    real(8), parameter :: om = 0.9d0
+    logical :: ok, ok1, ok2, same
+    integer :: i, j
+    character(len=200) :: line
+
+    do j = 1, n
+      do i = 1, n
+        mass(i, j) = sin(0.3d0*i + 0.7d0*j)
+        a(i, j) = cos(1.1d0*i - 0.4d0*j)
+        b(i, j) = sin(0.9d0*i*j)
+        b_ext(i, j) = cos(0.2d0*i + 1.3d0*j)
+        c(i, j) = 5d0*sin(1.7d0*i - 0.6d0*j)
+        k_ext(i, j) = 2d0*cos(0.5d0*i*j)
+      end do
+      mass(j, j) = mass(j, j) + 10d0
+      do i = 1, npair
+        force(j, i) = cmplx(cos(1.7d0*i*j), sin(0.4d0*i + j), kind=8)
+      end do
+    end do
+    call motion_matrix(om, mass, a, b, b_ext, c, k_ext, lhs)
+    lhs_in = lhs
+    call motion_solve_omega(lhs, force, xi, ok, rcond)
+    same = ok .and. all(lhs == lhs_in)
+    w = 0d0
+    do i = 1, npair
+      call motion_solve_omega(lhs, force(:, i:i), xi1, ok1, rcond1)
+      same = same .and. ok1 .and. rcond1 == rcond
+      w = max(w, maxval(abs(xi1(:, 1) - xi(:, i)))/maxval(abs(xi(:, i))))
+    end do
+    force(:, 2) = 3d0*force(:, 2) + (0d0, 1d0)
+    call motion_solve_omega(lhs, force, xi2, ok2, rcond2)
+    same = same .and. ok2 .and. rcond2 == rcond .and. all(xi2(:, 1) == xi(:, 1)) .and. all(xi2(:, 3) == xi(:, 3)) .and. &
+           any(xi2(:, 2) /= xi(:, 2))
+    write(line, '(a,l1,a,es10.2,a,l1,a,es10.2)') "three columns: ok ", ok, ", rcond ", rcond, &
+      ", bitwise checks ", same, "; against single calls, relative ", w
+    print '(4x,a)', trim(line)
+    call check(error, same .and. w <= column_limit, line)
+  end subroutine test_columns_independent
 
 end module test_qtf_motion
