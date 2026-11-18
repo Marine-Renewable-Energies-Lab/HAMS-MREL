@@ -522,7 +522,8 @@ contains
             new_unittest("indirect_sum_two_bodies", indirect_sum_two_bodies), &
             new_unittest("indirect_sum_qtf3_diff_unchanged", indirect_sum_qtf3_diff_unchanged), &
             new_unittest("indirect_sum_isolv_factored", indirect_sum_isolv_factored), &
-            new_unittest("indirect_sum_off_unchanged", indirect_sum_off_unchanged) &
+            new_unittest("indirect_sum_off_unchanged", indirect_sum_off_unchanged), &
+            new_unittest("indirect_sum_log_lines", indirect_sum_log_lines) &
         ]
     end subroutine collect_tests_drift
 
@@ -6814,5 +6815,28 @@ contains
             if (allocated(error)) return
         end do
     end subroutine indirect_sum_off_unchanged
+
+    !> The log line of the QTF files names .11s for qtf = 2 (no .11d line: that run writes none) and both for qtf = 3
+    !> (end messages of Phase 6b, SecondOrderDriver.f90): qtf_indsum_irsp (qtf = 2, full) and qtf_indsum_round (qtf = 3, body)
+    subroutine indirect_sum_log_lines(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: full_s = "QTF_Indirect.11s: body forcing and the free-surface integral (qtf_terms = full)."
+        character(len=*), parameter :: body_s = "QTF_Indirect.11s: body forcing only, the free-surface integral is omitted."
+        character(len=*), parameter :: body_d = "QTF_Indirect.11d: body forcing only, the free-surface integral is omitted."
+        character(len=*), parameter :: full_d = "QTF_Indirect.11d: body forcing and the free-surface integral (qtf_terms = full)."
+        character(len=:), allocatable :: log2, log3
+
+        log2 = get_running_exe_path()//"qtf_indsum_irsp.log"
+        log3 = get_running_exe_path()//"qtf_indsum_round.log"
+        call check(error, count_log_lines(log2, full_s), 1, "qtf = 2: the .11s line")
+        if (allocated(error)) return
+        call check(error, count_log_lines(log2, "QTF_Indirect.11d"), 0, "qtf = 2: a .11d line")
+        if (allocated(error)) return
+        call check(error, count_log_lines(log3, body_s), 1, "qtf = 3: the .11s line")
+        if (allocated(error)) return
+        call check(error, count_log_lines(log3, body_d), 1, "qtf = 3: the .11d line")
+        if (allocated(error)) return
+        call check(error, count_log_lines(log3, full_d) + count_log_lines(log3, full_s), 0, "qtf = 3 body: a full line")
+    end subroutine indirect_sum_log_lines
 
 end module test_integration_drift

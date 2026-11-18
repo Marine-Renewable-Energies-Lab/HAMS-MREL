@@ -419,10 +419,19 @@ CONTAINS
          CALL qtf_set_control_surface(b2_pts)
          IF (opts%qtf_edge_weights) CALL b2_edge_weights(opts)
       END IF
-      IF (fs_terms) THEN
-         WRITE (*, '(a)') ' QTF_Indirect.11d: body forcing and the free-surface integral (qtf_terms = full).'
-      ELSE
-         WRITE (*, '(a)') ' QTF_Indirect.11d: body forcing only, the free-surface integral is omitted.'
+      IF (opts%qtf == 1 .OR. opts%qtf == 3) THEN
+         IF (fs_terms) THEN
+            WRITE (*, '(a)') ' QTF_Indirect.11d: body forcing and the free-surface integral (qtf_terms = full).'
+         ELSE
+            WRITE (*, '(a)') ' QTF_Indirect.11d: body forcing only, the free-surface integral is omitted.'
+         END IF
+      END IF
+      IF (opts%qtf >= 2) THEN
+         IF (fs_terms) THEN
+            WRITE (*, '(a)') ' QTF_Indirect.11s: body forcing and the free-surface integral (qtf_terms = full).'
+         ELSE
+            WRITE (*, '(a)') ' QTF_Indirect.11s: body forcing only, the free-surface integral is omitted.'
+         END IF
       END IF
       IF (opts%qtf_direct == 1) THEN
          ! The sharp-edge mask of the B2 right side, once for the run (ruling M9 of Phase 7a)
