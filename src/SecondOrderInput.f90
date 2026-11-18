@@ -144,8 +144,23 @@ CONTAINS
       ELSE IF (opts%qtf_direct == 1 .AND. opts%qtf == 0) THEN
          ok = .FALSE.
          msg = 'qtf_direct = 1 needs qtf = 1, 2 or 3 in SecondOrder.in.'
+      ELSE IF (opts%qtf_motion < 0 .OR. opts%qtf_motion > 1) THEN
+         ok = .FALSE.
+         msg = 'qtf_motion must be 0 or 1 in SecondOrder.in.'
+      ELSE IF (opts%qtf_motion == 1 .AND. &
+               .NOT. (opts%qtf_terms == QTF_TERMS_BODY .OR. opts%qtf_terms == QTF_TERMS_FULL)) THEN
+         ! the motion needs the potential part of the QTF, which qtf_terms = quadratic does not have
+         ok = .FALSE.
+         msg = 'qtf_motion = 1 needs qtf_terms = body or full in SecondOrder.in.'
+      ELSE IF (opts%qtf_motion == 1 .AND. opts%qtf == 0) THEN
+         ok = .FALSE.
+         msg = 'qtf_motion = 1 needs qtf = 1, 2 or 3 in SecondOrder.in.'
       END IF
       IF (.NOT. ok) RETURN
+
+      ! A fixed body does not move, so there is no second-order motion to compute; say so once
+      IF (opts%qtf_motion == 1 .AND. opts%motion_fixed) &
+         WRITE (*, '(a)') ' QTF note: qtf_motion = 1 with motion_state = fixed: no second-order motion is computed.'
 
       opts%active = opts%mean_drift > 0
       ! Without drift_methods the far-field method is used
@@ -252,6 +267,8 @@ CONTAINS
          opts%qtf_b2_given = .TRUE.
       CASE ('qtf_direct')
          READ(value, *, IOSTAT=ios) opts%qtf_direct
+      CASE ('qtf_motion')
+         READ(value, *, IOSTAT=ios) opts%qtf_motion
       CASE ('qtf_edge_weights')
          ! Read always, used with qtf_terms = body and qtf_b2 = control only; off by default (SecondOrderTypes)
          IF (value == 'on') THEN

@@ -73,6 +73,9 @@ MODULE SecondOrderTypes
       ! qtf_direct: 1 also solves the second-order boundary-value problem for the diffracted and radiated potential at each
       ! difference frequency (Phase 7a), and with qtf = 2 or 3 at the sum frequencies (Phase 7c-2); needs qtf_terms = body (or full)
       INTEGER :: qtf_direct = 0
+      ! qtf_motion: 1 also computes the second-order motion of free bodies from the QTF (Phase 6c); needs qtf_terms = body
+      ! (or full); a fixed body (motion_state = fixed) gets none
+      INTEGER :: qtf_motion = 0
       LOGICAL :: qtf_edge_weights = .FALSE.
       REAL(8) :: qtf_edge_angle = 45D0
       ! The keys were in SecondOrder.in, so that the log can say when they have no effect

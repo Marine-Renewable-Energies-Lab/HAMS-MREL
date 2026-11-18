@@ -46,7 +46,12 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("qtf_max_sw_negative", test_qtf_max_sw_negative), &
     new_unittest("qtf_sum_full_deep_stops", test_qtf_sum_full_deep_stops), &
     new_unittest("qtf_edge_keys", test_qtf_edge_keys), &
-    new_unittest("qtf_field_key", test_qtf_field_key) &
+    new_unittest("qtf_field_key", test_qtf_field_key), &
+    new_unittest("qtf_motion_default_off", test_qtf_motion_default_off), &
+    new_unittest("qtf_motion_needs_body", test_qtf_motion_needs_body), &
+    new_unittest("qtf_motion_needs_qtf", test_qtf_motion_needs_qtf), &
+    new_unittest("qtf_motion_bad_value", test_qtf_motion_bad_value), &
+    new_unittest("qtf_motion_fixed_skips", test_qtf_motion_fixed_skips) &
     ]
 
 end subroutine collect_second_order_input
@@ -957,5 +962,95 @@ subroutine expect_read_message(error, root, lines, expected)
   if (allocated(error)) return
   call check(error, trim(msg) == expected, "message: "//trim(msg))
 end subroutine expect_read_message
+
+!> Phase 6c: qtf_motion is 0 by default and changes no other option; 1 is read with qtf_terms = body or full
+subroutine test_qtf_motion_default_off(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_motion_default"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = body"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_motion, 0, "qtf_motion default")
+  if (allocated(error)) return
+  call check(error, opts%qtf == 1 .and. opts%qtf_terms == QTF_TERMS_BODY .and. opts%qtf_direct == 0 .and. &
+                    .not. opts%motion_fixed, "another option changed")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 3", "qtf_terms = full", "qtf_motion = 1"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "qtf_motion = 1 rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_motion, 1, "qtf_motion = 1")
+  call remove_directory(root)
+end subroutine test_qtf_motion_default_off
+
+!> qtf_motion = 1 needs qtf_terms = body or full
+subroutine test_qtf_motion_needs_body(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_motion_body"
+  character(len=*), parameter :: msg_body = "qtf_motion = 1 needs qtf_terms = body or full in SecondOrder.in."
+
+  call remove_directory(root)
+  call make_directory(root)
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = quadratic", &
+                                         "qtf_motion = 1"], msg_body)
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 2", "qtf_motion = 1"], msg_body)
+  call remove_directory(root)
+end subroutine test_qtf_motion_needs_body
+
+!> qtf_motion = 1 needs qtf = 1, 2 or 3
+subroutine test_qtf_motion_needs_qtf(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_motion_qtf"
+
+  call remove_directory(root)
+  call make_directory(root)
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 0", "qtf_terms = body", &
+                                         "qtf_motion = 1"], "qtf_motion = 1 needs qtf = 1, 2 or 3 in SecondOrder.in.")
+  call remove_directory(root)
+end subroutine test_qtf_motion_needs_qtf
+
+!> qtf_motion other than 0 and 1 is rejected
+subroutine test_qtf_motion_bad_value(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_motion_bad"
+  character(len=*), parameter :: msg_bad = "qtf_motion must be 0 or 1 in SecondOrder.in."
+
+  call remove_directory(root)
+  call make_directory(root)
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = body", &
+                                         "qtf_motion = 2"], msg_bad)
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_terms = body", &
+                                         "qtf_motion = -1"], msg_bad)
+  call remove_directory(root)
+end subroutine test_qtf_motion_bad_value
+
+!> motion_state = fixed with qtf_motion = 1 is accepted; the log note that no motion is computed goes to the standard
+!> output, which a unit test cannot read
+subroutine test_qtf_motion_fixed_skips(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_motion_fixed"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "motion_state = fixed", "qtf = 1", "qtf_terms = body", &
+                          "qtf_motion = 1"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "fixed body with qtf_motion = 1 rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_motion == 1 .and. opts%motion_fixed, "values not kept")
+  call remove_directory(root)
+end subroutine test_qtf_motion_fixed_skips
 
 end module test_second_order_input
