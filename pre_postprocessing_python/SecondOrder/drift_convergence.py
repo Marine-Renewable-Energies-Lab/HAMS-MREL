@@ -86,10 +86,14 @@ NEMOH_SUM_QTF_RANGE = (0.40, 1.40, 21)
 # The free-surface mesh of the sharp cylinder (a quadrilateral mesh between the waterline R_B and the exterior radius R_e,
 # input-output.rst "Free surface mesh file"): R_e as the default inner radius of HAMS at m1 (15 m, QTF_FS notes of 6a), the
 # panel size of its outer ring per multiple: lambda/10 at the top sum frequency (2.80 rad/s, depth 100 m: lambda 7.86 m), and
-# the 0.55 m of the HAMS fsP055 check at m2. N_Bessel: "use 30 as a default value" (same page)
+# the 0.55 m of the HAMS fsP055 check at m2. N_Bessel: "use 30 as a default value" (input-output.rst, the list below the
+# Nemoh.cal table, "The computation of the HASFS+ASYMP terms requires a free-surface mesh")
 NEMOH_FS_RADIUS = 15.0
 NEMOH_FS_PANEL = {1: 0.786, 2: 0.55}
 NEMOH_BESSEL = 30
+# Slurm limits of the Nemoh runs with the free-surface integral, hours: the stage table of the Phase 6b plan (the time model
+# has no free-surface passes): 8 h for nemoh_sharp_free_fs_m1, 24 h each for nemoh_sharp_free_fs_m2 and nemoh_oc4_free_fs_m1
+NEMOH_FS_LIMIT_H = {1: 8.0, 2: 24.0}
 NEMOH_STAGES = (("preProcessor", "preProc"), ("Solver", "solver"), ("postProcessor", "postProc"),
                 (os.path.join("QTF", "PreProcessor"), "QTFpreProc"), (os.path.join("QTF", "Solver"), "QTFsolver"),
                 (os.path.join("QTF", "PostProcessor"), "QTFpostProc"))
@@ -148,7 +152,8 @@ class Case:
     def __init__(self, name, group, question, hull, multiple, motion="fixed", velocity="differencing", waterline="extrapolate",
                  frequencies=WIDE_FREQUENCIES, headings=(0.0, 30.0), grn=4, isolv=1, irsp=0, mean_drift=1, tier="both",
                  solver="hams", where="snellius", control=None, qtf=0, nemoh_range=None, qtf_terms=None, qtf_max_dw=None,
-                 nemoh_contrib=1, edge_power=None, qtf_edge_weights=None, extra_options=None, damping=None, nemoh_qtf_range=None):
+                 nemoh_contrib=1, edge_power=None, qtf_edge_weights=None, extra_options=None, damping=None, nemoh_qtf_range=None,
+                 limit_h=None):
         self.name = name
         self.group = group
         self.question = question
@@ -173,6 +178,7 @@ class Case:
         self.qtf_max_dw = qtf_max_dw   # qtf_max_dw of SecondOrder.in, or None (not written)
         self.nemoh_contrib = nemoh_contrib   # Nemoh's QTF terms: 1 DUOK, 2 DUOK + HASBO, 3 full (NEMOH_QTF_TERMS)
         self.nemoh_qtf_range = nemoh_qtf_range   # (low, high, count) of Nemoh's QTF frequencies, None: nemoh_range
+        self.limit_h = limit_h   # the Slurm time limit in hours where the estimate does not apply, None: limit_hours' rule
         self.edge_power = edge_power   # sharp hull only: power-law rows toward the bilge (make_mesh.cylinder), None for cosine
         self.qtf_edge_weights = qtf_edge_weights   # qtf_edge_weights of SecondOrder.in: None (not written), "on" or "off"
         self.extra_options = extra_options or {}   # further SecondOrder.in keys, written as given
@@ -636,9 +642,11 @@ def qtf_indirectsum_cases(grid):
                        extra_options=dict(cs_shape="file")))
     for m in (1, 2):
         chosen.append(Case("nemoh_sharp_free_fs_%s" % tag(m), "I", "6b", "sharp", m, "free", headings=(0.0,), solver="nemoh",
-                           nemoh_range=NEMOH_SUM_RANGE, nemoh_qtf_range=NEMOH_SUM_QTF_RANGE, nemoh_contrib=3))
+                           nemoh_range=NEMOH_SUM_RANGE, nemoh_qtf_range=NEMOH_SUM_QTF_RANGE, nemoh_contrib=3,
+                           limit_h=NEMOH_FS_LIMIT_H[m]))
     chosen.append(Case("nemoh_oc4_free_fs_m1", "I", "6b", "oc4", 1, "free", headings=(0.0,), solver="nemoh",
-                       nemoh_range=NEMOH_SUM_RANGE, nemoh_qtf_range=NEMOH_SUM_QTF_RANGE, nemoh_contrib=3))
+                       nemoh_range=NEMOH_SUM_RANGE, nemoh_qtf_range=NEMOH_SUM_QTF_RANGE, nemoh_contrib=3,
+                       limit_h=24.0))
     return chosen
 
 
@@ -858,6 +866,13 @@ def write_hams_hull(case, path):
         damping = {j - 1: v for j, v in case.damping.items()} if case.damping else None
         written = make_mesh.write_oc4(path, m, external_damping=damping, model="wamit" if case.hull == "oc4w" else "platform")
         mesh = written["hull"]
+        if case.qtf_terms == "full":
+            # The inner free surface of the free-surface integral. HAMS generates one only for a star-shaped waterline, which
+            # the four OC4 waterlines are not, so FSInnerMesh.pnl is given (ControlSurfaceMesh.f90, "FSInnerMesh.pnl"): the
+            # free surface between the waterlines and a circle about the centre of their bounding box. The Nemoh case
+            # (nemoh_fs_mesh) has the same panel size and rings but its circle about the origin
+            inner, _, _ = make_mesh.oc4_inner_free_surface(m, "waterlines")
+            make_mesh.write_mesh(os.path.join(path, "FSInnerMesh.pnl"), inner, title="Free Surface Mesh File")
         points = len(written["control"].panels) + len(written["free"].panels)
         if points != HULLS[case.hull]["cf_points"][m]:
             raise ValueError("%s has %d panels on C and F, not the %d of the job table" % (
@@ -928,10 +943,15 @@ def nemoh_fs_mesh(case, base):
     discretization points between the waterline and R_e, N_Bessel the number of Bessel functions). N_Re is taken as the nodes on
     a radial line from the waterline to R_e, the panel rows plus one: the page does not say whether the ends count [unverified].
     sharp: an annulus from the hull radius to NEMOH_FS_RADIUS, NEMOH_FS_PANEL[m] at the outer ring, the columns a multiple of
-    the hull's, so that the nodes of its waterline are nodes of the ring, in quadrilateral rows uniform in radius. oc4: the
-    F of HAMS (FSMesh_1.pnl, triangles, between the four waterlines and Gamma_c), R_e the radius of Gamma_c, the rows from the
-    farthest waterline point to R_e at the panel size of F; the vertex order is reversed to a right-hand normal -z, as the
-    annulus has. The segments of the waterline and of R_e are the boundary edges of the mesh."""
+    the hull's, so that the nodes of its waterline are nodes of the ring, in quadrilateral rows uniform in radius. oc4:
+    triangles between the four waterlines and a circle of the radius of Gamma_c about the origin (make_mesh.
+    oc4_inner_free_surface, around "origin", panel size OC4_FS_PANEL), R_e that radius, N_Re counted from the farthest
+    waterline point to R_e [unverified: with four waterlines "between the waterline and R_e" is ambiguous]; the vertex order is
+    reversed to a right-hand normal -z, as the annulus has. HAMS integrates over its own mesh, FSInnerMesh.pnl of
+    write_hams_hull: the same panel size and rings around the waterlines, but the outer circle is about the centre of the
+    waterline bounding box (HAMS needs that), so the panels near the circle differ. The manual asks for line segments on the
+    waterline and on R_e (input-output.rst, "Free surface mesh file": "Waterline on R_B and R_e has to discretized by line
+    segments"): they are the boundary edges of the mesh."""
     if case.hull == "sharp":
         radius = fixtures.DRIFT_CYL_MESH["radius"]
         ntheta = scaled(fixtures.DRIFT_CYL_MESH, ("ntheta",), case.multiple)["ntheta"]
@@ -941,11 +961,11 @@ def nemoh_fs_mesh(case, base):
         mesh, segments = make_mesh.free_surface_annulus(radius, NEMOH_FS_RADIUS, columns, rows)
         outer, points = NEMOH_FS_RADIUS, rows + 1
     elif case.hull == "oc4":
-        mesh = make_mesh.read_mesh(os.path.join(base, "hams_hull", "FSMesh_1.pnl"))
+        mesh, _, _ = make_mesh.oc4_inner_free_surface(case.multiple, "origin")
         normals = [make_mesh.cross(make_mesh.sub(mesh.nodes[p[1] - 1], mesh.nodes[p[0] - 1]),
                                    make_mesh.sub(mesh.nodes[p[2] - 1], mesh.nodes[p[0] - 1]))[2] for p in mesh.panels]
         if not (all(n > 0.0 for n in normals) or all(n < 0.0 for n in normals)):
-            raise ValueError("the panels of FSMesh_1.pnl do not all face one way")
+            raise ValueError("the panels of the OC4 free-surface mesh do not all face one way")
         if normals[0] > 0.0:
             mesh.panels = [list(reversed(p)) for p in mesh.panels]
         segments = make_mesh.boundary_edges(mesh)
@@ -953,7 +973,7 @@ def nemoh_fs_mesh(case, base):
         radii = [math.hypot(*mesh.nodes[n - 1][:2]) for n in edge_nodes]
         outer = max(radii)
         waterline = max(r for r in radii if r < outer - 1e-6)
-        points = int(math.ceil((outer - waterline) / make_mesh.OC4_CS["panel_size"])) + 1
+        points = int(math.ceil((outer - waterline) / make_mesh.OC4_FS_PANEL)) + 1
     else:
         raise ValueError("no Nemoh free-surface mesh for the hull " + case.hull)
     make_mesh.write_nemoh_fs_mesh(os.path.join(base, "FSmesh.dat"), mesh, segments)
@@ -1089,6 +1109,50 @@ def run_case(case, args):
         json.dump(result, f, indent=1)
     print("%s: code %d, %.1f s, peak %.3f GB" % (case.name, result["code"], result["wall_s"], (result["peak_bytes"] or 0.0) / 1e9))
     return result
+
+
+def check():
+    """Two checks on the cases of Phase 6b, no run. oc4_inner_mesh: q_oc4_indsum_free_m1 (qtf_terms = full on OC4) writes
+    FSInnerMesh.pnl, in z = 0, ending on a circle about the centre of the waterline bounding box (the centre and radius HAMS
+    takes from the file: the largest node distance from that centre equals the radius of Gamma_c), and q_oc4_free_m1 (body)
+    writes none; the Nemoh OC4 mesh has the same panel size and a circle about the origin. nemoh_limits: the wall limits of
+    the Nemoh runs with the free-surface integral are 8, 24 and 24 h and arrays of their own, one allocation
+    each; a difference Nemoh case keeps the limit of the rule (2 x the estimate, at least 0.5 h) and its allocation."""
+    import shutil
+    import tempfile
+    cases = {c.name: c for c in qtf_potential_cases()}
+    root = tempfile.mkdtemp(prefix="check_")
+    try:
+        full = write_hams_case(cases["q_oc4_indsum_free_m1"], root, CPUS)
+        body = write_hams_case(cases["q_oc4_free_m1"], root, CPUS)
+        assert os.path.exists(os.path.join(full, "FSInnerMesh.pnl")), "no FSInnerMesh.pnl for qtf_terms = full on OC4"
+        assert not os.path.exists(os.path.join(body, "FSInnerMesh.pnl")), "FSInnerMesh.pnl written for qtf_terms = body"
+        inner = make_mesh.read_mesh(os.path.join(full, "FSInnerMesh.pnl"))
+        assert all(abs(z) < 1e-9 for _, _, z in inner.nodes), "FSInnerMesh.pnl is not in z = 0"
+        waterline = {n for n in make_mesh.boundary_edges(inner) for n in n}
+        xs = [inner.nodes[n - 1][0] for n in waterline]
+        ys = [inner.nodes[n - 1][1] for n in waterline]
+        # the outer circle: the nodes of the boundary farthest out (the waterlines are inside it)
+        centre = (0.5 * (min(xs) + max(xs)), 0.5 * (min(ys) + max(ys)))
+        reach = max(math.hypot(x - centre[0], y - centre[1]) for x, y in zip(xs, ys))
+        assert abs(reach - make_mesh.oc4_control_surface(**make_mesh.OC4_CS)[1]) < 1e-6 * reach, "radius of FSInnerMesh.pnl"
+        nemoh = write_nemoh_case(cases["nemoh_oc4_free_fs_m1"], root)
+        with open(os.path.join(nemoh, "FSmesh.dat")) as f:
+            header = f.readline().split()
+        assert int(header[2]) > 1000, "the Nemoh OC4 mesh has the panel size of the inner mesh: %s" % header
+        got = {n: limit_hours(cases[n]) for n in ("nemoh_sharp_free_fs_m1", "nemoh_sharp_free_fs_m2", "nemoh_oc4_free_fs_m1")}
+        assert got == {"nemoh_sharp_free_fs_m1": 8.0, "nemoh_sharp_free_fs_m2": 24.0, "nemoh_oc4_free_fs_m1": 24.0}, got
+        assert time_limit(8.0) == "8:00:00" and time_limit(24.0) == "24:00:00"
+        old = cases["nemoh_sharp_fixed_m1"]
+        assert limit_hours(old) == max(0.5, 2.0 * wall_hours(old)), "a difference Nemoh case keeps its limit"
+        labels = dict(nemoh_batches([c for c in cases.values() if c.solver == "nemoh"]))
+        assert sorted(l for l in labels if l.startswith("nemoh_fs_")) == ["nemoh_fs_oc4_m1", "nemoh_fs_sharp_m1", "nemoh_fs_sharp_m2"]
+        assert all(c.nemoh_contrib != 3 for l, cs in labels.items() if not l.startswith("nemoh_fs_") for c in cs), "batches"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    print("oc4_inner_mesh  FSInnerMesh.pnl written for the full OC4 case only, %d triangles, circle R = %.2f m about (%.2f, 0); "
+          "Nemoh mesh %s panels" % (len(inner.panels), reach, centre[0], header[2]))
+    print("nemoh_limits    8 h, 24 h, 24 h for the free-surface Nemoh runs, one allocation each; difference cases unchanged")
 
 
 def dry_run(case, head_lines=6):
@@ -1584,7 +1648,10 @@ FULL_COST_NOTE = "body cost, FS not modelled"
 
 def limit_hours(case):
     """The Slurm time limit of a case in hours: twice the estimate, at least 30 minutes; for qtf_terms = full FULL_LIMIT_FACTOR
-    times the (body) estimate, at least FULL_LIMIT_FLOOR_H."""
+    times the (body) estimate, at least FULL_LIMIT_FLOOR_H. A case with limit_h has that: the Nemoh runs with the free-surface
+    integral (nemoh_contrib = 3), whose time the model does not give (stage table of the Phase 6b plan)."""
+    if case.limit_h is not None:
+        return case.limit_h
     if case.qtf_terms == "full":
         return max(FULL_LIMIT_FLOOR_H, FULL_LIMIT_FACTOR * wall_hours(case))
     return max(0.5, 2.0 * wall_hours(case))
@@ -1670,7 +1737,7 @@ def write_slurm(args):
             raise ValueError("%s has %d Nemoh runs for %d CPUs" % (label, len(chosen), NEMOH_CPUS))
         with open(os.path.join(out, label + ".txt"), "w", newline="\n") as f:
             f.write("\n".join(case.name for case in chosen) + "\n")
-        limit = time_limit(max(limit_hours(case) for case in chosen))
+        limit = args.limit or time_limit(max(limit_hours(case) for case in chosen))
         with open(os.path.join(out, label + ".sbatch"), "w", newline="\n") as f:
             f.write(SBATCH_HEAD.format(name="drift_" + label, limit=limit, log=label + "_%j.log",
                                        **dict(head, cpus=NEMOH_CPUS, memory=NEMOH_MEMORY_GB)).replace(
@@ -1689,11 +1756,17 @@ def only_prefixes(only):
 
 def nemoh_batches(cases):
     """[(label, cases)] of the Nemoh allocations: one "nemoh" for the hulls without batches of their own, and one
-    "nemoh_<hull>_m<k>" per multiple of a hull with HULLS nemoh_batches (OC4: m1 and m2 are approved and run apart)."""
+    "nemoh_<hull>_m<k>" per multiple of a hull with HULLS nemoh_batches (OC4: m1 and m2 are approved and run apart). The runs
+    with the free-surface integral (nemoh_contrib = 3) are one allocation each, "nemoh_fs_<hull>_m<k>", since their stages are
+    approved apart and have their own time limits."""
     groups = {}
     for case in cases:
         own = HULLS[case.hull].get("nemoh_batches")
-        groups.setdefault("nemoh_%s_%s" % (case.hull, tag(case.multiple)) if own else "nemoh", []).append(case)
+        if case.nemoh_contrib == 3:
+            label = "nemoh_fs_%s_%s" % (case.hull, tag(case.multiple))
+        else:
+            label = "nemoh_%s_%s" % (case.hull, tag(case.multiple)) if own else "nemoh"
+        groups.setdefault(label, []).append(case)
     return sorted(groups.items())
 
 
@@ -1767,6 +1840,8 @@ def main():
     qtf_help = "the QTF study: quadratic QTFs on the Nemoh grid (qtf_cases)"
     potential_help = "the QTF potential study: QTF_Indirect.11d with qtf_terms = body or full, and Nemoh DUOK + HASBO (qtf_potential_cases)"
 
+    sub.add_parser("check", help="self-checks of the Phase 6b cases (no run)")
+
     p = sub.add_parser("list")
     p.add_argument("--tier", choices=("full", "small"), default="full")
     p.add_argument("--markdown", action="store_true")
@@ -1826,7 +1901,9 @@ def main():
     p.add_argument("--qtf-potential", action="store_true", help=potential_help)
 
     args = parser.parse_args()
-    if args.command == "list":
+    if args.command == "check":
+        check()
+    elif args.command == "list":
         job_table(args.tier, args.markdown, args.control, study_of(args), args.only)
     elif args.command == "generate":
         for case in cases_of(args.control, study_of(args)):
