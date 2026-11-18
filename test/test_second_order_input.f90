@@ -34,7 +34,6 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("qtf_terms_body", test_qtf_terms_body), &
     new_unittest("qtf_terms_full_accepted", test_qtf_terms_full_accepted), &
     new_unittest("qtf_full_deep_water_stops", test_qtf_full_deep_water_stops), &
-    new_unittest("qtf_full_sum_only_stops", test_qtf_full_sum_only_stops), &
     new_unittest("qtf_fs_keys_ranges", test_qtf_fs_keys_ranges), &
     new_unittest("qtf_fs_keys_ignored_note", test_qtf_fs_keys_ignored_note), &
     new_unittest("qtf_b2_key", test_qtf_b2_key), &
@@ -42,7 +41,8 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("qtf_direct_needs_body", test_qtf_direct_needs_body), &
     new_unittest("qtf_direct_full_accepted", test_qtf_direct_full_accepted), &
     new_unittest("qtf_direct_sum_accepted", test_qtf_direct_sum_accepted), &
-    new_unittest("qtf_sum_indirect_stops", test_qtf_sum_indirect_stops), &
+    new_unittest("qtf_sum_indirect_accepted", test_qtf_sum_indirect_accepted), &
+    new_unittest("qtf_sum_body_warns", test_qtf_sum_body_warns), &
     new_unittest("qtf_max_sw_negative", test_qtf_max_sw_negative), &
     new_unittest("qtf_sum_full_deep_stops", test_qtf_sum_full_deep_stops), &
     new_unittest("qtf_edge_keys", test_qtf_edge_keys), &
@@ -514,8 +514,7 @@ subroutine test_qtf_field_key(error)
   call remove_directory(root)
 end subroutine test_qtf_field_key
 
-!> qtf_terms = body is read with the difference QTF (qtf = 1 or 3) and rejected with the sum frequency only; quadratic is
-!> the default.
+!> qtf_terms = body is read with qtf = 1, 2 (the indirect sum, Phase 6b) and 3; quadratic is the default.
 subroutine test_qtf_terms_body(error)
   type(error_type), allocatable, intent(out) :: error
   character(len=*), parameter :: root = "hams_test_so_qtf_body"
@@ -532,7 +531,7 @@ subroutine test_qtf_terms_body(error)
   if (allocated(error)) return
   call check(error, opts%qtf_terms, QTF_TERMS_QUADRATIC, "qtf_terms default")
   if (allocated(error)) return
-  do q = 1, 3, 2
+  do q = 1, 3
     write (msg, '(a,I0)') "qtf = ", q
     call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", trim(msg), &
                             "qtf_terms = body"])
@@ -545,10 +544,6 @@ subroutine test_qtf_terms_body(error)
     call check(error, ok, "qtf_terms = body not validated: "//trim(msg))
     if (allocated(error)) return
   end do
-  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 2", &
-                                         "qtf_terms = body"], &
-                           "qtf = 2 with qtf_terms = body or full needs qtf_direct = 1: "// &
-                           "the indirect sum-frequency QTF is Phase 6b.")
   call remove_directory(root)
 end subroutine test_qtf_terms_body
 
@@ -603,20 +598,6 @@ subroutine test_qtf_full_deep_water_stops(error)
              "finite-depth modes); set a large finite depth instead.", "message: "//trim(msg))
   call remove_directory(root)
 end subroutine test_qtf_full_deep_water_stops
-
-!> qtf_terms = full with the sum frequency only stops at reading
-subroutine test_qtf_full_sum_only_stops(error)
-  type(error_type), allocatable, intent(out) :: error
-  character(len=*), parameter :: root = "hams_test_so_qtf_full_sum"
-
-  call remove_directory(root)
-  call make_directory(root)
-  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 2", &
-                                         "qtf_terms = full"], &
-                           "qtf = 2 with qtf_terms = body or full needs qtf_direct = 1: "// &
-                           "the indirect sum-frequency QTF is Phase 6b.")
-  call remove_directory(root)
-end subroutine test_qtf_full_sum_only_stops
 
 !> The free-surface keys are read with their values and marked as given; negative values stop
 subroutine test_qtf_fs_keys_ranges(error)
@@ -867,33 +848,39 @@ subroutine test_qtf_direct_sum_accepted(error)
   call remove_directory(root)
 end subroutine test_qtf_direct_sum_accepted
 
-!> Phase 7c-2: qtf = 2 with qtf_terms = body or full and qtf_direct = 0 stops, and the message names qtf_direct = 1
-!> and Phase 6b; with qtf = 3 the difference QTF has its body forcing and the sum stays quadratic, as before
-subroutine test_qtf_sum_indirect_stops(error)
+!> Phase 6b: qtf = 2 and 3 with qtf_terms = body or full and qtf_direct = 0 are accepted (the indirect sum-frequency QTF)
+subroutine test_qtf_sum_indirect_accepted(error)
   type(error_type), allocatable, intent(out) :: error
   character(len=*), parameter :: root = "hams_test_so_qtf_sum_indirect"
+  character(len=8), parameter :: terms(2) = [character(len=8) :: "body", "full"]
   type(so_options) :: opts
   logical :: ok
   character(len=200) :: msg
+  integer :: q, t
 
   call remove_directory(root)
   call make_directory(root)
-  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 2", "qtf_terms = body", "qtf_direct = 0"])
-  call read_second_order_options(root, opts, ok, msg)
-  call check(error, .not. ok, "qtf = 2, body, qtf_direct = 0 accepted")
-  if (allocated(error)) return
-  call check(error, index(msg, "qtf_direct = 1") > 0 .and. index(msg, "Phase 6b") > 0, "message: "//trim(msg))
-  if (allocated(error)) return
-  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 3", "qtf_terms = body", "qtf_direct = 0"])
-  call read_second_order_options(root, opts, ok, msg)
-  call check(error, ok, "qtf = 3, body, qtf_direct = 0 rejected: "//trim(msg))
+  do q = 2, 3
+    do t = 1, 2
+      call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = "//char(48 + q), &
+                              "qtf_terms = "//trim(terms(t)), "qtf_direct = 0"])
+      call read_second_order_options(root, opts, ok, msg)
+      call check(error, ok, "qtf = "//char(48 + q)//", "//trim(terms(t))//", qtf_direct = 0 rejected: "//trim(msg))
+      if (allocated(error)) exit
+      call check(error, opts%qtf == q .and. opts%qtf_direct == 0, "values kept")
+      if (allocated(error)) exit
+    end do
+    if (allocated(error)) exit
+  end do
   call remove_directory(root)
-end subroutine test_qtf_sum_indirect_stops
+end subroutine test_qtf_sum_indirect_accepted
 
-!> qtf = 2 with qtf_terms = full and qtf_direct = 1 needs a finite depth as the difference QTF does
-subroutine test_qtf_sum_full_deep_stops(error)
+!> qtf = 2 with qtf_terms = body is accepted at reading and at validation, with and without qtf_direct. The log warning of
+!> qtf_init that the free-surface integral is left out (sum_warnings) goes to the standard output, which a unit test cannot
+!> read; test_qtf_sum_indirect_list_body in test_qtf runs that path
+subroutine test_qtf_sum_body_warns(error)
   type(error_type), allocatable, intent(out) :: error
-  character(len=*), parameter :: root = "hams_test_so_qtf_sum_full_deep"
+  character(len=*), parameter :: root = "hams_test_so_qtf_sum_body"
   type(so_options) :: opts
   logical :: ok
   character(len=200) :: msg
@@ -901,17 +888,40 @@ subroutine test_qtf_sum_full_deep_stops(error)
   call remove_directory(root)
   call make_directory(root)
   call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 2", &
-                          "qtf_terms = full", "qtf_direct = 1"])
+                          "qtf_terms = body", "qtf_direct = 0"])
   call read_second_order_options(root, opts, ok, msg)
-  call check(error, ok, "qtf = 2, full, qtf_direct = 1 rejected at reading: "//trim(msg))
+  call check(error, ok, "qtf = 2, body, qtf_direct = 0 rejected: "//trim(msg))
   if (allocated(error)) return
   call validate_second_order(opts, 1, -1d0, 1, 0, .false., ok, msg)
-  call check(error, .not. ok, "deep water accepted with qtf = 2, full, qtf_direct = 1")
-  if (allocated(error)) return
-  call check(error, index(msg, "qtf_terms = full needs a finite water depth") == 1, "message: "//trim(msg))
-  if (allocated(error)) return
-  call validate_second_order(opts, 1, 20d0, 1, 0, .false., ok, msg)
-  call check(error, ok, "finite depth rejected: "//trim(msg))
+  call check(error, ok, "validation stopped qtf = 2, body: "//trim(msg))
+  call remove_directory(root)
+end subroutine test_qtf_sum_body_warns
+
+!> qtf = 2 with qtf_terms = full needs a finite depth as the difference QTF does, with qtf_direct = 1 and 0 (Phase 6b)
+subroutine test_qtf_sum_full_deep_stops(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_qtf_sum_full_deep"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+  integer :: d
+
+  call remove_directory(root)
+  call make_directory(root)
+  do d = 1, 0, -1
+    call write_input(root, [character(len=40) :: "mean_drift = 1", "drift_methods = far near", "qtf = 2", &
+                            "qtf_terms = full", "qtf_direct = "//char(48 + d)])
+    call read_second_order_options(root, opts, ok, msg)
+    call check(error, ok, "qtf = 2, full, qtf_direct rejected at reading: "//trim(msg))
+    if (allocated(error)) return
+    call validate_second_order(opts, 1, -1d0, 1, 0, .false., ok, msg)
+    call check(error, .not. ok, "deep water accepted with qtf = 2, full")
+    if (allocated(error)) return
+    call check(error, index(msg, "qtf_terms = full needs a finite water depth") == 1, "message: "//trim(msg))
+    if (allocated(error)) return
+    call validate_second_order(opts, 1, 20d0, 1, 0, .false., ok, msg)
+    call check(error, ok, "finite depth rejected: "//trim(msg))
+  end do
   call remove_directory(root)
 end subroutine test_qtf_sum_full_deep_stops
 

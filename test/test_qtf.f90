@@ -13,7 +13,7 @@ module test_qtf
                         qtf_psi_index, qtf_direct_missing, qtf_omega_list, irregular_frequency_estimate, sum_pair_index, &
                         qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active, qtf_stored_mb, &
                         qtf_direct_sum_pairs, qtf_direct_at_omega, qtf_direct_sum_load, qtf_direct_pairs, &
-                        qtf_direct_diff_load
+                        qtf_direct_diff_load, qtf_sum_omega, qtf_diff_omega, qtf_psi_count
   use QTFFreeSurface, only : fs_point_field
   use HAMS_mod, only : NTHREAD, ISOLV
   use Potentials_mod, only : MXPOT
@@ -75,6 +75,10 @@ subroutine collect_qtf(testsuite)
     new_unittest("fs_store_order", test_fs_store_order), &
     new_unittest("qtf_sum_pairs_cover", test_sum_pairs_cover), &
     new_unittest("qtf_stored_mb_sum", test_stored_mb_sum), &
+    new_unittest("radiation_list_sum_indirect", test_radiation_list_sum_indirect), &
+    new_unittest("radiation_list_diff_unchanged", test_radiation_list_diff_unchanged), &
+    new_unittest("qtf_sum_indirect_list_body", test_sum_indirect_list_body), &
+    new_unittest("qtf_stored_mb_indirect_sum", test_stored_mb_indirect_sum), &
     new_unittest("qtf_sum_store_symmetric", test_sum_store_symmetric), &
     new_unittest("direct12s_rows", test_direct12s_rows), &
     new_unittest("direct_sum_terms_waterline", test_direct_sum_terms_waterline), &
@@ -1010,6 +1014,96 @@ subroutine test_stored_mb_sum(error)
   expected = 16d0 * (5d0 * (nfs1 - nfs0) * nfreq * nb + 6d0 * nbody * (nfs1 - nfs0) * npsi) / 1d6
   call check(error, abs((mb1 - mb0) - expected) <= 1d-12 * expected, "the larger inner mesh in qtf_stored_mb")
 end subroutine test_stored_mb_sum
+
+!> Phase 6b: qtf = 2 with qtf_direct = 0 keeps the sums of the list. Grid 0.3, 0.6, 0.9: the sums are 0.6, 0.9, 1.2, 1.2, 1.5,
+!> 1.8; 0.6 and 0.9 are main-grid solves, so the radiation-only list is 1.2, 1.5, 1.8. qtf_direct_omegas still stops at
+!> the direct solve (qtf_direct = 0 has none), but the list of psi is the same with and without qtf_direct, qtf = 3 adds the
+!> differences 0.3 and 0.6 (both on the grid, so the radiation-only list does not change).
+subroutine test_radiation_list_sum_indirect(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(so_options) :: opts
+  real(8), allocatable :: w(:)
+  integer :: kq, kd
+  logical :: made
+
+  call CreateDirectory(root//"/Wamit_format", made)
+  call check(error, made, "could not create the test folder")
+  if (allocated(error)) return
+  do kq = 2, 3
+    do kd = 0, 1
+      opts%mean_drift = 1; opts%qtf = kq; opts%qtf_terms = QTF_TERMS_BODY; opts%qtf_direct = kd
+      call qtf_init(opts, 3, [0d0], 4, 10, 1, root, omegas_main=[0.3d0, 0.6d0, 0.9d0])
+      w = qtf_radiation_omegas()
+      call check(error, size(w), 3, "radiation-only list size")
+      if (allocated(error)) return
+      call check(error, maxval(abs(w - [1.2d0, 1.5d0, 1.8d0])) <= 1d-12, "radiation-only list values")
+      if (allocated(error)) return
+    end do
+  end do
+  call remove_files()
+end subroutine test_radiation_list_sum_indirect
+
+!> qtf = 1 has no sum: with qtf_direct = 0 and 1 the lists are the difference lists of the grids of the earlier tests
+subroutine test_radiation_list_diff_unchanged(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(so_options) :: opts
+  real(8), allocatable :: w(:)
+  integer :: kd
+  logical :: made
+
+  call CreateDirectory(root//"/Wamit_format", made)
+  call check(error, made, "could not create the test folder")
+  if (allocated(error)) return
+  do kd = 0, 1
+    opts%mean_drift = 1; opts%qtf = 1; opts%qtf_terms = QTF_TERMS_BODY; opts%qtf_direct = kd
+    call qtf_init(opts, 3, [0d0], 4, 10, 1, root, omegas_main=[0.5d0, 0.7d0, 1.3d0])
+    w = qtf_radiation_omegas()
+    call check(error, size(w), 3, "difference list size")
+    if (allocated(error)) return
+    call check(error, maxval(abs(w - [0.2d0, 0.6d0, 0.8d0])) <= 1d-12, "difference list values")
+    if (allocated(error)) return
+    ! Nothing of the sum: no sum frequency has a psi
+    call check(error, .not. qtf_sum_omega(1.0d0), "qtf = 1 has a sum frequency")
+    if (allocated(error)) return
+  end do
+  call remove_files()
+end subroutine test_radiation_list_diff_unchanged
+
+!> qtf = 2, qtf_terms = body, qtf_direct = 0 (the path with the free-surface warning of sum_warnings): the sum frequencies are
+!> flagged as sums, and no difference frequency is in the list
+subroutine test_sum_indirect_list_body(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(so_options) :: opts
+  logical :: made
+
+  call CreateDirectory(root//"/Wamit_format", made)
+  call check(error, made, "could not create the test folder")
+  if (allocated(error)) return
+  opts%mean_drift = 1; opts%qtf = 2; opts%qtf_terms = QTF_TERMS_BODY; opts%qtf_direct = 0
+  call qtf_init(opts, 3, [0d0], 4, 10, 1, root, omegas_main=[0.3d0, 0.6d0, 0.9d0])
+  call check(error, qtf_sum_omega(1.2d0) .and. qtf_sum_omega(0.6d0) .and. qtf_sum_omega(1.8d0), "sum frequencies flagged")
+  if (allocated(error)) return
+  call check(error, .not. qtf_diff_omega(1.2d0) .and. .not. qtf_diff_omega(0.6d0), "a difference flagged with qtf = 2")
+  if (allocated(error)) return
+  call check(error, qtf_psi_count(), 5, "5 distinct sums: 0.6, 0.9, 1.2, 1.5, 1.8")
+  call remove_files()
+end subroutine test_sum_indirect_list_body
+
+!> qtf_stored_mb counts the stores of the sum by nsum_pairs; without the direct solve tpot_sum is the only one, 1 x the
+!> heading pairs: 16 bytes x 6 nbody x nfreq^2 per slice
+subroutine test_stored_mb_indirect_sum(error)
+  type(error_type), allocatable, intent(out) :: error
+  integer, parameter :: nfreq = 3, nb = 2, nhp = 4, nbody = 1, npsi = 7
+  real(8) :: mb0, mb1, mb2, expected
+
+  mb0 = qtf_stored_mb(10, 4, nbody, nfreq, nb, npsi=npsi, npairs=0)
+  mb1 = qtf_stored_mb(10, 4, nbody, nfreq, nb, npsi=npsi, npairs=0, nsum_pairs=nhp)
+  mb2 = qtf_stored_mb(10, 4, nbody, nfreq, nb, npsi=npsi, npairs=0, nsum_pairs=2*nhp)
+  expected = 16d0 * 6d0 * nbody * nfreq**2 * nhp / 1d6
+  call check(error, abs((mb1 - mb0) - expected) <= 1d-12 * expected, "tpot_sum alone in qtf_stored_mb")
+  if (allocated(error)) return
+  call check(error, abs((mb2 - mb1) - expected) <= 1d-12 * expected, "tdir_sum is the second store")
+end subroutine test_stored_mb_indirect_sum
 
 !> The whole direct sum path of the driver on a waterline body (Phase 7c-2): the 112-panel cylinder of
 !> direct_zero_forcing (radius 5, draft 5, depth 10), frequencies 0.4 and 0.5 rad/s, headings 0 and 30 degrees,

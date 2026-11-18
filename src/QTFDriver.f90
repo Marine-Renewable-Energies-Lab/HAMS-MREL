@@ -79,7 +79,8 @@ MODULE QTFDriver
    ! has the slots of tpot. With qtf_terms = full (Phase 7b) the caller passes the free-surface data of direct_fs_setup,
    ! which qtf_direct_at_omega points to the free-surface store, so that T_dir has the free-surface forcing too.
    !
-   ! The sum frequency (Phase 7c-2, qtf = 2 or 3 with qtf_direct = 1 and qtf_terms = body or full): the list psi_need is
+   ! The sum frequency (qtf = 2 or 3 with qtf_terms = body or full; Phase 7c-2 with qtf_direct = 1, Phase 6b also with
+   ! qtf_direct = 0, where only the indirect T+_pot is computed): the list psi_need is
    ! the union of the difference and the sum frequencies Omega = omega_i + omega_j (qtf_omega_list), and psi, grad psi on
    ! C and F and psi on the inner free surface are kept at every one of them, indexed like psi_store. qtf_direct_at_omega
    ! solves every difference pair and every sum pair of an Omega with one factorisation, the sum pairs in a
@@ -222,10 +223,10 @@ CONTAINS
 
       active = opts%qtf > 0
       IF (.NOT. active) RETURN
-      ! The sum is on for qtf = 2 or 3 with the direct solve; with qtf_direct = 0 the sum has no potential part in this phase
-      ! (the indirect one is Phase 6b) and nothing changes
+      ! The sum is on for qtf = 2 or 3 with qtf_terms = body or full, with or without the direct solve (Phase 6b: with
+      ! qtf_direct = 0 the sum QTF is the indirect one, .10s + T+_pot, and no direct solve runs)
       diff_on = opts%qtf == 1 .OR. opts%qtf == 3
-      sum_on = opts%qtf >= 2 .AND. opts%qtf_direct == 1 .AND. opts%qtf_terms >= QTF_TERMS_BODY
+      sum_on = opts%qtf >= 2 .AND. opts%qtf_terms >= QTF_TERMS_BODY
       body_active = opts%qtf_terms >= QTF_TERMS_BODY .AND. (diff_on .OR. sum_on)
       IF (body_active) THEN
          IF (.NOT. PRESENT(omegas_main)) THEN
@@ -319,14 +320,18 @@ CONTAINS
          IF (st /= 0) CALL out_of_memory(body=.TRUE.)
          tdir = (0D0, 0D0)
       END IF
-      ! sum_on needs qtf_direct = 1, so the sum stores come with the direct solve (tdir_sum, R6) and its indirect check
-      ! (tpot_sum, R1); with write_terms >= 1 also the parts of tdir_sum for QTF_DirectTermsSum.txt
+      ! The indirect sum load tpot_sum (R1) comes with the sum, with or without the direct solve (Phase 6b); the direct
+      ! one, tdir_sum (R6), only with qtf_direct = 1; with write_terms >= 1 also the parts of tdir_sum for
+      ! QTF_DirectTermsSum.txt
+      IF (body_active .AND. sum_on) THEN
+         ALLOCATE (tpot_sum(6*nbody, nfreq, nfreq, heading_pairs(nbeta)), STAT=st)
+         IF (st /= 0) CALL out_of_memory(body=.TRUE.)
+         tpot_sum = (0D0, 0D0)
+      END IF
       IF (direct_active .AND. sum_on) THEN
-         ALLOCATE (tdir_sum(6*nbody, nfreq, nfreq, heading_pairs(nbeta)), tpot_sum(6*nbody, nfreq, nfreq, &
-                   heading_pairs(nbeta)), STAT=st)
+         ALLOCATE (tdir_sum(6*nbody, nfreq, nfreq, heading_pairs(nbeta)), STAT=st)
          IF (st /= 0) CALL out_of_memory(body=.TRUE.)
          tdir_sum = (0D0, 0D0)
-         tpot_sum = (0D0, 0D0)
       END IF
       sum_terms = direct_active .AND. sum_on .AND. opts%write_terms >= 1
       IF (sum_terms) THEN
@@ -958,7 +963,9 @@ CONTAINS
    END SUBROUTINE heap_sort
 
    FUNCTION qtf_radiation_omegas() RESULT(w)
-      ! The difference frequencies that are not on the main grid: each needs a radiation-only solve. Empty unless
+      ! The frequencies of the list that are not on the main grid: each needs a radiation-only solve. These are the
+      ! difference frequencies (qtf = 1 or 3) and, with the sum on, the sum frequencies Omega = omega_i + omega_j (Phase 6b:
+      ! with qtf_direct = 0 only those, since the difference frequencies are not solved again for qtf = 2). Empty unless
       ! qtf_terms = body.
       REAL(8), ALLOCATABLE :: w(:)
 
@@ -1488,7 +1495,7 @@ CONTAINS
       ! (qtf_terms = full), also the fields there (5 complex values per point) and a pw_set per frequency and heading, and, with
       ! npsi, psi_k at the points (1 per point) and a pw_set per mode and difference frequency.
       ! With nsum_pairs (Phase 7c-2), the sum stores tdir_sum and tpot_sum: 6*nbody complex values per frequency pair and
-      ! per slice, nsum_pairs = 2 x the heading pairs. npsi then counts the sum frequencies of the list too, and nfs the
+      ! per slice, nsum_pairs = 2 x the heading pairs (Phase 6b: 1 x with qtf_direct = 0, where tpot_sum is the only store). npsi then counts the sum frequencies of the list too, and nfs the
       ! points of the inner mesh built for the largest sum frequency.
       INTEGER, INTENT(IN) :: n_panels, nwl, nbody, nfreq, nb
       INTEGER, INTENT(IN), OPTIONAL :: npsi, npairs, ncs, nfs, npw, nsum_pairs

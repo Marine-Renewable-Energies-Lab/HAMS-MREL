@@ -3650,7 +3650,9 @@ contains
 
     !> qtf_terms = quadratic solves no radiation-only problem and writes no psi check; qtf_terms = body changes no output of
     !> the quadratic case it extends, and logs one line per radiation-only solve (0.15 and 0.25 rad/s within qtf_max_dw = 0.3,
-    !> 0.05 to 0.20 rad/s for qtf_round_low).
+    !> 0.05 to 0.20 rad/s for qtf_round_low). qtf_round_body has qtf = 3, so since Phase 6b it also solves the sum frequencies
+    !> that psi needs, with or without qtf_direct: of the sums of the grid 0.7, 0.95, 1.1 only 1.4 rad/s (2 x 0.7) is below the
+    !> irregular-frequency cutoff of the sum (about 1.54 rad/s) and not on the grid, so 3 lines.
     subroutine qtf_off_unchanged(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=40), parameter :: same_files(7) = [character(len=40) :: "Wamit_format/AmssDamp.1", &
@@ -3665,7 +3667,7 @@ contains
         call check(error, count_log_lines(get_running_exe_path()//"qtf_round.log", "Radiation only"), 0, &
                    "radiation-only lines in the log of qtf_round")
         if (allocated(error)) return
-        call check(error, count_log_lines(get_running_exe_path()//"qtf_round_body.log", "Radiation only"), 2, &
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_round_body.log", "Radiation only"), 3, &
                    "radiation-only lines in the log of qtf_round_body")
         if (allocated(error)) return
         call check(error, count_log_lines(get_running_exe_path()//"qtf_round_low.log", "Radiation only"), 4, &
