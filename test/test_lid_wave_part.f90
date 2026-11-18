@@ -12,7 +12,7 @@ module test_lid_wave_part
   use Potentials_mod, only : RKBN, CGRN, PKBN, DGRN, RKBN_MULTI_COMB, CGRN_MULTI_COMB, PKBN_MULTI_COMB, DGRN_MULTI_COMB
   use WaveDyn_mod, only : V_SOLVER => V, H_SOLVER => H, WVN_SOLVER => WVN
   use HAMS_mod, only : NTHREAD, GRN_KIND
-  use SingularIntgr, only : WAVE_PART_PANEL, IMAGE_TERM_EXACT
+  use SingularIntgr, only : WAVE_PART_PANEL, IMAGE_TERM_EXACT, WAVE_PART_CELLS, WAVE_PART_DISTANCE
   use SingularIntgrMulti, only : WAVE_PART_PANEL_MULTI
   use CalGreenFunc, only : CALGREEN_IRR
   use CalGreenFuncMulti, only : CALGREEN_MULTI_IRR
@@ -41,6 +41,8 @@ contains
       new_unittest("near_wall_deep", test_near_wall_deep), &
       new_unittest("near_wall_finite_depth", test_near_wall_finite_depth), &
       new_unittest("triangle_finite_depth", test_triangle_finite_depth), &
+      new_unittest("cells_follow_distance", test_cells_follow_distance), &
+      new_unittest("graded_rule_accuracy", test_graded_rule_accuracy), &
       new_unittest("limits_have_no_wave_part", test_limits_have_no_wave_part), &
       new_unittest("multi_matches_single", test_multi_matches_single), &
       new_unittest("far_point_matches_solver_convention", test_far_point_matches_solver_convention), &
@@ -179,7 +181,67 @@ contains
     call check(error, eg < tol, name//": integral of the wave part of the gradient")
   end subroutine check_case
 
+  !> Integral against the reference only.
+  subroutine check_accuracy(nodes, p, h, name, error)
+    real(8), intent(in) :: nodes(:, :), p(3), h
+    character(len=*), intent(in) :: name
+    type(error_type), allocatable, intent(out) :: error
+    real(8) :: v, wvn(NK)
+    complex(8) :: ref(4), got(4)
+    real(8) :: e0, eg
+
+    v = (2d0*acos(-1d0)/period)**2/GRAV
+    wvn = 0d0
+    call set_mesh(nodes)
+    call reference(nodes, p, v, wvn, h, ref)
+    call WAVE_PART_PANEL(p, 1, v, wvn, NK, h, got)
+    e0 = abs(got(1) - ref(1))/abs(ref(1))
+    eg = norm2(abs(got(2:4) - ref(2:4)))/norm2(abs(ref(2:4)))
+    write (*, '(4x, a, ": err G ", es9.2, " grad ", es9.2)') name, e0, eg
+    call check(error, e0 < tol .and. eg < tol, name//": integral of the wave part")
+  end subroutine check_accuracy
+
   ! ---------------------------------------------------------------------------------------------- tests
+
+  !> The quadrature is graded by the distance s from the lid point to the panel, over the panel's longest side, from a scan of
+  !> the error against the reference quadrature (wall panel and triangle, deep water and h = 30 m, T = 2.5 s): 6 x 6 cells
+  !> below s = 0.075, 3 x 3 up to 0.15, 2 x 2 up to 0.4, one cell beyond. Worst gradient error in each band about 2.5e-4.
+  subroutine test_cells_follow_distance(error)
+    type(error_type), allocatable, intent(out) :: error
+    real(8) :: a(4, 3), s(4)
+    integer :: k, want(4)
+
+    a = wall_panel()
+    want = [6, 3, 2, 1]
+    s = [0.05d0, 0.1d0, 0.2d0, 0.5d0]
+    do k = 1, 4
+      call check(error, abs(WAVE_PART_DISTANCE(a, [s(k)*ph, 0.1d0, 0d0]) - s(k)) < 1d-12, "distance to the panel")
+      if (allocated(error)) return
+      call check(error, WAVE_PART_CELLS(a, [s(k)*ph, 0.1d0, 0d0]) == want(k), "cells for the distance")
+      if (allocated(error)) return
+    end do
+  end subroutine test_cells_follow_distance
+
+  !> The graded rule against the reference quadrature across the four bands, off the panel's side as well.
+  subroutine test_graded_rule_accuracy(error)
+    type(error_type), allocatable, intent(out) :: error
+    real(8) :: p(3, 7)
+    integer :: k
+    character(len=40) :: name
+
+    p(:, 1) = [0.05d0*ph, 0.1d0, 0d0]
+    p(:, 2) = [0.1d0*ph, 0.1d0, 0d0]
+    p(:, 3) = [0.2d0*ph, 0.1d0, 0d0]
+    p(:, 4) = [0.5d0*ph, 0.1d0, 0d0]
+    p(:, 5) = [0.05d0*ph, 0.3d0, 0d0]
+    p(:, 6) = [0.2d0*ph, 0.3d0, 0d0]
+    p(:, 7) = [0.01d0*ph, 0.6d0, 0d0]
+    do k = 1, size(p, 2)
+      write (name, '(a, i0)') "graded rule, point ", k
+      call check_accuracy(wall_panel(), p(:, k), -1d0, trim(name), error)
+      if (allocated(error)) return
+    end do
+  end subroutine test_graded_rule_accuracy
 
   !> Lid point 0.034 m from the wall (d/h = 0.05), level with the top edge, deep water.
   subroutine test_near_wall_deep(error)
