@@ -87,6 +87,7 @@ MODULE SecondOrderDriver
                         qtf_keep_cs_psi, qtf_set_edge_weights, qtf_keep_fs_state, qtf_keep_fs_psi, qtf_direct_at_omega, &
                         qtf_diff_omega, qtf_sum_omega
    USE QTFFreeSurface, ONLY: fs_point_field, fs_inner_fields, fs_inner_steps, fs_sample_phi, fs_circle_modes, fs_mode_warning, &
+                             fs_wl_fit, fs_waterline_fit_setup, fs_waterline_fit_apply, &
                              fs_auto_modes, fs_auto_evanescent, fs_radius_message, fs_coverage_check
    USE PartialWaves, ONLY: pw_set, pw_sample_points, pw_evanescent_from_wvn, PW_KR_MAX
    USE QTFDirect, ONLY: direct_setup, direct_fs_data
@@ -145,6 +146,7 @@ MODULE SecondOrderDriver
    INTEGER :: fs_mmax = 0, fs_nev = 0                  ! angular modes M and evanescent modes N_ev outside R
    INTEGER :: fs_np = 0                                ! chords of the polygon of the generated inner mesh, 0 for a file mesh
    REAL(8), ALLOCATABLE :: fs_delta(:)                 ! (fs_pts%n), offsets of fs_inner_fields, smaller next to a waterline
+   TYPE(fs_wl_fit) :: fs_fit                           ! the near-waterline fit of the inner fields (fs_waterline_fit_setup)
    TYPE(panel_mesh) :: fs_panels                       ! the panels of fs_pts (build_fs_inner), for the direct solve with full
 
 CONTAINS
@@ -534,12 +536,19 @@ CONTAINS
          lam_fo = 2D0*PI/wvn1(1)
          scale = MAX(fs_pts%psize, 0.1D0*lam_fo)
          CALL fs_inner_steps(mesh, fs_pts, fs_step, fs_delta, nshrunk, nfloor, scale=scale)
+         CALL fs_waterline_fit_setup(mesh, geom, fs_pts, fs_step, fs_fit, scale=scale)
          WRITE (*, '(a,F10.5,a,F10.5,a,F10.4,a)') ' QTF free surface: inner mesh for the sum, built at', omega_mesh, &
             ' rad/s; offsets of phi_zz at the first-order scale (omega_max', omega_max, ' rad/s, lambda/10 =', 0.1D0*lam_fo, &
             ' m)'
       ELSE
          CALL fs_inner_steps(mesh, fs_pts, fs_step, fs_delta, nshrunk, nfloor)
+         CALL fs_waterline_fit_setup(mesh, geom, fs_pts, fs_step, fs_fit)
       END IF
+      ! Within one waterline segment of a waterline the stencil differences the panel field below its smooth scale; those
+      ! points take a fit from [d0, 3 d0] instead (fs_waterline_fit_setup, Phase 7c-2 fix wave)
+      WRITE (*, '(a,I0,a,I0,a,I0,a)') ' QTF free surface: ', fs_fit%n, ' inner points within one waterline segment of a'// &
+         ' waterline take the fit of their fields from ', fs_fit%n*fs_fit%nfit, ' samples (', fs_fit%nskip, &
+         ' kept on the stencil: another waterline within one segment of their samples)'
       WRITE (*, '(a,I0,a,F10.3,a,F10.3,a,F10.3,a)') ' QTF free surface: ', fs_pts%n, ' inner points, circle R =', fs_radius, &
          ' m about (', fs_centre(1), ',', fs_centre(2), ')'
       WRITE (*, '(a,I0,a,I0,a,a,I0,a,F8.4,a,F8.3,a)') ' QTF free surface: partial waves outside R with M = ', fs_mmax, &
@@ -1188,6 +1197,7 @@ CONTAINS
       ALLOCATE (f(fs_pts%n, SIZE(states)), pw(SIZE(states)), miss(SIZE(states)))
       CALL SYSTEM_CLOCK(t0, rate)
       CALL fs_inner_fields(mesh, fs_pts, states, fs_step, multi_arrays, f, fs_delta)
+      CALL fs_waterline_fit_apply(mesh, fs_fit, states, fs_step, multi_arrays, f)
       CALL pw_evanescent_from_wvn(fs_nev, kev)
       CALL fs_circle_modes(mesh, fs_circle, states, multi_arrays, fs_centre, fs_radius, H, WK, kev, fs_mmax, fs_nev, pw, miss)
       CALL SYSTEM_CLOCK(t1)

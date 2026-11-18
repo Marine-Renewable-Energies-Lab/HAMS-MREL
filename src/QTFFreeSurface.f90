@@ -46,7 +46,7 @@ MODULE QTFFreeSurface
 
    USE SecondOrderIncident, ONLY: free_surface_forcing
    USE NearFieldDrift, ONLY: KERNEL_DIFF, KERNEL_SUM
-   USE SecondOrderTypes, ONLY: panel_mesh, first_order_state, cs_points, cs_fields, CS_FREE
+   USE SecondOrderTypes, ONLY: panel_mesh, first_order_state, cs_points, cs_fields, CS_FREE, surface_geom
    USE PartialWaves, ONLY: pw_set, pw_radial, pw_decompose, pw_eval_point, pw_radial_at, pw_bessel_k_scaled, &
                            pw_bessel_k_scaled_c, pw_hankel_scaled
    USE FieldVelocity, ONLY: incident_at
@@ -59,6 +59,7 @@ MODULE QTFFreeSurface
    PRIVATE
 
    PUBLIC :: fs_point_field, fs_forcing_diff
+   PUBLIC :: fs_wl_fit, fs_waterline_fit_setup, fs_waterline_fit_apply, WLFIT_N
    PUBLIC :: fs_inner_fields, fs_inner_steps, fs_sample_phi, fs_circle_modes, fs_mode_miss, fs_mode_warning, fs_auto_modes
    PUBLIC :: FS_MODE_TOL, fs_mode_scales, fs_auto_evanescent
    PUBLIC :: FS_SIGN, fs_inner_pair, fs_outer_pair, fs_outer_annulus, fs_outer_tail, fs_outer_ring, fs_outer_rfar
@@ -77,6 +78,15 @@ MODULE QTFFreeSurface
    ! The sign s_FS of T_FS = s_FS (i Omega rho / g) int psi_k Q_D dS: +1, settled by the direct solve of the Task 2
    ! reference (fs_sign_from_bvp: 7e-6 with +1, 1.25 with -1)
    REAL(8), PARAMETER :: FS_SIGN = 1D0
+   ! The near-waterline fit of the inner fields (fs_waterline_fit_setup): WLFIT_N Gauss-Legendre samples on [d0, 3 d0],
+   ! WLFIT_NB basis functions (WLFIT_KINDS)
+   INTEGER, PARAMETER :: WLFIT_N = 6, WLFIT_NB = 4
+   ! The basis of each fitted quantity (phi, grad phi, phi_zz), wlfit_basis: 0 keeps the stencil value, 1 is 1, log s, s,
+   ! s log s; 2 is 1, s, s^2, s^3; 3 is 1, s, s log s, s^2. Ruling W4 of the fix wave, from fs_fields_exact_inner and
+   ! fs_fields_exact_integral (sharp m1, exact panel data) over six combinations: phi stays on the stencil (1-2.5 %,
+   ! fitting it gave 28 % at 0.1 m), grad and phi_zz take the cubic (within 4.9 % and 3.5 % at 0.1 m from the
+   ! waterline; the log basis overfits, phi_zz 35 %), inner sum integral 1.9 % off against 42.7 % without the fit
+   INTEGER, PARAMETER :: WLFIT_KINDS(3) = [0, 2, 2]
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
    REAL(8), PARAMETER :: PI = 3.14159265358979323846D0
    ! The outer integral (Task 7): Gauss-Legendre points per radial interval, Gauss-Laguerre points per tail contour, the
@@ -112,6 +122,17 @@ MODULE QTFFreeSurface
       LOGICAL :: on(3) = .FALSE.
       INTEGER :: nalp = 0
    END TYPE outer_work
+
+   TYPE :: fs_wl_fit
+      ! The near-waterline fit of fs_waterline_fit_setup: the n inner points idx(n) (at x(3, n)) within d0 of a waterline,
+      ! their nfit samples each (samp, point k's from (k - 1) nfit + 1) with the offsets delta of fs_inner_steps, and the
+      ! linear fit weights wt(nfit, n); nskip near points kept on the stencil (a sample not clear of a waterplane)
+      INTEGER :: n = 0, nfit = 0, nskip = 0
+      INTEGER, ALLOCATABLE :: idx(:)
+      REAL(8), ALLOCATABLE :: x(:, :), wt(:, :, :), delta(:)   ! wt(nfit, n, 3): phi, grad phi, phi_zz
+      INTEGER :: kinds(3) = 0
+      TYPE(cs_points) :: samp
+   END TYPE fs_wl_fit
 
    TYPE :: fs_point_field
       ! One first-order state at one point of z = 0: potential, gradient, and d^2 phi / dz^2.
@@ -2105,5 +2126,197 @@ CONTAINS
 
       val = 2D0*(q0*i0 + qg(1)*mom(1) + qg(2)*mom(2))
    END SUBROUTINE fs_local_rankine
+
+   SUBROUTINE fs_waterline_fit_setup(mesh, geom, pts, step, fit, scale)
+      ! The near-waterline fit of the inner fields (Phase 7c-2 fix wave, validation-runs/snellius-qtf-directsum/findings.md
+      ! section 9). Within about one hull panel of a waterline the 5-point stencil of fs_inner_fields differences the field
+      ! of constant panels below the scale on which it is smooth (fs_inner_steps shrinks its offsets to millimetres there):
+      ! with exact panel data on the sharp m1 hull grad phi is 3-105 % and phi_zz 20-450 % off within 1 m of the
+      ! waterline, phi itself 1-2.5 % (fs_fields_exact_inner), and that metre carries a third of the sum free-surface
+      ! term at high Omega+. Such a point x gets its perturbation fields from a least-squares fit along the line from the
+      ! nearest waterline point p through x, at s = |x - p|: the values at WLFIT_N Gauss-Legendre samples p + s_j e,
+      ! s_j in [d0, 3 d0], fitted per quantity to the basis of WLFIT_KINDS (grad phi and phi_zz: 1, s, s^2, s^3; phi keeps
+      ! the stencil, which is accurate there; ruling W4). d0 is the
+      ! length of the nearest waterline segment, about one hull panel (ruling W1: on the sharp m1 hull, 1.96 m segments,
+      ! the stencil is within 2 % from 2 m out and 3-26 % off at 1 m). The fit is linear, fit%wt(j, k, q) its weights.
+      ! A point whose samples are not clear of every waterplane by d0 (another body, or a concave waterline of the same
+      ! body, in the way: closer than d0 the stencil itself is 3-26 % off, and the fit would amplify it, review I-2) keeps
+      ! the stencil, counted in fit%nskip. The extrapolation gain sum |w_j| is 2 at s = d0 and about 40 at s -> 0 (cubic,
+      ! six samples), so a stencil error e at the samples gives up to about 40 e at the point: the 1 % of the stencil
+      ! from d0 out is the floor of the 3.5-4.9 % near the waterline (review M-2). The samples get their offsets as the inner points do (fs_inner_steps with step, and the
+      ! scale(i) of their point if given). Frequency-independent: the driver calls it once.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(surface_geom), INTENT(IN) :: geom
+      TYPE(cs_points), INTENT(IN) :: pts
+      REAL(8), INTENT(IN) :: step
+      TYPE(fs_wl_fit), INTENT(OUT) :: fit
+      REAL(8), INTENT(IN), OPTIONAL :: scale(:)
+      REAL(8) :: xg(WLFIT_N), wg(WLFIT_N), p(2), s, d0, a(WLFIT_N, WLFIT_NB), ata(WLFIT_NB, WLFIT_NB), c(WLFIT_NB), &
+                 sig(WLFIT_N), xs(3, WLFIT_N), best
+      REAL(8), ALLOCATABLE :: sscale(:), wt(:, :, :), xsamp(:, :), psz(:), xpt(:, :)
+      INTEGER, ALLOCATABLE :: idx(:)
+      LOGICAL :: ok
+      INTEGER :: i, j, iw, n, m, nshr, info, ipiv(WLFIT_NB), q
+      EXTERNAL :: DGESV
+
+      IF (PRESENT(scale)) THEN
+         IF (SIZE(scale) /= pts%n) THEN
+            WRITE (*, '(a)') ' fs_waterline_fit_setup: scale must have one value per inner point.'
+            ERROR STOP 1
+         END IF
+      END IF
+      CALL gauss_legendre01(WLFIT_N, xg, wg)
+      sig = 1D0 + 2D0*xg                                      ! sigma = s/d0 in [1, 3]
+      ALLOCATE (idx(pts%n), wt(WLFIT_N, pts%n, 3), xsamp(3, WLFIT_N*pts%n), psz(WLFIT_N*pts%n), sscale(WLFIT_N*pts%n), &
+                xpt(3, pts%n))
+      n = 0
+      fit%nskip = 0
+      DO i = 1, pts%n
+         best = HUGE(1D0)
+         d0 = 0D0
+         DO iw = 1, geom%nwl
+            CALL nearest_on_segment(pts%x(1:2, i), geom%wl_x1(1:2, iw), geom%wl_x2(1:2, iw), p)
+            s = NORM2(pts%x(1:2, i) - p)
+            IF (s < best) THEN
+               best = s
+               d0 = geom%wl_len(iw)
+               xs(1:2, 1) = p
+            END IF
+         END DO
+         s = best
+         IF (geom%nwl == 0 .OR. .NOT. (s > 0D0 .AND. s < d0)) CYCLE
+         p = xs(1:2, 1)
+         ok = .TRUE.
+         DO j = 1, WLFIT_N
+            xs(1:2, j) = p + sig(j)*d0*(pts%x(1:2, i) - p)/s
+            xs(3, j) = 0D0
+            IF (stencil_in_waterplane(mesh, xs(:, j), 0D0) .OR. clearance_in_waterplane(mesh, xs(:, j), d0)) ok = .FALSE.
+         END DO
+         IF (.NOT. ok) THEN
+            fit%nskip = fit%nskip + 1
+            CYCLE
+         END IF
+         n = n + 1
+         idx(n) = i
+         xpt(:, n) = pts%x(:, i)
+         ! weights b(sigma)^T (A^T A)^{-1} A^T at sigma = s/d0, per fitted quantity (kind 0: none)
+         wt(:, n, :) = 0D0
+         DO q = 1, 3
+            IF (WLFIT_KINDS(q) == 0) CYCLE
+            DO j = 1, WLFIT_N
+               a(j, :) = wlfit_basis(sig(j), WLFIT_KINDS(q))
+            END DO
+            ata = MATMUL(TRANSPOSE(a), a)
+            c = wlfit_basis(s/d0, WLFIT_KINDS(q))
+            m = WLFIT_NB
+            CALL DGESV(m, 1, ata, m, ipiv, c, m, info)
+            IF (info /= 0) THEN
+               WRITE (*, '(a)') ' fs_waterline_fit_setup: singular fit matrix.'
+               ERROR STOP 1
+            END IF
+            wt(:, n, q) = MATMUL(a, c)
+         END DO
+         DO j = 1, WLFIT_N
+            xsamp(:, (n - 1)*WLFIT_N + j) = xs(:, j)
+            psz((n - 1)*WLFIT_N + j) = pts%psize(i)
+            IF (PRESENT(scale)) THEN
+               sscale((n - 1)*WLFIT_N + j) = scale(i)
+            ELSE
+               sscale((n - 1)*WLFIT_N + j) = pts%psize(i)
+            END IF
+         END DO
+      END DO
+      fit%n = n
+      fit%nfit = WLFIT_N
+      fit%idx = idx(1:n)
+      fit%wt = wt(:, 1:n, :)
+      fit%kinds = WLFIT_KINDS
+      fit%x = xpt(:, 1:n)
+      m = n*WLFIT_N
+      fit%samp%n = m
+      ALLOCATE (fit%samp%x(3, m), fit%samp%nrm(3, m), fit%samp%w(m), fit%samp%psize(m), fit%samp%kind(m), &
+                fit%samp%body(m), fit%delta(m))
+      fit%samp%x = xsamp(:, 1:m)
+      fit%samp%nrm = 0D0
+      fit%samp%nrm(3, :) = -1D0
+      fit%samp%w = 0D0
+      fit%samp%psize = psz(1:m)
+      fit%samp%kind = CS_FREE
+      fit%samp%body = 0
+      IF (m > 0) CALL fs_inner_steps(mesh, fit%samp, step, fit%delta, nshr, scale=sscale(1:m))
+   END SUBROUTINE fs_waterline_fit_setup
+
+   SUBROUTINE fs_waterline_fit_apply(mesh, fit, states, step, is_multi, f)
+      ! Replaces the fields of the near-waterline points of fit (fs_waterline_fit_setup) in f(pts%n, SIZE(states)), the
+      ! output of fs_inner_fields for the same points, by the fit of the perturbation fields at their samples
+      ! (fs_inner_fields at the samples, with their offsets) plus the exact incident wave at the point (incident_at,
+      ! phi_zz = k^2 phi_I, as fs_inner_fields). All states at the current global frequency.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(fs_wl_fit), INTENT(IN) :: fit
+      TYPE(first_order_state), INTENT(IN) :: states(:)
+      REAL(8), INTENT(IN) :: step
+      LOGICAL, INTENT(IN) :: is_multi
+      TYPE(fs_point_field), INTENT(INOUT) :: f(:, :)
+      TYPE(fs_point_field), ALLOCATABLE :: fs(:, :)
+      COMPLEX(8) :: phi_i, grad_i(3), phi_s, grad_s(3), ap, ag(3), az
+      INTEGER :: k, j, ist, js
+
+      IF (fit%n == 0) RETURN
+      ALLOCATE (fs(fit%samp%n, SIZE(states)))
+      CALL fs_inner_fields(mesh, fit%samp, states, step, is_multi, fs, fit%delta)
+      DO ist = 1, SIZE(states)
+         DO k = 1, fit%n
+            ap = (0D0, 0D0)
+            ag = (0D0, 0D0)
+            az = (0D0, 0D0)
+            DO j = 1, fit%nfit
+               js = (k - 1)*fit%nfit + j
+               CALL incident_at(states(ist), fit%samp%x(:, js), phi_s, grad_s)
+               IF (fit%kinds(1) /= 0) ap = ap + fit%wt(j, k, 1)*(fs(js, ist)%phi - phi_s)
+               IF (fit%kinds(2) /= 0) ag = ag + fit%wt(j, k, 2)*(fs(js, ist)%grad - grad_s)
+               IF (fit%kinds(3) /= 0) az = az + fit%wt(j, k, 3)*(fs(js, ist)%phizz - states(ist)%k**2*phi_s)
+            END DO
+            CALL incident_at(states(ist), fit%x(:, k), phi_i, grad_i)
+            IF (fit%kinds(1) /= 0) f(fit%idx(k), ist)%phi = phi_i + ap
+            ! Only the horizontal gradient: on z = 0, d phi_P/dz = nu phi_P exactly (fs_inner_fields), so phi_z follows phi
+            ! (review I-1); with phi from the stencil it stays the stencil's
+            IF (fit%kinds(2) /= 0) f(fit%idx(k), ist)%grad(1:2) = grad_i(1:2) + ag(1:2)
+            IF (fit%kinds(1) /= 0) f(fit%idx(k), ist)%grad(3) = states(ist)%nu*(f(fit%idx(k), ist)%phi - phi_i) + grad_i(3)
+            IF (fit%kinds(3) /= 0) f(fit%idx(k), ist)%phizz = states(ist)%k**2*phi_i + az
+         END DO
+      END DO
+   END SUBROUTINE fs_waterline_fit_apply
+
+   PURE FUNCTION wlfit_basis(sig, kind) RESULT(b)
+      ! The basis of the near-waterline fit in sigma = s/d0 (fs_waterline_fit_setup, WLFIT_KINDS): kind 1 is 1, log sigma,
+      ! sigma, sigma log sigma; 2 is 1, sigma, sigma^2, sigma^3; 3 is 1, sigma, sigma log sigma, sigma^2
+      REAL(8), INTENT(IN) :: sig
+      INTEGER, INTENT(IN) :: kind
+      REAL(8) :: b(WLFIT_NB)
+
+      SELECT CASE (kind)
+      CASE (1)
+         b = [1D0, LOG(sig), sig, sig*LOG(sig)]
+      CASE (2)
+         b = [1D0, sig, sig**2, sig**3]
+      CASE DEFAULT
+         b = [1D0, sig, sig*LOG(sig), sig**2]
+      END SELECT
+   END FUNCTION wlfit_basis
+
+   PURE SUBROUTINE nearest_on_segment(x, a, b, p)
+      ! The point p of the segment a-b nearest to x (2D)
+      REAL(8), INTENT(IN) :: x(2), a(2), b(2)
+      REAL(8), INTENT(OUT) :: p(2)
+      REAL(8) :: t, l2
+
+      l2 = SUM((b - a)**2)
+      IF (l2 <= 0D0) THEN
+         p = a
+         RETURN
+      END IF
+      t = MIN(1D0, MAX(0D0, SUM((x - a)*(b - a))/l2))
+      p = a + t*(b - a)
+   END SUBROUTINE nearest_on_segment
 
 END MODULE QTFFreeSurface

@@ -270,8 +270,10 @@ module test_integration_drift
     ! 1e-6: other compilers and libraries move the two meshes' bits apart by this much, and it is still about 1e5 below
     ! the free-surface part
     real(8), parameter :: directfs_half_limit = 1d-6
-    ! qtf_directfs_irsp (IRSP = 1, 0.95 and 1.10 rad/s, depth 20): 1.45e-3 measured, without D_FS 1.29e-1. 1.3x measured
-    real(8), parameter :: directfs_irsp_limit = 1.9d-3
+    ! qtf_directfs_irsp (IRSP = 1, 0.95 and 1.10 rad/s, depth 20): 1.45e-3 measured, without D_FS 1.29e-1; 1.92e-3 with the
+    ! near-waterline fit of the inner fields (7c-2 fix wave, fs_waterline_fit_setup), which changes the forcing next to the
+    ! waterline where the two methods integrate it differently. 1.3x measured
+    real(8), parameter :: directfs_irsp_limit = 2.5d-3
     ! qtf_directfs_two (two hulls of 220 panels, depth 20): 4.36e-1 measured, without D_FS 1.83. The gap is the moments of the
     ! body forcing, the bottom of the coarse hull as in qtf_direct_two (M_y: 6.3e-2 of 0.144, where the free-surface part
     ! of M_y is 0.20 and agrees to 3e-4); the free-surface part is checked by directfs_fs_limit. 1.3x measured
@@ -6476,7 +6478,9 @@ contains
 
     !> Without the sum frequency the direct solve is that of Phases 7a and 7b, bit for bit: QTF_Direct.12d and
     !> QTF_DirectTerms.txt of the qtf = 1 fixtures of both phases are the files of the binary before the sum frequency
-    !> (the merge c716ed7), stored in expected_output of each case. 7a: qtf_direct_irsp and qtf_direct_two (qtf_direct_round
+    !> (the merge c716ed7), stored in expected_output of each case; the 7b files (qtf_directfs_*) were stored again with
+    !> the near-waterline fit of the 7c-2 fix wave, which changes their free-surface forcing next to the waterline (at
+    !> most 4.9e-3 of the largest value; most rows to the bit). 7a: qtf_direct_irsp and qtf_direct_two (qtf_direct_round
     !> has qtf = 3 and is a sum case: its .12d is the same file, direct_fs_off_unchanged); 7b: qtf_directfs_round,
     !> qtf_directfs_irsp and qtf_directfs_two. The logs have no line of a sum solve
     subroutine direct_sum_off_unchanged(error)

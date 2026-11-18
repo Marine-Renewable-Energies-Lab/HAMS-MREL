@@ -9,7 +9,8 @@ module test_qtf_free_surface
                              fs_mode_warning, fs_auto_modes, FS_MODE_TOL, fs_sample_phi, fs_mode_scales, fs_auto_evanescent, &
                              fs_inner_pair, fs_outer_pair, fs_outer_annulus, fs_outer_tail, fs_outer_ring, fs_outer_rfar, &
                              fs_outer_sliver, fs_radius_message, FS_SIGN, fs_pair_order_message, fs_pair_terms, &
-                             fs_coverage_check, fs_outer_moments, fs_forcing_points, fs_local_rankine
+                             fs_coverage_check, fs_outer_moments, fs_forcing_points, fs_local_rankine, &
+                             fs_wl_fit, fs_waterline_fit_setup, fs_waterline_fit_apply
   use HAMS_mod, only : NTHREAD, ISOL, IRSP
   use WaveDyn_mod, only : AMP, BETA, H, NK, TP, V, W1, WK, WVN
   use Body_mod, only : XW
@@ -40,6 +41,15 @@ module test_qtf_free_surface
   ! (1.4e-3, 2.4e-3, 1.5e-3). This is the offset that the difference run has at its circle (panel size lambda/10 there),
   ! so the sum keeps it; the 1e-3 of the brief was the value at delta = 0.1 m. Limit 1.3x measured, rounded up
   real(8), parameter :: scale_residual_limit = 3.1d-3
+  ! fs_fields_exact_inner with the near-waterline fit (Phase 7c-2 fix wave): measured worst 4.89e-2 (grad phi at 0.1 m
+  ! from the waterline, 1.4 rad/s; phi_zz 3.46e-2, phi 2.44e-2), against 1.05 and 4.51 without the fit; 1.3x, rounded
+  real(8), parameter :: WLGATE = 6.5d-2
+  ! fs_fields_exact_integral: measured 2.05e-2 (M_y) with the fit (grad phi horizontal only, review I-1), 0.427 without;
+  ! 1.3x, rounded up
+  real(8), parameter :: WLINT_GATE = 2.7d-2
+  ! fs_fields_exact_integral_diff (difference pair (1.4, 1.0), Omega- = 0.4): measured 2.28e-2 with the fit, 0.240
+  ! without; 1.3x, rounded
+  real(8), parameter :: WLINT_DIFF_GATE = 3.0d-2
   ! The synthetic partial waves of the outer-integral tests (Task 7): depth, circle, angular and evanescent modes
   real(8), parameter :: rho = 1025d0
   real(8), parameter :: sy_h = 20d0, sy_radius = 12d0, sy_centre(2) = [1.5d0, -0.7d0]
@@ -91,7 +101,9 @@ subroutine collect_qtf_free_surface(testsuite)
     new_unittest("fs_sum_exact_inner", test_sum_exact_inner), &
     new_unittest("fs_sum_exact_outer", test_sum_exact_outer), &
     new_unittest("fs_fields_exact_inner", test_fields_exact_inner), &
-    new_unittest("fs_fields_exact_circle", test_fields_exact_circle) &
+    new_unittest("fs_fields_exact_circle", test_fields_exact_circle), &
+    new_unittest("fs_fields_exact_integral", test_fields_exact_integral), &
+    new_unittest("fs_fields_exact_integral_diff", test_fields_exact_integral_diff) &
     ]
 end subroutine collect_qtf_free_surface
 
@@ -2513,9 +2525,10 @@ end subroutine exact_hull_state
 !> fs_inner_fields (5-point stencil, offsets of fs_inner_steps with the driver's step 2 cs_fd_step = 0.04 and the sum's
 !> scale max(psize, lambda(1.4)/10)) with the exact scattered potential on the sharp m1 hull (no BEM solve), at rings
 !> 0.1 to 3.5 m from the waterline, against the exact total phi, grad phi and phi_zz; 1.0 and 1.4 rad/s. Measured
-!> (findings section 9): phi 0.3-2.5 % at every ring; from 2 m out grad and phi_zz 0.6-1.9 % (gate 3 %); within 1 m of
-!> the waterline, where fs_inner_steps shrinks the offset to 4-31 mm, grad 3-105 % and phi_zz 20-450 % off.
-!> That ring holds 37 % of the exact F_x free-surface term at (1.2, 1.2) rad/s: the cause of the 7c-2 sum error.
+!> (findings section 9): without the near-waterline fit, phi 0.3-2.5 % at every ring, grad and phi_zz 0.6-1.9 % from
+!> 2 m out, but within 1 m of the waterline, where fs_inner_steps shrinks the offset to 4-31 mm, grad 3-105 % and
+!> phi_zz 20-450 % off (that metre holds 37 % of the exact F_x free-surface term at (1.2, 1.2) rad/s: the cause of the
+!> 7c-2 sum error). With the fit (fs_waterline_fit_setup) every ring is within WLGATE.
 subroutine test_fields_exact_inner(error)
   type(error_type), allocatable, intent(out) :: error
   type(panel_mesh) :: mesh
@@ -2524,13 +2537,18 @@ subroutine test_fields_exact_inner(error)
   type(fs_point_field), allocatable :: f(:, :)
   real(8), allocatable :: xp(:, :), xc(:, :), delta(:), scale(:), x3(:, :)
   complex(8), allocatable :: fp(:, :), fc(:, :)
-  real(8) :: w, k, h_ex, e(3), worst(3), lam, rr
+  real(8) :: w, k, h_ex, e(3), worst(3), worst_far(3), lam, rr
   integer :: ib, i, n, nshrunk, nthread_saved, ir, j
   character(len=300) :: info
+  type(surface_geom) :: geom
+  type(fs_wl_fit) :: fit
+  logical :: ok
+  character(len=:), allocatable :: msg
 
   nthread_saved = NTHREAD
   NTHREAD = 8
   worst = 0d0
+  worst_far = 0d0
   do ib = 1, 2
     call exact_hull_state(ib, mesh, st, w, k, h_ex, xp, fp, xc, fc, error)
     if (allocated(error)) exit
@@ -2542,7 +2560,12 @@ subroutine test_fields_exact_inner(error)
     lam = 2d0*pi/0.19986437774367391d0      ! lambda at 1.4 rad/s, h = 100 m
     scale = max(0.786d0, lam/10d0)
     call fs_inner_steps(mesh, pts, 0.04d0, delta, nshrunk, scale=scale)
+    call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+    call check(error, ok, "fs_fields_exact_inner: geometry: "//msg)
+    if (allocated(error)) exit
+    call fs_waterline_fit_setup(mesh, geom, pts, 0.04d0, fit, scale)
     call fs_inner_fields(mesh, pts, st, 0.04d0, .false., f, delta)
+    call fs_waterline_fit_apply(mesh, fit, st, 0.04d0, .false., f)
     do ir = 1, n/5
       e = 0d0
       do j = 5*(ir - 1) + 1, 5*ir
@@ -2553,17 +2576,20 @@ subroutine test_fields_exact_inner(error)
       rr = norm2(xp(:, 5*ir - 4))
       print '(4x,a,f4.1,a,f5.2,a,f7.4,a,3es10.2)', "omega ", w, ", r - a = ", rr - 10d0, " m, delta ", &
         minval(delta(5*(ir - 1) + 1:5*ir)), ": phi, grad, phi_zz ", e
-      ! gated from 2 m out; within 1 m of the waterline the stencil derivatives are far off (findings section 9, the
-      ! cause of the 7c-2 sum free-surface error), printed only until that is fixed
-      if (rr - 10d0 >= 1.99d0) worst = max(worst, e)
+      worst = max(worst, e)
+      if (rr - 10d0 >= 1.99d0) worst_far = max(worst_far, e)
     end do
     deallocate (x3, delta, scale, f)
   end do
   NTHREAD = nthread_saved
   if (allocated(error)) return
-  write (info, '(a,3es10.2)') "first-order fields at the inner points 2 m and more from the waterline, exact panel data: "// &
-    "worst phi, grad, phi_zz ", worst
-  call check(error, maxval(worst) <= 3d-2, trim(info))
+  write (info, '(a,3es10.2)') "first-order fields at the inner points 0.1 to 3.5 m from the waterline, exact panel "// &
+    "data, with the near-waterline fit: worst phi, grad, phi_zz ", worst
+  call check(error, maxval(worst) <= WLGATE, trim(info))
+  if (allocated(error)) return
+  write (info, '(a,3es10.2)') "first-order fields 2 m and more from the waterline (the stencil, no fit there): "// &
+    "worst phi, grad, phi_zz ", worst_far
+  call check(error, maxval(worst_far) <= 3d-2, trim(info))
 end subroutine test_fields_exact_inner
 
 !> fs_circle_modes (samples by the centroid route on R = 15 m, M and N_ev as the driver for the sum run) with the exact
@@ -2615,5 +2641,134 @@ subroutine test_fields_exact_circle(error)
   write (info, '(a,3es10.2)') "partial waves of the circle with exact panel data: worst phi, grad, phi_zz ", worst
   call check(error, maxval(worst) <= 3d-2, trim(info))
 end subroutine test_fields_exact_circle
+
+!> The inner free-surface integral of the sum pair (1.4, 1.0) rad/s over a < r < a + 5 m, with HAMS's own fields
+!> (fs_inner_fields from the exact scattered potential on the sharp m1 hull, the driver's offsets) and the exact psi_k at
+!> Omega+ = 2.4, against the same integral of the exact fields (test/data/fs_sum_exact/fs_fields_exact_grid.txt, 408
+!> points graded to 0.017 m from the waterline). It measures what the field evaluation next to the waterline does to the
+!> free-surface term of the 7c-2 sum QTF (findings section 9).
+subroutine test_fields_exact_integral(error)
+  type(error_type), allocatable, intent(out) :: error
+  call run_fields_integral('test/data/fs_sum_exact/fs_fields_exact_grid.txt', KERNEL_SUM, WLINT_GATE, 'sum', error)
+end subroutine test_fields_exact_integral
+
+!> The same at the difference frequency, Omega- = 0.4 rad/s, exact psi_k at Omega- (fs_fields_exact_grid_diff.txt): the
+!> effect of the near-waterline fit on the free-surface term of the difference QTF (Phases 6a and 7b), printed with
+!> and without the fit; gated with it.
+subroutine test_fields_exact_integral_diff(error)
+  type(error_type), allocatable, intent(out) :: error
+  call run_fields_integral('test/data/fs_sum_exact/fs_fields_exact_grid_diff.txt', KERNEL_DIFF, WLINT_DIFF_GATE, &
+    'difference', error)
+end subroutine test_fields_exact_integral_diff
+
+!> The inner free-surface integral of the grid file (kernel), with and without the near-waterline fit; gate on the fit.
+subroutine run_fields_integral(file, kernel, gate, label, error)
+  character(len=*), intent(in) :: file, label
+  integer, intent(in) :: kernel
+  real(8), intent(in) :: gate
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: st(1)
+  type(cs_points) :: pts
+  type(fs_point_field), allocatable :: f(:, :), fa(:), fb(:), ia(:), ib_(:), fa0(:), fb0(:)
+  real(8), allocatable :: xp(:, :), xc(:, :), delta(:), scale(:), x3(:, :), wts(:)
+  complex(8), allocatable :: fp(:, :), fc(:, :), psi(:, :)
+  complex(8) :: expect(3), t_in(3), t_nofit(3), phi, grad(3)
+  real(8) :: w, k, h_ex, wpair(2), kpair(2), g_ex, v(9), lam, gw, err, err0
+  character(len=64) :: tag
+  character(len=4096) :: buf
+  integer :: u, ios, n, i, j, nshrunk, nthread_saved, iw
+  character(len=300) :: info
+  type(surface_geom) :: geom
+  type(fs_wl_fit) :: fit
+  logical :: ok
+  character(len=:), allocatable :: msg
+
+  open (newunit=u, file=file, status='old', action='read', iostat=ios)
+  call check(error, ios == 0, "fs_fields_exact_integral: cannot open "//file)
+  if (allocated(error)) return
+  do
+    read (u, '(a)', iostat=ios) buf
+    if (ios /= 0) exit
+    read (buf, *, iostat=ios) tag
+    if (ios /= 0) cycle
+    select case (trim(tag))
+    case ('GRIDPAIR')
+      read (buf, *) tag, wpair, kpair, g_ex, h_ex
+    case ('GRID')
+      read (buf, *) tag, n
+      allocate (x3(3, n), wts(n), psi(n, 3))
+      do i = 1, n
+        read (u, *) v
+        x3(:, i) = [v(1), v(2), 0d0]
+        wts(i) = v(3)
+        psi(i, :) = [(cmplx(v(2 + 2*j), v(3 + 2*j), 8), j = 1, 3)]
+      end do
+    case ('EXPECT_GRID')
+      read (buf, *) tag, v(1:6)
+      expect = [(cmplx(v(2*j - 1), v(2*j), 8), j = 1, 3)]
+    end select
+  end do
+  close (u)
+
+  nthread_saved = NTHREAD
+  NTHREAD = 8
+  allocate (fa(n), fb(n), ia(n), ib_(n), fa0(n), fb0(n), delta(n), scale(n), f(n, 1))
+  call free_points(x3, 0.786d0, pts)
+  lam = 2d0*pi/kpair(1)                  ! lambda at 1.4 rad/s
+  scale = max(0.786d0, lam/10d0)
+  ! block 2 of fs_fields_exact.txt is 1.4 rad/s (state a), block 1 is 1.0 rad/s (state b)
+  do iw = 2, 1, -1
+    call exact_hull_state(iw, mesh, st, w, k, h_ex, xp, fp, xc, fc, error)
+    if (allocated(error)) exit
+    if (iw == 2) then
+      call fs_inner_steps(mesh, pts, 0.04d0, delta, nshrunk, scale=scale)
+      call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+      call check(error, ok, "fs_fields_exact_integral: geometry: "//msg)
+      if (allocated(error)) exit
+      call fs_waterline_fit_setup(mesh, geom, pts, 0.04d0, fit, scale)
+      print '(4x,a,i0,a,i0,a,i0,a)', "near-waterline fit: ", fit%n, " of ", n, " points, ", fit%nskip, " kept on the stencil"
+    end if
+    call fs_inner_fields(mesh, pts, st, 0.04d0, .false., f, delta)
+    if (iw == 2) then
+      fa0 = f(:, 1)
+    else
+      fb0 = f(:, 1)
+    end if
+    call fs_waterline_fit_apply(mesh, fit, st, 0.04d0, .false., f)
+    gw = wave_gravity(w, k, h_ex)
+    do i = 1, n
+      phi = incident_phi(x3(:, i), w, k, h_ex, 1d0, 0d0, gw)
+      call incident_grad(x3(:, i), w, k, h_ex, 1d0, 0d0, gw, grad)
+      if (iw == 2) then
+        fa(i) = f(i, 1)
+        ia(i)%phi = phi; ia(i)%grad = grad; ia(i)%phizz = k**2*phi
+      else
+        fb(i) = f(i, 1)
+        ib_(i)%phi = phi; ib_(i)%grad = grad; ib_(i)%phizz = k**2*phi
+      end if
+    end do
+  end do
+  NTHREAD = nthread_saved
+  if (allocated(error)) return
+  call check(error, n > 0 .and. fit%n > 0, "fs_fields_exact_integral: no grid points or none near the waterline")
+  if (allocated(error)) return
+  call fs_inner_pair(wpair(1), fa, ia, wpair(2), fb, ib_, psi, wts, g_ex, rho, t_in, kernel)
+  t_in = t_in/(rho*g_ex)
+  call fs_inner_pair(wpair(1), fa0, ia, wpair(2), fb0, ib_, psi, wts, g_ex, rho, t_nofit, kernel)
+  t_nofit = t_nofit/(rho*g_ex)
+  do j = 1, 3
+    print '(4x,a,i0,a,2es13.5,a,2es13.5,a,f8.2,a)', "psi_", 2*j - 1, ": HAMS fields ", t_in(j), ", exact ", &
+      expect(j), ", off ", 100d0*abs(t_in(j) - expect(j))/maxval(abs(expect)), " % of the largest"
+  end do
+  err = maxval(abs(t_in - expect))/maxval(abs(expect))
+  err0 = maxval(abs(t_nofit - expect))/maxval(abs(expect))
+  print '(4x,a,a,a,f8.2,a,f8.2,a)', "inner ", label, " FS integral off the exact: ", 100d0*err0, " % without the fit, ", &
+    100d0*err, " % with it"
+  write (info, '(a,a,a,f7.2,a,f5.2,a)') "inner ", label, " FS integral (a < r < a + 5 m) from HAMS's fields with exact "// &
+    "panel data is ", 100d0*err, " % off the exact one; gate ", 100d0*gate, " %"
+  call check(error, err <= gate, trim(info))
+end subroutine run_fields_integral
+
 
 end module test_qtf_free_surface
