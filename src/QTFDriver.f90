@@ -122,7 +122,7 @@ MODULE QTFDriver
    PUBLIC :: qtf_radiation_list, qtf_radiation_omegas, qtf_direct_omegas, qtf_omega_on_grid, qtf_keep_psi, qtf_psi_index, qtf_psi_count, qtf_psi_tolerance
    PUBLIC :: qtf_nonfinite_psi, qtf_nonfinite_pairs
    PUBLIC :: qtf_direct_at_omega, qtf_direct_pairs, qtf_direct_missing, qtf_diff_omega, qtf_direct_sum_pairs, qtf_sum_omega
-   PUBLIC :: qtf_direct_sum_load, qtf_direct_diff_load, qtf_indirect_sum_load, potential_part_sum
+   PUBLIC :: qtf_direct_sum_load, qtf_direct_diff_load, qtf_indirect_sum_load, potential_part_sum, psi_bad_files
    PUBLIC :: qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, qtf_set_edge_weights
    PUBLIC :: qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active
 
@@ -1051,6 +1051,50 @@ CONTAINS
       END DO
    END FUNCTION qtf_psi_index
 
+   PURE FUNCTION psi_bad_files(is_sum, is_diff, terms_diff, terms_sum) RESULT(names)
+      ! The output files a non-finite psi feeds, for the message of qtf_keep_psi: QTF_Indirect.11d if the psi is of a
+      ! difference frequency (is_diff, or neither flag), QTF_Indirect.11s if of a sum (is_sum), each with its terms file
+      ! (QTF_PotentialTerms.txt, QTF_PotentialTermsSum.txt) only when this run writes it (terms_diff, terms_sum: write_terms >= 1)
+      LOGICAL, INTENT(IN) :: is_sum, is_diff, terms_diff, terms_sum
+      CHARACTER(LEN=120) :: names
+      CHARACTER(LEN=60) :: first, second
+      LOGICAL :: has_diff, has_sum
+
+      has_sum = is_sum
+      has_diff = is_diff .OR. .NOT. is_sum
+      first = ''
+      second = ''
+      IF (has_diff) THEN
+         first = 'QTF_Indirect.11d'
+         IF (terms_diff) first = TRIM(first)//', QTF_PotentialTerms.txt'
+      END IF
+      IF (has_sum) THEN
+         second = 'QTF_Indirect.11s'
+         IF (terms_sum) second = TRIM(second)//', QTF_PotentialTermsSum.txt'
+      END IF
+      IF (has_diff .AND. has_sum) THEN
+         names = TRIM(first)//', '//TRIM(second)
+      ELSE
+         names = TRIM(first)//TRIM(second)
+      END IF
+      ! Join the last two names with "and", as the single-route messages do
+      names = and_last(names)
+   END FUNCTION psi_bad_files
+
+   PURE FUNCTION and_last(list) RESULT(text)
+      ! "a, b, c" -> "a, b and c"; a list of one name is unchanged
+      CHARACTER(LEN=*), INTENT(IN) :: list
+      CHARACTER(LEN=LEN(list)+4) :: text
+      INTEGER :: k
+
+      k = INDEX(TRIM(list), ',', BACK=.TRUE.)
+      IF (k == 0) THEN
+         text = list
+      ELSE
+         text = list(1:k-1)//' and'//list(k+1:)
+      END IF
+   END FUNCTION and_last
+
    SUBROUTINE qtf_keep_psi(omega, psi, ok)
       ! Keeps psi(n_panels, 6*nbody) of the difference frequency omega. An omega that is not a difference frequency, or a psi
       ! of another size, stops the run; with ok present, psi is not kept and ok is false instead. A psi with NaN or Inf is
@@ -1082,22 +1126,7 @@ CONTAINS
          WRITE (*, '(a,ES14.6,a,I0,a,I0,a,I0,a,a)') ' QTF error: psi at Omega =', omega, ' rad/s has ', nbad, &
             ' values with NaN or Inf, the first in mode ', k - 6*((k - 1)/6), ' of body ', (k - 1)/6 + 1, ' (', &
             TRIM(MERGE('radiation solve of the main grid', 'radiation-only solve            ', psi_reuse(m) > 0))//').'
-         ! The terms files are named only when this run writes them (write_terms >= 1)
-         bad_files = 'QTF_Indirect.11d'
-         IF (pot_terms) bad_files = 'QTF_Indirect.11d and QTF_PotentialTerms.txt'
-         IF (psi_is_sum(m)) THEN
-            bad_files = 'QTF_Indirect.11s'
-            IF (pot_sum_terms) bad_files = 'QTF_Indirect.11s and QTF_PotentialTermsSum.txt'
-            IF (psi_is_diff(m)) THEN
-               bad_files = 'QTF_Indirect.11d and QTF_Indirect.11s'
-               IF (pot_terms .AND. pot_sum_terms) bad_files = 'QTF_Indirect.11d, QTF_PotentialTerms.txt, QTF_Indirect.11s and'// &
-                  ' QTF_PotentialTermsSum.txt'
-               IF (pot_terms .AND. .NOT. pot_sum_terms) bad_files = 'QTF_Indirect.11d, QTF_PotentialTerms.txt and'// &
-                  ' QTF_Indirect.11s'
-               IF (.NOT. pot_terms .AND. pot_sum_terms) bad_files = 'QTF_Indirect.11d, QTF_Indirect.11s and'// &
-                  ' QTF_PotentialTermsSum.txt'
-            END IF
-         END IF
+         bad_files = psi_bad_files(psi_is_sum(m), psi_is_diff(m), pot_terms, pot_sum_terms)
          WRITE (*, '(a)') ' '//TRIM(bad_files)//' are not valid at that Omega; the run will end with exit code 1.'
       END IF
       psi_store(:, :, m) = psi

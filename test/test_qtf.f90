@@ -14,7 +14,7 @@ module test_qtf
                         qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active, qtf_stored_mb, &
                         qtf_direct_sum_pairs, qtf_direct_at_omega, qtf_direct_sum_load, qtf_direct_pairs, &
                         qtf_direct_diff_load, qtf_sum_omega, qtf_diff_omega, qtf_psi_count, qtf_indirect_sum_load, &
-                        potential_part_sum
+                        potential_part_sum, psi_bad_files
   use QTFFreeSurface, only : fs_point_field
   use HAMS_mod, only : NTHREAD, ISOLV
   use Potentials_mod, only : MXPOT
@@ -73,6 +73,7 @@ subroutine collect_qtf(testsuite)
     new_unittest("qtf_direct_omegas_all", test_qtf_direct_omegas_all), &
     new_unittest("qtf_direct_missing", test_qtf_direct_missing), &
     new_unittest("psi_nonfinite_counted", test_psi_nonfinite_counted), &
+    new_unittest("psi_bad_files_text", test_psi_bad_files_text), &
     new_unittest("fs_store_order", test_fs_store_order), &
     new_unittest("qtf_sum_pairs_cover", test_sum_pairs_cover), &
     new_unittest("qtf_stored_mb_sum", test_stored_mb_sum), &
@@ -696,6 +697,31 @@ subroutine test_psi_store_order(error)
   call qtf_finish(mesh, geom, 1d0)   ! frees the store
   call remove_files()
 end subroutine test_psi_store_order
+
+!> The files named by the non-finite psi message: the terms files only when the run writes them (write_terms = 0 names
+!> neither QTF_PotentialTerms.txt nor QTF_PotentialTermsSum.txt), the sum files for a sum frequency, both sets for a frequency
+!> that is both
+subroutine test_psi_bad_files_text(error)
+  type(error_type), allocatable, intent(out) :: error
+
+  call check(error, trim(psi_bad_files(.false., .false., .false., .false.)), "QTF_Indirect.11d", "diff, no terms")
+  if (allocated(error)) return
+  call check(error, trim(psi_bad_files(.false., .false., .true., .true.)), "QTF_Indirect.11d and QTF_PotentialTerms.txt", &
+             "diff with terms")
+  if (allocated(error)) return
+  call check(error, trim(psi_bad_files(.true., .false., .false., .false.)), "QTF_Indirect.11s", "sum, no terms")
+  if (allocated(error)) return
+  call check(error, trim(psi_bad_files(.true., .false., .false., .true.)), "QTF_Indirect.11s and QTF_PotentialTermsSum.txt", &
+             "sum with terms")
+  if (allocated(error)) return
+  call check(error, trim(psi_bad_files(.true., .true., .false., .false.)), "QTF_Indirect.11d and QTF_Indirect.11s", &
+             "both, no terms")
+  if (allocated(error)) return
+  call check(error, trim(psi_bad_files(.true., .true., .true., .true.)), "QTF_Indirect.11d, QTF_PotentialTerms.txt, "// &
+             "QTF_Indirect.11s and QTF_PotentialTermsSum.txt", "both with terms")
+  if (allocated(error)) return
+  call check(error, index(psi_bad_files(.true., .true., .false., .false.), "Terms") == 0, "terms file named at write_terms = 0")
+end subroutine test_psi_bad_files_text
 
 !> A psi with a NaN is kept but counted (qtf_nonfinite_psi), and the pairs of its Omega are counted by the final guard
 !> (qtf_nonfinite_pairs): 0.5 rad/s = 1.3 - 0.8 has the pairs (1, 3) and (3, 1) at each of the 2 headings. psi at 0.2 and
