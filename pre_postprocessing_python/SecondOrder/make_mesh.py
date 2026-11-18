@@ -431,6 +431,59 @@ def write_nemoh_mesh(path, mesh, isym=0):
         f.write("0 0 0 0\n")
 
 
+def free_surface_annulus(r_in, r_out, ntheta, nrows):
+    """The free surface z = 0 between the circles r_in and r_out, centred on the axis, as nrows rings of ntheta quadrilaterals
+    (uniform in radius, uniform in angle, the nodes of the ring at r_in on the angles of the hull waterline when ntheta is a
+    multiple of the hull's ntheta). The vertex order gives a right-hand normal -z, towards the fluid, the convention Nemoh
+    documents for the body mesh (doc/source/description.rst, "mesh ... with the normal direction towards fluid"; the free
+    surface mesh page, doc/source/input-output.rst "Free surface mesh file", gives none). Returns the mesh and the segments
+    of the two circles, (node, node) pairs, 1-based: the inner circle (the body waterline) first, then the outer one."""
+    if ntheta < 3 or nrows < 1 or not 0.0 < r_in < r_out:
+        raise ValueError("free_surface_annulus needs ntheta >= 3, nrows >= 1 and 0 < r_in < r_out")
+    mesh = Mesh()
+    radii = [r_in + (r_out - r_in) * i / nrows for i in range(nrows + 1)]
+
+    def point(i, j):
+        angle = 2.0 * math.pi * (j % ntheta) / ntheta
+        return (radii[i] * math.cos(angle), radii[i] * math.sin(angle), 0.0)
+    for i in range(nrows):
+        for j in range(ntheta):
+            mesh.add_panel([point(i, j), point(i, j + 1), point(i + 1, j + 1), point(i + 1, j)])
+    segments = []
+    for i in (0, nrows):
+        for j in range(ntheta):
+            segments.append((mesh.node(*point(i, j)), mesh.node(*point(i, j + 1))))
+    return mesh, segments
+
+
+def boundary_edges(mesh):
+    """The edges used by exactly one panel, (start node, end node) as the panel runs, 1-based: the boundary of an open
+    surface such as a free-surface mesh (open_edges is for a body, which is closed except at z = 0)."""
+    use = {}
+    for panel in mesh.panels:
+        for k in range(len(panel)):
+            a, b = panel[k], panel[(k + 1) % len(panel)]
+            use.setdefault((min(a, b), max(a, b)), []).append((a, b))
+    return [directed[0] for directed in use.values() if len(directed) == 1]
+
+
+def write_nemoh_fs_mesh(path, mesh, segments, isym=0):
+    """Write a free-surface mesh in the format of Nemoh v3 (doc/source/input-output.rst, "Free surface mesh file", table
+    FSmesh): a first line isym (1 for a body half-mesh symmetric about xOz, else 0), the number of nodes, of panels and of
+    waterline segments; the nodes (ID x y z) closed by a line 0 0. 0. 0.; the panels (four node IDs each, a triangle has its
+    last node repeated, as in write_nemoh_mesh); the segments (two node IDs each); a last line 0 0 0 0."""
+    with open(path, "w") as f:
+        f.write("%d %d %d %d\n" % (isym, len(mesh.nodes), len(mesh.panels), len(segments)))
+        for number, (x, y, z) in enumerate(mesh.nodes, start=1):
+            f.write("%d " % number + " ".join(NODE_FORMAT % c for c in (x, y, z)) + "\n")
+        f.write("0 0. 0. 0.\n")
+        for panel in mesh.panels:
+            f.write(" ".join("%d" % i for i in (panel + panel[-1:])[:4]) + "\n")
+        for a, b in segments:
+            f.write("%d %d\n" % (a, b))
+        f.write("0 0 0 0\n")
+
+
 def write_matrix(f, matrix):
     for row in matrix:
         f.write("".join("  %12.5E" % value for value in row) + "\n")
