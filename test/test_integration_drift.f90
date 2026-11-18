@@ -83,6 +83,8 @@ module test_integration_drift
     character(len=*), parameter :: direct_terms_file = "Wamit_format/QTF_DirectTerms.txt"
     character(len=*), parameter :: qtf_direct_sum_file = "Wamit_format/QTF_Direct.12s"
     character(len=*), parameter :: direct_sum_terms_file = "Wamit_format/QTF_DirectTermsSum.txt"
+    character(len=*), parameter :: qtf_indirect_sum_file = "Wamit_format/QTF_Indirect.11s"
+    character(len=*), parameter :: pot_sum_terms_file = "Wamit_format/QTF_PotentialTermsSum.txt"
     character(len=*), parameter :: terms_file = "Wamit_format/MeanDriftTerms.txt"
     character(len=*), parameter :: control_file = "Wamit_format/MeanDriftControlSurface.7"
     character(len=*), parameter :: offset_cases(4) = [character(len=17) :: "drift_field_0p005", "drift_field_0p01", &
@@ -300,6 +302,9 @@ module test_integration_drift
     ! meshes' bits apart by this much (2x measured would be 9e-8, flaky on another machine), and it is still 1e5 below the
     ! gap to the indirect method (1.34e-1 on the whole mesh)
     real(8), parameter :: directsum_half_limit = 1d-6
+    ! The indirect sum QTF .11s against the direct .12s of qtf_directsum_irsp: 1.3 x the 7c-2 gap of direct_sum_irsp_full
+    ! (1.375e-1 measured, directsum_irsp_limit), Phase 6b Task 3
+    real(8), parameter :: indsum_vs_direct_limit = 1.79d-1
     integer, parameter :: directsum_half_rows = 108
     ! The sums of qtf_directsum_round that are kept are below the estimate of the lowest irregular frequency, 1.538 rad/s
     real(8), parameter :: sum_cutoff_bound = 1.54d0
@@ -362,6 +367,7 @@ contains
             new_unittest("run_qtf_fs_cases", run_qtf_fs_cases), &
             new_unittest("run_qtf_directfs_cases", run_qtf_directfs_cases), &
             new_unittest("run_qtf_directsum_cases", run_qtf_directsum_cases), &
+            new_unittest("run_qtf_indsum_cases", run_qtf_indsum_cases), &
             new_unittest("run_control_cyl", run_control_cyl), &
             new_unittest("run_control_cyl_sybo", run_control_cyl_sybo), &
             new_unittest("run_control_cases", run_control_cases) &
@@ -502,7 +508,10 @@ contains
             new_unittest("direct_sum_half_matches_full", direct_sum_half_matches_full), &
             new_unittest("direct_sum_field_rows", direct_sum_field_rows), &
             new_unittest("direct_sum_off_unchanged", direct_sum_off_unchanged), &
-            new_unittest("direct_sum_qtf3_diff_unchanged", direct_sum_qtf3_diff_unchanged) &
+            new_unittest("direct_sum_qtf3_diff_unchanged", direct_sum_qtf3_diff_unchanged), &
+            new_unittest("indirect_sum_cutoff_rows", indirect_sum_cutoff_rows), &
+            new_unittest("indirect_sum_matches_direct_run", indirect_sum_matches_direct_run), &
+            new_unittest("indirect_sum_vs_direct", indirect_sum_vs_direct) &
         ]
     end subroutine collect_tests_drift
 
@@ -6522,5 +6531,147 @@ contains
             if (allocated(error)) return
         end do
     end subroutine direct_sum_qtf3_diff_unchanged
+
+    ! ---------------------------------------------------------------------------------------------- indirect sum frequency
+
+    !> The fixtures of the indirect sum frequency QTF (qtf_direct = 0, QTF_Indirect.11s), Phase 6b Task 3, with the run time
+    !> of each case
+    subroutine run_qtf_indsum_cases(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=21), parameter :: cases(2) = [character(len=21) :: "qtf_indsum_round", "qtf_indsum_irsp"]
+        type(error_type), allocatable :: one
+        integer(8) :: t0, t1, rate
+        integer :: c
+
+        do c = 1, size(cases)
+            call system_clock(t0, rate)
+            call run_case(trim(cases(c)), [character(len=40) :: qtf_sum_file, qtf_indirect_sum_file, pot_sum_terms_file], one)
+            call system_clock(t1)
+            print '(4x,a,": run time ",F8.1," s")', trim(cases(c)), real(t1 - t0, 8)/real(rate, 8)
+            if (allocated(one)) then
+                print '(4x,a)', trim(cases(c))//": "//one%message
+                if (.not. allocated(error)) call move_alloc(one, error)
+            end if
+        end do
+    end subroutine run_qtf_indsum_cases
+
+    !> .11s - .10s of the run name, as (PER1, PER2, BETA1, BETA2, I, Re, Im): the potential part T+_pot of the sum QTF with
+    !> the printed digits of the files (7), for the rows of .11s
+    subroutine read_indsum_difference(name, rows, error)
+        character(len=*), intent(in) :: name
+        real(8), allocatable, intent(out) :: rows(:,:)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: d11(:,:), d10(:,:)
+        integer :: p, q
+
+        call check_no_bad_numbers(output_dir(name)//qtf_indirect_sum_file, error)
+        if (allocated(error)) return
+        call read_qtf(output_dir(name)//qtf_indirect_sum_file, d11, error)
+        if (allocated(error)) return
+        call read_qtf(output_dir(name)//qtf_sum_file, d10, error)
+        if (allocated(error)) return
+        allocate (rows(size(d11, 1), 7))
+        do p = 1, size(d11, 1)
+            q = matching_row(d11, p, d10)
+            call check(error, q > 0, name//": a row of .11s is not in .10s")
+            if (allocated(error)) return
+            rows(p,1:5) = d11(p,1:5)
+            rows(p,6:7) = d11(p,8:9) - d10(q,8:9)
+        end do
+    end subroutine read_indsum_difference
+
+    !> qtf_indsum_round (qtf_direct = 0, qtf_terms = body, the inputs of qtf_directsum_round): .11s holds only the pair
+    !> (0.70, 0.70) below the cutoff, 12 rows, as .12s does; QTF_PotentialTermsSum.txt has the same 12 rows (15 columns); the
+    !> log warns of the 5 of 6 pairs left out of QTF_Indirect.11s and, once, that the body terms leave out the free-surface
+    !> integral (the Task 1 warning, qtf_terms = body with the sum route)
+    subroutine indirect_sum_cutoff_rows(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: d11(:,:), d10(:,:)
+        character(len=:), allocatable :: lines(:)
+        integer :: r, nbelow, nrows
+        character(len=*), parameter :: name = "qtf_indsum_round"
+        character(:), allocatable :: log
+
+        log = get_running_exe_path()//name//".log"
+        call read_qtf(output_dir(name)//qtf_indirect_sum_file, d11, error)
+        if (allocated(error)) return
+        call read_qtf(output_dir(name)//qtf_sum_file, d10, error)
+        if (allocated(error)) return
+        call check(error, size(d11, 1) == 2*6, name//": .11s should have 12 rows (one Omega, 2 headings)")
+        if (allocated(error)) return
+        do r = 1, size(d11, 1)
+            call check(error, d11(r,1) + d11(r,2) < sum_cutoff_bound .and. &
+                       abs(d11(r,1) - 0.7d0) < 1d-9 .and. abs(d11(r,2) - 0.7d0) < 1d-9, &
+                       name//": a row of .11s is not the pair (0.70, 0.70) below the cutoff")
+            if (allocated(error)) return
+        end do
+        nbelow = 0
+        do r = 1, size(d10, 1)
+            if (d10(r,1) + d10(r,2) < sum_cutoff_bound) nbelow = nbelow + 1
+        end do
+        call check(error, nbelow == size(d11, 1), name//": .11s does not have every pair of .10s below the cutoff")
+        if (allocated(error)) return
+        call read_lines(output_dir(name)//pot_sum_terms_file, lines, error)
+        if (allocated(error)) return
+        nrows = 0
+        do r = 1, size(lines)
+            if (len_trim(lines(r)) > 0 .and. lines(r)(1:1) /= '#') nrows = nrows + 1
+        end do
+        call check(error, nrows == size(d11, 1), name//": QTF_PotentialTermsSum.txt rows differ from .11s")
+        if (allocated(error)) return
+        call check(error, count_log_lines(log, " are left out of QTF_Indirect.11s: 5 of 6 pairs") == 1, &
+                   name//": the log does not warn that 5 of 6 pairs are left out of QTF_Indirect.11s")
+        if (allocated(error)) return
+        call check(error, count_log_lines(log, "leaves out the free-surface integral") == 1, &
+                   name//": the log does not warn once that the free-surface integral is left out")
+    end subroutine indirect_sum_cutoff_rows
+
+    !> qtf_indsum_irsp (the inputs of qtf_directsum_irsp with qtf_direct = 0): .11s is the same file, to the byte, as .11s of
+    !> qtf_directsum_irsp (R2: both routes solve the radiation problems of the same list), and so is QTF_PotentialTermsSum.txt;
+    !> .11s - .10s equals P_BODY + P_FS of QTF_DirectTermsSum.txt of the direct run, to the printed digits
+    subroutine indirect_sum_matches_direct_run(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: a(:,:), td(:,:), tp(:,:), pf(:,:)
+        real(8) :: printed
+
+        call check_same_file(output_dir("qtf_indsum_irsp")//qtf_indirect_sum_file, &
+                             output_dir("qtf_directsum_irsp")//qtf_indirect_sum_file, error)
+        if (allocated(error)) return
+        call check_same_file(output_dir("qtf_indsum_irsp")//pot_sum_terms_file, &
+                             output_dir("qtf_directsum_irsp")//pot_sum_terms_file, error)
+        if (allocated(error)) return
+        call read_indsum_difference("qtf_indsum_irsp", a, error)
+        if (allocated(error)) return
+        call check(error, size(a, 1) == 4*2*6, "qtf_indsum_irsp: .11s should have 4 ordered pairs, 2 headings, 6 rows")
+        if (allocated(error)) return
+        call read_sum_terms(output_dir("qtf_directsum_irsp")//direct_sum_terms_file, .true., td, tp, error)
+        if (allocated(error)) return
+        call rows_of(a, tp, pf, error)
+        if (allocated(error)) return
+        call largest_difference(a, pf, "indirect_sum_matches_direct_run .11s - .10s against P_BODY + P_FS", printed, error)
+        if (allocated(error)) return
+        call report("indirect_sum_matches_direct_run .11s - .10s against P_BODY + P_FS", printed)
+        call check_below(error, "indirect_sum_matches_direct_run .11s - .10s against P_BODY + P_FS", printed, printed_limit)
+    end subroutine indirect_sum_matches_direct_run
+
+    !> .11s of qtf_indsum_irsp against .12s of qtf_directsum_irsp (the direct run), over max |.12s| of the rows of forces or
+    !> of moments, within 1.3 x the 7c-2 gap of direct_sum_irsp_full (1.375e-1 measured)
+    subroutine indirect_sum_vs_direct(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: d11(:,:), d12(:,:), c(:,:)
+        real(8) :: gap
+
+        call read_qtf(output_dir("qtf_indsum_irsp")//qtf_indirect_sum_file, d11, error)
+        if (allocated(error)) return
+        call read_qtf(output_dir("qtf_directsum_irsp")//qtf_direct_sum_file, d12, error)
+        if (allocated(error)) return
+        call rows_of(d12, d11, c, error)   ! the rows of .11s that .12s has, in its order
+        if (allocated(error)) return
+        call largest_difference(c(:, [1, 2, 3, 4, 5, 8, 9]), d12(:, [1, 2, 3, 4, 5, 8, 9]), &
+                                "indirect_sum_vs_direct .11s against .12s", gap, error)
+        if (allocated(error)) return
+        call report("indirect_sum_vs_direct .11s against .12s", gap)
+        call check_below(error, "indirect_sum_vs_direct .11s against .12s", gap, indsum_vs_direct_limit)
+    end subroutine indirect_sum_vs_direct
 
 end module test_integration_drift

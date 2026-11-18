@@ -1082,11 +1082,21 @@ CONTAINS
          WRITE (*, '(a,ES14.6,a,I0,a,I0,a,I0,a,a)') ' QTF error: psi at Omega =', omega, ' rad/s has ', nbad, &
             ' values with NaN or Inf, the first in mode ', k - 6*((k - 1)/6), ' of body ', (k - 1)/6 + 1, ' (', &
             TRIM(MERGE('radiation solve of the main grid', 'radiation-only solve            ', psi_reuse(m) > 0))//').'
-         bad_files = 'QTF_Indirect.11d and QTF_PotentialTerms.txt'
+         ! The terms files are named only when this run writes them (write_terms >= 1)
+         bad_files = 'QTF_Indirect.11d'
+         IF (pot_terms) bad_files = 'QTF_Indirect.11d and QTF_PotentialTerms.txt'
          IF (psi_is_sum(m)) THEN
-            bad_files = 'QTF_Indirect.11s and QTF_PotentialTermsSum.txt'
-            IF (psi_is_diff(m)) bad_files = 'QTF_Indirect.11d, QTF_PotentialTerms.txt, QTF_Indirect.11s and'// &
-               ' QTF_PotentialTermsSum.txt'
+            bad_files = 'QTF_Indirect.11s'
+            IF (pot_sum_terms) bad_files = 'QTF_Indirect.11s and QTF_PotentialTermsSum.txt'
+            IF (psi_is_diff(m)) THEN
+               bad_files = 'QTF_Indirect.11d and QTF_Indirect.11s'
+               IF (pot_terms .AND. pot_sum_terms) bad_files = 'QTF_Indirect.11d, QTF_PotentialTerms.txt, QTF_Indirect.11s and'// &
+                  ' QTF_PotentialTermsSum.txt'
+               IF (pot_terms .AND. .NOT. pot_sum_terms) bad_files = 'QTF_Indirect.11d, QTF_PotentialTerms.txt and'// &
+                  ' QTF_Indirect.11s'
+               IF (.NOT. pot_terms .AND. pot_sum_terms) bad_files = 'QTF_Indirect.11d, QTF_Indirect.11s and'// &
+                  ' QTF_PotentialTermsSum.txt'
+            END IF
          END IF
          WRITE (*, '(a)') ' '//TRIM(bad_files)//' are not valid at that Omega; the run will end with exit code 1.'
       END IF

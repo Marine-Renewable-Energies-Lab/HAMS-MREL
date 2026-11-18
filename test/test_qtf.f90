@@ -14,7 +14,7 @@ module test_qtf
                         qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active, qtf_stored_mb, &
                         qtf_direct_sum_pairs, qtf_direct_at_omega, qtf_direct_sum_load, qtf_direct_pairs, &
                         qtf_direct_diff_load, qtf_sum_omega, qtf_diff_omega, qtf_psi_count, qtf_indirect_sum_load, &
-                        qtf_radiation_omegas, potential_part_sum
+                        potential_part_sum
   use QTFFreeSurface, only : fs_point_field
   use HAMS_mod, only : NTHREAD, ISOLV
   use Potentials_mod, only : MXPOT
@@ -1446,7 +1446,7 @@ subroutine test_indirect11s_equals_tpot(error)
   real(8), parameter :: w(2) = [0.4d0, 0.5d0], hb(2) = [0d0, 30d0]
   complex(8) :: tp(6, 2, 2, 2, 2), t
   real(8), allocatable :: rs(:, :), ri(:, :), rt(:, :)
-  real(8) :: scale, err_file, err_terms, tmax, sig(2)
+  real(8) :: scale, err_file, err_terms, tmax, sig(2), rowmax
   integer :: i, j, b1, b2, n, ncol, ia, ja, ba, bb, ks, c
 
   call sum_pipeline(error, 0d0, mesh, geom, indirect_only=.true.)
@@ -1496,13 +1496,15 @@ subroutine test_indirect11s_equals_tpot(error)
     do c = 0, 4
       sig = sig + rt(6 + 2 * c:7 + 2 * c, n)
     end do
-    err_terms = max(err_terms, abs(sig(1) - real(t, 8)), abs(sig(2) - aimag(t)))
+    ! per row: the error over the largest of the row's terms and of T+_pot, not over the global maximum
+    rowmax = max(maxval(abs(rt(6:15, n))), abs(real(t, 8)), abs(aimag(t)))
+    if (rowmax > 0d0) err_terms = max(err_terms, abs(sig(1) - real(t, 8)) / rowmax, abs(sig(2) - aimag(t)) / rowmax)
   end do
   print '(4x,a,es10.2,a,es10.2,a,es10.2)', "indirect11s_equals_tpot: max |.11s - .10s - T+_pot| ", err_file, &
     " (max |.11s| ", scale, "), terms file against T+_pot ", err_terms
   call check(error, err_file <= 3d-6 * scale, ".11s - .10s is not T+_pot of tpot_sum")
   if (allocated(error)) return
-  call check(error, err_terms <= 1d-14 * tmax, "the terms do not add up to T+_pot")
+  call check(error, err_terms <= 1d-14, "the terms do not add up to T+_pot")
   call remove_files()
 
 contains
