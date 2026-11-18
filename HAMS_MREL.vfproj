@@ -97,6 +97,7 @@
 		<File RelativePath=".\src\QTFDirectFS.f90"/>
 		<File RelativePath=".\src\QTFDirectFSBlock.f90"/>
 		<File RelativePath=".\src\QTFDirectField.f90"/>
+		<File RelativePath=".\src\QTFMotion.f90"/>
 		<File RelativePath=".\src\QTFDriver.f90"/>
 		<File RelativePath=".\src\QTFField.f90"/>
 		<File RelativePath=".\src\QTFFreeSurface.f90"/>
