@@ -720,8 +720,9 @@ def compare_motion(results, paths, exclude=None):
     and those the reference leaves out are not compared, and the cell shows (compared/pairs); the count of pairs left out
     by the file is printed with its header lines. With exclude (lo, hi) the pairs with a frequency in the band are left out
     of the max and median, the scales keep all the pairs (off by default; Task 7 of the Phase 6c plan leaves out 0.75 to
-    0.80 rad/s, the heave and coupled surge-pitch resonances). Returns [(case, kernel, {row label: [(max, median) or None
-    per quantity]})]."""
+    0.80 rad/s, the heave and coupled surge-pitch resonances). The reference keeps the M and C of the exact circle, while
+    the HAMS m1 polygon has M and C about 0.6 % lower, which shifts the response near the 100 s resonance by about 0.3 %.
+    Returns [(case, kernel, {row label: [(max, median) or None per quantity]})]."""
     ref = read_motion_reference(paths)
     print("Second-order motion (QTF_Motion.*) against the exact sharp cylinder with the surge spring of R8 (heading 0): "
           "|HAMS - exact| / max |exact| over the pairs omega_i <= omega_j, max and median, percent")
@@ -1711,8 +1712,8 @@ def check_motion_compare():
     of each pair, with header lines; the difference files leave out the diagonal (Omega = 0, R6, with its "# Left out"
     line) and .12d and .12s are 1.02 times .11d and .11s. The .11 rows read 0.00 against the reference and the .12 rows a
     largest error of at most 2 % (the scale holds the left-out diagonal too); the difference rows show (3/6) and the R6
-    line 3 of 6 pairs; the in-run rows show 0.02/1.02 =
-    1.96 %; with --exclude 0.75 0.80 the difference rows show (1/3). Returns a summary."""
+    line 3 of 6 pairs; the in-run rows show 0.02/1.02 = 1.96 %; with --exclude 0.75 0.80 the difference rows show (1/3).
+    Returns a summary."""
     import contextlib
     import io
     import tempfile
@@ -1810,7 +1811,7 @@ def main(argv=None):
     parser.add_argument("--nemoh", help="folder holding nemoh_<hull>_<motion>_m<k>/results/QTF")
     parser.add_argument("--max-dw", type=float, default=0.3)
     parser.add_argument("--exclude", type=float, nargs=2, metavar=("LO", "HI"),
-                        help="with --potential or --against-nemoh: leave out the pairs with a frequency in [LO, HI] rad/s "
+                        help="with --potential, --against-nemoh or --motion: leave out the pairs with a frequency in [LO, HI] rad/s "
                              "(a resonance band)")
     parser.add_argument("--against-nemoh", metavar="FOLDER",
                         help="compare QTF_Indirect.11d of q_<hull>_* with Nemoh's nemoh_<hull>_* under FOLDER (no exact "
