@@ -431,6 +431,59 @@ def write_nemoh_mesh(path, mesh, isym=0):
         f.write("0 0 0 0\n")
 
 
+def free_surface_annulus(r_in, r_out, ntheta, nrows):
+    """The free surface z = 0 between the circles r_in and r_out, centred on the axis, as nrows rings of ntheta quadrilaterals
+    (uniform in radius, uniform in angle, the nodes of the ring at r_in on the angles of the hull waterline when ntheta is a
+    multiple of the hull's ntheta). The vertex order gives a right-hand normal -z, towards the fluid, the convention Nemoh
+    documents for the body mesh (doc/source/description.rst, "mesh ... with the normal direction towards fluid"; the free
+    surface mesh page, doc/source/input-output.rst "Free surface mesh file", gives none). Returns the mesh and the segments
+    of the two circles, (node, node) pairs, 1-based: the inner circle (the body waterline) first, then the outer one."""
+    if ntheta < 3 or nrows < 1 or not 0.0 < r_in < r_out:
+        raise ValueError("free_surface_annulus needs ntheta >= 3, nrows >= 1 and 0 < r_in < r_out")
+    mesh = Mesh()
+    radii = [r_in + (r_out - r_in) * i / nrows for i in range(nrows + 1)]
+
+    def point(i, j):
+        angle = 2.0 * math.pi * (j % ntheta) / ntheta
+        return (radii[i] * math.cos(angle), radii[i] * math.sin(angle), 0.0)
+    for i in range(nrows):
+        for j in range(ntheta):
+            mesh.add_panel([point(i, j), point(i, j + 1), point(i + 1, j + 1), point(i + 1, j)])
+    segments = []
+    for i in (0, nrows):
+        for j in range(ntheta):
+            segments.append((mesh.node(*point(i, j)), mesh.node(*point(i, j + 1))))
+    return mesh, segments
+
+
+def boundary_edges(mesh):
+    """The edges used by exactly one panel, (start node, end node) as the panel runs, 1-based: the boundary of an open
+    surface such as a free-surface mesh (open_edges is for a body, which is closed except at z = 0)."""
+    use = {}
+    for panel in mesh.panels:
+        for k in range(len(panel)):
+            a, b = panel[k], panel[(k + 1) % len(panel)]
+            use.setdefault((min(a, b), max(a, b)), []).append((a, b))
+    return [directed[0] for directed in use.values() if len(directed) == 1]
+
+
+def write_nemoh_fs_mesh(path, mesh, segments, isym=0):
+    """Write a free-surface mesh in the format of Nemoh v3 (doc/source/input-output.rst, "Free surface mesh file", table
+    FSmesh): a first line isym (1 for a body half-mesh symmetric about xOz, else 0), the number of nodes, of panels and of
+    waterline segments; the nodes (ID x y z) closed by a line 0 0. 0. 0.; the panels (four node IDs each, a triangle has its
+    last node repeated, as in write_nemoh_mesh); the segments (two node IDs each); a last line 0 0 0 0."""
+    with open(path, "w") as f:
+        f.write("%d %d %d %d\n" % (isym, len(mesh.nodes), len(mesh.panels), len(segments)))
+        for number, (x, y, z) in enumerate(mesh.nodes, start=1):
+            f.write("%d " % number + " ".join(NODE_FORMAT % c for c in (x, y, z)) + "\n")
+        f.write("0 0. 0. 0.\n")
+        for panel in mesh.panels:
+            f.write(" ".join("%d" % i for i in (panel + panel[-1:])[:4]) + "\n")
+        for a, b in segments:
+            f.write("%d %d\n" % (a, b))
+        f.write("0 0 0 0\n")
+
+
 def write_matrix(f, matrix):
     for row in matrix:
         f.write("".join("  %12.5E" % value for value in row) + "\n")
@@ -1007,25 +1060,28 @@ def _signed_area(a, b, c):
     return 0.5 * ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]))
 
 
-def oc4_free_surface(polygons, c_radius, c_count, panel_size=4.0):
+def oc4_free_surface(polygons, c_radius, c_count, panel_size=4.0, centre=(0.0, 0.0)):
     """F, the free surface z = 0 between the column waterlines (the polygons of oc4_hull) and Gamma_c (the top ring of C, of
     c_count nodes at c_radius), as triangles with HAMS normals -z. Its boundary nodes are those of the hull waterlines and of
     Gamma_c. Points: the boundary nodes, staggered rings around each waterline and inside Gamma_c whose spacing grows by
     FS_GROWTH per ring to that of triangles of area panel_size^2, and a hexagonal lattice of that spacing elsewhere, all
     symmetric about y = 0; then a Delaunay triangulation, with each column centre added (and its triangles removed) so that the
     holes stay holes. Checked: the triangles tile the region exactly (area), and the boundary edges are the waterline and
-    Gamma_c edges. Returns the mesh."""
+    Gamma_c edges. centre: the centre of the circle Gamma_c (the origin for F; the inner free surface of HAMS, see
+    oc4_inner_free_surface, has it at the centre of the waterline bounding box, as FSInnerMesh.pnl needs). Keep it on y = 0:
+    the mesh is then symmetric about y = 0. Returns the mesh."""
+    cx, cy = centre
     far = panel_size / math.sqrt(math.sqrt(3.0) / 4.0)   # side of an equilateral triangle of area panel_size^2
     columns = [(0.0, 0.0, OC4_MAIN_RADIUS, len(polygons[0]))]
     columns += [(x, y, OC4_UPPER_RADIUS, len(poly)) for (x, y), poly in zip(OC4_OFFSET_AXES, polygons[1:])]
     fixed = [p for poly in polygons for p in poly]
     centres = [(x, y) for x, y, _, _ in columns]
-    boundary = [_ring_point(0.0, 0.0, c_radius, c_count, k, 0.0)[:2] for k in range(c_count)]
+    boundary = [_ring_point(cx, cy, c_radius, c_count, k, 0.0)[:2] for k in range(c_count)]
     accepted = []
 
     def clear(p, spacing, own):
         """p keeps clear of Gamma_c, of the columns other than own, and of the points of other rings."""
-        if math.hypot(p[0], p[1]) > c_radius - 0.5 * spacing:
+        if math.hypot(p[0] - cx, p[1] - cy) > c_radius - 0.5 * spacing:
             return False
         for index, (x, y, r, _) in enumerate(columns):
             if math.hypot(p[0] - x, p[1] - y) < r + (0.3 if index == own else 0.6) * spacing:
@@ -1034,7 +1090,7 @@ def oc4_free_surface(polygons, c_radius, c_count, panel_size=4.0):
 
     # Rings out from each waterline (owner = column index) and in from Gamma_c (owner = -1), one level at a time
     sources = [(x, y, r, 2.0 * math.pi * r / n, 1.0, index) for index, (x, y, r, n) in enumerate(columns)]
-    sources.append((0.0, 0.0, c_radius, 2.0 * math.pi * c_radius / c_count, -1.0, -1))
+    sources.append((cx, cy, c_radius, 2.0 * math.pi * c_radius / c_count, -1.0, -1))
     state = [dict(radius=r, spacing=a) for _, _, r, a, _, _ in sources]
     level = 0
     while any(s["spacing"] < far for s in state):
@@ -1055,10 +1111,10 @@ def oc4_free_surface(polygons, c_radius, c_count, panel_size=4.0):
         accepted += kept
     rows = int(c_radius / (0.5 * math.sqrt(3.0) * far)) + 1
     for row in range(-rows, rows + 1):
-        y = row * 0.5 * math.sqrt(3.0) * far
+        y = cy + row * 0.5 * math.sqrt(3.0) * far
         shift = 0.5 * far if abs(row) % 2 else 0.0
         for col in range(-rows - 1, rows + 2):
-            p = (col * far + shift, y)
+            p = (cx + col * far + shift, y)
             if clear(p, far, None) and all(math.hypot(p[0] - q[0], p[1] - q[1]) >= 0.75 * far for q, _ in accepted):
                 accepted.append((p, -2))
     free = [p for p, _ in accepted]
@@ -1103,6 +1159,32 @@ def oc4_free_surface(polygons, c_radius, c_count, panel_size=4.0):
     if found != expected:
         raise ValueError("the boundary of F is not the waterlines and Gamma_c: %d edges against %d" % (len(found), len(expected)))
     return out
+
+
+OC4_FS_PANEL = 2.0   # m, the triangle size of the inner free surface of the OC4 sum-frequency cases: lambda / 4 at 2.80 rad/s
+
+
+def oc4_inner_free_surface(multiple=1, around="waterlines", panel_size=OC4_FS_PANEL):
+    """The free surface z = 0 between the four OC4 waterlines and a circle of the radius of Gamma_c (OC4_CS), as triangles, with
+    HAMS normals -z (oc4_free_surface). around "waterlines": the circle is about the centre of the waterline bounding box,
+    which is where HAMS needs the outer circle of FSInnerMesh.pnl (the inner free surface of qtf_terms = full, centre and R
+    from ControlSurfaceMesh.f90, "FSInnerMesh.pnl": R is the largest node distance from that centre; the generated mesh needs a
+    star-shaped waterline, which OC4 has not). around "origin": the circle is about the origin, as the F of HAMS, for the Nemoh
+    free-surface mesh: Nemoh's manual does not say about which point it takes R_e. Both meshes have the same panel size and the
+    same rings around the waterlines; they differ in the outer circle and so in the panels near it. Checks: R exceeds the
+    distance from the centre to every hull node (the circle must not cut the submerged hull, or HAMS stops). Returns the mesh,
+    the centre and R."""
+    hull, polygons, _ = oc4_hull(multiple)
+    _, c_radius, c_count = oc4_control_surface(**OC4_CS)
+    xs = [p[0] for poly in polygons for p in poly]
+    ys = [p[1] for poly in polygons for p in poly]
+    centre = (0.5 * (min(xs) + max(xs)), 0.5 * (min(ys) + max(ys))) if around == "waterlines" else (0.0, 0.0)
+    if abs(centre[1]) > 1e-9:
+        raise ValueError("the waterlines are not symmetric about y = 0")
+    reach = max(math.hypot(x - centre[0], y - centre[1]) for x, y, _ in hull.nodes)
+    if not c_radius > reach:
+        raise ValueError("the inner free surface of radius %.3f m cuts the hull (%.3f m from its centre)" % (c_radius, reach))
+    return oc4_free_surface(polygons, c_radius, c_count, panel_size, centre), centre, c_radius
 
 
 def triangle_quality(mesh):

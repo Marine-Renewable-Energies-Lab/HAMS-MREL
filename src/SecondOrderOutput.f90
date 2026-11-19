@@ -29,7 +29,7 @@ MODULE SecondOrderOutput
    PRIVATE
 
    PUBLIC :: write_drift_row, write_terms_row, write_qtf_row, write_qtf_terms_row, write_qtf_terms_header, write_field_row
-   PUBLIC :: write_direct_terms_header, write_direct_sum_terms_header
+   PUBLIC :: write_direct_terms_header, write_direct_sum_terms_header, write_potential_sum_terms_header
 
 CONTAINS
 
@@ -150,6 +150,33 @@ CONTAINS
       END IF
       WRITE (unit, '(a)') '# The rows are not in the order of .12s: match them by PER1 PER2 BETA1 BETA2 I.'
    END SUBROUTINE write_direct_sum_terms_header
+
+   SUBROUTINE write_potential_sum_terms_header(unit, full)
+      ! The four comment lines of QTF_PotentialTermsSum.txt (Phase 6b): the terms of T+_pot, the potential part of
+      ! QTF_Indirect.11s, as the header of QTF_PotentialTerms.txt gives those of QTF_Indirect.11d. Columns: the 5 keys, then
+      ! Re Im of the 5 body-forcing terms (qtf_terms = body, 15 in all), or with full (qtf_terms = full) of 7 terms, FS_inner
+      ! and FS_outer after B3 (19 in all)
+      INTEGER, INTENT(IN) :: unit
+      LOGICAL, INTENT(IN) :: full
+
+      IF (full) THEN
+         WRITE (unit, '(a)') '# Terms of the potential part of QTF_Indirect.11s (qtf_terms = full), scaled and conjugated'// &
+            ' as QTF_Quadratic.10s.'
+         WRITE (unit, '(a)') '# PER1 PER2 BETA1 BETA2 I, then Re Im of each term: 1 Froude-Krylov of phi_I2, 2 incident'// &
+            ' diffraction, 3 B1, 4 B2, 5 B3, 6 FS_inner, 7 FS_outer.'
+         WRITE (unit, '(a)') '# .11s - .10s is their sum. FS_inner: the free-surface integral from the waterlines to the'// &
+            ' circle R (inner mesh); FS_outer: beyond the inner mesh (partial waves). One row per pair of .11s (the'// &
+            ' diagonal included), by ascending omega_i + omega_j.'
+      ELSE
+         WRITE (unit, '(a)') '# Body-forcing terms of the potential part of QTF_Indirect.11s (qtf_terms = body), scaled'// &
+            ' and conjugated as QTF_Quadratic.10s.'
+         WRITE (unit, '(a)') '# PER1 PER2 BETA1 BETA2 I, then Re Im of each term: 1 Froude-Krylov of phi_I2, 2 incident'// &
+            ' diffraction, 3 B1, 4 B2, 5 B3.'
+         WRITE (unit, '(a)') '# .11s - .10s is their sum; the free-surface integral is omitted. One row per pair of .11s'// &
+            ' (the diagonal included), by ascending omega_i + omega_j.'
+      END IF
+      WRITE (unit, '(a)') '# The rows are not in the order of .11s: match them by PER1 PER2 BETA1 BETA2 I.'
+   END SUBROUTINE write_potential_sum_terms_header
 
    SUBROUTINE write_qtf_terms_row(unit, oufr1, oufr2, beta1_deg, beta2_deg, index, values, refl, moment)
       ! Writes one row PER1 PER2 BETA1 BETA2 I, then Re Im of each of values, of QTF_PotentialTerms.txt. The keys are as in

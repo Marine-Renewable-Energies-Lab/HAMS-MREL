@@ -199,18 +199,19 @@ CONTAINS
       END IF
 
       b2_control = uses_b2_control(opts)
-      IF (opts%qtf_b2_given .AND. .NOT. (opts%qtf_terms >= QTF_TERMS_BODY .AND. (opts%qtf == 1 .OR. opts%qtf == 3))) THEN
-         ! qtf = 2 with qtf_direct = 1 gives the sum through the direct method, which has no indirect B2 to move
-         WRITE (*, '(a)') ' QTF note: qtf_b2 is ignored; it applies with qtf_terms = body or full and the indirect difference'// &
-            ' QTF (qtf = 1 or 3) only.'
+      IF (opts%qtf_b2_given .AND. .NOT. (opts%qtf_terms >= QTF_TERMS_BODY .AND. opts%qtf >= 1)) THEN
+         ! B2 of the difference QTF (qtf = 1 or 3) and of T+_pot of the sum QTF (qtf = 2 or 3) both have a surface piece to
+         ! move to C and F. Only qtf_terms below body or qtf = 0 leaves no B2 (user ruling, 2026-11-19: the same input gives
+         ! the same .11s with qtf = 2 and 3)
+         WRITE (*, '(a)') ' QTF note: qtf_b2 is ignored; it applies with qtf_terms = body or full and qtf = 1, 2 or 3 only.'
       END IF
       IF (opts%qtf_edge_given .AND. .NOT. (b2_control .OR. opts%qtf_direct == 1)) THEN
          WRITE (*, '(a)') ' QTF note: qtf_edge_weights and qtf_edge_angle are ignored; they apply with qtf_terms = body or'// &
-            ' full, the difference QTF and qtf_b2 = control (qtf_edge_angle also with qtf_direct = 1) only.'
+            ' full, qtf_b2 = control and qtf = 1, 2 or 3 (qtf_edge_angle also with qtf_direct = 1) only.'
       END IF
       IF (opts%qtf_fs_given .AND. .NOT. uses_fs(opts)) THEN
          WRITE (*, '(a)') ' QTF note: qtf_fs_radius, qtf_fs_rows, qtf_fs_panel, qtf_fs_modes and qtf_fs_evanescent are ignored;'// &
-            ' they apply with qtf_terms = full and qtf = 1 or 3, or qtf = 2 with qtf_direct = 1, only.'
+            ' they apply with qtf_terms = full and qtf = 1, 2 or 3 only.'
       END IF
       ALLOCATE (states(MERGE(NBETA, 1, keep_all_headings(opts))))
       ! Only the near-field and control-surface methods use the surface geometry (the control surface takes the waterplane
@@ -255,9 +256,9 @@ CONTAINS
          nqtf = NPER - MERGE(2, 0, SYBO == 1)
          WRITE (*, '(a,F10.1,a,I0,a,I0,a)') ' QTF: the first-order states take', &
             qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA), ' MB for ', nqtf, ' frequencies and ', NBETA, ' headings'
-         ! The body forcing of the difference QTF, and with qtf_direct = 1 also that of the sum (Phase 7c-2)
-         body_terms = opts%qtf_terms >= QTF_TERMS_BODY .AND. &
-                      (opts%qtf == 1 .OR. opts%qtf == 3 .OR. (opts%qtf == 2 .AND. opts%qtf_direct == 1))
+         ! The body forcing of the difference QTF and of the sum: psi at the sum frequencies too, with or without the direct
+         ! solve (Phase 6b)
+         body_terms = opts%qtf_terms >= QTF_TERMS_BODY
          IF (body_terms) THEN
             CALL body_terms_setup(opts, nqtf, inputdir, outputdir)
          ELSE
@@ -351,7 +352,7 @@ CONTAINS
       END DO
       ! The counts and the size go to the log before qtf_init allocates, so that a run that does not fit has them; qtf_init
       ! builds the same list
-      want_sum = opts%qtf >= 2 .AND. opts%qtf_direct == 1
+      want_sum = opts%qtf >= 2
       CALL qtf_sum_limits(opts, geom, G, IRSP, cut_irr, sum_top)
       CALL qtf_omega_list(omegas, opts%qtf_max_dw, sum_top, qtf_psi_tolerance(omegas), opts%qtf == 1 .OR. opts%qtf == 3, &
                           want_sum, need, reuse, is_diff, is_sum)
@@ -368,7 +369,7 @@ CONTAINS
       npairs = MERGE(NBETA*NBETA, NBETA, opts%mean_drift == 2)
       ! The sum stores (Phase 7c-2): tdir_sum and tpot_sum, one slice each per heading pair
       nsum_pairs = 0
-      IF (want_sum) nsum_pairs = 2*npairs
+      IF (want_sum) nsum_pairs = MERGE(2, 1, opts%qtf_direct == 1)*npairs   ! tpot_sum, and tdir_sum with the direct solve
       ! qtf_direct = 1 keeps T_dir beside T_pot, of the same size; both only with the difference QTF (qtf = 1 or 3)
       IF (opts%qtf_direct == 1) npairs = 2*npairs
       IF (.NOT. (opts%qtf == 1 .OR. opts%qtf == 3)) npairs = 0
@@ -419,10 +420,19 @@ CONTAINS
          CALL qtf_set_control_surface(b2_pts)
          IF (opts%qtf_edge_weights) CALL b2_edge_weights(opts)
       END IF
-      IF (fs_terms) THEN
-         WRITE (*, '(a)') ' QTF_Indirect.11d: body forcing and the free-surface integral (qtf_terms = full).'
-      ELSE
-         WRITE (*, '(a)') ' QTF_Indirect.11d: body forcing only, the free-surface integral is omitted.'
+      IF (opts%qtf == 1 .OR. opts%qtf == 3) THEN
+         IF (fs_terms) THEN
+            WRITE (*, '(a)') ' QTF_Indirect.11d: body forcing and the free-surface integral (qtf_terms = full).'
+         ELSE
+            WRITE (*, '(a)') ' QTF_Indirect.11d: body forcing only, the free-surface integral is omitted.'
+         END IF
+      END IF
+      IF (opts%qtf >= 2) THEN
+         IF (fs_terms) THEN
+            WRITE (*, '(a)') ' QTF_Indirect.11s: body forcing and the free-surface integral (qtf_terms = full).'
+         ELSE
+            WRITE (*, '(a)') ' QTF_Indirect.11s: body forcing only, the free-surface integral is omitted.'
+         END IF
       END IF
       IF (opts%qtf_direct == 1) THEN
          ! The sharp-edge mask of the B2 right side, once for the run (ruling M9 of Phase 7a)
@@ -871,20 +881,22 @@ CONTAINS
    END FUNCTION keep_all_headings
 
    LOGICAL FUNCTION uses_fs(opts)
-      ! qtf_terms = full applies: the free-surface integral is computed, for the difference QTF (qtf = 1 or 3) and, with
-      ! the direct method, for the sum QTF (qtf = 2; with qtf_direct = 0 that stops at input)
+      ! qtf_terms = full applies: the free-surface integral is computed, for the difference QTF (qtf = 1 or 3) and for the
+      ! sum QTF (qtf = 2 or 3; with qtf_direct = 0 the indirect sum, Phase 6b)
       TYPE(so_options), INTENT(IN) :: opts
 
-      uses_fs = opts%qtf_terms == QTF_TERMS_FULL .AND. &
-                (opts%qtf == 1 .OR. opts%qtf == 3 .OR. (opts%qtf == 2 .AND. opts%qtf_direct == 1))
+      uses_fs = opts%qtf_terms == QTF_TERMS_FULL .AND. opts%qtf >= 1
    END FUNCTION uses_fs
 
    LOGICAL FUNCTION uses_b2_control(opts)
-      ! qtf_b2 = control applies: the potential part of the difference QTF is computed
+      ! qtf_b2 = control applies: B2 of the potential part of the difference QTF (qtf = 1 or 3) and of the sum QTF T+_pot
+      ! (qtf = 2 or 3, QTF_Indirect.11s) is computed with its surface piece on C and F. The same input then gives the same
+      ! .11s with qtf = 2 and 3 (user ruling, 2026-11-19). The fields of potential_part_sum are those of potential_part:
+      ! the velocity on C and F of every kept frequency, and grad psi_k there at every psi frequency, sum frequencies too.
       TYPE(so_options), INTENT(IN) :: opts
 
       uses_b2_control = opts%qtf_terms >= QTF_TERMS_BODY .AND. opts%qtf_b2 == QTF_B2_CONTROL .AND. &
-                        (opts%qtf == 1 .OR. opts%qtf == 3)
+                        opts%qtf >= 1
    END FUNCTION uses_b2_control
 
    SUBROUTINE b2_control_setup(opts, inputdir, outputdir)

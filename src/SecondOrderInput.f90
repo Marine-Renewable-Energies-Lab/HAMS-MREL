@@ -133,10 +133,6 @@ CONTAINS
       ELSE IF (opts%qtf_fs_evanescent < 0) THEN
          ok = .FALSE.
          msg = 'qtf_fs_evanescent must not be negative in SecondOrder.in.'
-      ELSE IF (opts%qtf_terms >= QTF_TERMS_BODY .AND. opts%qtf == 2 .AND. opts%qtf_direct == 0) THEN
-         ! The sum-frequency potential part comes from the direct solve (Phase 7c-2); the indirect one is Phase 6b
-         ok = .FALSE.
-         msg = 'qtf = 2 with qtf_terms = body or full needs qtf_direct = 1: the indirect sum-frequency QTF is Phase 6b.'
       ELSE IF (opts%qtf_direct < 0 .OR. opts%qtf_direct > 1) THEN
          ok = .FALSE.
          msg = 'qtf_direct must be 0 or 1 in SecondOrder.in.'

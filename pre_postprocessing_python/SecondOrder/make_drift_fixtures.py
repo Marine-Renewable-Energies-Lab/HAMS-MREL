@@ -454,6 +454,7 @@ def main():
     write_qtf_fs_fixtures(data, both)
     write_qtf_directfs_fixtures(data, both)
     write_qtf_directsum_fixtures(data)
+    write_qtf_indsum_fixtures(data)
 
     # The control-surface method on the hull of drift_cyl: held fixed, and with the limit frequencies and all heading pairs
     for name, control, options in (("control_cyl", dict(), dict(mean_drift=1, drift_methods="far control", write_terms=1,
@@ -953,6 +954,11 @@ def write_qtf_directsum_fixtures(data):
     target = case_dir(data, "qtf_directsum_irsp")
     copy_inputs(data, "qtf_directfs_irsp", target, inputs + ("WaterPlaneMesh.pnl",))
     write_second_order(os.path.join(target, "SecondOrder.in"), **full)
+    # qtf_directsum_irsp with the default qtf_b2 = control (no qtf_b2 line), Phase 6b Task B2 fix 1: P_BODY of
+    # QTF_DirectTermsSum.txt takes the control-surface B2, .12s and the D columns do not change
+    target = case_dir(data, "qtf_directsum_q2_def")
+    copy_inputs(data, "qtf_directfs_irsp", target, inputs + ("WaterPlaneMesh.pnl",))
+    write_second_order(os.path.join(target, "SecondOrder.in"), **{key: value for key, value in full.items() if key != "qtf_b2"})
     # The same two difference runs, qtf = 1 and 3
     for name, qtf in (("qtf_directsum_d1", 1), ("qtf_directsum_d3", 3)):
         target = case_dir(data, name)
@@ -974,6 +980,64 @@ def write_qtf_directsum_fixtures(data):
                        **dict(mean_drift=1, drift_methods="far near", motion_state="free", write_terms=1, qtf_terms="body",
                               qtf=3, qtf_b2="body", qtf_edge_weights="off", qtf_direct=1, velocity_method="source",
                               qtf_field=1))
+
+
+def write_qtf_indsum_fixtures(data):
+    """Fixtures of the indirect sum frequency QTF (qtf_direct = 0, QTF_Indirect.11s), Phase 6b Task 3: the 7c-2 sum fixtures
+    with qtf_direct = 0 (qtf_indsum_round, _irsp, _half, _halfref), qtf_indsum_gmres and _gmres_dir (qtf_indsum_irsp with the
+    GMRES solve, Solver_type 2, without and with the direct solve), and the two hulls of qtf_directfs_two with qtf = 3:
+    qtf_indsum_two, its qtf_direct = 1 twin qtf_indsum_two_dir and its qtf = 1 twin qtf_indsum_two1. The two-hull
+    cases set qtf_fs_panel and qtf_fs_modes, so that the difference files do not depend on qtf = 3 (7c-2 final review)."""
+    inputs = ("HullMesh.pnl", "Hydrostatic.in", "ControlFile.in")
+    # qtf_directsum_round and qtf_directsum_irsp with qtf_direct = 0
+    target = case_dir(data, "qtf_indsum_round")
+    copy_inputs(data, "qtf_directsum_round", target, inputs)
+    write_second_order(os.path.join(target, "SecondOrder.in"),
+                       **dict(mean_drift=1, drift_methods="far near", motion_state="free", write_terms=1, qtf_terms="body",
+                              qtf=3, qtf_b2="body", qtf_edge_weights="off", qtf_direct=0, qtf_max_dw=0.3,
+                              velocity_method="source"))
+    full = dict(mean_drift=1, drift_methods="far near", motion_state="free", write_terms=1, qtf_terms="full", qtf=2,
+                qtf_max_dw=0.3, qtf_b2="body", qtf_edge_weights="off", qtf_direct=0)
+    target = case_dir(data, "qtf_indsum_irsp")
+    copy_inputs(data, "qtf_directsum_irsp", target, inputs + ("WaterPlaneMesh.pnl",))
+    write_second_order(os.path.join(target, "SecondOrder.in"), **full)
+    # The same with the GMRES solve (Solver_type 2, the unfactored matrix), and with the direct solve too (the direct
+    # method re-factors the matrix when ISOLV /= 1)
+    for name, direct in (("qtf_indsum_gmres", 0), ("qtf_indsum_gmres_dir", 1)):
+        target = case_dir(data, name)
+        copy_inputs(data, "qtf_directsum_irsp", target, inputs + ("WaterPlaneMesh.pnl",))
+        write_control(os.path.join(target, "ControlFile.in"), depth=QTF_DIRECTFS_DEPTH, frequencies=QTF_BODY_FREQUENCIES,
+                      headings=DRIFT_CYL_HEADINGS, irsp=1, threads=QTF_DIRECTFS_THREADS, solver=2)
+        write_second_order(os.path.join(target, "SecondOrder.in"), **dict(full, qtf_direct=direct))
+    # The half mesh (ISY = 1) and the whole mesh of the rounded hull, IRSP = 0
+    for name, half in (("qtf_indsum_half", True), ("qtf_indsum_halfref", False)):
+        target = case_dir(data, name)
+        make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
+                                         half_y=half, **ROUND_MESH)
+        write_control(os.path.join(target, "ControlFile.in"), depth=QTF_DIRECTFS_DEPTH,
+                      frequencies=QTF_DIRECTSUM_HALF_FREQUENCIES, headings=DRIFT_CYL_HEADINGS, threads=QTF_DIRECTFS_THREADS)
+        write_second_order(os.path.join(target, "SecondOrder.in"), **full)
+    # Two hulls with FSInnerMesh.pnl (the inputs of qtf_directfs_two)
+    two_inputs = ("HullMesh_1.pnl", "HullMesh_2.pnl", "Hydrostatic_1.in", "Hydrostatic_2.in", "FSInnerMesh.pnl",
+                  "ControlFile.in")
+    two = dict(full, qtf=3, qtf_fs_radius=QTF_FS_TWO_RADIUS, qtf_fs_panel=QTF_DIRECTSUM_FS_PANEL,
+               qtf_fs_modes=QTF_DIRECTSUM_FS_MODES)
+    for name, options in (("qtf_indsum_two", two), ("qtf_indsum_two_dir", dict(two, qtf_direct=1)),
+                          ("qtf_indsum_two1", dict(two, qtf=1))):
+        target = case_dir(data, name)
+        copy_inputs(data, "qtf_directfs_two", target, two_inputs)
+        write_second_order(os.path.join(target, "SecondOrder.in"), **options)
+    # qtf = 2 and qtf = 3 of qtf_indsum_irsp with the default qtf_b2 = control and the same inner mesh (qtf_fs_panel and
+    # qtf_fs_modes given), Phase 6b Task B2: .11s and QTF_PotentialTermsSum.txt are those of the one B2 form
+    # (one heading, two frequencies: only the equality of the two runs is tested, and the pairs off the diagonal exist)
+    control = {key: value for key, value in full.items() if key != "qtf_b2"}
+    for name, qtf in (("qtf_indsum_b2_q2", 2), ("qtf_indsum_b2_q3", 3)):
+        target = case_dir(data, name)
+        copy_inputs(data, "qtf_directsum_irsp", target, inputs + ("WaterPlaneMesh.pnl",))
+        write_control(os.path.join(target, "ControlFile.in"), depth=QTF_DIRECTFS_DEPTH, frequencies=QTF_BODY_FREQUENCIES,
+                      headings=(0.0,), irsp=1, threads=QTF_DIRECTFS_THREADS)
+        write_second_order(os.path.join(target, "SecondOrder.in"),
+                           **dict(control, qtf=qtf, qtf_fs_panel=QTF_DIRECTSUM_FS_PANEL, qtf_fs_modes=QTF_DIRECTSUM_FS_MODES))
 
 
 if __name__ == "__main__":

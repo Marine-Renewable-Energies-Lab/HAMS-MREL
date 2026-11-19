@@ -862,8 +862,10 @@ contains
 
     ! Report the end of the run. Output files are written either way; a run with NaN or Inf results
     ! ends with exit code 1 instead of the message of success. So does a QTF potential part (qtf_terms = body) with
-    ! NaN or Inf in psi or T_pot; QTFDriver logged the difference frequencies concerned.
+    ! NaN or Inf in psi, T_pot or T+_pot (the difference and the sum QTF); QTFDriver logged the frequencies concerned.
     subroutine ReportCompletion()
+        character(len=64) :: ind, dir
+        character(len=3) :: verb
         write(*,*)
         if (NONFINITE_FREQS .eq. 0 .and. qtf_nonfinite_psi() .eq. 0 .and. qtf_nonfinite_pairs() .eq. 0) then
             write(*,*) ' Congratulations! Your computation completes successfully.'
@@ -875,13 +877,30 @@ contains
                 write(*,*) ' The output files are written but are not valid at those frequencies.'
             end if
             if (qtf_nonfinite_psi() .ne. 0 .or. qtf_nonfinite_pairs() .ne. 0) then
-                write(*,'(a,i0,a,i0,a)') '  Error: the QTF potential part has NaN or Inf: psi at ', qtf_nonfinite_psi(), &
-                    ' difference frequencies, T_pot or T_dir at ', qtf_nonfinite_pairs(), ' frequency and heading pairs.'
-                if (so_opts%qtf_direct == 1 .and. so_opts%qtf >= 2) then
-                    write(*,*) ' QTF_Indirect.11d (and QTF_Direct.12d and QTF_Direct.12s with qtf_direct = 1) is written but is'
-                    write(*,*) ' not valid at those pairs'
+                if (so_opts%qtf == 1) then
+                    write(*,'(a,i0,a,i0,a)') '  Error: the QTF potential part has NaN or Inf: psi at ', qtf_nonfinite_psi(), &
+                        ' difference frequencies, T_pot or T_dir at ', qtf_nonfinite_pairs(), ' frequency and heading pairs.'
                 else
+                    write(*,'(a,i0,a,i0,a)') '  Error: the QTF potential part has NaN or Inf: psi at ', qtf_nonfinite_psi(), &
+                        ' frequencies, T_pot, T+_pot or T_dir at ', qtf_nonfinite_pairs(), ' frequency and heading pairs.'
+                end if
+                ! The QTF files this run writes: .11d with qtf = 1 or 3, .11s with qtf = 2 or 3, and with qtf_direct = 1
+                ! also .12d and .12s for the same qtf values (Phase 6b). qtf = 1 keeps its text.
+                if (so_opts%qtf == 1) then
                     write(*,*) ' QTF_Indirect.11d (and QTF_Direct.12d with qtf_direct = 1) is written but is not valid at those pairs'
+                else
+                    if (so_opts%qtf == 2) then
+                        ind = ' QTF_Indirect.11s'
+                        dir = 'QTF_Direct.12s'
+                        verb = 'is'
+                    else
+                        ind = ' QTF_Indirect.11d and QTF_Indirect.11s'
+                        dir = 'QTF_Direct.12d and QTF_Direct.12s'
+                        verb = 'are'
+                    end if
+                    write(*,*) trim(ind)//' (and '//trim(dir)//' with qtf_direct = 1) '//trim(verb)//' written but '// &
+                        trim(verb)//' not valid'
+                    write(*,*) ' at those pairs'
                 end if
                 write(*,*) ' (see the QTF error lines above).'
             end if

@@ -11,6 +11,10 @@ Usage:
                           (the IRSP cases q_sharp_direct_irsp*_m1 need --max-dw 2: their Omega reach 1.6 rad/s)
     python qtf_compare.py <results> --direct-sum <qtf_potential_sum.csv> [--exclude LO HI]
                           (the q_*directsum* cases of the sum-frequency direct solve, Phase 7c-2)
+    python qtf_compare.py <results> --indirect-sum <qtf_potential_sum.csv> [--exclude LO HI]
+                          (the q_*indsum* cases of the sum-frequency indirect method, Phase 6b)
+    python qtf_compare.py <results> --against-nemoh <folder> --kernel sum [--hull sharp|oc4] [--reading ...] [--exclude LO HI]
+                          (QTF_Indirect.11s against Nemoh's OUT_QTFP_N.dat of the nemoh_*_free_fs_* runs)
     python qtf_compare.py <results> --against-wamit <file.12d> [--hull oc4w] [--reading as-is|conj|-1|-conj]
                           [--max-dw 0.3] [--max-omega 1.90] [--exclude LO HI]
 
@@ -61,6 +65,17 @@ For each q_*directsum* case (qtf_direct = 1, qtf = 3, qtf_terms = full) QTF_Dire
 exact free-surface part and P_BODY + P_FS with the exact potential part. The file holds both orders of an unequal pair with
 the same value, so each pair is read in either order. The last table is the in-run check, D = D_I2 + D_D + D_FS against
 P = P_BODY + P_FS row by row, as --direct does for the difference frequency. `check` tests it (compare_direct_sum).
+
+Indirect sum frequency (--indirect-sum REF). REF is the CSV of the --direct-sum section. For each q_*indsum* case
+(qtf = 3, qtf_terms = full, qtf_direct = 0) QTF_Indirect.11s is compared with the exact total, .11s - .10s with the exact
+potential part, and from QTF_PotentialTermsSum.txt (16 digits; FK, ID, B1, B2, B3, FS_inner, FS_outer) the sum of the terms
+with the exact potential part and FS_inner + FS_outer with the exact free-surface part, |HAMS - exact| / max |exact| over
+the pairs omega_i <= omega_j; a case that also has QTF_Direct.12s (qtf_direct = 1) gets the in-run row .11s-12s,
+|.11s - .12s| / max |.12s|. `check` tests it (indirect_sum_reader). With --against-nemoh --kernel sum the same .11s is
+compared with Nemoh's OUT_QTFP_N.dat (DUOK + HASBO + HASFS + ASYMP) of nemoh_<hull>_free_fs_m<k> over every pair
+omega_i <= omega_j, the matrix being symmetric (Nemoh documentation, doc/source/input-output.rst): no conjugate between
+the halves; the reading of Nemoh's value is fixed as for the difference (as-is) and never chosen by agreement with HAMS;
+`check` tests it (nemoh_sum_reader).
 
 WAMIT (--against-wamit). A WAMIT numeric .12d (difference QTF; one header line, then PER_i PER_j BETA_i BETA_j I Mod Pha Re
 Im, periods in s, nondimensional by rho g L^k with L = 1 m: the layout HAMS writes for .10d and .11d) is read "as written":
@@ -466,11 +481,12 @@ def compare_direct(results, path, max_dw, exclude=None, by_omega=False):
     return rows
 
 
-def read_direct_sum_terms(path):
+def read_direct_sum_terms(path, widths=(11, 15)):
     """{(w1, w2, beta1, beta2, I): [complex] * n} of QTF_DirectTermsSum.txt, conjugated back to e^{-i omega t}: n = 3
     (D_I2, D_D, P_BODY) or 5 with qtf_terms = full (D_I2, D_D, D_FS, P_BODY, P_FS), the header of
     write_direct_sum_terms_header in src/QTFDriver.f90. Both orders of an unequal pair have a row. {} if the file is
-    missing."""
+    missing. widths: the numbers of columns of a row to read (read_potential_sum_terms reads the 15 and 19 of
+    QTF_PotentialTermsSum.txt with the same rule)."""
     out = {}
     if not os.path.exists(path):
         return out
@@ -479,7 +495,7 @@ def read_direct_sum_terms(path):
             if line.lstrip().startswith("#"):
                 continue
             q = line.split()
-            if len(q) not in (11, 15):
+            if len(q) not in widths:
                 continue
             key = (round(float(q[0]), 6), round(float(q[1]), 6), round(float(q[2]), 6), round(float(q[3]), 6), int(q[4]))
             out[key] = [complex(float(q[5 + 2 * t]), -float(q[6 + 2 * t])) for t in range((len(q) - 5) // 2)]
@@ -552,10 +568,99 @@ def compare_direct_sum(results, path, exclude=None):
     return rows
 
 
+def read_potential_sum_terms(path):
+    """{(w1, w2, beta1, beta2, I): [complex] * n} of QTF_PotentialTermsSum.txt (Phase 6b), conjugated back to e^{-i omega t}:
+    n = 5 (FK, ID, B1, B2, B3, 15 columns) or 7 with qtf_terms = full (FS_inner and FS_outer after B3, 19 columns), the header
+    of write_potential_sum_terms_header in src/SecondOrderOutput.f90. Both orders of an unequal pair have a row. {} if the file
+    is missing."""
+    return read_direct_sum_terms(path, (15, 19))
+
+
+def read_indirect_sum(path):
+    """{(w1, w2, I): T+/(rho g)} in e^{-i omega t}, heading pair (0, 0), from QTF_Indirect.11s: the same layout as .10s and
+    .12s (WAMIT-format rows, HAMS writes conj(T)), so read_hams reads it; T+_ji = T+_ij, so lookup(table, ..., "sum") takes
+    either order without a conjugate. {} if the file is missing."""
+    return read_hams(path)
+
+
+def compare_indirect_sum(results, path, exclude=None):
+    """The --indirect-sum tables. path: CSV of truncated_cylinder_reference.py qtf-potential --kernel sum (with
+    --free-surface for qtf_terms = full, which the q_*indsum* cases have). For each q_*indsum* case (qtf = 3, qtf_direct = 0):
+    .11s against the exact total (quadratic + body terms + free-surface integral), .11s - .10s against the exact potential
+    part, from QTF_PotentialTermsSum.txt the sum of the terms against the potential part and FS_inner + FS_outer against the
+    exact free-surface part, each |HAMS - exact| / max |exact| over the pairs omega_i <= omega_j (the diagonal included), max
+    and median, percent; and, where the case also has .12s (qtf_direct = 1), the in-run row .11s-12s, |.11s - .12s| / max
+    |.12s| on the same pairs (the indirect and the direct route of one run). Heading pair (0, 0) against the reference. With
+    exclude (lo, hi) the pairs with a frequency in the band are left out of the max and median, the scales keep all the pairs.
+    Returns [(case, {row label: [(max, median) or None per quantity]})]."""
+    ref = read_potential_reference(path, 0.0, "sum")
+    print("Indirect sum-frequency QTF (QTF_Indirect.11s) against the exact sharp cylinder (heading 0): "
+          "|HAMS - exact| / max |exact| over the pairs omega_i <= omega_j, max and median, percent")
+    if exclude:
+        print("Pairs with omega_i or omega_j in [%.3f, %.3f] rad/s left out; scales from all the pairs" % tuple(exclude))
+
+    def kept(p):
+        return not exclude or not any(exclude[0] - 1e-9 <= w <= exclude[1] + 1e-9 for w in p)
+
+    def of(table):
+        return lambda wi, wj, index: lookup(table, wi, wj, index, "sum")
+    print("%-26s %-8s %18s %18s %18s" % ("case", "what", "F_x", "F_z", "M_y"))
+    found = []
+    for case in sorted(os.path.basename(c) for c in glob.glob(os.path.join(results, "q_*indsum*"))):
+        folder = os.path.join(results, case, "output", "Wamit_format")
+        indirect = read_indirect_sum(os.path.join(folder, "QTF_Indirect.11s"))
+        quadratic = read_hams(os.path.join(folder, "QTF_Quadratic.10s"))
+        direct = read_hams(os.path.join(folder, "QTF_Direct.12s"))
+        terms = read_potential_sum_terms(os.path.join(folder, "QTF_PotentialTermsSum.txt"))
+        if not indirect or not quadratic:
+            print("%-26s no QTF_Indirect.11s and QTF_Quadratic.10s" % case)
+            continue
+        full = len(next(iter(terms.values()))) == 7 if terms else True
+        motion = "fixed" if "_fixed_" in case else "free_damped" if "_damp_" in case else "free"
+        total_key, pot_key = ("total_fs", "pot_fs") if full else ("total", "pot")
+        if motion not in ref:
+            print("%-26s no reference for the %s body in %s" % (case, motion, path))
+            continue
+        if full and not ref[motion]["FS"]:
+            print("%-26s no FS reference (columns Fx_FS_re ... in %s, from qtf-potential --kernel sum --free-surface)"
+                  % (case, path))
+            continue
+        by = {k[:2] + k[4:]: v for k, v in terms.items() if k[2] == 0.0 and k[3] == 0.0}
+        sources = [(".11s", of(indirect), total_key, None), (".11s-10s", _difference(of(indirect), of(quadratic)), pot_key, None)]
+        if terms:
+            sources.append(("terms", of({k: sum(v) for k, v in by.items()}), pot_key, None))
+            if full:
+                sources.append(("FS", of({k: v[5] + v[6] for k, v in by.items()}), "FS", None))
+        if direct:
+            sources.append((".11s-12s", of(indirect), None, of(direct)))
+        rows = {}
+        for label, source, key, other in sources:
+            cells, summary = [], []
+            for q, index in QUANTITIES:
+                if other is None:
+                    exact = {pr: v[q] for pr, v in ref[motion][key].items()}
+                else:
+                    exact = {pr: other(pr[0], pr[1], index) for pr in ref[motion][total_key]}
+                    exact = {pr: v for pr, v in exact.items() if v is not None}
+                if not exact:
+                    cells.append("-")
+                    summary.append(None)
+                    continue
+                scale = max(abs(v) for v in exact.values())   # of all the pairs, before the band is left out
+                exact = {pr: v for pr, v in exact.items() if kept(pr)}
+                cells.append(_potential_cell({pr: source(pr[0], pr[1], index) for pr in exact}, exact, scale))
+                e = errors_of({pr: source(pr[0], pr[1], index) for pr in exact}, exact, scale)
+                summary.append(e[:2] if e else None)
+            rows[label] = summary
+            print("%-26s %-8s %18s %18s %18s" % (case, label, *cells))
+        found.append((case, rows))
+    return found
+
+
 READINGS = (("as-is", False, 1.0), ("conj", True, 1.0), ("-1", False, -1.0), ("-conj", True, -1.0))
 
 
-def compare_against_nemoh(results, nemoh, max_dw, exclude=None, hull="oc4", reading="as-is"):
+def compare_against_nemoh(results, nemoh, max_dw, exclude=None, hull="oc4", reading="as-is", kernel="diff"):
     """The --against-nemoh table, for a hull without an exact reference: QTF_Indirect.11d of each q_<hull>_<motion>_m<k>
     case against OUT_QTFM_N.dat of nemoh_<hull>_<motion>_m<k> (DUOK + HASBO, the same mesh), |HAMS - Nemoh| / max |Nemoh|
     over the pairs omega_i <= omega_j of the HAMS file with omega_j - omega_i <= max_dw, max and median, percent. Nemoh's
@@ -563,36 +668,49 @@ def compare_against_nemoh(results, nemoh, max_dw, exclude=None, hull="oc4", read
     exact reference. With no reference here, the reading is never chosen by agreement with HAMS, which would hide a sign or
     conjugation error of either code; the other readings are only computed to print a WARNING when one of them has a sum of
     medians under WARN_READING_RATIO of the fixed reading's. exclude (lo, hi) as in compare_potential.
+    kernel "sum": QTF_Indirect.11s of each q_<hull>_indsum_free_m<k> case (qtf_terms = full) against OUT_QTFP_N.dat of
+    nemoh_<hull>_free_fs_m<k> (DUOK + HASBO + HASFS + ASYMP, NEMOH_QTF_TERMS[3]), over every pair omega_i <= omega_j
+    (the diagonal included; max_dw does not apply), the matrix being symmetric (Nemoh documentation, doc/source/
+    input-output.rst, "Quadratic Transfer Function": lower triangle written, symmetric for the sum frequency), so the
+    upper triangle is the same value, no conjugate.
     Returns the rows (case, [(max, median) or None per quantity], warning or None)."""
     fixed = [r for r in READINGS if r[0] == reading]
     if not fixed:
         raise ValueError("unknown Nemoh reading " + str(reading))
-    print("HAMS QTF_Indirect.11d against Nemoh DUOK + HASBO, %s: |HAMS - Nemoh| / max |Nemoh| over the pairs, max and median, "
-          "percent; omega_j - omega_i <= %.2f rad/s; Nemoh reading %s" % (hull, max_dw, reading))
+    sum_ = kernel == "sum"
+    if sum_:
+        print("HAMS QTF_Indirect.11s against Nemoh DUOK + HASBO + HASFS + ASYMP, %s: |HAMS - Nemoh| / max |Nemoh| over the "
+              "pairs omega_i <= omega_j, max and median, percent; Nemoh reading %s" % (hull, reading))
+    else:
+        print("HAMS QTF_Indirect.11d against Nemoh DUOK + HASBO, %s: |HAMS - Nemoh| / max |Nemoh| over the pairs, max and "
+              "median, percent; omega_j - omega_i <= %.2f rad/s; Nemoh reading %s" % (hull, max_dw, reading))
     if exclude:
         print("Pairs with omega_i or omega_j in [%.3f, %.3f] rad/s left out; scales from all the pairs" % tuple(exclude))
     print("%-24s %16s %16s %16s" % ("case", "F_x", "F_z", "M_y"))
     rows = []
-    for folder in sorted(glob.glob(os.path.join(results, "q_%s_*" % hull))):
+    hams_file, nemoh_file = ("QTF_Indirect.11s", "OUT_QTFP_N.dat") if sum_ else ("QTF_Indirect.11d", "OUT_QTFM_N.dat")
+    for folder in sorted(glob.glob(os.path.join(results, "q_%s_*indsum*" % hull if sum_ else "q_%s_*" % hull))):
         case = os.path.basename(folder)
-        partner = os.path.join(nemoh, "nemoh_" + case[2:])
-        hams = read_hams(os.path.join(folder, "output", "Wamit_format", "QTF_Indirect.11d"))
-        table = read_nemoh(os.path.join(partner, "results", "QTF", "OUT_QTFM_N.dat"))
+        if not sum_ and "indsum" in case:
+            continue   # a q_*indsum* case has its own partner, nemoh_<hull>_free_fs_m<k>, under kernel "sum"
+        partner = os.path.join(nemoh, "nemoh_" + (case[2:].replace("_indsum_free_", "_free_fs_") if sum_ else case[2:]))
+        hams = read_hams(os.path.join(folder, "output", "Wamit_format", hams_file))
+        table = read_nemoh(os.path.join(partner, "results", "QTF", nemoh_file))
         if not hams or not table:
-            print("%-24s %s" % (case, "no QTF_Indirect.11d" if not hams else "no %s" % os.path.basename(partner)))
+            print("%-24s %s" % (case, "no " + hams_file if not hams else "no %s" % os.path.basename(partner)))
             continue
-        pairs_all = sorted(set((min(w1, w2), max(w1, w2)) for w1, w2, _ in hams if abs(w2 - w1) <= max_dw + 1e-9))
+        pairs_all = sorted(set((min(w1, w2), max(w1, w2)) for w1, w2, _ in hams if sum_ or abs(w2 - w1) <= max_dw + 1e-9))
         kept = [p for p in pairs_all if not exclude or not any(exclude[0] - 1e-9 <= w <= exclude[1] + 1e-9 for w in p)]
 
         def cells_of(conjugate, sign):
             cells = []
             for _, index in QUANTITIES:
-                values = nemoh_values(table, index, "diff", conjugate, sign)
+                values = nemoh_values(table, index, kernel, conjugate, sign)
                 if not all(p in values for p in pairs_all):
                     cells.append(None)
                     continue
                 scale = max(abs(values[p]) for p in pairs_all)
-                e = errors_of({p: lookup(hams, p[0], p[1], index, "diff") for p in kept}, {p: values[p] for p in kept}, scale)
+                e = errors_of({p: lookup(hams, p[0], p[1], index, kernel) for p in kept}, {p: values[p] for p in kept}, scale)
                 cells.append(e[:2] if e else None)
             return cells, sum(c[1] if c else np.inf for c in cells)
         cells, score = cells_of(*fixed[0][1:])
@@ -1307,9 +1425,163 @@ def check_compare_direct_sum():
     return "ok"
 
 
+def check_indirect_sum_reader():
+    """read_indirect_sum on a 3-row .11s fixture (the diagonal 0.70 rad/s, the pair 0.70 / 0.90 in both orders, F_z), written
+    as HAMS writes it, conj(T): the values come back as T (e^{-i omega t}), the sum kernel finds the pair in either order
+    without a conjugate, a missing file reads {}. Then compare_indirect_sum on a fixture case (a sum-kernel reference CSV with
+    FS, .10s, .11s, .12s and QTF_PotentialTermsSum.txt of 19 columns, three pairs, both orders): every row reads 0.00; with .12s
+    scaled by 1.02 only the row .11s-12s shows it (2% of the largest .12s). Returns a summary."""
+    import contextlib
+    import io
+    import tempfile
+    t = {(0.70, 0.70): 1.5 - 0.25j, (0.70, 0.90): -0.4 + 0.8j}
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "QTF_Indirect.11s")
+        with open(path, "w") as f:
+            for (wi, wj), orders in (((0.70, 0.70), ((0.70, 0.70),)), ((0.70, 0.90), ((0.70, 0.90), (0.90, 0.70)))):
+                for a, b in orders:
+                    v = t[(wi, wj)].conjugate()
+                    f.write("%14.6E%14.6E%14.6E%14.6E%6d%14.6E%14.6E%14.6E%14.6E\n" % (a, b, 0.0, 0.0, 3, abs(v), 0.0, v.real, v.imag))
+        table = read_indirect_sum(path)
+        assert len(table) == 3, table
+        assert abs(table[(0.7, 0.9, 3)] - t[(0.70, 0.90)]) < 1e-12 and abs(table[(0.9, 0.7, 3)] - t[(0.70, 0.90)]) < 1e-12, \
+            "T of both orders: %s" % (table,)
+        assert lookup(table, 0.9, 0.7, 3, "sum") == lookup(table, 0.7, 0.9, 3, "sum"), "the sum kernel has no conjugate"
+        assert read_indirect_sum(os.path.join(d, "missing.11s")) == {}, "a missing file reads {}"
+    quantities = ("Fx", "Fz", "My")
+    pairs_ = ((0.70, 0.70), (0.70, 0.90), (0.90, 0.90))
+    parts = ("",) + POTENTIAL_TERMS + ("FS",)
+
+    def value(a, qi, k):
+        return complex(1.0 + 0.3 * a + 0.1 * qi - 0.05 * k, -0.4 + 0.2 * a - 0.07 * qi + 0.03 * k)
+    results = {}
+    for factor in (1.0, 1.02):
+        with tempfile.TemporaryDirectory() as d:
+            ref_path = os.path.join(d, "ref.csv")
+            with open(ref_path, "w", newline="") as f:
+                header = ["motion", "omega_i", "omega_j", "kernel"]
+                for q in quantities:
+                    for k in parts:
+                        header += ["%s_%s_%s" % (q, k, ri) if k else "%s_%s" % (q, ri) for ri in ("re", "im")]
+                w = csv.writer(f)
+                w.writerow(header)
+                for a, (wi, wj) in enumerate(pairs_):
+                    row = ["free", wi, wj, "sum"]
+                    for qi in range(3):
+                        for k in range(len(parts)):
+                            row += [value(a, qi, k).real, value(a, qi, k).imag]
+                    w.writerow(row)
+            folder = os.path.join(d, "results", "q_sharp_indsum_free_m1", "output", "Wamit_format")
+            os.makedirs(folder)
+            files = {n: open(os.path.join(folder, n), "w") for n in ("QTF_Quadratic.10s", "QTF_Indirect.11s", "QTF_Direct.12s",
+                                                                    "QTF_PotentialTermsSum.txt")}
+            for a, (wi, wj) in enumerate(pairs_):
+                for order in ((wi, wj), (wj, wi)) if wi != wj else ((wi, wj),):
+                    for mode in range(1, 7):
+                        qi = {1: 0, 3: 1, 5: 2}.get(mode)
+                        v = [value(a, qi, k) if qi is not None else 0j for k in range(len(parts))]
+                        quad, body, fs = v[0], v[1:6], v[6]
+                        cols = body + [0.4 * fs, 0.6 * fs]
+                        total = quad + sum(cols)
+                        head = "%.6f %.6f 0.0 0.0 %d 0 0" % (order[0], order[1], mode)
+                        files["QTF_Quadratic.10s"].write(head + " %.16e %.16e\n" % (quad.real, -quad.imag))
+                        files["QTF_Indirect.11s"].write(head + " %.16e %.16e\n" % (total.real, -total.imag))
+                        files["QTF_Direct.12s"].write(head + " %.16e %.16e\n" % (factor * total.real, -factor * total.imag))
+                        files["QTF_PotentialTermsSum.txt"].write(
+                            "%.6f %.6f 0.0 0.0 %d" % (order[0], order[1], mode)
+                            + "".join(" %.16e %.16e" % (c.real, -c.imag) for c in cols) + "\n")
+            for f in files.values():
+                f.close()
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rows = compare_indirect_sum(os.path.join(d, "results"), ref_path)
+            results[factor] = (buf.getvalue(), rows)
+
+    def cell(text, what):
+        return [l for l in text.splitlines() if l.startswith("q_sharp_indsum_free_m1") and l.split()[1] == what][0]
+    text0, rows0 = results[1.0]
+    assert rows0 and rows0[0][0] == "q_sharp_indsum_free_m1", rows0
+    for what in (".11s", ".11s-10s", "terms", "FS", ".11s-12s"):
+        assert set(cell(text0, what).split()[2:]) == {"0.00"}, cell(text0, what)
+    text1, _ = results[1.02]
+    for what in (".11s", ".11s-10s", "terms", "FS"):
+        assert set(cell(text1, what).split()[2:]) == {"0.00"}, cell(text1, what)
+    shown = float(cell(text1, ".11s-12s").split()[2])
+    assert 1.5 < shown < 2.5, cell(text1, ".11s-12s")
+    return "3-row .11s read as T in either order, exact fixture 0.00 in five rows, .12s scaled by 1.02 seen as %.2f%% in .11s-12s only" % shown
+
+
+def check_nemoh_sum_reader():
+    """A Nemoh sum-frequency QTF written by hand in the layout of the Nemoh documentation (doc/source/input-output.rst, table
+    tab:QTF: w1 w2 beta1 beta2 DoF |QTF|/rho g, arg, Re, Im; the lower triangle w1 >= w2; the sum-frequency matrix is
+    symmetric): read_nemoh reads it, nemoh_values with the sum kernel fills the upper triangle with the same value (no
+    conjugate), and compare_against_nemoh(kernel = "sum") of a HAMS .11s of the same T (conj(T), both orders) in
+    q_oc4_indsum_free_m1 against nemoh_oc4_free_fs_m1 reads 0 under "as-is". The same Nemoh file written conjugated reads
+    a large error with a warning naming "conj". A HAMS case without its Nemoh run is noted, and all the pairs, the diagonal
+    included, are compared."""
+    import contextlib
+    import io
+    import tempfile
+    grid = (0.4, 0.5, 0.6)
+    rng = np.random.default_rng(11)
+    t = {(wi, wj): {index: complex(*rng.normal(size=2)) for _, index in QUANTITIES} for wi in grid for wj in grid if wi <= wj}
+
+    def value(wi, wj, index):
+        return t[(min(wi, wj), max(wi, wj))][index]
+    with tempfile.TemporaryDirectory() as d:
+        for hull, conjugate in (("oc4", False), ("sharp", True)):
+            folder = os.path.join(d, "results", "q_%s_indsum_free_m1" % hull, "output", "Wamit_format")
+            os.makedirs(folder)
+            with open(os.path.join(folder, "QTF_Indirect.11s"), "w") as f:
+                for wi in grid:
+                    for wj in grid:
+                        for _, index in QUANTITIES:
+                            v = value(wi, wj, index).conjugate()
+                            f.write("%14.6E%14.6E%14.6E%14.6E%6d%14.6E%14.6E%14.6E%14.6E\n" % (
+                                wi, wj, 0.0, 0.0, index, abs(v), 0.0, v.real, v.imag))
+            folder = os.path.join(d, "nemoh", "nemoh_%s_free_fs_m1" % hull, "results", "QTF")
+            os.makedirs(folder)
+            with open(os.path.join(folder, "OUT_QTFP_N.dat"), "w") as f:
+                for w1 in grid:
+                    for w2 in grid:
+                        if w1 < w2:
+                            continue
+                        for _, index in QUANTITIES:
+                            v = value(w1, w2, index)
+                            v = v.conjugate() if conjugate else v
+                            f.write("%.6E %.6E 0. 0. %d %.6E %.6E %.9E %.9E\n" % (
+                                w1, w2, index, abs(v), np.degrees(np.angle(v)), v.real, v.imag))
+        os.makedirs(os.path.join(d, "results", "q_oc4_indsum_free_m2", "output", "Wamit_format"))
+        with open(os.path.join(d, "results", "q_oc4_indsum_free_m2", "output", "Wamit_format", "QTF_Indirect.11s"), "w") as f:
+            f.write("%14.6E%14.6E%14.6E%14.6E%6d%14.6E%14.6E%14.6E%14.6E\n" % (0.4, 0.4, 0.0, 0.0, 1, 1.0, 0.0, 1.0, 0.0))
+        table = read_nemoh(os.path.join(d, "nemoh", "nemoh_oc4_free_fs_m1", "results", "QTF", "OUT_QTFP_N.dat"))
+        assert len(table) == 6 * len(QUANTITIES), "6 lower-triangle pairs per DoF: %d" % len(table)
+        values = nemoh_values(table, 3, "sum", False)
+        assert values[(0.4, 0.6)] == values[(0.6, 0.4)] == table[(0.6, 0.4, 3)], "the sum matrix is symmetric, no conjugate"
+        text = io.StringIO()
+        with contextlib.redirect_stdout(text):
+            rows = compare_against_nemoh(os.path.join(d, "results"), os.path.join(d, "nemoh"), 0.3, hull="oc4", kernel="sum")
+            conj_rows = compare_against_nemoh(os.path.join(d, "results"), os.path.join(d, "nemoh"), 0.3, hull="sharp",
+                                              kernel="sum")
+            fixed_rows = compare_against_nemoh(os.path.join(d, "results"), os.path.join(d, "nemoh"), 0.3, hull="sharp",
+                                               kernel="sum", reading="conj")
+    found = {case: (cells, warning) for case, cells, warning in rows}
+    exact = max(c[0] for c in found["q_oc4_indsum_free_m1"][0])
+    wrong = min(c[1] for case, cells, _ in conj_rows for c in cells)
+    warned = [w for _, _, w in conj_rows][0]
+    conj = max(c[0] for _, cells, _ in fixed_rows for c in cells)
+    assert exact <= 1e-5 and found["q_oc4_indsum_free_m1"][1] is None, "as-is fixture: %s" % (found,)
+    assert wrong > 0.1 and warned and "conj" in warned, "the conjugated fixture under as-is: %s %s" % (wrong, warned)
+    assert conj <= 1e-5, "the conjugated fixture under conj: %g" % conj
+    assert "QTF_Indirect.11s" in text.getvalue() and "no nemoh_oc4_free_fs_m2" in text.getvalue(), "header or missing note"
+    assert "pairs omega_i <= omega_j" in text.getvalue(), "all the pairs of the sum"
+    return ("as-is fixture max %.1e %%, conjugated file %.0f %% median under as-is with a warning and %.1e %% under conj, "
+            "missing run noted" % (100 * exact, 100 * wrong, 100 * conj))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
-    if argv is None and sys.argv[1:2] == ["check"]:
+    if argv is None and sys.argv[1:2] in (["check"], ["--self-test"]):
         print("compare_potential    %s" % check_compare_potential())
         print("fs_columns           %s" % check_fs_columns())
         print("against_nemoh        %s" % check_against_nemoh())
@@ -1317,6 +1589,8 @@ def main(argv=None):
         print("compare_direct       %s" % check_compare_direct())
         print("compare_direct_fs    %s" % check_compare_direct_fs())
         print("compare_direct_sum   %s" % check_compare_direct_sum())
+        print("indirect_sum_reader  %s" % check_indirect_sum_reader())
+        print("nemoh_sum_reader     %s" % check_nemoh_sum_reader())
         return 0
     parser.add_argument("results")
     parser.add_argument("--reference", help="CSV of truncated_cylinder_reference.py qtf (needed without --potential)")
@@ -1336,6 +1610,13 @@ def main(argv=None):
     parser.add_argument("--direct-sum", metavar="REF",
                         help="compare QTF_Direct.12s and QTF_DirectTermsSum.txt of the q_*directsum* cases with the CSV of "
                              "truncated_cylinder_reference.py qtf-potential --kernel sum, and D with P of the same run")
+    parser.add_argument("--indirect-sum", metavar="REF",
+                        help="compare QTF_Indirect.11s (and QTF_PotentialTermsSum.txt, and .12s where the run has it) of the "
+                             "q_*indsum* cases with the CSV of truncated_cylinder_reference.py qtf-potential --kernel sum "
+                             "--free-surface")
+    parser.add_argument("--kernel", choices=("diff", "sum"), default="diff",
+                        help="with --against-nemoh: diff (default, .11d against OUT_QTFM_N.dat) or sum (.11s of the "
+                             "q_*indsum* cases against OUT_QTFP_N.dat of the nemoh_*_free_fs_* runs)")
     parser.add_argument("--by-omega", action="store_true",
                         help="with --direct: also the largest direct-indirect error at each difference frequency")
     parser.add_argument("--against-wamit", metavar="FILE",
@@ -1349,6 +1630,9 @@ def main(argv=None):
                              "against the exact reference; never chosen by agreement with HAMS); with --against-wamit: "
                              "WAMIT's (default as-is, as written)")
     args = parser.parse_args(argv)
+    if args.indirect_sum:
+        rows = compare_indirect_sum(args.results, args.indirect_sum, args.exclude)
+        return 0 if rows else 1
     if args.direct_sum:
         rows = compare_direct_sum(args.results, args.direct_sum, args.exclude)
         return 0 if rows else 1
@@ -1361,7 +1645,7 @@ def main(argv=None):
         return 0 if rows else 1
     if args.against_nemoh:
         rows = compare_against_nemoh(args.results, args.against_nemoh, args.max_dw, args.exclude, args.hull or "oc4",
-                                     args.reading)
+                                     args.reading, args.kernel)
         return 0 if rows else 1
     if args.potential:
         return compare_potential(args.results, args.potential, args.nemoh, args.max_dw, args.exclude)

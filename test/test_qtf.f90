@@ -13,7 +13,8 @@ module test_qtf
                         qtf_psi_index, qtf_direct_missing, qtf_omega_list, irregular_frequency_estimate, sum_pair_index, &
                         qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active, qtf_stored_mb, &
                         qtf_direct_sum_pairs, qtf_direct_at_omega, qtf_direct_sum_load, qtf_direct_pairs, &
-                        qtf_direct_diff_load
+                        qtf_direct_diff_load, qtf_sum_omega, qtf_diff_omega, qtf_psi_count, qtf_indirect_sum_load, &
+                        potential_part_sum, psi_bad_files
   use QTFFreeSurface, only : fs_point_field
   use HAMS_mod, only : NTHREAD, ISOLV
   use Potentials_mod, only : MXPOT
@@ -72,12 +73,20 @@ subroutine collect_qtf(testsuite)
     new_unittest("qtf_direct_omegas_all", test_qtf_direct_omegas_all), &
     new_unittest("qtf_direct_missing", test_qtf_direct_missing), &
     new_unittest("psi_nonfinite_counted", test_psi_nonfinite_counted), &
+    new_unittest("psi_bad_files_text", test_psi_bad_files_text), &
     new_unittest("fs_store_order", test_fs_store_order), &
     new_unittest("qtf_sum_pairs_cover", test_sum_pairs_cover), &
     new_unittest("qtf_stored_mb_sum", test_stored_mb_sum), &
+    new_unittest("radiation_list_sum_indirect", test_radiation_list_sum_indirect), &
+    new_unittest("radiation_list_diff_unchanged", test_radiation_list_diff_unchanged), &
+    new_unittest("qtf_sum_indirect_list_body", test_sum_indirect_list_body), &
+    new_unittest("qtf_stored_mb_indirect_sum", test_stored_mb_indirect_sum), &
     new_unittest("qtf_sum_store_symmetric", test_sum_store_symmetric), &
     new_unittest("direct12s_rows", test_direct12s_rows), &
     new_unittest("direct_sum_terms_waterline", test_direct_sum_terms_waterline), &
+    new_unittest("indirect11s_rows", test_indirect11s_rows), &
+    new_unittest("indirect11s_equals_tpot", test_indirect11s_equals_tpot), &
+    new_unittest("indirect11s_routes_agree", test_indirect11s_routes_agree), &
     new_unittest("qtf3_diff_unchanged", test_qtf3_diff_unchanged), &
     new_unittest("qtf_files", test_files) &
     ]
@@ -689,6 +698,31 @@ subroutine test_psi_store_order(error)
   call remove_files()
 end subroutine test_psi_store_order
 
+!> The files named by the non-finite psi message: the terms files only when the run writes them (write_terms = 0 names
+!> neither QTF_PotentialTerms.txt nor QTF_PotentialTermsSum.txt), the sum files for a sum frequency, both sets for a frequency
+!> that is both
+subroutine test_psi_bad_files_text(error)
+  type(error_type), allocatable, intent(out) :: error
+
+  call check(error, trim(psi_bad_files(.false., .false., .false., .false.)), "QTF_Indirect.11d", "diff, no terms")
+  if (allocated(error)) return
+  call check(error, trim(psi_bad_files(.false., .false., .true., .true.)), "QTF_Indirect.11d and QTF_PotentialTerms.txt", &
+             "diff with terms")
+  if (allocated(error)) return
+  call check(error, trim(psi_bad_files(.true., .false., .false., .false.)), "QTF_Indirect.11s", "sum, no terms")
+  if (allocated(error)) return
+  call check(error, trim(psi_bad_files(.true., .false., .false., .true.)), "QTF_Indirect.11s and QTF_PotentialTermsSum.txt", &
+             "sum with terms")
+  if (allocated(error)) return
+  call check(error, trim(psi_bad_files(.true., .true., .false., .false.)), "QTF_Indirect.11d and QTF_Indirect.11s", &
+             "both, no terms")
+  if (allocated(error)) return
+  call check(error, trim(psi_bad_files(.true., .true., .true., .true.)), "QTF_Indirect.11d, QTF_PotentialTerms.txt, "// &
+             "QTF_Indirect.11s and QTF_PotentialTermsSum.txt", "both with terms")
+  if (allocated(error)) return
+  call check(error, index(psi_bad_files(.true., .true., .false., .false.), "Terms") == 0, "terms file named at write_terms = 0")
+end subroutine test_psi_bad_files_text
+
 !> A psi with a NaN is kept but counted (qtf_nonfinite_psi), and the pairs of its Omega are counted by the final guard
 !> (qtf_nonfinite_pairs): 0.5 rad/s = 1.3 - 0.8 has the pairs (1, 3) and (3, 1) at each of the 2 headings. psi at 0.2 and
 !> 0.3 rad/s is finite and adds nothing. The main program turns either count into exit code 1.
@@ -1011,12 +1045,103 @@ subroutine test_stored_mb_sum(error)
   call check(error, abs((mb1 - mb0) - expected) <= 1d-12 * expected, "the larger inner mesh in qtf_stored_mb")
 end subroutine test_stored_mb_sum
 
+!> Phase 6b: qtf = 2 with qtf_direct = 0 keeps the sums of the list. Grid 0.3, 0.6, 0.9: the sums are 0.6, 0.9, 1.2, 1.2, 1.5,
+!> 1.8; 0.6 and 0.9 are main-grid solves, so the radiation-only list is 1.2, 1.5, 1.8. qtf_direct_omegas still stops at
+!> the direct solve (qtf_direct = 0 has none), but the list of psi is the same with and without qtf_direct, qtf = 3 adds the
+!> differences 0.3 and 0.6 (both on the grid, so the radiation-only list does not change).
+subroutine test_radiation_list_sum_indirect(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(so_options) :: opts
+  real(8), allocatable :: w(:)
+  integer :: kq, kd
+  logical :: made
+
+  call CreateDirectory(root//"/Wamit_format", made)
+  call check(error, made, "could not create the test folder")
+  if (allocated(error)) return
+  do kq = 2, 3
+    do kd = 0, 1
+      opts%mean_drift = 1; opts%qtf = kq; opts%qtf_terms = QTF_TERMS_BODY; opts%qtf_direct = kd
+      call qtf_init(opts, 3, [0d0], 4, 10, 1, root, omegas_main=[0.3d0, 0.6d0, 0.9d0])
+      w = qtf_radiation_omegas()
+      call check(error, size(w), 3, "radiation-only list size")
+      if (allocated(error)) return
+      call check(error, maxval(abs(w - [1.2d0, 1.5d0, 1.8d0])) <= 1d-12, "radiation-only list values")
+      if (allocated(error)) return
+    end do
+  end do
+  call remove_files()
+end subroutine test_radiation_list_sum_indirect
+
+!> qtf = 1 has no sum: with qtf_direct = 0 and 1 the lists are the difference lists of the grids of the earlier tests
+subroutine test_radiation_list_diff_unchanged(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(so_options) :: opts
+  real(8), allocatable :: w(:)
+  integer :: kd
+  logical :: made
+
+  call CreateDirectory(root//"/Wamit_format", made)
+  call check(error, made, "could not create the test folder")
+  if (allocated(error)) return
+  do kd = 0, 1
+    opts%mean_drift = 1; opts%qtf = 1; opts%qtf_terms = QTF_TERMS_BODY; opts%qtf_direct = kd
+    call qtf_init(opts, 3, [0d0], 4, 10, 1, root, omegas_main=[0.5d0, 0.7d0, 1.3d0])
+    w = qtf_radiation_omegas()
+    call check(error, size(w), 3, "difference list size")
+    if (allocated(error)) return
+    call check(error, maxval(abs(w - [0.2d0, 0.6d0, 0.8d0])) <= 1d-12, "difference list values")
+    if (allocated(error)) return
+    ! Nothing of the sum: no sum frequency has a psi
+    call check(error, .not. qtf_sum_omega(1.0d0), "qtf = 1 has a sum frequency")
+    if (allocated(error)) return
+  end do
+  call remove_files()
+end subroutine test_radiation_list_diff_unchanged
+
+!> qtf = 2, qtf_terms = body, qtf_direct = 0 (the path with the free-surface warning of sum_warnings): the sum frequencies are
+!> flagged as sums, and no difference frequency is in the list
+subroutine test_sum_indirect_list_body(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(so_options) :: opts
+  logical :: made
+
+  call CreateDirectory(root//"/Wamit_format", made)
+  call check(error, made, "could not create the test folder")
+  if (allocated(error)) return
+  opts%mean_drift = 1; opts%qtf = 2; opts%qtf_terms = QTF_TERMS_BODY; opts%qtf_direct = 0
+  call qtf_init(opts, 3, [0d0], 4, 10, 1, root, omegas_main=[0.3d0, 0.6d0, 0.9d0])
+  call check(error, qtf_sum_omega(1.2d0) .and. qtf_sum_omega(0.6d0) .and. qtf_sum_omega(1.8d0), "sum frequencies flagged")
+  if (allocated(error)) return
+  call check(error, .not. qtf_diff_omega(1.2d0) .and. .not. qtf_diff_omega(0.6d0), "a difference flagged with qtf = 2")
+  if (allocated(error)) return
+  call check(error, qtf_psi_count(), 5, "5 distinct sums: 0.6, 0.9, 1.2, 1.5, 1.8")
+  if (allocated(error)) return
+  call remove_files()
+end subroutine test_sum_indirect_list_body
+
+!> qtf_stored_mb counts the stores of the sum by nsum_pairs; without the direct solve tpot_sum is the only one, 1 x the
+!> heading pairs: 16 bytes x 6 nbody x nfreq^2 per slice
+subroutine test_stored_mb_indirect_sum(error)
+  type(error_type), allocatable, intent(out) :: error
+  integer, parameter :: nfreq = 3, nb = 2, nhp = 4, nbody = 1, npsi = 7
+  real(8) :: mb0, mb1, mb2, expected
+
+  mb0 = qtf_stored_mb(10, 4, nbody, nfreq, nb, npsi=npsi, npairs=0)
+  mb1 = qtf_stored_mb(10, 4, nbody, nfreq, nb, npsi=npsi, npairs=0, nsum_pairs=nhp)
+  mb2 = qtf_stored_mb(10, 4, nbody, nfreq, nb, npsi=npsi, npairs=0, nsum_pairs=2*nhp)
+  expected = 16d0 * 6d0 * nbody * nfreq**2 * nhp / 1d6
+  call check(error, abs((mb1 - mb0) - expected) <= 1d-12 * expected, "tpot_sum alone in qtf_stored_mb")
+  if (allocated(error)) return
+  call check(error, abs((mb2 - mb1) - expected) <= 1d-12 * expected, "tdir_sum is the second store")
+end subroutine test_stored_mb_indirect_sum
+
 !> The whole direct sum path of the driver on a waterline body (Phase 7c-2): the 112-panel cylinder of
 !> direct_zero_forcing (radius 5, draft 5, depth 10), frequencies 0.4 and 0.5 rad/s, headings 0 and 30 degrees,
 !> mean_drift = 2, qtf = 2, qtf_terms = body, qtf_direct = 1, write_terms = 1. States: the incident wave and rigid motions
 !> (make_state). At every frequency of the list the radiation solve (radiation_at), psi into the store, and
 !> qtf_direct_at_omega, as RadiationOnlySolves and so_after_radiation_only do it. max_sw is qtf_max_sw.
-subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid)
+subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid, indirect_only)
   type(error_type), allocatable, intent(out) :: error
   real(8), intent(in) :: max_sw
   type(panel_mesh), intent(out) :: mesh
@@ -1025,7 +1150,8 @@ subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid)
   integer, intent(in), optional :: kind_qtf   ! qtf of SecondOrder.in, 2 by default
   real(8), intent(in), optional :: grid(:)    ! the frequencies, [0.4, 0.5] by default
   logical, intent(in), optional :: lid        ! IRSP = 1 with the lid of the cylinder (clear_lid after the test)
-  integer :: rf, kq, nl
+  logical, intent(in), optional :: indirect_only   ! qtf_direct = 0: psi of the radiation-only list, no direct solve
+  integer :: rf, kq, nl, kd
   real(8), parameter :: hb(2) = [0d0, 30d0], h10 = 10d0
   real(8), allocatable :: w(:), pts(:, :)
   type(panel_mesh) :: full
@@ -1052,6 +1178,8 @@ subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid)
   end if
   use_lid = .false.
   if (present(lid)) use_lid = lid
+  kd = 1
+  if (present(indirect_only)) kd = merge(0, 1, indirect_only)
   call make_cylinder(5d0, 5d0, 16 * rf, 4 * rf, 3 * rf, full, .true.)
   call set_wave(h10)
   NTHREAD = 4
@@ -1066,7 +1194,7 @@ subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid)
   call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
   call check(error, ok .and. geom%nwl > 0, "build_surface_geom stopped, or no waterline")
   if (allocated(error)) return
-  opts%mean_drift = 2; opts%qtf = kq; opts%qtf_terms = QTF_TERMS_BODY; opts%qtf_direct = 1; opts%write_terms = 1
+  opts%mean_drift = 2; opts%qtf = kq; opts%qtf_terms = QTF_TERMS_BODY; opts%qtf_direct = kd; opts%write_terms = 1
   opts%qtf_max_sw = max_sw
   call qtf_init(opts, size(w), hb, geom%nwl, mesh%n, mesh%nbody, root, omegas_main=w)
   call motions(x1, x2)
@@ -1078,8 +1206,12 @@ subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid)
       call qtf_keep(ib, s, wl, w(i))
     end do
   end do
-  call direct_setup(mesh, DEFAULT_EDGE_DEG)
-  om = qtf_direct_omegas()
+  if (kd == 1) then
+    call direct_setup(mesh, DEFAULT_EDGE_DEG)
+    om = qtf_direct_omegas()
+  else
+    om = qtf_radiation_omegas()
+  end if
   allocate (psi(mesh%n, 6))
   do m = 1, size(om)
     if (use_lid) then
@@ -1089,7 +1221,7 @@ subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid)
     end if
     call radiation_psi(mesh, om(m), MXPOT, psi)
     call qtf_keep_psi(om(m), psi)
-    call qtf_direct_at_omega(mesh, geom, om(m))
+    if (kd == 1) call qtf_direct_at_omega(mesh, geom, om(m))
   end do
 end subroutine sum_pipeline
 
@@ -1288,6 +1420,192 @@ subroutine test_direct_sum_terms_waterline(error)
              gap_all(1) / gap_all(2) >= terms_waterline_ratio .and. gap_off(1) / gap_off(2) >= terms_waterline_ratio, line)
 end subroutine test_direct_sum_terms_waterline
 
+!> QTF_Indirect.11s with qtf_max_sw = 0.9 and qtf_direct = 0 (Phase 6b): the rows of .10s whose sum is kept, in the order of
+!> .10s, as .12s (72 of the 96: the pair (0.5, 0.5) is cut). The diagonal (0.4, 0.4) is a row of its own and carries T+_pot
+!> (it is not .10s). The run has no direct solve and writes no .12s.
+subroutine test_indirect11s_rows(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  real(8), allocatable :: rs(:, :), ri(:, :)
+  integer :: i, k
+  real(8) :: diag_change
+  logical :: has12s
+
+  call sum_pipeline(error, 0.9d0, mesh, geom, indirect_only=.true.)
+  if (allocated(error)) return
+  call qtf_finish(mesh, geom, 1d0)
+  call read_qtf_rows(root//"/Wamit_format/QTF_Quadratic.10s", rs)
+  call read_qtf_rows(root//"/Wamit_format/QTF_Indirect.11s", ri)
+  inquire (file=root//"/Wamit_format/QTF_Direct.12s", exist=has12s)
+  call check(error, .not. has12s, "qtf_direct = 0 wrote QTF_Direct.12s")
+  if (allocated(error)) return
+  call check(error, size(rs, 2), 96, "rows of .10s")
+  if (allocated(error)) return
+  call check(error, size(ri, 2), 72, "rows of .11s with qtf_max_sw = 0.9")
+  if (allocated(error)) return
+  k = 0
+  diag_change = 0d0
+  do i = 1, size(rs, 2)
+    if (rs(1, i) + rs(2, i) > 0.9d0 + 1d-9) cycle
+    k = k + 1
+    call check(error, all(ri(1:5, k) == rs(1:5, i)), ".11s is not in the order of .10s")
+    if (allocated(error)) return
+    if (rs(1, i) == 0.4d0 .and. rs(2, i) == 0.4d0) diag_change = max(diag_change, maxval(abs(ri(8:9, k) - rs(8:9, i))))
+  end do
+  call check(error, k, 72, "rows of .10s kept by the cut")
+  if (allocated(error)) return
+  print '(4x,a,es10.2)', "indirect11s_rows: largest |.11s - .10s| on the diagonal (0.4, 0.4) ", diag_change
+  call check(error, diag_change > 0d0, "the diagonal of .11s is .10s: T+_pot left out")
+  call remove_files()
+end subroutine test_indirect11s_rows
+
+!> .11s - .10s is T+_pot of the row: tpot_sum as the driver holds it (qtf_indirect_sum_load), conjugated and scaled as the
+!> writer does (refl = 1: 1/(rho g) for forces and moments), against the rows of the files to their 7 digits, the diagonal
+!> included. The terms file (16 digits) has 15 columns with qtf_terms = body (5 keys and 5 terms of 2 values) and its terms
+!> add up to the same T+_pot to 1e-14 of the largest term of the row (rowmax), for every pair and its mirror. (The brief said
+!> 15 and 11 columns, which does not fit its own list of 5 keys and 5 terms; ruling in the report, as in Phase 7c-2.)
+subroutine test_indirect11s_equals_tpot(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  real(8), parameter :: w(2) = [0.4d0, 0.5d0], hb(2) = [0d0, 30d0]
+  complex(8) :: tp(6, 2, 2, 2, 2), t
+  real(8), allocatable :: rs(:, :), ri(:, :), rt(:, :)
+  real(8) :: scale, err_file, err_terms, tmax, sig(2), rowmax
+  integer :: i, j, b1, b2, n, ncol, ia, ja, ba, bb, ks, c
+
+  call sum_pipeline(error, 0d0, mesh, geom, indirect_only=.true.)
+  if (allocated(error)) return
+  ! tpot_sum is computed at qtf_finish; computing it here too only fills the same slots again, to the bit
+  call potential_part_sum(mesh, geom, 1d0)
+  do i = 1, 2
+    do j = 1, 2
+      do b1 = 1, 2
+        do b2 = 1, 2
+          call qtf_indirect_sum_load(i, b1, j, b2, tp(:, i, j, b1, b2))
+        end do
+      end do
+    end do
+  end do
+  tmax = maxval(abs(tp)) / (RHO_SOLVER * G_SOLVER)
+  call check(error, tmax > 0d0, "tpot_sum is empty without the direct solve")
+  if (allocated(error)) return
+  call qtf_finish(mesh, geom, 1d0)
+  call read_qtf_rows(root//"/Wamit_format/QTF_Quadratic.10s", rs)
+  call read_qtf_rows(root//"/Wamit_format/QTF_Indirect.11s", ri)
+  call read_terms_rows(root//"/Wamit_format/QTF_PotentialTermsSum.txt", rt, ncol)
+  call check(error, size(ri, 2), size(rs, 2), ".11s has every row of .10s without a cut")
+  if (allocated(error)) return
+  call check(error, ncol, 15, "columns of QTF_PotentialTermsSum.txt with qtf_terms = body")
+  if (allocated(error)) return
+  call check(error, size(rt, 2), size(ri, 2), "rows of QTF_PotentialTermsSum.txt")
+  if (allocated(error)) return
+  scale = maxval(abs(ri(8:9, :)))
+  err_file = 0d0
+  do n = 1, size(ri, 2)
+    call locate(ri(:, n), ia, ja, ba, bb, ks)
+    t = conjg(tp(ks, ia, ja, ba, bb)) / (RHO_SOLVER * G_SOLVER)
+    ! the matching row of .10s
+    do i = 1, size(rs, 2)
+      if (all(rs(1:5, i) == ri(1:5, n))) exit
+    end do
+    call check(error, i <= size(rs, 2), "a row of .11s has no row in .10s")
+    if (allocated(error)) return
+    err_file = max(err_file, abs(ri(8, n) - rs(8, i) - real(t, 8)), abs(ri(9, n) - rs(9, i) - aimag(t)))
+  end do
+  err_terms = 0d0
+  do n = 1, size(rt, 2)
+    call locate(rt(:, n), ia, ja, ba, bb, ks)
+    t = conjg(tp(ks, ia, ja, ba, bb)) / (RHO_SOLVER * G_SOLVER)
+    sig = 0d0
+    do c = 0, 4
+      sig = sig + rt(6 + 2 * c:7 + 2 * c, n)
+    end do
+    ! per row: the error over the largest of the row's terms and of T+_pot, not over the global maximum
+    rowmax = max(maxval(abs(rt(6:15, n))), abs(real(t, 8)), abs(aimag(t)))
+    if (rowmax > 0d0) err_terms = max(err_terms, abs(sig(1) - real(t, 8)) / rowmax, abs(sig(2) - aimag(t)) / rowmax)
+  end do
+  print '(4x,a,es10.2,a,es10.2,a,es10.2)', "indirect11s_equals_tpot: max |.11s - .10s - T+_pot| ", err_file, &
+    " (max |.11s| ", scale, "), terms file against T+_pot ", err_terms
+  call check(error, err_file <= 3d-6 * scale, ".11s - .10s is not T+_pot of tpot_sum")
+  if (allocated(error)) return
+  call check(error, err_terms <= 1d-14, "the terms do not add up to T+_pot")
+  call remove_files()
+
+contains
+
+  !> The frequency, heading and mode indices of a row whose first five columns are PER1 PER2 BETA1 BETA2 I
+  subroutine locate(row, i1, i2, h1, h2, kk)
+    real(8), intent(in) :: row(:)
+    integer, intent(out) :: i1, i2, h1, h2, kk
+
+    i1 = merge(1, 2, row(1) == w(1))
+    i2 = merge(1, 2, row(2) == w(1))
+    h1 = merge(1, 2, row(3) == hb(1))
+    h2 = merge(1, 2, row(4) == hb(1))
+    kk = nint(row(5))
+  end subroutine locate
+
+end subroutine test_indirect11s_equals_tpot
+
+!> R2 of Phase 6b: the indirect sum files of the run without the direct solve (qtf_direct = 0) and of the run with it
+!> (qtf_direct = 1) are the same to the byte: QTF_Quadratic.10s, QTF_Indirect.11s and QTF_PotentialTermsSum.txt, with
+!> qtf_max_sw = 0.9. Both runs solve the radiation problems of the same list, so psi, and with it every T+_pot, must be
+!> the same; the run with the direct solve also has QTF_Direct.12s (checked to exist).
+subroutine test_indirect11s_routes_agree(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  character(len=:), allocatable :: a1, a2, a3, b1, b2, b3
+  logical :: has12s
+
+  call sum_pipeline(error, 0.9d0, mesh, geom, indirect_only=.true.)
+  if (allocated(error)) return
+  call qtf_finish(mesh, geom, 1d0)
+  a1 = slurp(root//"/Wamit_format/QTF_Quadratic.10s")
+  a2 = slurp(root//"/Wamit_format/QTF_Indirect.11s")
+  a3 = slurp(root//"/Wamit_format/QTF_PotentialTermsSum.txt")
+  call remove_files()
+  call sum_pipeline(error, 0.9d0, mesh, geom)
+  if (allocated(error)) return
+  call qtf_finish(mesh, geom, 1d0)
+  b1 = slurp(root//"/Wamit_format/QTF_Quadratic.10s")
+  b2 = slurp(root//"/Wamit_format/QTF_Indirect.11s")
+  b3 = slurp(root//"/Wamit_format/QTF_PotentialTermsSum.txt")
+  inquire (file=root//"/Wamit_format/QTF_Direct.12s", exist=has12s)
+  call remove_files()
+  call check(error, has12s, "qtf_direct = 1 wrote no QTF_Direct.12s")
+  if (allocated(error)) return
+  call check(error, len(a2) > 0 .and. len(a3) > 0, "empty .11s or terms file")
+  if (allocated(error)) return
+  print '(4x,a,2i8)', "indirect11s_routes_agree: bytes of .11s and of QTF_PotentialTermsSum.txt ", len(a2), len(a3)
+  call check(error, a1 == b1, ".10s differs between qtf_direct = 0 and 1")
+  if (allocated(error)) return
+  call check(error, a2 == b2, ".11s differs between qtf_direct = 0 and 1")
+  if (allocated(error)) return
+  call check(error, a3 == b3, "QTF_PotentialTermsSum.txt differs between qtf_direct = 0 and 1")
+end subroutine test_indirect11s_routes_agree
+
+!> The whole file as one string (stream access); empty if it does not exist
+function slurp(path) result(text)
+  character(len=*), intent(in) :: path
+  character(len=:), allocatable :: text
+  integer :: unit, n
+  logical :: exists
+
+  inquire (file=path, exist=exists)
+  if (.not. exists) then
+    text = ""
+    return
+  end if
+  open (newunit=unit, file=path, access="stream", form="unformatted", status="old", action="read")
+  inquire (unit=unit, size=n)
+  allocate (character(len=n) :: text)
+  read (unit) text
+  close (unit)
+end function slurp
+
 !> The rows of a QTF file, r(9, n): PER1 PER2 BETA1 BETA2 I Mod Pha Re Im
 subroutine read_qtf_rows(path, r)
   character(len=*), intent(in) :: path
@@ -1457,12 +1775,13 @@ subroutine check_file_symmetry(error, path, hermitian)
 end subroutine check_file_symmetry
 
 subroutine remove_files()
-  character(len=*), parameter :: names(4) = [character(len=24) :: "QTF_Quadratic.10d", "QTF_Quadratic.10s", &
-                                                "QTF_Direct.12s", "QTF_DirectTermsSum.txt"]
+  character(len=*), parameter :: names(6) = [character(len=24) :: "QTF_Quadratic.10d", "QTF_Quadratic.10s", &
+                                                "QTF_Direct.12s", "QTF_DirectTermsSum.txt", "QTF_Indirect.11s", &
+                                                "QTF_PotentialTermsSum.txt"]
   integer :: unit, ios, i
   logical :: exists
 
-  do i = 1, 4
+  do i = 1, 6
     inquire(file=root//"/Wamit_format/"//trim(names(i)), exist=exists)
     if (.not. exists) cycle
     open(newunit=unit, file=root//"/Wamit_format/"//trim(names(i)), status="old", iostat=ios)
