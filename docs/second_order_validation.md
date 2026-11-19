@@ -994,6 +994,146 @@ The full solve with the fit (job 29405797, sharp m2, fixed and free, 153.4 core-
 - `qtf_terms = body` with the sum has no free-surface integral and is not usable as a sum QTF; the checks of `body` use the in-run indirect body terms only.
 - The cutoff estimate of the irregular frequency is a lower bound for a wall-sided hull only (`direct_sum_cutoff_rows`: 1.5382 rad/s for the rounded hull; the sharp cylinder's exact value is 1.548).
 
+## Indirect method at the sum frequency
+
+The indirect method at the sum frequency (Phase 6b, `qtf = 2` or `3` with `qtf_direct = 0`) writes `QTF_Indirect.11s` without the direct solve. The run solves the radiation problems at Ω⁺ = ω_i + ω_j that the free-surface forcing needs (ψ), and builds the potential part T⁺_pot of the sum QTF from them ([Developer Documentation](developer_documentation.md); files: [Output Files](output_files.md)). The file holds `.10s` + T⁺_pot, as `.11d` holds `.10d` + T_pot. With `qtf_direct = 1` the same file is written, and `.12s` as well ([direct method at the sum frequency](#direct-method-at-the-sum-frequency)). The checks below test the route and its files on the laptop, then the numbers on Snellius: against the exact sum QTF of the sharp cylinder, and against Nemoh on the OC4 semisubmersible, which has no exact reference. Unit and integration tests run on the laptop (ifort 2022.1, Windows). The Snellius runs are in `validation-runs/snellius-qtf-indirectsum` of the working folder, which is outside the repository (findings.md, the job logs, the compare files and the figures). The code of the runs is a0b974c (`feature/qtf-indirect-sum`, not pushed); the later change of the B2 form for `qtf = 2` (257662b) does not touch the `qtf = 3` cases that were run.
+
+### What is checked
+
+- **The route.** `.11s` = `.10s` + T⁺_pot, with `qtf_direct = 0`: no direct solve, no `.12s`. `QTF_PotentialTermsSum.txt` holds the parts of T⁺_pot, 16 digits (the body terms and, with `qtf_terms = full`, FS_inner and FS_outer). The parts must add up to `.11s` − `.10s`.
+- **The same numbers as the direct route.** The radiation problems solved are the same with and without the direct solve, so `.11s` and `QTF_PotentialTermsSum.txt` must be the same files with `qtf_direct = 0` and `1`, to the byte.
+- **Nothing else changes.** The `qtf_direct = 1` files of 7c-2 and the difference files of `qtf = 3` must be the same as before, to the byte.
+- **The numbers.** Against the exact sum QTF of the sharp cylinder (`truncated_cylinder_reference.py qtf-potential --kernel sum --free-surface`), and against Nemoh v3.0.3 (`qtf_compare.py --against-nemoh --kernel sum`).
+
+### Unit and integration tests
+
+The unit tester has 412 tests, all passing [measured at 257662b, 2026-11-19]. The integration tester has 233, all passing [measured at 257662b]; 22086da adds `direct_sum_qtf2_default_b2`. That test was run in the filtered integration run of its fix (56 passed, 0 failed); a full integration run at 22086da is not recorded. Sources: `git log --oneline 4ba2ddb..HEAD` and the task reports of the 6b work. The fixtures are `test/data/qtf_indsum_*`, written by `make_drift_fixtures.py`: the 7c-2 fixtures with `qtf_direct = 0`, a half-mesh pair, a two-hull case with `qtf_fs_panel` and `qtf_fs_modes` given (and its `qtf_direct = 1` and `qtf = 1` twins), and a GMRES case.
+
+| Test | What it pins | Measured | Limit |
+| :--- | :--- | :--- | :--- |
+| `radiation_list_sum_indirect`, `radiation_list_diff_unchanged` (unit) | The list of the radiation problems at the sum frequencies with `qtf_direct = 0` is the same as with it; the difference lists are not changed | exact | exact |
+| `qtf_sum_indirect_list_body`, `qtf_stored_mb_indirect_sum` (unit) | The sum frequencies are flagged as sums and no difference frequency is in the list; the memory of the stored T⁺_pot is 1 × the heading pairs | exact | exact |
+| `indirect11s_rows` (unit) | `.11s` has the rows of `.10s` whose sum is kept (72 of 96 with `qtf_max_sw` = 0.9), the diagonal included, and there is no `.12s` | exact | exact |
+| `indirect11s_equals_tpot` (unit) | `.11s` − `.10s` is T⁺_pot as the driver holds it, to the 7 digits of the file; the terms of the terms file add up to it | 5.75e-16 (terms sum, per row) | 1e-14 |
+| `indirect11s_routes_agree` (unit) | `.10s`, `.11s` and the terms file with `qtf_direct = 0` and `1`: the same to the byte | exact | exact |
+| `psi_bad_files_text` (unit) | The message of a non-finite ψ names the terms files only when they are written | exact | exact |
+| `qtf_sum_indirect_accepted`, `qtf_sum_body_warns` (input unit) | `qtf = 2` and `3` with `qtf_terms` = `body` or `full` and `qtf_direct = 0` are read; `full` needs a finite depth; `body` warns that the free-surface integral is left out | exact | exact |
+| `potential_sum_terms_header` (output unit) | Header and column count of `QTF_PotentialTermsSum.txt`: 19 columns with `full`, 15 with `body` | exact | exact |
+| `indirect_sum_cutoff_rows` (integration, round hull, `body`) | `.11s` has 12 rows (only the pair (0.70, 0.70), below the cutoff), the terms file has the same rows, the log warns "5 of 6 pairs" once and the free-surface warning once | exact | exact |
+| `indirect_sum_matches_direct_run` (integration, lid hull) | `.11s` and the terms file are those of the `qtf_direct = 1` run, to the byte; `.11s` − `.10s` against P_BODY + P_FS of `QTF_DirectTermsSum.txt` | 7.3e-7 | 1e-5 |
+| `indirect_sum_vs_direct` (integration, lid hull) | `.11s` against `.12s` of the direct run, over max `.12s`: 1.3 times the gap of 7c-2 (1.375e-1 for `direct_sum_irsp_full`) | 5.4e-2 | 1.79e-1 |
+| `indirect_sum_half_matches_full` (integration) | Half mesh against whole mesh, T⁺_pot, 108 rows | 3.3e-8 | 1e-6 |
+| `indirect_sum_two_bodies` (integration) | Two hulls: `.11s` and the terms file are those of the `qtf_direct = 1` twin, to the byte; the index I covers the 12 modes | exact | exact |
+| `indirect_sum_isolv_factored` (integration, GMRES) | With ISOLV = 2, `.11s` and the terms file are those of the `qtf_direct = 1` twin, to the byte; T⁺_pot against the LU solve | 6.9e-4 | 1e-3 (GMRES stops at 1e-4) |
+| `indirect_sum_qtf3_diff_unchanged` (integration) | `.10d` and `.11d` of the `qtf = 3` two-hull run are those of the `qtf = 1` run, to the byte | exact | exact |
+| `indirect_sum_off_unchanged` (integration) | `QTF_Direct.12s` and `QTF_DirectTermsSum.txt` of `qtf_directsum_round` and `_irsp` are those of the 7c-2 merge build 4ba2ddb, to the byte | exact | exact |
+| `indirect_sum_log_lines` (integration) | The end message names `.11s` (and `.11d` for `qtf = 3` only) and says whether the free-surface integral is in it | exact | exact |
+| `indirect_sum_b2_qtf2_matches_qtf3` (integration) | `qtf = 2` takes the control-surface B2 as `qtf = 3` does (user ruling, 2026-11-19): same input, same `.11s` and terms file, to the byte, and the log has the line of the points of C and F | exact | exact |
+| `direct_sum_qtf2_default_b2` (integration) | `qtf = 2`, `qtf_direct = 1` and the default `qtf_b2` = `control`: `QTF_Direct.12s` and the D columns are those of the `qtf_b2 = body` run, to the byte; P_BODY changes; the log has the line of C and F | exact | exact |
+
+- **The `qtf = 2` change of B2 is a change of output.** A `qtf = 2`, `qtf_direct = 1` run without a `qtf_b2` line now builds C and F and gives a different P_BODY in `QTF_DirectTermsSum.txt` (`.12s` is unchanged). The user accepted it (option a, 2026-11-19) and it is documented in [Input Files](input_files.md).
+- **The pins are of this build.** The byte-for-byte checks compare two routes of the same code, so they test that the routes agree and that nothing else moved. They do not test the value of T⁺_pot; the values are tested in the next sections.
+- The limits are measured values with a margin, as in the sections above; `indirect_sum_vs_direct` keeps the plan's 1.3 times the 7c-2 gap, so it is loose against its own measurement (5.4e-2).
+
+### Sharp cylinder against the exact reference
+
+Sharp truncated cylinder (radius 10 m, draft 10 m), depth 100 m, free body, heading 0, 21 frequencies 0.40 to 1.40 rad/s, `qtf = 3`, `qtf_terms = full`, `qtf_direct = 0`, meshes m1 (448 panels) and m2 (1792 panels). The error is |X − exact| / max |exact total|, in percent, max / median. Pairs with a frequency in 0.75 to 0.80 rad/s are left out (the surge-pitch resonance, as in the sections above). Sources: `findings.md` (sections Results and Stage 2), `stage1_summary.json`, `stage2_summary.json`, `stage2_summary.txt`, `compare_indsum_m1.txt`, `compare_indsum_stage2.txt` [measured, 2026-11-19].
+
+| Total | F_x | F_z | M_y |
+| :--- | :--- | :--- | :--- |
+| HAMS `.11s` m1 | 7.8 / 1.4 | 6.0 / 0.14 | 3.0 / 0.56 |
+| HAMS `.11s` m2 | 6.1 / 1.1 | 4.1 / 0.10 | 2.1 / 0.39 |
+| Nemoh default free-surface mesh, m1 | 10.4 / 1.7 | 18.3 / 1.4 | 20.7 / 1.8 |
+| Nemoh matched free-surface mesh, m1 | 10.4 / 1.7 | 18.3 / 1.4 | 20.8 / 1.8 |
+| Nemoh default free-surface mesh, m2 | 7.2 / 1.4 | 17.1 / 1.3 | 11.9 / 1.2 |
+| Nemoh matched free-surface mesh, m2 | 7.2 / 1.4 | 17.1 / 1.3 | 11.9 / 1.2 |
+
+The same, split into the body part and the free-surface part, with the same scale:
+
+| | Body F_x | F_z | M_y | Free-surface F_x | F_z | M_y |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| HAMS m1 | 6.9 / 1.3 | 4.6 / 0.16 | 11.0 / 0.79 | 0.94 / 0.26 | 0.15 / 0.03 | 0.41 / 0.11 |
+| HAMS m2 | 5.5 / 1.0 | 1.4 / 0.05 | 5.1 / 0.52 | 0.37 / 0.09 | 0.04 / 0.01 | 0.17 / 0.04 |
+| Nemoh default m1 | 10.4 / 1.7 | 17.5 / 1.5 | 21.2 / 1.7 | 3.5 / 0.70 | 3.3 / 0.34 | 2.1 / 0.47 |
+| Nemoh default m2 | 6.2 / 1.4 | 16.8 / 1.4 | 10.9 / 1.1 | 3.5 / 0.80 | 3.4 / 0.33 | 2.1 / 0.62 |
+
+HAMS body part: FK + ID + B1 + B2 + B3 of `QTF_PotentialTermsSum.txt`; free-surface part: FS_inner + FS_outer. Nemoh body part: HASBO; free-surface part: HASFS + ASYMP. The exact parts are the matching terms of the reference.
+
+- **The two codes use different free-surface meshes.** Both integrate over the ring from the waterline (r = 10 m) to about r = 15 m. HAMS uses 2600 inner points of about 0.16 m² at m1 (a waterline fit for the points next to the waterline, and partial waves fitted on a circle outside the ring). Nemoh uses 896 panels of about 0.44 m², about 3 times coarser, with no waterline treatment and an analytic far part (ASYMP).
+- **The mesh is not the cause of Nemoh's peak error.** Two further Nemoh runs gave it the HAMS inner mesh (m1 2600 panels, m2 2496; `fsmatch/`). Its total moves from the default-mesh value by at most 0.26% of max |exact| at m1 and 0.08% at m2. So the mesh share of Nemoh's peak error from m1 to m2 is about 0, and all of it is the method (HASBO), at a given hull mesh.
+- **Nemoh's peak error is in HASBO.** From m1 to m2 its body error falls for F_x (10.4 to 6.2%) and M_y (21.2 to 10.9%) but not for F_z (17.5 to 16.8%). Its free-surface part stays at about 3.5% on both meshes. Why that part does not fall was not checked.
+- **`.11s` converges with the mesh.** The maxima fall from 7.8 / 6.0 / 3.0% to 6.1 / 4.1 / 2.1% and the medians from 1.4 / 0.14 / 0.56% to 1.1 / 0.10 / 0.39% (F_x, F_z, M_y). The free-surface part is within 0.4% at m2. The body part keeps the larger error (M_y 5.1% at m2).
+- **The body part equals the 7c-2 one.** The body terms of `QTF_PotentialTermsSum.txt` equal P_BODY of the 7c-2 `QTF_DirectTermsSum.txt` to 5e-16 of the maximum, on all 441 rows per mode (`scripts/route_check.py`). The free-surface part is 3% (median, F_x) from the 7c-2 one, because the waterline fit (47d5911) came after that run. The maximum of the potential part for F_x falls from 18% to 8%.
+- **`.11s` against Nemoh directly** (`compare_nemoh_m1.txt`, `compare_nemoh_sharp_stage2.txt`): F_x 10.3 / 2.3% at m1 and 7.0 / 1.95% at m2. The gap shrinks as Nemoh's body part converges.
+- Nemoh switches its Green function from finite to infinite depth at the higher frequencies by itself; its log gives no warning. In HAMS the log warns once that νh > 50 from Ω⁺ = 2.25 rad/s (νh = 51.6; log.txt:316), as in 7c-2 at the same frequency; it comes from the radiation-only solve at Ω⁺.
+
+Figures: `validation-runs/snellius-qtf-indirectsum/indirectsum_stage2.png` (m1 and m2, script `scripts/stage2_summary.py`) and `indirectsum_summary.png` (m1, `scripts/stage1_summary.py`), kept with the Snellius results and not copied into the repository.
+
+### OC4 against Nemoh
+
+The OC4 semisubmersible, 1224 panels (m1), free body, the Nemoh test-case model, `qtf = 3`, `full`. There is no exact reference. The table gives HAMS `.11s` against Nemoh, max / median of |HAMS − Nemoh| / max |Nemoh| over the 150 pairs that HAMS writes (`compare_nemoh_oc4.txt`) [measured]:
+
+| | F_x | F_z | M_y |
+| :--- | :--- | :--- | :--- |
+| `.11s` against Nemoh (150 pairs) | 82 / 26% | 33 / 10% | 27 / 12% |
+| difference QTF of the same two runs (pairs with 0.40 to 0.45 rad/s left out) | 8.8 / 1.8% | | |
+| Phase 5 OC4 runs, difference QTF (`snellius-qtfpot/oc4/compare_m1.txt`) | 5.2 / 1.9% | | |
+
+HAMS leaves out the 81 pairs with Ω⁺ ≥ 1.995 rad/s, its estimate of the lowest irregular frequency (log.txt:46). The gap is much larger than that of the difference QTF. What was checked (`scripts/oc4_parts.py`, `scripts/oc4_bands.py`):
+
+- The quadratic parts agree: `.10s` against Nemoh's DUOK, 3.0 / 0.9% (F_x).
+- The first-order motions agree within 1 to 4% from 0.60 rad/s up. Near the heave resonance they differ: heave 0.12 against 0.26 m/m at 0.40 rad/s, 0.23 against 0.19 m/m at 0.45 rad/s.
+- The gap is in the potential part: the body terms differ by 76 / 13% (F_x) and the free-surface terms by 50 / 19%.
+- It is not the heave resonance: without the pairs with 0.40 to 0.45 rad/s, F_x is still 67 / 26%.
+- It is not the νh > 50 band: HAMS warns from Ω⁺ = 1.6 rad/s (log.txt:278), but below 1.6 the medians are similar.
+- The two codes differ in the free-surface mesh and in the circle. HAMS uses the given `FSInnerMesh.pnl` (1724 points) and a circle of R = 48.87 m about (−7.22, 0) (log.txt:39 to 41). Nemoh uses 1732 panels inside r = 48.87 m about the origin. The effect of this was not tested.
+
+**This is open.** It is not known which code is closer to the truth for the OC4 hull at the sum frequency. Possible next checks: a direct-solve run (`qtf_direct = 1`, `.12s`) as an independent HAMS route, and Nemoh with the HAMS circle and inner mesh. Figure: `validation-runs/snellius-qtf-indirectsum/indirectsum_oc4.png`, not copied into the repository.
+
+### OC4 against WAMIT
+
+`validation-runs/snellius-qtf-indirectsum/wamit_check/findings_wamit.md` compares both OC4 runs with the OpenFAST WAMIT sum file `marin_semi.12s` (heading 0, the 150 pairs HAMS writes). It is a different OC4 model (braces, centre of gravity at z = −9.9 m, mass 1.37e7 kg; the runs have z = −13.5 m and 1.31e7 kg). The first-order excitation differs by about 5%, and the difference QTF `.11d` of HAMS against WAMIT's `.12d` has a median of 2.6 / 7.2 / 3.0% (F_x / F_z / M_y), which is the level of the model difference. Median errors against `marin_semi.12s`, F_x / F_z / M_y [measured]:
+
+| Assembly | HAMS | Nemoh |
+| :--- | :--- | :--- |
+| quadratic + body terms | 5.0 / 8.9 / 16% | 7.4 / 7.3 / 16% |
+| total, with the free-surface part | 32 / 108 / 81% | 36 / 96 / 89% |
+
+The WAMIT file matches the quadratic and body terms without the free-surface part, and is 3 to 10 times further off with it. So it appears to hold no free-surface forcing [inferred from the numbers, not from the WAMIT run settings, which are not available]. It cannot settle the HAMS-Nemoh gap, which lies largely in the free-surface part. On the body part the two codes are about equally close to WAMIT. A run of the WAMIT model itself (the full hull, with braces) in both codes is being prepared; it has not been run.
+
+### Cost
+
+Fat_genoa, 24 CPUs billed per job (`findings.md`, cost tables).
+
+| Job | Wall | Core-h |
+| :--- | :--- | ---: |
+| build | 1 min 34 s | 0.63 |
+| HAMS sharp m1 | 50 min 7 s | 20.05 |
+| Nemoh sharp m1, default mesh | 5 min 59 s | 2.39 |
+| Nemoh sharp m1, first try (failed on a path) | 19 s | 0.13 |
+| **Stage 1** | | **23.2** |
+| HAMS sharp m2 | 2 h 29 min | 59.76 |
+| HAMS OC4 m1 | 1 h 23 min | 33.37 |
+| Nemoh sharp m2, default mesh | 57 min 33 s | 23.02 |
+| Nemoh OC4 m1 | 23 min 5 s | 9.23 |
+| Nemoh sharp m1, matched mesh | 9 min 46 s | 3.91 |
+| Nemoh sharp m2, matched mesh | 1 h 3 min | 25.21 |
+| **Stage 2** | | **154.5** |
+| **Stages 1 and 2** | | **177.7** |
+
+HAMS without the direct solve took 50 minutes at m1, against 54 minutes for the 7c-2 run with it: most of the time is the free-surface fields (63 s per frequency, 21 frequencies). Nemoh took 6 minutes at m1, not the 2 h that was estimated. The two matched-mesh runs added 29.1 core-h to the planned stage 2.
+
+### Limits of the checks
+
+- **The exact reference is one hull.** The absolute check is the sharp cylinder at two meshes (m1, m2), free body, one heading, one depth (100 m). The rounded hull, other headings, fixed and damped bodies and several bodies have no sum-frequency reference run. Two hulls are tested by the byte-for-byte check against the direct route only.
+- **The maxima stay.** `.11s` is within 8% at m1 and 6% at m2 (max, F_x), away from the resonance. The largest errors are in the body part at the sharp edge, not in the free-surface part. m3 was not run.
+- **The pairs at 0.75 to 0.80 rad/s are left out**, as in the other sections; with them the errors at the resonance are larger.
+- **The Nemoh mesh test is at the sharp cylinder only.** Nemoh's body error in F_z (17%) does not fall with the mesh, and its cause is not found.
+- **OC4 is open.** There is no exact reference, the WAMIT file does not hold the free-surface part and is another model, the free-surface meshes and circles differ, and the first-order motions differ at the heave resonance (0.40 to 0.45 rad/s). It is one mesh (m1, 1224 panels).
+- **The OC4 cut** at Ω⁺ ≥ 1.995 rad/s (81 of 231 pairs) is HAMS's estimate of the lowest irregular frequency; it is not a measured value for this hull.
+- **The unit and integration tests pin the route** (files, lists, byte equality with the direct route), not the physics. The integration suite was not run in full at 22086da.
+- The code of the Snellius runs is a0b974c; the later commits change the B2 form for `qtf = 2`, the docs and one test, not the `qtf = 3` route that was run.
+
 ## Partial second-order field
 
 `QTF_FieldPartial.txt` (`qtf_field = 1`) holds the quadratic part and the second-order incident wave at the field points. It omits the second-order diffracted wave and, for a free body, the wave radiated by its second-order motion; near the bodies, where the free-surface forcing drives the second-order scattered wave, the omitted part is not small (see [Partial second-order field](input_files.md#partial-second-order-field-at-the-field-points)). There is no reference for the complete field, so the checks below cover the two parts that are computed. The complete field is a later phase. Tests in `test/test_second_order_incident.f90`, `test/test_qtf_field.f90` and `test/test_integration_drift.f90`; fixtures `test/data/qtf_field*`, written by `make_drift_fixtures.py`.
@@ -1087,6 +1227,7 @@ The relative differences are over the largest value at the points. The radiation
 - Direct method with the free-surface forcing (`qtf_terms = full`): checked on the laptop against the indirect free-surface terms (unit and integration tests, depth 20 m and 100 m), finite depth only. On Snellius it was checked on one rounded hull and one sharp cylinder, free body only ([Snellius validation](#snellius-validation)). No fixed, damped or multi-body case was run there.
 - Direct method at the sum frequency (`QTF_Direct.12s`): checked against the in-run indirect sum (unit and integration tests, rounded hull on Snellius to 1.2% at m3) and against the exact sum QTF of the sharp cylinder on Snellius (`.12s` within 5–15% max and 0.3–1.1% median at m3, away from the resonance); the free-surface part is within 2.0 / 0.5% (max / median, F_x, sharp m2) with the near-waterline fit (47d5911), 8–9% (median) before it; and `FINGREEN3D` is about 2e-4 off the exact series at ν h ≈ 50 with small R/h ([direct method at the sum frequency](#direct-method-at-the-sum-frequency)).
 - Two unit tests failed under ifx 2024a on Snellius (job of 2026-11-09, the build of the hull-form runs): `control_surface_mesh/separate_bodies_accepted` and `field_velocity/field_green_is_smooth_in_z`, in modules the potential part does not change. Both are fixed on the `second-order-drift` branch by commit 60a972e, which this branch does not contain yet. With ifort 2022.1 on Windows all tests pass ([Developer Documentation](developer_documentation.md#qtf-potential-part)).
+- Indirect method at the sum frequency (`QTF_Indirect.11s`): the sharp cylinder is checked against the exact sum QTF at two meshes (7.8 / 6.0 / 3.0% at m1 and 6.1 / 4.1 / 2.1% at m2, max, F_x / F_z / M_y). For the OC4 semisubmersible HAMS and Nemoh differ by 82 / 33 / 27% (max) and the cause is open; the WAMIT sum file holds no free-surface part ([indirect method at the sum frequency](#indirect-method-at-the-sum-frequency)).
 - WAMIT: the OC4 comparison with the public WAMIT run of OpenFAST now exists ([OC4 against WAMIT](#oc4-against-wamit)). A WAMIT licence would still be needed to settle the conjugation and axes of the WAMIT-format output on a hull with a known answer, since the diagonal of that comparison is real. The semi-analytical reference covers the signs of the mean drift values (210 values agree at 7168 panels), not the phases of the complex outputs.
 
 ## Sources
