@@ -314,6 +314,17 @@ module test_integration_drift
     integer, parameter :: directsum_half_rows = 108
     ! The sums of qtf_directsum_round that are kept are below the estimate of the lowest irregular frequency, 1.538 rad/s
     real(8), parameter :: sum_cutoff_bound = 1.54d0
+    ! Deep-water field rows (field_deep_kh, default 10) against finite-depth rows (field_deep_kh = 0): qtf_deep_kh and
+    ! qtf_deep_kh_off, the input of qtf_indsum_b2_q3 at h = 100 m and 0.90, 1.05 rad/s (k0 h = 8.3 and 11.2; the sum
+    ! frequencies 1.80 to 2.10 rad/s at k0 h = 33 to 45; the difference 0.15 rad/s at k0 h = 1.6), coarser for run time
+    ! (qtf_fs_panel = 5, qtf_fs_modes = 8, qtf_fs_evanescent = 8, cs_panel_size = 5: 68 s and 123 s on the laptop).
+    ! max |on - off| / max |off| of each file (Re and Im of .11d and .11s, every term of the terms files), measured
+    ! 1.624e-6 (.11d: only the fields at 1.05 rad/s switch), 1.657e-3 (.11s), 1.379e-4 (QTF_PotentialTerms.txt) and
+    ! 1.730e-3 (QTF_PotentialTermsSum.txt); the limits are 1.3x measured, rounded up to two digits. The rows differ by up
+    ! to 1.3e-3 of the row maximum (field_row_deep_within_tol of test_field_velocity).
+    character(len=*), parameter :: deep_kh_files(4) = [character(len=40) :: qtf_indirect_file, qtf_indirect_sum_file, &
+                                                       pot_terms_file, pot_sum_terms_file]
+    real(8), parameter :: deep_kh_limits(4) = [2.2d-6, 2.2d-3, 1.8d-4, 2.3d-3]
 
 contains
 
@@ -374,6 +385,7 @@ contains
             new_unittest("run_qtf_directfs_cases", run_qtf_directfs_cases), &
             new_unittest("run_qtf_directsum_cases", run_qtf_directsum_cases), &
             new_unittest("run_qtf_indsum_cases", run_qtf_indsum_cases), &
+            new_unittest("run_qtf_deep_kh_cases", run_qtf_deep_kh_cases), &
             new_unittest("run_control_cyl", run_control_cyl), &
             new_unittest("run_control_cyl_sybo", run_control_cyl_sybo), &
             new_unittest("run_control_cases", run_control_cases) &
@@ -525,9 +537,12 @@ contains
             new_unittest("indirect_sum_off_unchanged", indirect_sum_off_unchanged), &
             new_unittest("indirect_sum_b2_qtf2_matches_qtf3", indirect_sum_b2_qtf2_matches_qtf3), &
             new_unittest("direct_sum_qtf2_default_b2", direct_sum_qtf2_default_b2), &
-            new_unittest("indirect_sum_log_lines", indirect_sum_log_lines) &
+            new_unittest("indirect_sum_log_lines", indirect_sum_log_lines), &
+            new_unittest("qtf_deep_kh_log", qtf_deep_kh_log), &
+            new_unittest("qtf_deep_kh_within_limits", qtf_deep_kh_within_limits) &
         ]
     end subroutine collect_tests_drift
+
 
     ! ---------------------------------------------------------------------------------------------- running the cases
 
@@ -6824,6 +6839,76 @@ contains
         call check(error, count_log_lines(get_running_exe_path()//name//".log", "points of C and F (qtf_b2 = control)") == 1, &
                    name//": the log does not have the store line of C and F (qtf_b2 = control)")
     end subroutine direct_sum_qtf2_default_b2
+
+    ! ---------------------------------------------------------------------------------------------- deep-water field rows
+
+    !> qtf_deep_kh (the default field_deep_kh = 10) and qtf_deep_kh_off (field_deep_kh = 0), with the run time of each
+    subroutine run_qtf_deep_kh_cases(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=15), parameter :: cases(2) = [character(len=15) :: "qtf_deep_kh", "qtf_deep_kh_off"]
+        type(error_type), allocatable :: one
+        integer(8) :: t0, t1, rate
+        integer :: c
+
+        do c = 1, size(cases)
+            call system_clock(t0, rate)
+            call run_case(trim(cases(c)), deep_kh_files, one)
+            call system_clock(t1)
+            print '(4x,a,": run time ",F8.1," s")', trim(cases(c)), real(t1 - t0, 8)/real(rate, 8)
+            if (allocated(one)) then
+                print '(4x,a)', trim(cases(c))//": "//one%message
+                if (.not. allocated(error)) call move_alloc(one, error)
+            end if
+        end do
+    end subroutine run_qtf_deep_kh_cases
+
+    !> The log of qtf_deep_kh names the switch to the deep-water field rows once, at the first pass with k0 h >= 10; that of
+    !> qtf_deep_kh_off (field_deep_kh = 0) does not
+    subroutine qtf_deep_kh_log(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: line = "QTF field rows: the deep-water Green function from k0 h ="
+
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_deep_kh.log", line) == 1, &
+                   "qtf_deep_kh: the log does not name the deep-water field rows once")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_deep_kh_off.log", line) == 0, &
+                   "qtf_deep_kh_off: the log names the deep-water field rows with field_deep_kh = 0")
+    end subroutine qtf_deep_kh_log
+
+    !> Each output of qtf_deep_kh against that of qtf_deep_kh_off, row by row (the same rows in both): max |on - off| over
+    !> max |off| of the values, below deep_kh_limits, and above 0, or the runs did not switch
+    subroutine qtf_deep_kh_within_limits(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: a(:,:), b(:,:)
+        real(8) :: gap
+        integer :: f, first
+
+        do f = 1, size(deep_kh_files)
+            if (index(deep_kh_files(f), "QTF_Indirect") > 0) then
+                call read_qtf(output_dir("qtf_deep_kh")//trim(deep_kh_files(f)), a, error)
+                if (allocated(error)) return
+                call read_qtf(output_dir("qtf_deep_kh_off")//trim(deep_kh_files(f)), b, error)
+                first = 8
+            else
+                call read_pot_terms(output_dir("qtf_deep_kh")//trim(deep_kh_files(f)), a, error)
+                if (allocated(error)) return
+                call read_pot_terms(output_dir("qtf_deep_kh_off")//trim(deep_kh_files(f)), b, error)
+                first = 6
+            end if
+            if (allocated(error)) return
+            call check(error, size(a, 1) == size(b, 1) .and. size(a, 2) == size(b, 2) .and. size(a, 1) > 0, &
+                       trim(deep_kh_files(f))//": other rows in qtf_deep_kh and qtf_deep_kh_off")
+            if (allocated(error)) return
+            call check(error, all(a(:,1:5) == b(:,1:5)), trim(deep_kh_files(f))//": the keys of the rows differ")
+            if (allocated(error)) return
+            gap = maxval(abs(a(:,first:) - b(:,first:)))/maxval(abs(b(:,first:)))
+            call report("qtf_deep_kh against qtf_deep_kh_off "//trim(deep_kh_files(f)), gap)
+            call check_below(error, "qtf_deep_kh "//trim(deep_kh_files(f)), gap, deep_kh_limits(f))
+            if (allocated(error)) return
+            call check(error, gap > 0d0, trim(deep_kh_files(f))//": the same with and without the deep-water rows")
+            if (allocated(error)) return
+        end do
+    end subroutine qtf_deep_kh_within_limits
 
     !> The 15 numbers of every row of QTF_DirectTermsSum.txt of a qtf_terms = full run (the five keys, D_I2, D_D, D_FS, P_BODY,
     !> P_FS, each Re and Im)

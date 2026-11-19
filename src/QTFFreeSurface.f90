@@ -196,7 +196,7 @@ CONTAINS
       END IF
    END FUNCTION pair_omega
 
-   SUBROUTINE fs_inner_fields(mesh, pts, states, step, is_multi, f, delta)
+   SUBROUTINE fs_inner_fields(mesh, pts, states, step, is_multi, f, delta, deep)
       ! The total first-order fields of every state at the inner points of the free surface: phi, grad phi and phi_zz.
       ! phi_P comes from the boundary integral formula (stock route, fs_sample_phi) at each point x and at its four
       ! horizontal offsets x +- delta e_x, x +- delta e_y, all five with x as decision point (near or far, and the series of
@@ -212,7 +212,7 @@ CONTAINS
       ! passes step = 2 cs_fd_step, with which lap_h is that of the difference of central differences over delta/2
       ! (fields_green at cs_fd_step) to rounding, at 5 rows per point in place of 25 (fs_laplace_residual).
       ! delta(pts%n), if given, is the offset of each point; otherwise fs_inner_steps gives it: step x the point size, smaller
-      ! next to a waterline. All states must be at the current global frequency.
+      ! next to a waterline. All states must be at the current global frequency. deep, if present, goes to fs_sample_phi.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(cs_points), INTENT(IN) :: pts
       TYPE(first_order_state), INTENT(IN) :: states(:)
@@ -220,6 +220,7 @@ CONTAINS
       LOGICAL, INTENT(IN) :: is_multi
       TYPE(fs_point_field), INTENT(OUT) :: f(pts%n, SIZE(states))
       REAL(8), INTENT(IN), OPTIONAL :: delta(:)
+      LOGICAL, INTENT(IN), OPTIONAL :: deep
       ! The stencil: the centre, +x, -x, +y, -y, and below z = -delta also +z, -z
       REAL(8), PARAMETER :: OFF(3, 7) = RESHAPE([0D0, 0D0, 0D0, 1D0, 0D0, 0D0, -1D0, 0D0, 0D0, 0D0, 1D0, 0D0, 0D0, -1D0, 0D0, &
                                                  0D0, 0D0, 1D0, 0D0, 0D0, -1D0], [3, 7])
@@ -269,7 +270,7 @@ CONTAINS
       ex%kind = CS_FREE
       ex%body = 0
       ALLOCATE (ph(ex%n, SIZE(states)))
-      CALL fs_sample_phi(mesh, ex, states, is_multi, ph, decide=dec)
+      CALL fs_sample_phi(mesh, ex, states, is_multi, ph, decide=dec, deep=deep)
 
       DO ist = 1, SIZE(states)
          DO i = 1, pts%n
@@ -399,14 +400,15 @@ CONTAINS
       END DO
    END FUNCTION any_in_waterplane
 
-   SUBROUTINE fs_sample_phi(mesh, pts, states, is_multi, phi, centroid_only, decide)
+   SUBROUTINE fs_sample_phi(mesh, pts, states, is_multi, phi, centroid_only, decide, deep)
       ! The perturbation potential phi_P of every state at every point of pts, any kind and any z <= 0, from one row of the
       ! boundary integral formula per point (field_influence_row in field mode); no gradient. phi(pts%n, SIZE(states)).
       ! With centroid_only every panel takes its centroid value (near_panel = .FALSE.), so that phi_P is a sum of the
       ! free-surface modes outside the hull: the samples of the partial waves on the circle. Otherwise the stock route of
       ! fields_green. decide(3, pts%n), if given, is the decision point of each point (near or far, series of FINGREEN3D),
       ! else the point itself: the points of a difference stencil pass their centre (fs_inner_fields). All states must be
-      ! at the current global frequency.
+      ! at the current global frequency. deep, if present and true, takes the deep-water Green function at finite depth
+      ! too (deep of field_influence_row).
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(cs_points), INTENT(IN) :: pts
       TYPE(first_order_state), INTENT(IN) :: states(:)
@@ -414,13 +416,16 @@ CONTAINS
       COMPLEX(8), INTENT(OUT) :: phi(pts%n, SIZE(states))
       LOGICAL, INTENT(IN), OPTIONAL :: centroid_only
       REAL(8), INTENT(IN), OPTIONAL :: decide(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL :: deep
       COMPLEX(8), ALLOCATABLE :: row_g(:, :), row_dg(:, :)
       REAL(8) :: xd(3)
-      LOGICAL :: near
+      LOGICAL :: near, dw
       INTEGER :: i, ist
 
       near = .TRUE.
       IF (PRESENT(centroid_only)) near = .NOT. centroid_only
+      dw = .FALSE.
+      IF (PRESENT(deep)) dw = deep
       IF (PRESENT(decide)) THEN
          IF (SIZE(decide, 1) /= 3 .OR. SIZE(decide, 2) /= pts%n) THEN
             WRITE (*, '(a)') ' fs_sample_phi: decide must have one point per point of pts.'
@@ -434,7 +439,8 @@ CONTAINS
       DO i = 1, pts%n
          xd = pts%x(:, i)
          IF (PRESENT(decide)) xd = decide(:, i)
-         CALL field_influence_row(mesh, pts%x(:, i), is_multi, row_g, row_dg, xd, field_mode=.TRUE., near_panel=near)
+         CALL field_influence_row(mesh, pts%x(:, i), is_multi, row_g, row_dg, xd, field_mode=.TRUE., near_panel=near, &
+                                  deep=dw)
          DO ist = 1, SIZE(states)
             phi(i, ist) = field_potential(mesh, states(ist), row_g, row_dg)
          END DO
@@ -444,13 +450,15 @@ CONTAINS
       !$OMP END PARALLEL
    END SUBROUTINE fs_sample_phi
 
-   SUBROUTINE fs_circle_modes(mesh, circle, states, is_multi, centre, radius, h, k0, kev, mmax, nev, pw, miss)
+   SUBROUTINE fs_circle_modes(mesh, circle, states, is_multi, centre, radius, h, k0, kev, mmax, nev, pw, miss, deep)
       ! The partial waves of the perturbation potential of every state outside the circle r = radius about centre: phi_P at
       ! the samples circle of pw_sample_points(centre, radius, h, mmax, nev), by the centroid route (fs_sample_phi), so that
       ! the samples are a sum of the free-surface modes, then pw_decompose with the propagating wave number k0 and the
       ! evanescent kev(1:nev) (pw_evanescent_from_wvn) of the current frequency. miss is the mode check of each state
       ! (fs_mode_miss), relative to fs_mode_scales: each state's own largest sample, so that every state is held to the
       ! tolerance of itself. The samples are evaluated in the fluid whatever their kind (CS_WALL from pw_sample_points).
+      ! deep, if present, goes to fs_sample_phi. The modes stay those of depth h: at k0 h >= 10 the deep-water rows differ
+      ! from the finite-depth rows by about 1e-3 of the row maximum (field_row_deep_within_tol), and miss shows the fit.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(cs_points), INTENT(IN) :: circle
       TYPE(first_order_state), INTENT(IN) :: states(:)
@@ -459,12 +467,13 @@ CONTAINS
       INTEGER, INTENT(IN) :: mmax, nev
       TYPE(pw_set), INTENT(OUT) :: pw(SIZE(states))
       REAL(8), INTENT(OUT) :: miss(SIZE(states))
+      LOGICAL, INTENT(IN), OPTIONAL :: deep
       COMPLEX(8), ALLOCATABLE :: samples(:, :)
       REAL(8) :: scale(SIZE(states))
       INTEGER :: ist
 
       ALLOCATE (samples(circle%n, SIZE(states)))
-      CALL fs_sample_phi(mesh, circle, states, is_multi, samples, centroid_only=.TRUE.)
+      CALL fs_sample_phi(mesh, circle, states, is_multi, samples, centroid_only=.TRUE., deep=deep)
       scale = fs_mode_scales(samples)
       DO ist = 1, SIZE(states)
          CALL pw_decompose(samples(:, ist), centre, radius, h, k0, kev, mmax, nev, pw(ist))
@@ -2246,24 +2255,26 @@ CONTAINS
       IF (m > 0) CALL fs_inner_steps(mesh, fit%samp, step, fit%delta, nshr, scale=sscale(1:m))
    END SUBROUTINE fs_waterline_fit_setup
 
-   SUBROUTINE fs_waterline_fit_apply(mesh, fit, states, step, is_multi, f)
+   SUBROUTINE fs_waterline_fit_apply(mesh, fit, states, step, is_multi, f, deep)
       ! Replaces the fields of the near-waterline points of fit (fs_waterline_fit_setup) in f(pts%n, SIZE(states)), the
       ! output of fs_inner_fields for the same points, by the fit of the perturbation fields at their samples
       ! (fs_inner_fields at the samples, with their offsets) plus the exact incident wave at the point (incident_at,
-      ! phi_zz = k^2 phi_I, as fs_inner_fields). All states at the current global frequency.
+      ! phi_zz = k^2 phi_I, as fs_inner_fields). All states at the current global frequency. deep, if present, goes to
+      ! fs_inner_fields.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(fs_wl_fit), INTENT(IN) :: fit
       TYPE(first_order_state), INTENT(IN) :: states(:)
       REAL(8), INTENT(IN) :: step
       LOGICAL, INTENT(IN) :: is_multi
       TYPE(fs_point_field), INTENT(INOUT) :: f(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL :: deep
       TYPE(fs_point_field), ALLOCATABLE :: fs(:, :)
       COMPLEX(8) :: phi_i, grad_i(3), phi_s, grad_s(3), ap, ag(3), az
       INTEGER :: k, j, ist, js
 
       IF (fit%n == 0) RETURN
       ALLOCATE (fs(fit%samp%n, SIZE(states)))
-      CALL fs_inner_fields(mesh, fit%samp, states, step, is_multi, fs, fit%delta)
+      CALL fs_inner_fields(mesh, fit%samp, states, step, is_multi, fs, fit%delta, deep=deep)
       DO ist = 1, SIZE(states)
          DO k = 1, fit%n
             ap = (0D0, 0D0)

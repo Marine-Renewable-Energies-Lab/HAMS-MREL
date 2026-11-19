@@ -63,7 +63,7 @@ MODULE FieldVelocity
 
 CONTAINS
 
-   SUBROUTINE fields_green(mesh, pts, states, step, is_multi, fields, centroid_only, decide)
+   SUBROUTINE fields_green(mesh, pts, states, step, is_multi, fields, centroid_only, decide, deep)
       ! phi and grad phi of every state at every point of pts. step is delta as a fraction of the point size pts%psize.
       ! phi is computed at the centre for points from z = -delta up, which need it for dphi/dz, and for CS_LINE and CS_FREE
       ! points. At a CS_WALL point further down it is not needed, and it is left zero.
@@ -73,6 +73,7 @@ CONTAINS
       ! the QTF free-surface integral). decide(3, pts%n), if present, is the point of the near-or-far and series decision of
       ! each point's stencil, in place of the point itself: points whose values are differenced again pass their common
       ! centre, for the reason of x_decide (fs_sample_phi of QTFFreeSurface has the same option for values only).
+      ! deep, if present and true, takes the deep-water Green function at finite depth too (deep of field_influence_row).
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(cs_points), INTENT(IN) :: pts
       TYPE(first_order_state), INTENT(IN) :: states(:)
@@ -81,10 +82,11 @@ CONTAINS
       TYPE(cs_fields), INTENT(OUT) :: fields(SIZE(states))
       LOGICAL, INTENT(IN), OPTIONAL :: centroid_only
       REAL(8), INTENT(IN), OPTIONAL :: decide(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL :: deep
       COMPLEX(8), ALLOCATABLE :: row_g(:, :), row_dg(:, :)
       COMPLEX(8) :: phi_c(SIZE(states)), phi_plus(SIZE(states)), dphi(3, SIZE(states)), grad_i(3), phi_i
       REAL(8) :: x0(3), xs(3), xd(3), delta
-      LOGICAL :: at_surface, with_centre, near
+      LOGICAL :: at_surface, with_centre, near, dw
       INTEGER :: i, c, ncomp, ist, nst
 
       nst = SIZE(states)
@@ -95,6 +97,8 @@ CONTAINS
       END DO
       near = .TRUE.
       IF (PRESENT(centroid_only)) near = .NOT. centroid_only
+      dw = .FALSE.
+      IF (PRESENT(deep)) dw = deep
       IF (PRESENT(decide)) THEN
          IF (SIZE(decide, 1) /= 3 .OR. SIZE(decide, 2) /= pts%n) THEN
             WRITE (*, '(a)') ' fields_green: decide must have one point per point of pts.'
@@ -120,7 +124,7 @@ CONTAINS
 
          phi_c = (0D0, 0D0)
          IF (with_centre) THEN
-            CALL field_influence_row(mesh, x0, is_multi, row_g, row_dg, xd, field_mode=.TRUE., near_panel=near)
+            CALL field_influence_row(mesh, x0, is_multi, row_g, row_dg, xd, field_mode=.TRUE., near_panel=near, deep=dw)
             DO ist = 1, nst
                phi_c(ist) = field_potential(mesh, states(ist), row_g, row_dg)
             END DO
@@ -129,12 +133,12 @@ CONTAINS
          DO c = 1, ncomp
             xs = x0
             xs(c) = x0(c) + delta
-            CALL field_influence_row(mesh, xs, is_multi, row_g, row_dg, xd, field_mode=.TRUE., near_panel=near)
+            CALL field_influence_row(mesh, xs, is_multi, row_g, row_dg, xd, field_mode=.TRUE., near_panel=near, deep=dw)
             DO ist = 1, nst
                phi_plus(ist) = field_potential(mesh, states(ist), row_g, row_dg)
             END DO
             xs(c) = x0(c) - delta
-            CALL field_influence_row(mesh, xs, is_multi, row_g, row_dg, xd, field_mode=.TRUE., near_panel=near)
+            CALL field_influence_row(mesh, xs, is_multi, row_g, row_dg, xd, field_mode=.TRUE., near_panel=near, deep=dw)
             DO ist = 1, nst
                dphi(c, ist) = (phi_plus(ist) - field_potential(mesh, states(ist), row_g, row_dg))/(2D0*delta)
             END DO
