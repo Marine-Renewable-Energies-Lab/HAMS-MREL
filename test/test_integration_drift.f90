@@ -12,6 +12,7 @@ module test_integration_drift
     implicit none
     private
     public :: setup_drift, collect_tests_drift
+    public :: setup_drift_motion, collect_tests_drift_motion   ! Phase 6c, the block at the end
 
     real(8), parameter :: pi = 3.141592653589793d0
     real(8), parameter :: rho = 1000d0, g = 9.80665d0   ! as Const_mod
@@ -6928,5 +6929,328 @@ contains
         if (allocated(error)) return
         call check(error, count_log_lines(log3, full_d) + count_log_lines(log3, full_s), 0, "qtf = 3 body: a full line")
     end subroutine indirect_sum_log_lines
+
+    ! ============================================================================================ Phase 6c: QTF_Motion
+    !
+    ! The second-order motion of the free body (qtf_motion = 1; QTF_Motion.11d/.11s/.12d/.12s), in a block of its own with
+    ! its own suites (setup_drift_motion, collect_tests_drift_motion), so that it merges apart from the blocks above. The
+    ! fixtures (make_drift_fixtures.py, write_qtf_motion_fixtures): qtf_motion_round, the free rounded hull of
+    ! qtf_direct_round at 128 panels, 0.70 and 0.95 rad/s, heading 0, qtf = 3, qtf_direct = 1, with the surge spring and
+    ! damping of R8 of the Phase 6c plan, and qtf_motion_round_free, the same without them. The tests check properties of
+    ! one run (rows present or absent, log and header lines, the two routes against each other), not stored files.
+
+    !> The fixtures of the second-order motion, one setup test each, with the run time of each case
+    subroutine setup_drift_motion(testsuite)
+        type(unittest_type), allocatable, intent(out) :: testsuite(:)
+        testsuite = [ &
+            new_unittest("run_qtf_motion_round", run_qtf_motion_round), &
+            new_unittest("run_qtf_motion_round_free", run_qtf_motion_round_free) &
+        ]
+    end subroutine setup_drift_motion
+
+    subroutine collect_tests_drift_motion(testsuite)
+        type(unittest_type), allocatable, intent(out) :: testsuite(:)
+        testsuite = [ &
+            new_unittest("motion_integration_rows", motion_integration_rows), &
+            new_unittest("motion_routes_agree", motion_routes_agree), &
+            new_unittest("motion_unmoored_diagonal_absent", motion_unmoored_diagonal_absent) &
+        ]
+    end subroutine collect_tests_drift_motion
+
+    subroutine run_qtf_motion_round(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_motion_case("qtf_motion_round", error)
+    end subroutine run_qtf_motion_round
+
+    subroutine run_qtf_motion_round_free(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_motion_case("qtf_motion_round_free", error)
+    end subroutine run_qtf_motion_round_free
+
+    !> Runs a motion fixture, which must write the four motion files and their force files, and prints its run time
+    subroutine run_motion_case(name, error)
+        character(len=*), intent(in) :: name
+        type(error_type), allocatable, intent(out) :: error
+        integer(8) :: t0, t1, rate
+        integer :: f
+
+        call system_clock(t0, rate)
+        call run_case(name, [character(len=40) :: (motion_file(f), f = 1, 4), (motion_force_file(f), f = 1, 4)], error)
+        call system_clock(t1)
+        print '(4x,a,": run time ",F8.1," s")', name, real(t1 - t0, 8)/real(rate, 8)
+    end subroutine run_motion_case
+
+    !> Rows PER1 PER2 BETA1 BETA2 I Mod Pha Re Im of a QTF_Motion file (the layout of the force files) and its header, the
+    !> lines that start with #
+    subroutine read_motion(path, rows, header, error)
+        character(len=*), intent(in) :: path
+        real(8), allocatable, intent(out) :: rows(:,:)
+        character(len=:), allocatable, intent(out) :: header(:)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=:), allocatable :: lines(:)
+        logical, allocatable :: is_header(:)
+        real(8) :: a(4), b(4)
+        integer :: i, r, n, ios
+
+        call read_lines(path, lines, error)
+        if (allocated(error)) return
+        allocate (is_header(size(lines)))
+        do r = 1, size(lines)
+            is_header(r) = index(adjustl(lines(r)), "#") == 1
+        end do
+        header = pack(lines, is_header)
+        allocate (rows(count(.not. is_header), 9))
+        n = 0
+        do r = 1, size(lines)
+            if (is_header(r)) cycle
+            read (lines(r), '(4ES14.6,I6,4ES14.6)', iostat=ios) a, i, b
+            call check(error, ios == 0, "Bad row in "//path//": "//trim(lines(r)))
+            if (allocated(error)) return
+            n = n + 1
+            rows(n,1:4) = a
+            rows(n,5) = real(i, 8)
+            rows(n,6:9) = b
+        end do
+    end subroutine read_motion
+
+    !> The header lines of a motion file that hold text
+    integer function count_header(header, text)
+        character(len=*), intent(in) :: header(:), text
+        integer :: r
+
+        count_header = 0
+        do r = 1, size(header)
+            if (index(header(r), text) > 0) count_header = count_header + 1
+        end do
+    end function count_header
+
+    !> The rows of a force file that the motion file of a run must have, in their order (ruling R6): all of them, less those
+    !> of Omega = 0 (the difference diagonal, PER1 = PER2) when left_out_diagonal
+    function expected_motion_rows(force, left_out_diagonal) result(keep)
+        real(8), intent(in) :: force(:,:)
+        logical, intent(in) :: left_out_diagonal
+        logical :: keep(size(force, 1))
+
+        keep = .true.
+        if (left_out_diagonal) keep = force(:,1) /= force(:,2)
+    end function expected_motion_rows
+
+    !> The motion file of name and index f (motion_file) has the rows of its force file (motion_force_file) less the
+    !> diagonal when left_out_diagonal, in the same order, finite, and one header line that holds left_text
+    subroutine check_motion_rows(name, f, left_out_diagonal, left_text, error)
+        character(len=*), intent(in) :: name, left_text
+        integer, intent(in) :: f
+        logical, intent(in) :: left_out_diagonal
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: force(:,:), motion(:,:), expected(:,:)
+        character(len=:), allocatable :: header(:)
+        character(len=:), allocatable :: what
+        character(len=80) :: line
+        integer :: k
+
+        what = name//" "//motion_file(f)
+        call check_no_bad_numbers(output_dir(name)//motion_file(f), error)
+        if (allocated(error)) return
+        call read_qtf(output_dir(name)//motion_force_file(f), force, error)
+        if (allocated(error)) return
+        call read_motion(output_dir(name)//motion_file(f), motion, header, error)
+        if (allocated(error)) return
+        expected = pack_rows(force, expected_motion_rows(force, left_out_diagonal))
+        write (line, '(I0," rows, expected ",I0," of the ",I0," of the force file")') size(motion, 1), size(expected, 1), &
+            size(force, 1)
+        print '(4x,a)', what//": "//trim(line)
+        call check(error, size(motion, 1) == size(expected, 1) .and. size(motion, 1) > 0, what//": "//trim(line))
+        if (allocated(error)) return
+        do k = 1, 5
+            call check(error, all(motion(:,k) == expected(:,k)), what//": the rows are not those of the force file")
+            if (allocated(error)) return
+        end do
+        call check(error, count_header(header, left_text), 1, what//": header line with "//left_text)
+    end subroutine check_motion_rows
+
+    !> The moored hull (surge spring): each motion file has the rows of its force file, the difference files less the
+    !> diagonal, whose Omega = 0 is singular in sway and yaw (R6: C + K_ext has no restoring there); the sum files all. The log
+    !> names the motion files and both routes, the left-out Omega with modes 2 and 6 once, and has one "QTF motion" line per
+    !> Omega of the rows (the difference Omega and the sum Omega of the force files)
+    subroutine motion_integration_rows(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: name = "qtf_motion_round"
+        character(len=*), parameter :: diff_line = "QTF_Motion.11d and .12d: the second-order motion from the force of "// &
+            "QTF_Indirect.11d and QTF_Direct.12d."
+        character(len=*), parameter :: sum_line = "QTF_Motion.11s and .12s: the second-order motion from the force of "// &
+            "QTF_Indirect.11s and QTF_Direct.12s."
+        character(len=:), allocatable :: log
+        real(8), allocatable :: d(:,:), s(:,:)
+        integer :: f, nomega
+
+        do f = 1, 4
+            if (is_difference_file(f)) then
+                call check_motion_rows(name, f, .true., left_out_modes("2 6"), error)
+            else
+                call check_motion_rows(name, f, .false., "# Left out: none", error)
+            end if
+            if (allocated(error)) return
+        end do
+        log = get_running_exe_path()//name//".log"
+        call check(error, count_log_lines(log, diff_line), 1, name//": the log line of the difference motion files")
+        if (allocated(error)) return
+        call check(error, count_log_lines(log, sum_line), 1, name//": the log line of the sum motion files")
+        if (allocated(error)) return
+        call check(error, count_log_lines(log, left_out_modes("2 6")//"; its pairs are left out of the QTF_Motion files."), 1, &
+                   name//": the log line of Omega = 0 with modes 2 and 6")
+        if (allocated(error)) return
+        call check(error, count_log_lines(log, left_out_modes("1 2 6")), 0, name//": surge named without restoring")
+        if (allocated(error)) return
+        call read_qtf(output_dir(name)//motion_force_file(1), d, error)
+        if (allocated(error)) return
+        call read_qtf(output_dir(name)//motion_force_file(3), s, error)
+        if (allocated(error)) return
+        nomega = distinct_count([abs(d(:,1) - d(:,2)), s(:,1) + s(:,2)])
+        print '(4x,a,I0,a)', name//": ", nomega, " Omega in the force files"
+        call check(error, count_log_lines(log, " QTF motion: Omega ="), nomega, name//": one QTF motion line per Omega")
+    end subroutine motion_integration_rows
+
+    !> QTF_Motion.11d against QTF_Motion.12d of the moored hull: xi2 = H(Omega) F, so the routes differ by H times the force
+    !> gap. The motion gap, |.11d - .12d| / max |.12d| over the rows of translations or of rotations (the larger), must be
+    !> within motion_route_factor of the same measure of QTF_Indirect.11d against QTF_Direct.12d on the same rows (forces or
+    !> moments), measured in the same run: a self-referential limit by design. The force gap must exceed the printed digits,
+    !> or the check would compare nothing
+    subroutine motion_routes_agree(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: name = "qtf_motion_round"
+        ! The routes may differ in xi2 by H times their force gap: 1.3 x that of the forces, on the same rows
+        real(8), parameter :: motion_route_factor = 1.3d0
+        real(8), allocatable :: m1(:,:), m2(:,:), f1(:,:), f2(:,:)
+        character(len=:), allocatable :: header(:)
+        logical, allocatable :: keep(:)
+        real(8) :: motion_gap, force_gap
+
+        call read_motion(output_dir(name)//motion_file(1), m1, header, error)
+        if (allocated(error)) return
+        call read_motion(output_dir(name)//motion_file(2), m2, header, error)
+        if (allocated(error)) return
+        call read_qtf(output_dir(name)//motion_force_file(1), f1, error)
+        if (allocated(error)) return
+        call read_qtf(output_dir(name)//motion_force_file(2), f2, error)
+        if (allocated(error)) return
+        call check(error, size(m1, 1) == size(m2, 1) .and. size(f1, 1) == size(f2, 1), name//": the routes have other rows")
+        if (allocated(error)) return
+        keep = expected_motion_rows(f1, .true.)
+        motion_gap = route_gap(m1, m2)
+        force_gap = route_gap(pack_rows(f1, keep), pack_rows(f2, keep))
+        call report("motion_routes_agree motion gap .11d-.12d", motion_gap)
+        call report("motion_routes_agree force gap .11d-.12d", force_gap)
+        call report("motion_routes_agree limit", motion_route_factor*force_gap)
+        call check(error, force_gap > printed_limit, name//": the force routes agree to the printed digits")
+        if (allocated(error)) return
+        call check_below(error, "motion_routes_agree", motion_gap, motion_route_factor*force_gap)
+    end subroutine motion_routes_agree
+
+    !> |a - b| / max |b| (columns Re Im) over the rows of modes 1 to 3 and over those of 4 to 6, the larger; a and b have the
+    !> same rows
+    real(8) function route_gap(a, b)
+        real(8), intent(in) :: a(:,:), b(:,:)
+        logical :: group(size(a, 1))
+        real(8) :: gap(size(a, 1)), big
+        integer :: g
+
+        gap = hypot(a(:,8) - b(:,8), a(:,9) - b(:,9))
+        route_gap = 0d0
+        do g = 0, 1
+            group = (nint(b(:,5)) - 1)/3 == g
+            if (.not. any(group)) cycle
+            big = maxval(hypot(b(:,8), b(:,9)), mask=group)
+            if (big > 0d0) route_gap = max(route_gap, maxval(gap, mask=group)/big)
+        end do
+    end function route_gap
+
+    !> The unmoored hull: at Omega = 0, C + K_ext has no restoring in surge, sway and yaw, so the diagonal rows are absent
+    !> from both difference motion files, the header and the log name modes 1, 2 and 6, and the sum files keep their rows.
+    !> The spring of the moored twin enters its surge rows (they differ from these by more than the printed digits)
+    subroutine motion_unmoored_diagonal_absent(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: name = "qtf_motion_round_free"
+        ! The surge spring must change the surge rows by more than this (set below the change measured)
+        real(8), parameter :: motion_spring_change = 1d-3
+        real(8), allocatable :: free(:,:), moored(:,:)
+        character(len=:), allocatable :: header(:), log
+        logical, allocatable :: surge(:)
+        real(8) :: change
+        integer :: f
+
+        do f = 1, 4
+            if (is_difference_file(f)) then
+                call check_motion_rows(name, f, .true., left_out_modes("1 2 6"), error)
+            else
+                call check_motion_rows(name, f, .false., "# Left out: none", error)
+            end if
+            if (allocated(error)) return
+        end do
+        log = get_running_exe_path()//name//".log"
+        call check(error, count_log_lines(log, left_out_modes("1 2 6")//"; its pairs are left out of the QTF_Motion files."), 1, &
+                   name//": the log line of Omega = 0 with modes 1, 2 and 6")
+        if (allocated(error)) return
+        call read_motion(output_dir(name)//motion_file(1), free, header, error)
+        if (allocated(error)) return
+        call read_motion(output_dir("qtf_motion_round")//motion_file(1), moored, header, error)
+        if (allocated(error)) return
+        call check(error, size(free, 1) == size(moored, 1), name//": the moored twin has other rows")
+        if (allocated(error)) return
+        surge = nint(free(:,5)) == 1
+        change = maxval(hypot(moored(:,8) - free(:,8), moored(:,9) - free(:,9)), mask=surge) &
+                 /maxval(hypot(free(:,8), free(:,9)), mask=surge)
+        call report("motion_unmoored_diagonal_absent surge change by the spring", change)
+        call check(error, change > motion_spring_change, name//": the surge spring does not change the surge motion")
+    end subroutine motion_unmoored_diagonal_absent
+
+    !> The motion file f of a run, relative to its output directory: QTF_Motion.11d, .12d (the difference, f = 1, 2),
+    !> .11s, .12s (the sum, f = 3, 4)
+    function motion_file(f) result(path)
+        integer, intent(in) :: f
+        character(len=:), allocatable :: path
+        character(len=3), parameter :: ext(4) = ["11d", "12d", "11s", "12s"]
+        path = "Wamit_format/QTF_Motion."//ext(f)
+    end function motion_file
+
+    !> The force file of motion_file(f): QTF_Indirect.11d, QTF_Direct.12d, QTF_Indirect.11s, QTF_Direct.12s
+    function motion_force_file(f) result(path)
+        integer, intent(in) :: f
+        character(len=:), allocatable :: path
+        select case (f)
+        case (1)
+            path = qtf_indirect_file
+        case (2)
+            path = qtf_direct_file
+        case (3)
+            path = qtf_indirect_sum_file
+        case default
+            path = qtf_direct_sum_file
+        end select
+    end function motion_force_file
+
+    !> The text of the log line and the header line of an Omega left out of the motion (QTFDriver, omega_left_text) that
+    !> names the modes without restoring, as "(modes 2 6 without restoring)"
+    function left_out_modes(modes) result(text)
+        character(len=*), intent(in) :: modes
+        character(len=:), allocatable :: text
+        text = "(modes "//modes//" without restoring)"
+    end function left_out_modes
+
+    !> The difference motion files (QTF_Motion.11d, .12d) are 1 and 2 of motion_file, the sum ones 3 and 4
+    logical function is_difference_file(f)
+        integer, intent(in) :: f
+        is_difference_file = f <= 2
+    end function is_difference_file
+
+    !> The number of distinct values (to 1e-6) of x
+    integer function distinct_count(x)
+        real(8), intent(in) :: x(:)
+        integer :: i
+
+        distinct_count = 0
+        do i = 1, size(x)
+            if (all(abs(x(1:i - 1) - x(i)) > 1d-6)) distinct_count = distinct_count + 1
+        end do
+    end function distinct_count
 
 end module test_integration_drift

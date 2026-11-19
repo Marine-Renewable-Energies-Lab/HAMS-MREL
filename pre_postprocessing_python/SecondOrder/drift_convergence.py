@@ -153,7 +153,7 @@ class Case:
                  frequencies=WIDE_FREQUENCIES, headings=(0.0, 30.0), grn=4, isolv=1, irsp=0, mean_drift=1, tier="both",
                  solver="hams", where="snellius", control=None, qtf=0, nemoh_range=None, qtf_terms=None, qtf_max_dw=None,
                  nemoh_contrib=1, edge_power=None, qtf_edge_weights=None, extra_options=None, damping=None, nemoh_qtf_range=None,
-                 limit_h=None):
+                 limit_h=None, stiffness=None):
         self.name = name
         self.group = group
         self.question = question
@@ -185,6 +185,9 @@ class Case:
         self.damping = damping or {}   # sharp and oc4 hulls: external linear damping {mode 1..6: value} (Hydrostatic.in)
         if self.damping and hull not in ("sharp", "oc4"):
             raise ValueError("%s: damping is written for the sharp and oc4 hulls only, not %s" % (name, hull))
+        self.stiffness = stiffness or {}   # sharp hull: external restoring {mode 1..6: value} on the diagonal (Hydrostatic.in)
+        if self.stiffness and hull != "sharp":
+            raise ValueError("%s: stiffness is written for the sharp hull only, not %s" % (name, hull))
 
 
 def in_tier(case, tier):
@@ -390,6 +393,17 @@ CS_FIXED_M1 = dict(cs_margin=7.84, cs_bottom_margin=7.84, cs_panel_size=1.96)
 # truncated_cylinder_reference reads it for its motion "free_damped".
 SHARP_DAMPING = {3: 3.8306e5, 5: 1.3416e7}
 
+# The surge spring and damping of the free sharp hull of the second-order motion (Phase 6c, ruling R8 of its plan): K_11 for
+# a natural period of 100 s and B_11 = 5 % of critical, so that the static surge and the slow-drift peak at
+# omega_n = 2 pi / 100 = 0.0628319 rad/s are finite. M = rho pi a^2 d = 3.14159e6 kg (the exact cylinder,
+# truncated_cylinder_reference.body_matrices; Hydrostatic.in of the m1 polygon has 3.12145e6, 0.6 % less) and
+# A_11(omega_n) = 1.82474e6 kg (truncated_cylinder_reference.added_mass_damping, the same to 6 digits at 8000 and 64000
+# modes), so M + A_11 = 4.96633e6 kg: K_11 = (M + A_11) omega_n^2 = 1.96063e4 N/m and B_11 = 0.05 x 2 sqrt(K_11 (M + A_11))
+# = 0.1 (M + A_11) omega_n = 3.12044e4 N s/m. The cases q_sharp_motion_free_m* write them into Hydrostatic.in, and
+# truncated_cylinder_reference.py qtf-motion takes them as its defaults of --k-ext and --b-ext
+SHARP_MOTION_K11 = 1.96063e4
+SHARP_MOTION_B11 = 3.12044e4
+
 # Grid of the q_oc4w cases: the omega of the WAMIT .12d of OpenFAST (marin_semi.12d: 0.25 to 3.00 rad/s in steps of 0.05) up
 # to 1.90, below the first irregular frequency of OC4, about 1.98 rad/s (upper columns, J0 zero under a deep lid [derived]):
 # velocity_method = source rejects IRSP = 1, so the grid stops there. 34 frequencies, 33 distinct differences
@@ -508,6 +522,7 @@ def qtf_potential_cases():
     chosen += qtf_directfs_cases(grid)
     chosen += qtf_directsum_cases(grid)
     chosen += qtf_indirectsum_cases(grid)
+    chosen += qtf_motion_cases(grid)
     return chosen
 
 
@@ -647,6 +662,23 @@ def qtf_indirectsum_cases(grid):
     chosen.append(Case("nemoh_oc4_free_fs_m1", "I", "6b", "oc4", 1, "free", headings=(0.0,), solver="nemoh",
                        nemoh_range=NEMOH_SUM_RANGE, nemoh_qtf_range=NEMOH_SUM_QTF_RANGE, nemoh_contrib=3,
                        limit_h=24.0))
+    return chosen
+
+
+def qtf_motion_cases(grid):
+    """The cases of the second-order motion (Phase 6c, R8 of its plan): q_sharp_motion_free_m{1,2}, the cases of
+    q_sharp_directsum_free_m{1,2} (qtf = 3, qtf_terms = full, qtf_direct = 1, free body, IRSP = 1 with velocity_method =
+    differencing, the 21-frequency grid QTF_SUM_FREQUENCIES, heading 0, the fixed control surface CS_FIXED_M1 at m2) with
+    qtf_motion = 1 and the surge spring and damping SHARP_MOTION_K11, SHARP_MOTION_B11 in Hydrostatic.in. They write
+    QTF_Motion.11d, .12d, .11s and .12s; qtf_compare.py --motion compares them with truncated_cylinder_reference.py
+    qtf-motion. Group M, question 6c."""
+    chosen = []
+    for m in (1, 2):
+        chosen.append(Case("q_sharp_motion_free_%s" % tag(m), "M", "6c", "sharp", m, "free", "differencing",
+                           frequencies=QTF_SUM_FREQUENCIES, headings=(0.0,), irsp=1, qtf=3, qtf_terms="full",
+                           qtf_max_dw=QTF_POTENTIAL_MAX_DW,
+                           extra_options=dict(CS_FIXED_M1 if m > 1 else {}, qtf_direct=1, qtf_motion=1),
+                           damping={1: SHARP_MOTION_B11}, stiffness={1: SHARP_MOTION_K11}))
     return chosen
 
 
@@ -845,6 +877,8 @@ def write_hams_hull(case, path):
             params.update(graded=False, edge_power=case.edge_power)
         if case.damping:
             params.update(external_damping={j - 1: v for j, v in case.damping.items()})
+        if case.stiffness:
+            params.update(external_restoring={j - 1: v for j, v in case.stiffness.items()})
         mesh = make_mesh.write_cylinder(mesh_path, hydro_path, **params)
     elif case.hull == "round":
         mesh = make_mesh.write_rounded_cylinder(mesh_path, hydro_path,

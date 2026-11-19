@@ -11,6 +11,7 @@ program integration_tester
     use test_integration_image,   only : setup_image,   collect_tests_image
     use test_integration_gen_modes, only : setup_gen_modes, collect_tests_gen_modes
     use test_integration_drift,   only : setup_drift,   collect_tests_drift
+    use test_integration_drift,   only : setup_drift_motion, collect_tests_drift_motion
     use testing_utilities
 
     implicit none
@@ -37,7 +38,9 @@ program integration_tester
         new_testsuite("setup_gen_modes", setup_gen_modes), &
         new_testsuite("test_gen_modes", collect_tests_gen_modes), &
         new_testsuite("setup_drift",   setup_drift),   &
-        new_testsuite("test_drift",    collect_tests_drift)  &
+        new_testsuite("test_drift",    collect_tests_drift),  &
+        new_testsuite("setup_drift_motion", setup_drift_motion), &
+        new_testsuite("test_drift_motion", collect_tests_drift_motion)  &
     ]
 
     stat = 0
