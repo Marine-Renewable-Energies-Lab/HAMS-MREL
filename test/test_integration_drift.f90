@@ -523,6 +523,7 @@ contains
             new_unittest("indirect_sum_qtf3_diff_unchanged", indirect_sum_qtf3_diff_unchanged), &
             new_unittest("indirect_sum_isolv_factored", indirect_sum_isolv_factored), &
             new_unittest("indirect_sum_off_unchanged", indirect_sum_off_unchanged), &
+            new_unittest("indirect_sum_b2_qtf2_matches_qtf3", indirect_sum_b2_qtf2_matches_qtf3), &
             new_unittest("indirect_sum_log_lines", indirect_sum_log_lines) &
         ]
     end subroutine collect_tests_drift
@@ -6550,9 +6551,9 @@ contains
     !> of each case
     subroutine run_qtf_indsum_cases(error)
         type(error_type), allocatable, intent(out) :: error
-        character(len=21), parameter :: cases(9) = [character(len=21) :: "qtf_indsum_round", "qtf_indsum_irsp", &
+        character(len=21), parameter :: cases(11) = [character(len=21) :: "qtf_indsum_round", "qtf_indsum_irsp", &
             "qtf_indsum_gmres", "qtf_indsum_gmres_dir", "qtf_indsum_half", "qtf_indsum_halfref", "qtf_indsum_two", &
-            "qtf_indsum_two_dir", "qtf_indsum_two1"]
+            "qtf_indsum_two_dir", "qtf_indsum_two1", "qtf_indsum_b2_q2", "qtf_indsum_b2_q3"]
         type(error_type), allocatable :: one
         integer(8) :: t0, t1, rate
         integer :: c
@@ -6759,6 +6760,20 @@ contains
         call check(error, nint(minval(d11(:,5))) == 1 .and. nint(maxval(d11(:,5))) == 12, &
                    "qtf_indsum_two: the index I of .11s does not cover the 12 modes of two bodies")
     end subroutine indirect_sum_two_bodies
+
+    !> The control-surface B2 for the sum QTF with qtf = 2 (user ruling, 2026-11-19): qtf_indsum_b2_q2 (qtf = 2) and
+    !> qtf_indsum_b2_q3 (qtf = 3) have the same input, with the default qtf_b2 = control, qtf_direct = 0 and both
+    !> qtf_fs_panel and qtf_fs_modes given (the same inner mesh). The same B2 form gives the same .11s and
+    !> QTF_PotentialTermsSum.txt, byte for byte (the checks are exact)
+    subroutine indirect_sum_b2_qtf2_matches_qtf3(error)
+        type(error_type), allocatable, intent(out) :: error
+
+        call check_same_file(output_dir("qtf_indsum_b2_q2")//qtf_indirect_sum_file, &
+                             output_dir("qtf_indsum_b2_q3")//qtf_indirect_sum_file, error)
+        if (allocated(error)) return
+        call check_same_file(output_dir("qtf_indsum_b2_q2")//pot_sum_terms_file, &
+                             output_dir("qtf_indsum_b2_q3")//pot_sum_terms_file, error)
+    end subroutine indirect_sum_b2_qtf2_matches_qtf3
 
     !> qtf = 3 with the sum route does not change the difference files (qtf_fs_panel and qtf_fs_modes are set, so the
     !> inner mesh is not built at the sum frequency): .10d and .11d of qtf_indsum_two are those of the qtf = 1 run

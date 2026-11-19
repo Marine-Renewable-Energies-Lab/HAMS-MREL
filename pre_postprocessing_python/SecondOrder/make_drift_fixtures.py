@@ -1022,6 +1022,14 @@ def write_qtf_indsum_fixtures(data):
         target = case_dir(data, name)
         copy_inputs(data, "qtf_directfs_two", target, two_inputs)
         write_second_order(os.path.join(target, "SecondOrder.in"), **options)
+    # qtf = 2 and qtf = 3 of qtf_indsum_irsp with the default qtf_b2 = control and the same inner mesh (qtf_fs_panel and
+    # qtf_fs_modes given), Phase 6b Task B2: .11s and QTF_PotentialTermsSum.txt are those of the one B2 form
+    control = {key: value for key, value in full.items() if key != "qtf_b2"}
+    for name, qtf in (("qtf_indsum_b2_q2", 2), ("qtf_indsum_b2_q3", 3)):
+        target = case_dir(data, name)
+        copy_inputs(data, "qtf_directsum_irsp", target, inputs + ("WaterPlaneMesh.pnl",))
+        write_second_order(os.path.join(target, "SecondOrder.in"),
+                           **dict(control, qtf=qtf, qtf_fs_panel=QTF_DIRECTSUM_FS_PANEL, qtf_fs_modes=QTF_DIRECTSUM_FS_MODES))
 
 
 if __name__ == "__main__":

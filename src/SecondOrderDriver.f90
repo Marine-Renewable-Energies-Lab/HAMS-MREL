@@ -199,10 +199,11 @@ CONTAINS
       END IF
 
       b2_control = uses_b2_control(opts)
-      IF (opts%qtf_b2_given .AND. .NOT. (opts%qtf_terms >= QTF_TERMS_BODY .AND. (opts%qtf == 1 .OR. opts%qtf == 3))) THEN
-         ! qtf = 2 gives the sum by the direct method or by T+_pot, neither of which has an indirect B2 to move
-         WRITE (*, '(a)') ' QTF note: qtf_b2 is ignored; it applies with qtf_terms = body or full and the indirect difference'// &
-            ' QTF (qtf = 1 or 3) only.'
+      IF (opts%qtf_b2_given .AND. .NOT. (opts%qtf_terms >= QTF_TERMS_BODY .AND. opts%qtf >= 1)) THEN
+         ! B2 of the difference QTF (qtf = 1 or 3) and of T+_pot of the sum QTF (qtf = 2 or 3) both have a surface piece to
+         ! move to C and F. Only qtf_terms below body or qtf = 0 leaves no B2 (user ruling, 2026-11-19: the same input gives
+         ! the same .11s with qtf = 2 and 3)
+         WRITE (*, '(a)') ' QTF note: qtf_b2 is ignored; it applies with qtf_terms = body or full and qtf = 1, 2 or 3 only.'
       END IF
       IF (opts%qtf_edge_given .AND. .NOT. (b2_control .OR. opts%qtf_direct == 1)) THEN
          WRITE (*, '(a)') ' QTF note: qtf_edge_weights and qtf_edge_angle are ignored; they apply with qtf_terms = body or'// &
@@ -888,11 +889,14 @@ CONTAINS
    END FUNCTION uses_fs
 
    LOGICAL FUNCTION uses_b2_control(opts)
-      ! qtf_b2 = control applies: the potential part of the difference QTF is computed
+      ! qtf_b2 = control applies: B2 of the potential part of the difference QTF (qtf = 1 or 3) and of the sum QTF T+_pot
+      ! (qtf = 2 or 3, QTF_Indirect.11s) is computed with its surface piece on C and F. The same input then gives the same
+      ! .11s with qtf = 2 and 3 (user ruling, 2026-11-19). The fields of potential_part_sum are those of potential_part:
+      ! the velocity on C and F of every kept frequency, and grad psi_k there at every psi frequency, sum frequencies too.
       TYPE(so_options), INTENT(IN) :: opts
 
       uses_b2_control = opts%qtf_terms >= QTF_TERMS_BODY .AND. opts%qtf_b2 == QTF_B2_CONTROL .AND. &
-                        (opts%qtf == 1 .OR. opts%qtf == 3)
+                        opts%qtf >= 1
    END FUNCTION uses_b2_control
 
    SUBROUTINE b2_control_setup(opts, inputdir, outputdir)

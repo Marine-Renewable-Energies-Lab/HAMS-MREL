@@ -621,7 +621,7 @@ CONTAINS
       INTEGER :: st
 
       IF (.NOT. body_active) THEN
-         WRITE (*, '(a)') ' QTF: qtf_set_control_surface needs qtf_terms = body and the difference QTF.'
+         WRITE (*, '(a)') ' QTF: qtf_set_control_surface needs qtf_terms = body or full and qtf = 1, 2 or 3.'
          ERROR STOP 1
       END IF
       CALL free_control_surface()
