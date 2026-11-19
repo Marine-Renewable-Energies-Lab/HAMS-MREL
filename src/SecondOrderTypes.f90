@@ -67,6 +67,9 @@ MODULE SecondOrderTypes
       REAL(8) :: qtf_fs_panel = 0D0      ! m, panel size of the generated inner mesh; 0: lambda/10 at the largest frequency
       INTEGER :: qtf_fs_modes = 0        ! angular modes M of the outer region
       INTEGER :: qtf_fs_evanescent = 0   ! evanescent vertical modes N_ev of the outer region
+      ! Field-pass rows (psi, grad psi at the hull, free-surface and field points): the deep-water Green function is used
+      ! where k0 h >= field_deep_kh (k0 the wave number of the frequency, h the depth); 0 switches it off
+      REAL(8) :: field_deep_kh = 10D0
       ! Panel weights of the B2 hull term at sharp edges (SharpEdge), with qtf_b2 = control; edges where the normals differ
       ! by more than qtf_edge_angle degrees. Off by default: on the sharp-cylinder fixture they moved B2 F_x and F_z away
       ! from the exact reference (15.1% to 17.2%, 30.0% to 37.4%) for an M_y gain of 11.9% to 11.1%

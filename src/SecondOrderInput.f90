@@ -118,6 +118,9 @@ CONTAINS
       ELSE IF (opts%qtf_field == 1 .AND. opts%qtf == 0) THEN
          ok = .FALSE.
          msg = 'qtf_field needs qtf = 1, 2 or 3 in SecondOrder.in.'
+      ELSE IF (opts%field_deep_kh < 0D0) THEN
+         ok = .FALSE.
+         msg = 'field_deep_kh must not be negative in SecondOrder.in.'
       ELSE IF (opts%qtf_fs_radius < 0D0) THEN
          ok = .FALSE.
          msg = 'qtf_fs_radius must not be negative in SecondOrder.in.'
@@ -230,6 +233,8 @@ CONTAINS
          ELSE
             ios = 1
          END IF
+      CASE ('field_deep_kh')
+         READ(value, *, IOSTAT=ios) opts%field_deep_kh
       CASE ('qtf_fs_radius')
          ! The four qtf_fs_* keys are read always, used with qtf_terms = full only
          READ(value, *, IOSTAT=ios) opts%qtf_fs_radius
