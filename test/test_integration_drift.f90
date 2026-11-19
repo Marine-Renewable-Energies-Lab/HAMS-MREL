@@ -6887,7 +6887,8 @@ contains
     end subroutine indirect_sum_isolv_factored
 
     !> The qtf_direct = 1 sum fixtures are unchanged by the indirect route: QTF_Direct.12s and QTF_DirectTermsSum.txt of
-    !> qtf_directsum_round and qtf_directsum_irsp are those of the merge 4ba2ddb (stored in expected_output), byte for byte
+    !> qtf_directsum_round and qtf_directsum_irsp are those of the base without the indirect route (stored in expected_output),
+    !> byte for byte: round from the 7c-2 merge 4ba2ddb, irsp from the v2.3.4 merge 5792fb9 (its lid fixes move irsp)
     subroutine indirect_sum_off_unchanged(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=21), parameter :: cases(2) = [character(len=21) :: "qtf_directsum_round", "qtf_directsum_irsp"]

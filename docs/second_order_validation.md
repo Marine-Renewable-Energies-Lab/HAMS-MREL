@@ -1007,7 +1007,7 @@ The indirect method at the sum frequency (Phase 6b, `qtf = 2` or `3` with `qtf_d
 
 ### Unit and integration tests
 
-The unit tester has 412 tests and the integration tester 234, all passing, 0 failed [measured at 22086da source; 43c75ad to 14cb8bc change docs only; ifort, Windows, 2026-11-19]. Sources: `git log --oneline 4ba2ddb..HEAD` and the task reports of the 6b work. The fixtures are `test/data/qtf_indsum_*`, written by `make_drift_fixtures.py`: the 7c-2 fixtures with `qtf_direct = 0`, a half-mesh pair, a two-hull case with `qtf_fs_panel` and `qtf_fs_modes` given (and its `qtf_direct = 1` and `qtf = 1` twins), and a GMRES case.
+The unit tester has 412 tests and the integration tester 234, all passing, 0 failed [measured at 22086da source; 43c75ad to 14cb8bc change docs only; ifort, Windows, 2026-11-19]. After the merge into `second-order-drift` with the v2.3.4 fixes (c44cee8 plus the regenerated `qtf_directsum_irsp` expected files): 431 and 240, all passing, 0 failed [measured, ifort, Windows, 2026-11-19]. Sources: `git log --oneline 4ba2ddb..HEAD` and the task reports of the 6b work. The fixtures are `test/data/qtf_indsum_*`, written by `make_drift_fixtures.py`: the 7c-2 fixtures with `qtf_direct = 0`, a half-mesh pair, a two-hull case with `qtf_fs_panel` and `qtf_fs_modes` given (and its `qtf_direct = 1` and `qtf = 1` twins), and a GMRES case.
 
 | Test | What it pins | Measured | Limit |
 | :--- | :--- | :--- | :--- |
@@ -1026,7 +1026,7 @@ The unit tester has 412 tests and the integration tester 234, all passing, 0 fai
 | `indirect_sum_two_bodies` (integration) | Two hulls: `.11s` and the terms file are those of the `qtf_direct = 1` twin, to the byte; the index I covers the 12 modes | exact | exact |
 | `indirect_sum_isolv_factored` (integration, GMRES) | With ISOLV = 2, `.11s` and the terms file are those of the `qtf_direct = 1` twin, to the byte; T⁺_pot against the LU solve | 6.9e-4 | 1e-3 (GMRES stops at 1e-4) |
 | `indirect_sum_qtf3_diff_unchanged` (integration) | `.10d` and `.11d` of the `qtf = 3` two-hull run are those of the `qtf = 1` run, to the byte | exact | exact |
-| `indirect_sum_off_unchanged` (integration) | `QTF_Direct.12s` and `QTF_DirectTermsSum.txt` of `qtf_directsum_round` and `_irsp` are those of the 7c-2 merge build 4ba2ddb, to the byte | exact | exact |
+| `indirect_sum_off_unchanged` (integration) | `QTF_Direct.12s` and `QTF_DirectTermsSum.txt` of `qtf_directsum_round` and `_irsp` are those of the base without 6b, to the byte: `_round` from the 7c-2 merge 4ba2ddb, `_irsp` from the v2.3.4 merge 5792fb9, whose lid fixes move it by at most 1.3e-3 of the column maximum | exact | exact |
 | `indirect_sum_log_lines` (integration) | The set-up log lines of `SecondOrderDriver.f90` (not the end message of `ReportCompletion`) name `.11s` (and `.11d` for `qtf = 3` only) and say whether the free-surface integral is in it | exact | exact |
 | `indirect_sum_b2_qtf2_matches_qtf3` (integration) | `qtf = 2` takes the control-surface B2 as `qtf = 3` does (user ruling, 2026-11-19): same input, same `.11s` and terms file, to the byte, and the log has the line of the points of C and F | exact | exact |
 | `direct_sum_qtf2_default_b2` (integration) | `qtf = 2`, `qtf_direct = 1` and the default `qtf_b2` = `control`: `QTF_Direct.12s` and the D columns are those of the `qtf_b2 = body` run, to the byte; P_BODY changes; the log has the line of C and F | exact | exact |
