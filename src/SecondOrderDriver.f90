@@ -207,7 +207,7 @@ CONTAINS
       END IF
       IF (opts%qtf_edge_given .AND. .NOT. (b2_control .OR. opts%qtf_direct == 1)) THEN
          WRITE (*, '(a)') ' QTF note: qtf_edge_weights and qtf_edge_angle are ignored; they apply with qtf_terms = body or'// &
-            ' full, the difference QTF and qtf_b2 = control (qtf_edge_angle also with qtf_direct = 1) only.'
+            ' full, qtf_b2 = control and qtf = 1, 2 or 3 (qtf_edge_angle also with qtf_direct = 1) only.'
       END IF
       IF (opts%qtf_fs_given .AND. .NOT. uses_fs(opts)) THEN
          WRITE (*, '(a)') ' QTF note: qtf_fs_radius, qtf_fs_rows, qtf_fs_panel, qtf_fs_modes and qtf_fs_evanescent are ignored;'// &

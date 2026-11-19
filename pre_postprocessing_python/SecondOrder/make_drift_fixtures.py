@@ -954,6 +954,11 @@ def write_qtf_directsum_fixtures(data):
     target = case_dir(data, "qtf_directsum_irsp")
     copy_inputs(data, "qtf_directfs_irsp", target, inputs + ("WaterPlaneMesh.pnl",))
     write_second_order(os.path.join(target, "SecondOrder.in"), **full)
+    # qtf_directsum_irsp with the default qtf_b2 = control (no qtf_b2 line), Phase 6b Task B2 fix 1: P_BODY of
+    # QTF_DirectTermsSum.txt takes the control-surface B2, .12s and the D columns do not change
+    target = case_dir(data, "qtf_directsum_q2_def")
+    copy_inputs(data, "qtf_directfs_irsp", target, inputs + ("WaterPlaneMesh.pnl",))
+    write_second_order(os.path.join(target, "SecondOrder.in"), **{key: value for key, value in full.items() if key != "qtf_b2"})
     # The same two difference runs, qtf = 1 and 3
     for name, qtf in (("qtf_directsum_d1", 1), ("qtf_directsum_d3", 3)):
         target = case_dir(data, name)
@@ -1024,10 +1029,13 @@ def write_qtf_indsum_fixtures(data):
         write_second_order(os.path.join(target, "SecondOrder.in"), **options)
     # qtf = 2 and qtf = 3 of qtf_indsum_irsp with the default qtf_b2 = control and the same inner mesh (qtf_fs_panel and
     # qtf_fs_modes given), Phase 6b Task B2: .11s and QTF_PotentialTermsSum.txt are those of the one B2 form
+    # (one heading, two frequencies: only the equality of the two runs is tested, and the pairs off the diagonal exist)
     control = {key: value for key, value in full.items() if key != "qtf_b2"}
     for name, qtf in (("qtf_indsum_b2_q2", 2), ("qtf_indsum_b2_q3", 3)):
         target = case_dir(data, name)
         copy_inputs(data, "qtf_directsum_irsp", target, inputs + ("WaterPlaneMesh.pnl",))
+        write_control(os.path.join(target, "ControlFile.in"), depth=QTF_DIRECTFS_DEPTH, frequencies=QTF_BODY_FREQUENCIES,
+                      headings=(0.0,), irsp=1, threads=QTF_DIRECTFS_THREADS)
         write_second_order(os.path.join(target, "SecondOrder.in"),
                            **dict(control, qtf=qtf, qtf_fs_panel=QTF_DIRECTSUM_FS_PANEL, qtf_fs_modes=QTF_DIRECTSUM_FS_MODES))
 

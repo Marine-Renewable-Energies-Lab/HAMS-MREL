@@ -616,7 +616,7 @@ CONTAINS
 
    SUBROUTINE qtf_set_control_surface(pts)
       ! qtf_b2 = control: keeps the points of C and F and allocates the fields there for the store of qtf_init. Call after
-      ! qtf_init, before the frequency loop, only with qtf_terms = body.
+      ! qtf_init, before the frequency loop, only with qtf_terms = body or full and qtf = 1, 2 or 3.
       TYPE(cs_points), INTENT(IN) :: pts
       INTEGER :: st
 

@@ -524,6 +524,7 @@ contains
             new_unittest("indirect_sum_isolv_factored", indirect_sum_isolv_factored), &
             new_unittest("indirect_sum_off_unchanged", indirect_sum_off_unchanged), &
             new_unittest("indirect_sum_b2_qtf2_matches_qtf3", indirect_sum_b2_qtf2_matches_qtf3), &
+            new_unittest("direct_sum_qtf2_default_b2", direct_sum_qtf2_default_b2), &
             new_unittest("indirect_sum_log_lines", indirect_sum_log_lines) &
         ]
     end subroutine collect_tests_drift
@@ -6120,8 +6121,8 @@ contains
     !> Task 6, in one setup test, with the run time of each case
     subroutine run_qtf_directsum_cases(error)
         type(error_type), allocatable, intent(out) :: error
-        character(len=21), parameter :: cases(5) = [character(len=21) :: "qtf_directsum_round", "qtf_directsum_irsp", &
-            "qtf_directsum_half", "qtf_directsum_halfref", "qtf_directsum_field"]
+        character(len=21), parameter :: cases(6) = [character(len=21) :: "qtf_directsum_round", "qtf_directsum_irsp", &
+            "qtf_directsum_half", "qtf_directsum_halfref", "qtf_directsum_field", "qtf_directsum_q2_def"]
         character(len=21), parameter :: pair(2) = [character(len=21) :: "qtf_directsum_d1", "qtf_directsum_d3"]
         type(error_type), allocatable :: one
         integer(8) :: t0, t1, rate
@@ -6767,13 +6768,77 @@ contains
     !> QTF_PotentialTermsSum.txt, byte for byte (the checks are exact)
     subroutine indirect_sum_b2_qtf2_matches_qtf3(error)
         type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: store_line = "points of C and F (qtf_b2 = control)"
 
+        ! Both logs name the points of C and F, so the control form is used, not a fall back to the hull B2
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_indsum_b2_q2.log", store_line) == 1, &
+                   "qtf_indsum_b2_q2: the log does not have the store line of C and F (qtf_b2 = control)")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_indsum_b2_q3.log", store_line) == 1, &
+                   "qtf_indsum_b2_q3: the log does not have the store line of C and F (qtf_b2 = control)")
+        if (allocated(error)) return
         call check_same_file(output_dir("qtf_indsum_b2_q2")//qtf_indirect_sum_file, &
                              output_dir("qtf_indsum_b2_q3")//qtf_indirect_sum_file, error)
         if (allocated(error)) return
         call check_same_file(output_dir("qtf_indsum_b2_q2")//pot_sum_terms_file, &
                              output_dir("qtf_indsum_b2_q3")//pot_sum_terms_file, error)
     end subroutine indirect_sum_b2_qtf2_matches_qtf3
+
+    !> qtf = 2, qtf_direct = 1 and the default qtf_b2 = control (user ruling, 2026-11-19, option a): qtf_directsum_q2_def has
+    !> the input of qtf_directsum_irsp (qtf_b2 = body) without the qtf_b2 line. (i) QTF_Direct.12s is the same file, to the
+    !> byte (no direct-path code reads b2_control); (ii) in QTF_DirectTermsSum.txt the D columns are the same to the digit
+    !> and P_BODY differs (B2 is on C and F; before 257662b uses_b2_control was false for qtf = 2, so P_BODY was that of
+    !> the body run and the log had no store line of C and F); (iii) the log has that store line, once
+    subroutine direct_sum_qtf2_default_b2(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: name = "qtf_directsum_q2_def", ref = "qtf_directsum_irsp"
+        real(8), allocatable :: tc(:,:), tb(:,:)
+        real(8) :: dmax
+        integer :: r
+
+        call check_same_file(output_dir(name)//qtf_direct_sum_file, output_dir(ref)//qtf_direct_sum_file, error)
+        if (allocated(error)) return
+        call read_sum_terms_raw(output_dir(name)//direct_sum_terms_file, tc, error)
+        if (allocated(error)) return
+        call read_sum_terms_raw(output_dir(ref)//direct_sum_terms_file, tb, error)
+        if (allocated(error)) return
+        call check(error, size(tc, 1) == size(tb, 1) .and. size(tc, 1) > 0, name//": the rows of the terms file differ")
+        if (allocated(error)) return
+        dmax = 0d0
+        do r = 1, size(tc, 1)
+            call check(error, all(tc(r,1:11) == tb(r,1:11)), name//": the keys or the D columns differ from "//ref)
+            if (allocated(error)) return
+            dmax = max(dmax, maxval(abs(tc(r,12:13) - tb(r,12:13))))
+        end do
+        call check(error, dmax > 0d0, name//": P_BODY is that of the hull B2, the control form is not used")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//name//".log", "points of C and F (qtf_b2 = control)") == 1, &
+                   name//": the log does not have the store line of C and F (qtf_b2 = control)")
+    end subroutine direct_sum_qtf2_default_b2
+
+    !> The 15 numbers of every row of QTF_DirectTermsSum.txt of a qtf_terms = full run (the five keys, D_I2, D_D, D_FS, P_BODY,
+    !> P_FS, each Re and Im)
+    subroutine read_sum_terms_raw(path, t, error)
+        character(len=*), intent(in) :: path
+        real(8), allocatable, intent(out) :: t(:,:)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=:), allocatable :: lines(:)
+        real(8), allocatable :: tmp(:,:)
+        integer :: r, n, ios
+
+        call read_lines(path, lines, error)
+        if (allocated(error)) return
+        allocate (tmp(size(lines), 15))
+        n = 0
+        do r = 1, size(lines)
+            if (len_trim(lines(r)) == 0 .or. lines(r)(1:1) == '#') cycle
+            n = n + 1
+            read (lines(r), *, iostat=ios) tmp(n,:)
+            call check(error, ios == 0, "Bad row in "//path//": "//trim(lines(r)))
+            if (allocated(error)) return
+        end do
+        t = tmp(1:n,:)
+    end subroutine read_sum_terms_raw
 
     !> qtf = 3 with the sum route does not change the difference files (qtf_fs_panel and qtf_fs_modes are set, so the
     !> inner mesh is not built at the sum frequency): .10d and .11d of qtf_indsum_two are those of the qtf = 1 run

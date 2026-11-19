@@ -11,8 +11,8 @@
    #End Definition of Wave Frequencies
 
    #Start Definition of Wave Headings
-    Number_of_headings          2
-  0.0000 30.0000
+    Number_of_headings          1
+  0.0000
    #End Definition of Wave Headings
 
     Reference_body_center          0.000       0.000       0.000
