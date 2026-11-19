@@ -1498,7 +1498,7 @@ contains
   end subroutine test_direct_irr_accepted
 
   !> With IRSP = 1 and b = n_k, the direct solve with the lid rows (ASSB_RHS_FIELD_IRR, the least-squares combination
-  !> AMAT^T r and the factored CMAT) is psi_k of the radiation solve with the lid at Omega (RADIATION_SOLVER_IRR): the same
+  !> AMAT^H r and the factored CMAT = AMAT^H AMAT) is psi_k of the radiation solve with the lid (RADIATION_SOLVER_IRR): the same
   !> matrix and the same right side, so to rounding. The cylinder of direct_unit_normal_is_radiation with its bottom
   !> panels lifted to z = 0 as the lid: whole at depth 10, half (ISY = 1) in deep water, whole with ISOLV = 2 (CMAT
   !> unfactored by ASSB_LEFT_IRR, factored by direct_factor), and two cylinders with their lids in the multi-body arrays,

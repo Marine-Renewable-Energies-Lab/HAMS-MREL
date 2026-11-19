@@ -144,6 +144,8 @@ MODULE QTFDirect
    USE PanelMesh_mod, ONLY: ISX, ISY, DS, PNSZ, XYZ_P, DS_MULTI_COMB, PNSZ_MULTI_COMB, XYZ_GLOBAL_MULTI_COMB_P, IPIV, &
                             IPIV_MULTI_COMB, iNELEM_TOTAL, iXYZ_GLOBAL_MULTI_COMB_P
    USE Inerfs_mod, ONLY: iNELEM, iXYZ_P
+   USE SingularIntgr, ONLY: WAVE_PART_PANEL
+   USE SingularIntgrMulti, ONLY: WAVE_PART_PANEL_MULTI
    USE LinearMatrix_mod, ONLY: AMAT, AMAT_MULTI, CMAT, CMAT_MULTI
    USE Potentials_mod, ONLY: CGRN, RKBN, CGRN_MULTI_COMB, RKBN_MULTI_COMB, DGRN, PKBN, DGRN_MULTI_COMB, PKBN_MULTI_COMB
    USE AssbMatx, ONLY: ASSB_RHS_FIELD_IRR
@@ -218,6 +220,8 @@ MODULE QTFDirect
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
    ! As CALGREEN: a panel closer than this many panel sizes gets panel integrals of 1/r and of its image
    REAL(8), PARAMETER :: NEAR_PANEL_SIZES = 50D0
+   ! Lid points: the wave part is integrated over source panels closer than this many panel sizes (WNEAR of CALGREEN_IRR)
+   REAL(8), PARAMETER :: LID_WAVE_NEAR = 2D0
    ! direct_at_omega takes the pairs of one Omega in blocks of at most this many bytes of work arrays (about 25 complex
    ! values per panel and pair with a lid: the fields, the right sides, the B2 densities and their linear parts, phi_D)
    REAL(8), PARAMETER :: DIRECT_BLOCK_BYTES = 256D6
@@ -362,9 +366,9 @@ CONTAINS
       !        lid); overwritten: rows 1 to nbase hold the solution of each block
       !   phi  (n, nrhs), phi_D on the full panels: image a of base panel i is sum_ip RXY(a, ip) x(i, :, ip)/nsys, as
       !        RADIATION_SOLVER builds MXPOT and radiation_psi expands it (RXY_MULTI for several bodies)
-      ! Without the lid, ZGETRS on the factors of AMAT (AMAT_MULTI). With the lid, the least-squares form of HAMS: A^T r with
-      ! A = AMAT (AMAT_MULTI) of nbase + nlid rows, as ASSB_RBC_IRR forms DRMAT, then ZGETRS on the factors of CMAT
-      ! (CMAT_MULTI). Stops if ZGETRS reports an error.
+      ! Without the lid, ZGETRS on the factors of AMAT (AMAT_MULTI). With the lid, the least-squares form of HAMS: A^H r with
+      ! A = AMAT (AMAT_MULTI) of nbase + nlid rows, as NORMAL_RHS forms DRMAT, then ZGETRS on the factors of CMAT
+      ! (CMAT_MULTI) = A^H A (NORMAL_MATRIX). Stops if ZGETRS reports an error.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       COMPLEX(8), INTENT(INOUT) :: rhs(:, :, :)
       COMPLEX(8), INTENT(OUT) :: phi(:, :)
@@ -392,12 +396,12 @@ CONTAINS
       END IF
       DO ip = 1, mesh%nsys
          IF (nt > nb) THEN
-            ! d = A^T r over the hull and lid rows (the first nb columns of AMAT), as DRMAT of ASSB_RBC_IRR
+            ! d = A^H r over the hull and lid rows (the first nb columns of AMAT), as DRMAT of NORMAL_RHS
             IF (multi) THEN
-               CALL ZGEMM('T', 'N', nb, nrhs, nt, (1D0, 0D0), AMAT_MULTI(:, :, ip), nt, rhs(:, :, ip), nt, (0D0, 0D0), d, nb)
+               CALL ZGEMM('C', 'N', nb, nrhs, nt, (1D0, 0D0), AMAT_MULTI(:, :, ip), nt, rhs(:, :, ip), nt, (0D0, 0D0), d, nb)
                CALL ZGETRS('No transpose', nb, nrhs, CMAT_MULTI(:, :, ip), nb, IPIV_MULTI_COMB(:, ip), d, nb, info)
             ELSE
-               CALL ZGEMM('T', 'N', nb, nrhs, nt, (1D0, 0D0), AMAT(:, :, ip), nt, rhs(:, :, ip), nt, (0D0, 0D0), d, nb)
+               CALL ZGEMM('C', 'N', nb, nrhs, nt, (1D0, 0D0), AMAT(:, :, ip), nt, rhs(:, :, ip), nt, (0D0, 0D0), d, nb)
                CALL ZGETRS('No transpose', nb, nrhs, CMAT(:, :, ip), nb, IPIV(:, ip), d, nb, info)
             END IF
             rhs(1:nb, :, ip) = d
@@ -997,9 +1001,9 @@ CONTAINS
          ELSE IF (from_store) THEN
             CALL b2_stokes_at_point(mesh, geom, x, a, c, e, multi, r(:, i), row=i)
          ELSE IF (PRESENT(cl)) THEN
-            CALL b2_stokes_at_point(mesh, geom, x, a, c, e, multi, r(:, i), cl)
+            CALL b2_stokes_at_point(mesh, geom, x, a, c, e, multi, r(:, i), cl, lid_point=i > mesh%n)
          ELSE
-            CALL b2_stokes_at_point(mesh, geom, x, a, c, e, multi, r(:, i))
+            CALL b2_stokes_at_point(mesh, geom, x, a, c, e, multi, r(:, i), lid_point=i > mesh%n)
          END IF
       END DO
       !$OMP END PARALLEL DO
@@ -1046,7 +1050,7 @@ CONTAINS
 
    END SUBROUTINE direct_rhs_b2_block
 
-   SUBROUTINE b2_stokes_at_point(mesh, geom, x, a, c, e, is_multi, out, cl, row, lid_row, field_mode)
+   SUBROUTINE b2_stokes_at_point(mesh, geom, x, a, c, e, is_multi, out, cl, row, lid_row, field_mode, lid_point)
       ! int_S G(x, .) n.[(X.grad)u] dS for each column of the densities, at the field point x (full coordinates):
       !   out = sum_p [ int_p G a_p + (int_p grad_xi G).c_p ] - sum_w (int_w G dl) e_w
       ! With cl (3, 4, n, ncol), on the near panels also sum_ab cl(a, b, p) int_p d_a(1/r + 1/r1) (xi - xi_p)_b dS and
@@ -1057,6 +1061,7 @@ CONTAINS
       ! field_mode, optional (default .false.): the fresh integrals (green_panel_integrals, green_line_integral) pass FIELD
       ! to FINGREEN3D, the route of the field rows (field_mode of field_influence_row), for field points off the hull
       ! (QTFDirectField). Absent, every caller of Phase 7a keeps the default route bit for bit.
+      ! lid_point, optional (default .false.): x is a lid point; passed on to green_panel_integrals (fresh integrals only).
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       REAL(8), INTENT(IN) :: x(3)
@@ -1065,7 +1070,7 @@ CONTAINS
       COMPLEX(8), INTENT(OUT) :: out(:)
       COMPLEX(8), INTENT(IN), OPTIONAL :: cl(:, :, :, :)
       INTEGER, INTENT(IN), OPTIONAL :: row, lid_row
-      LOGICAL, INTENT(IN), OPTIONAL :: field_mode
+      LOGICAL, INTENT(IN), OPTIONAL :: field_mode, lid_point
       COMPLEX(8) :: g_int, grad_int(3), g_line, acc
       REAL(8) :: xv(3, 4), m0, g0(3), m1(3, 3), m1i(3, 3), mg(3), mgi(3), xim(3)
       INTEGER :: p, iw, k, nv, m, ia, ib
@@ -1083,7 +1088,7 @@ CONTAINS
          ELSE IF (PRESENT(lid_row)) THEN
             CALL stored_lid_integrals(mesh, lid_row, p, is_multi, g_int, grad_int)
          ELSE
-            CALL green_panel_integrals(mesh, x, p, is_multi, g_int, grad_int, field_mode)
+            CALL green_panel_integrals(mesh, x, p, is_multi, g_int, grad_int, field_mode, lid_point)
          END IF
          DO k = 1, SIZE(out)
             out(k) = out(k) + g_int*a(p, k) + (grad_int(1)*c(1, p, k) + grad_int(2)*c(2, p, k) + grad_int(3)*c(3, p, k))
@@ -1298,20 +1303,24 @@ CONTAINS
       END DO
    END SUBROUTINE sharp_edge_panels
 
-   SUBROUTINE green_panel_integrals(mesh, x, p, is_multi, g_int, grad_int, field_mode)
+   SUBROUTINE green_panel_integrals(mesh, x, p, is_multi, g_int, grad_int, field_mode, lid_point)
       ! int_p G(x, xi) dS_xi and int_p grad_xi G(x, xi) dS_xi over full panel p (image b of base panel j), x in full
       ! coordinates. Near panels (within NEAR_PANEL_SIZES panel sizes, as CALGREEN) take 1/r and 1/r1 as panel integrals,
       ! far ones the centroid value. On the own panel the 1/r part of the gradient is the principal value (in-plane part).
       ! field_mode, optional (default .false.): FIELD of FINGREEN3D (see b2_stokes_at_point); no effect in deep water.
+      ! lid_point, optional (default .false.): x is a lid point of irregular frequency removal. As CALGREEN_IRR
+      ! (CALGREEN_MULTI_IRR) does for the stored lid integrals, the wave part is then integrated over the panel
+      ! (WAVE_PART_PANEL) when x is within LID_WAVE_NEAR panel sizes of its centroid, at finite frequency.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       REAL(8), INTENT(IN) :: x(3)
       INTEGER, INTENT(IN) :: p
       LOGICAL, INTENT(IN) :: is_multi
       COMPLEX(8), INTENT(OUT) :: g_int, grad_int(3)
-      LOGICAL, INTENT(IN), OPTIONAL :: field_mode
-      REAL(8) :: f(3), xf(3), xq(3), d(3), r1, area, rk(4), rk_image(4)
-      COMPLEX(8) :: grn(4)
+      LOGICAL, INTENT(IN), OPTIONAL :: field_mode, lid_point
+      REAL(8) :: f(3), xf(3), xq(3), d(3), r1, area, rk(4), rk_image(4), pnsz_j
+      COMPLEX(8) :: grn(4), gint(4)
       INTEGER :: j, flag
+      LOGICAL :: lid
 
       j = mesh%base(p)
       f = image_signs(mesh%image(p), ISX, ISY)
@@ -1338,6 +1347,26 @@ CONTAINS
       CALL rankine_panel_integral([xf(1), xf(2), -xf(3)], j, mesh%ncn(p), is_multi, rk_image)
       d = [xq(1) - xf(1), xq(2) - xf(2), xq(3) + xf(3)]   ! grad_xi (1/r1) = -d/r1^3 at the centroid
       r1 = NORM2(d)
+      lid = .FALSE.
+      IF (PRESENT(lid_point)) lid = lid_point
+      IF (lid .AND. ABS(V) > 1D-8 .AND. ABS(V + 1D0) > 1D-8) THEN
+         ! Not MERGE: it evaluates both arguments, and PNSZ_MULTI_COMB is not allocated for a single body
+         IF (is_multi) THEN
+            pnsz_j = PNSZ_MULTI_COMB(j)
+         ELSE
+            pnsz_j = PNSZ(j)
+         END IF
+         IF (NORM2(xf - xq) <= LID_WAVE_NEAR*pnsz_j) THEN
+            IF (is_multi) THEN
+               CALL WAVE_PART_PANEL_MULTI(xf, j, V, WVN, NK, H, gint)
+            ELSE
+               CALL WAVE_PART_PANEL(xf, j, V, WVN, NK, H, gint)
+            END IF
+            g_int = rk(1) + rk_image(1) + gint(1)
+            grad_int = f*(rk(2:4) + rk_image(2:4) + gint(2:4))
+            RETURN
+         END IF
+      END IF
       g_int = rk(1) + rk_image(1) + (grn(1) - 1D0/r1)*area
       grad_int = f*(rk(2:4) + rk_image(2:4) + (grn(2:4) + d/r1**3)*area)
    END SUBROUTINE green_panel_integrals

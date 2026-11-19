@@ -32,6 +32,7 @@ MODULE AssbMatx_irrMulti
    USE BodyIntgr_irrMulti
    USE PatcVelct
    USE IterativeSolvers, ONLY: ZITER_SOLVE_MULTI, SETUP_BLOCK_PRECONDITIONER
+   USE AssbMatx_irr, ONLY: NORMAL_MATRIX, NORMAL_RHS
    IMPLICIT NONE
    
       ! ..... Public Subroutines ...................................................................................................
@@ -151,25 +152,9 @@ CONTAINS
 !--------------------------------------------------------------
 !    Matrix set-up for the least-square problem
 
-      CMAT=CMPLX(0.0D0,0.0D0)
-
-      DO  6000  IP=1, NSYS
-!$OMP PARALLEL NUM_THREADS(NTHREAD)
-!$OMP DO PRIVATE(IEL,JEL,KEL,SUM)
-! SUM is per-iteration accumulator (PRIVATE); CMAT row-disjoint on IEL — no REDUCTION.
-      DO  5000  IEL=1,  NELEM_TOTAL
-      DO  5000  JEL=1,  NELEM_TOTAL
-        
-       SUM=CMPLX(0.0D0,0.0D0)
-       DO  KEL=1,  TNELEM
-          SUM=SUM+AMAT(KEL,IEL,IP)*AMAT(KEL,JEL,IP)
-       ENDDO
-       CMAT(IEL,JEL,IP)=SUM
-        
-5000   CONTINUE
-!$OMP END DO NOWAIT
-!$OMP END PARALLEL
-6000   CONTINUE
+      DO IP=1, NSYS
+       CALL NORMAL_MATRIX(AMAT(:,:,IP),TNELEM,NELEM_TOTAL,CMAT(:,:,IP))
+      ENDDO
 
 ! NSYS is 1 or 2 — let MKL's internal threading do the work in ZGETRF.
 ! Only factorize when direct-LU will be used; ISOLV>1 uses the unfactored normal-equations matrix.
@@ -297,23 +282,9 @@ CONTAINS
 !
       !WRITE(6, *) ' Right-hand side matrix setting-up for the least-square problem...'
 
-!$OMP PARALLEL NUM_THREADS(NTHREAD)
-!$OMP DO PRIVATE(IP,IEL,KEL,MD)
-! Disjoint writes on (IP,IEL) — no REDUCTION needed.
-
-      DO  5000  IP=1, NSYS
-      DO  5000  IEL=1,  NELEM_TOTAL
-        
-       DO  MD=1,6
-       DO  KEL=1,  TNELEM
-          DRMAT(IEL,MD,IP)=DRMAT(IEL,MD,IP)+BRMAT(KEL,MD,IP)*AMAT(KEL,IEL,IP)
-       ENDDO
-       ENDDO
-
-5000  CONTINUE
-
-!$OMP END DO NOWAIT
-!$OMP END PARALLEL
+      DO IP=1, NSYS
+       CALL NORMAL_RHS(AMAT(:,:,IP),TNELEM,NELEM_TOTAL,BRMAT(:,:,IP),6,DRMAT(:,:,IP))
+      ENDDO
 
       RETURN
       END SUBROUTINE ASSB_RBC_IRR_MULTI
@@ -442,23 +413,9 @@ CONTAINS
 !--------------------------------------------------------------
 !    Matrix set-up for the least-square problem
 
-      DDMAT=CMPLX(0.0D0,0.0D0)
-
-!$OMP PARALLEL NUM_THREADS(NTHREAD)
-!$OMP DO PRIVATE(IP,IEL,KEL)
-! Disjoint writes on (IP,IEL) — no REDUCTION needed.
-
-      DO  5000  IP=1, NSYS
-      DO  5000  IEL=1,  NELEM_TOTAL
- 
-       DO  KEL=1,  TNELEM
-          DDMAT(IEL,IP)=DDMAT(IEL,IP)+BDMAT(KEL,IP)*AMAT(KEL,IEL,IP)
-       ENDDO
-
-5000  CONTINUE
-
-!$OMP END DO NOWAIT
-!$OMP END PARALLEL
+      DO IP=1, NSYS
+       CALL NORMAL_RHS(AMAT(:,:,IP),TNELEM,NELEM_TOTAL,BDMAT(:,IP),1,DDMAT(:,IP))
+      ENDDO
 
       RETURN
       END SUBROUTINE ASSB_DBC_IRR_MULTI

@@ -25,12 +25,16 @@ MODULE SingularIntgrMulti
    USE Const_mod
    USE PanelMesh_mod
    USE Inerfs_mod
+   USE INFG3D_Open
+   USE FinGreen3D_Open
+   USE SingularIntgr, ONLY: WAVE_PART_KERNEL, WAVE_PART_CELLS
 
    IMPLICIT NONE
 
       ! ..... Public Subroutines ...................................................................................................
 
    PUBLIC :: IMAGE_TERM_EXACT_MULTI
+   PUBLIC :: WAVE_PART_PANEL_MULTI
    PUBLIC :: SGLINTBD_MULTI_TRI
    PUBLIC :: SGLINTBD_MULTI_QUAD
    PUBLIC :: SGLINTBD_MULTI_TRI2
@@ -82,6 +86,30 @@ CONTAINS
 
       RETURN
       END SUBROUTINE IMAGE_TERM_EXACT_MULTI
+
+!-------------------------------------------------------------------------------
+!     WAVE_PART_PANEL for the combined multi-body arrays; the quadrature and the choice of cells are those of the
+!     single-body path (SingularIntgr).
+!       XF   field point, already reflected for the symmetry image
+!       JEL  source panel, in the combined hull arrays
+!-------------------------------------------------------------------------------
+      SUBROUTINE WAVE_PART_PANEL_MULTI(XF,JEL,V,WVN,NK,H,GINT)
+      IMPLICIT NONE
+
+      INTEGER,INTENT(IN):: JEL,NK
+      REAL*8,INTENT(IN):: XF(3),V,WVN(NK),H
+      COMPLEX*16,INTENT(OUT):: GINT(4)
+      INTEGER:: K
+      REAL*8:: A(4,3)
+
+      DO K=1,NCN_MULTI_COMB(JEL)
+       A(K,:)=XYZ_GLOBAL_MULTI_COMB(NCON_MULTI_COMB(JEL,K),:)
+      ENDDO
+      IF (NCN_MULTI_COMB(JEL).EQ.3) A(4,:)=A(3,:)
+      CALL WAVE_PART_KERNEL(A,XF,WAVE_PART_CELLS(A,XF),V,WVN,NK,H,GINT)
+
+      RETURN
+      END SUBROUTINE WAVE_PART_PANEL_MULTI
 
 !-------------------------------------------------------------------------------
 !          Evaluation of 1/r singular integrals in Constant Panel Method  

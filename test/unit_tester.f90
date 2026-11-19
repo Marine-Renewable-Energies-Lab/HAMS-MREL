@@ -36,6 +36,9 @@ program unit_tester
     use test_qtf_direct, only : collect_qtf_direct
     use test_qtf_direct_fs, only : collect_qtf_direct_fs
     use test_qtf_direct_field, only : collect_qtf_direct_field
+    use test_lid_wave_part, only : collect_lid_wave_part
+    use test_normal_equations, only : collect_normal_equations
+    use test_wamit_scaling, only : collect_wamit_scaling
 
     implicit none
     integer :: stat, is
@@ -80,7 +83,10 @@ program unit_tester
         new_testsuite("partial_waves", collect_partial_waves), &
         new_testsuite("qtf_direct", collect_qtf_direct), &
         new_testsuite("qtf_direct_fs", collect_qtf_direct_fs), &
-        new_testsuite("qtf_direct_field", collect_qtf_direct_field) &
+        new_testsuite("qtf_direct_field", collect_qtf_direct_field), &
+        new_testsuite("lid_wave_part", collect_lid_wave_part), &
+        new_testsuite("normal_equations", collect_normal_equations), &
+        new_testsuite("wamit_scaling", collect_wamit_scaling) &
     ]
 
     stat = 0
@@ -105,7 +111,8 @@ program unit_tester
                                      .and. testsuites(is)%name /= "qtf_direct" &
                                      .and. testsuites(is)%name /= "qtf_direct_fs" &
                                      .and. testsuites(is)%name /= "qtf_field_serial" &
-                                     .and. testsuites(is)%name /= "qtf_direct_field"))
+                                     .and. testsuites(is)%name /= "qtf_direct_field" &
+                                     .and. testsuites(is)%name /= "lid_wave_part"))
     end do
 
     if (stat > 0) then
