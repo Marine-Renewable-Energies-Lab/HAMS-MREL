@@ -97,6 +97,17 @@ MODULE QTFDriver
    ! with qtf_terms = full FS_inner and FS_outer) of every row in QTF_PotentialTermsSum.txt. The two routes give one .11s.
    ! The difference stores (tpot, tdir and their parts) are allocated only with the difference QTF (qtf = 1 or 3).
    !
+   ! Phase 6c, qtf_motion = 1: the second-order motion xi2 of the free bodies at every row of .11d and .11s (and with
+   ! qtf_direct = 1 of .12d and .12s), from the force of that row: per Omega of the list, the added mass and damping from
+   ! psi (radiation_coefficients of QTFMotion), the matrix of the equation of motion with the body matrices that qtf_init
+   ! is given (mass, hydrostatic restoring, external stiffness and linear damper: B(Omega) + BLNR only, ruling R5) and one
+   ! solve over every pair of that Omega, per kernel and route (motion_part, into xi2 and xi2_sum). On the difference
+   ! diagonal Omega = 0 the equation is static, (C + K_ext) xi2 = F (R6). An Omega whose matrix has rcond < 1e-12 is logged
+   ! with the modes without restoring, and its rows are left out of the motion files (R6). qtf_finish writes
+   ! QTF_Motion.11d, .11s (and .12d, .12s): the rows of the force file in its order, scaled by A^2/L (translations) and
+   ! A^2/L^2 (rotations) and conjugated as .10d (R4), after a header that names the route and what is left out. A fixed
+   ! body (motion_state = fixed) gets none: qtf_init logs it and allocates nothing for the motion.
+   !
    ! A psi with NaN or Inf (a radiation solve that failed) is kept, but counted and logged by qtf_keep_psi, and every pair
    ! whose terms are not finite is counted by potential_part. The files are still written (.10d does not use psi); the main
    ! program ends with exit code 1 when qtf_nonfinite_psi() or qtf_nonfinite_pairs() is not zero, as for first-order NaN.
@@ -108,7 +119,9 @@ MODULE QTFDriver
    USE PartialWaves, ONLY: pw_set
    USE NearFieldDrift, ONLY: near_field_pair, KERNEL_DIFF, KERNEL_SUM
    USE SecondOrderOutput, ONLY: write_qtf_row, write_qtf_terms_row, write_qtf_terms_header, write_direct_terms_header, &
-                                write_direct_sum_terms_header, write_potential_sum_terms_header
+                                write_direct_sum_terms_header, write_potential_sum_terms_header, write_motion_row, &
+                                write_motion_header
+   USE QTFMotion, ONLY: radiation_coefficients, motion_matrix, motion_solve_omega
    USE QTFPotential, ONLY: potential_pair, psi_surface_gradient, psi_waterline, NPOT_TERMS
    USE QTFDirect, ONLY: direct_at_omega, direct_fs_data
    USE QTFField, ONLY: qfield_direct_active, qfield_direct_points, qfield_keep_direct
@@ -125,6 +138,7 @@ MODULE QTFDriver
    PUBLIC :: qtf_direct_sum_load, qtf_direct_diff_load, qtf_indirect_sum_load, potential_part_sum, psi_bad_files
    PUBLIC :: qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, qtf_set_edge_weights
    PUBLIC :: qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active
+   PUBLIC :: potential_part, qtf_motion_part, qtf_motion_load
 
    LOGICAL :: active = .FALSE.
    INTEGER :: kind_qtf = 0, nbeta = 0, nkept = 0, all_headings_pairs = 0
@@ -194,6 +208,19 @@ MODULE QTFDriver
    COMPLEX(8), ALLOCATABLE :: fs_psi(:, :, :)            ! (n_fs, 6*nbody, nneed), psi_k at the inner points, as psi_store
    TYPE(pw_set), ALLOCATABLE :: fs_pw_psi(:, :)          ! (6*nbody, nneed), partial waves of each psi_k
    LOGICAL, ALLOCATABLE :: fs_psi_kept(:)                ! (nneed)
+   ! Second-order motion of the free bodies (qtf_motion = 1, Phase 6c); route 1 is the indirect force (.11d, .11s), route 2
+   ! the direct one (.12d, .12s, qtf_direct = 1)
+   LOGICAL :: mot_active = .FALSE.                       ! the QTF_Motion files are written
+   INTEGER :: mot_nroute = 0                             ! 1, or 2 with qtf_direct = 1
+   REAL(8), ALLOCATABLE :: mot_mass(:, :), mot_c(:, :), mot_k(:, :), mot_b(:, :)   ! (6*nbody, 6*nbody): M, C, K_ext, BLNR
+   COMPLEX(8), ALLOCATABLE :: xi2(:, :, :, :, :)         ! (6*nbody, nfreq, nfreq, heading pairs, mot_nroute), difference
+   COMPLEX(8), ALLOCATABLE :: xi2_sum(:, :, :, :, :)     ! as xi2, sum; both e^{-i Omega t}, unscaled
+   ! Per Omega of the list, index 0 for Omega = 0 (the difference diagonal): rcond >= 1e-12 (its rows are written), the
+   ! rcond, and the modes without restoring when it is not
+   LOGICAL, ALLOCATABLE :: mot_ok(:)                     ! (0:nneed)
+   REAL(8), ALLOCATABLE :: mot_rcond(:)                  ! (0:nneed)
+   LOGICAL, ALLOCATABLE :: mot_free(:, :)                ! (6*nbody, 0:nneed)
+   LOGICAL, ALLOCATABLE :: mot_solved(:)                 ! (0:nneed), the Omega has rows and was solved
    ! Non-finite results of the potential part, over the run (reset by qtf_init, kept after qtf_finish for the exit code)
    INTEGER :: n_bad_psi = 0                              ! difference frequencies whose psi has NaN or Inf
    INTEGER :: n_bad_pairs = 0                            ! frequency and heading pairs whose T_pot has NaN or Inf
@@ -201,7 +228,7 @@ MODULE QTFDriver
 CONTAINS
 
    SUBROUTINE qtf_init(opts, nfreq, beta_in_deg, nwl, n_panels, nbody, outputdir, omegas_main, fs_pts, fs_centre, fs_radius, &
-                       fs_depth, fs_mmax, fs_nev, fs_np_circle, geom, g, irsp)
+                       fs_depth, fs_mmax, fs_nev, fs_np_circle, geom, g, irsp, mass, c_hyd, k_ext, b_ext)
       ! Allocates the whole store for up to nfreq frequencies, the headings beta_in_deg, n_panels panels and nbody bodies,
       ! so that a run that does not fit stops here, before the first-order solves. outputdir holds Wamit_format.
       ! omegas_main (rad/s), the nfreq frequencies of the QTF grid, is needed for qtf_terms = body: the store then also holds
@@ -212,6 +239,9 @@ CONTAINS
       ! geom, g and irsp (Phase 7c-2, the sum frequency of the direct solve): with irsp = 0 the sum pairs at or above the
       ! estimate of the lowest irregular frequency (irregular_frequency_estimate) are left out of the list and of the pairs,
       ! with a warning. Without them no such cutoff applies.
+      ! mass, c_hyd, k_ext, b_ext (Phase 6c, needed with qtf_motion = 1 and a free body): the body mass matrix, the
+      ! hydrostatic restoring, the external stiffness and the external linear damping, each (6 nbody, 6 nbody) and
+      ! block-diagonal over the bodies (MATX, CRS, KSTF, BLNR, or their _MULTI forms)
       TYPE(so_options), INTENT(IN) :: opts
       INTEGER, INTENT(IN) :: nfreq, nwl, n_panels, nbody
       REAL(8), INTENT(IN) :: beta_in_deg(:)
@@ -223,6 +253,7 @@ CONTAINS
       TYPE(surface_geom), INTENT(IN), OPTIONAL :: geom
       REAL(8), INTENT(IN), OPTIONAL :: g
       INTEGER, INTENT(IN), OPTIONAL :: irsp
+      REAL(8), INTENT(IN), OPTIONAL :: mass(:, :), c_hyd(:, :), k_ext(:, :), b_ext(:, :)
       INTEGER :: st, i, b
       REAL(8) :: sum_top
 
@@ -233,6 +264,11 @@ CONTAINS
       diff_on = opts%qtf == 1 .OR. opts%qtf == 3
       sum_on = opts%qtf >= 2 .AND. opts%qtf_terms >= QTF_TERMS_BODY
       body_active = opts%qtf_terms >= QTF_TERMS_BODY .AND. (diff_on .OR. sum_on)
+      ! The motion needs the potential part (validate_second_order checks qtf_terms and qtf) and a free body: a fixed one
+      ! does not move, so nothing is computed for it (plan review focus 2), and this is the one log line that says so
+      IF (opts%qtf_motion == 1 .AND. opts%motion_fixed) &
+         WRITE (*, '(a)') ' QTF note: qtf_motion = 1 with motion_state = fixed: no second-order motion is computed.'
+      mot_active = opts%qtf_motion == 1 .AND. .NOT. opts%motion_fixed .AND. body_active
       IF (body_active) THEN
          IF (.NOT. PRESENT(omegas_main)) THEN
             WRITE (*, '(a)') ' QTF: qtf_init needs the main-grid frequencies for qtf_terms = body.'
@@ -365,8 +401,49 @@ CONTAINS
             tdir_fs = (0D0, 0D0)
          END IF
       END IF
+      CALL free_motion_stores()
+      mot_active = opts%qtf_motion == 1 .AND. .NOT. opts%motion_fixed .AND. body_active
+      IF (mot_active) CALL init_motion()
 
    CONTAINS
+
+      SUBROUTINE init_motion()
+         ! The body matrices and the stores of the second-order motion (qtf_motion = 1, Phase 6c): xi2 with the difference
+         ! QTF, xi2_sum with the sum, one slice per heading pair and route
+         INTEGER :: nmode
+
+         nmode = 6*nbody
+         IF (.NOT. (PRESENT(mass) .AND. PRESENT(c_hyd) .AND. PRESENT(k_ext) .AND. PRESENT(b_ext))) THEN
+            WRITE (*, '(a)') ' QTF: qtf_init needs the mass, restoring, stiffness and damping matrices for qtf_motion = 1.'
+            ERROR STOP 1
+         END IF
+         IF (ANY(SHAPE(mass) /= [nmode, nmode]) .OR. ANY(SHAPE(c_hyd) /= [nmode, nmode]) .OR. &
+             ANY(SHAPE(k_ext) /= [nmode, nmode]) .OR. ANY(SHAPE(b_ext) /= [nmode, nmode])) THEN
+            WRITE (*, '(a)') ' QTF: the body matrices of qtf_motion = 1 must be 6 nbody x 6 nbody.'
+            ERROR STOP 1
+         END IF
+         mot_mass = mass
+         mot_c = c_hyd
+         mot_k = k_ext
+         mot_b = b_ext
+         mot_nroute = MERGE(2, 1, direct_active)
+         IF (diff_on) THEN
+            ALLOCATE (xi2(nmode, nfreq, nfreq, heading_pairs(nbeta), mot_nroute), STAT=st)
+            IF (st /= 0) CALL out_of_memory(body=.TRUE.)
+            xi2 = (0D0, 0D0)
+         END IF
+         IF (sum_on) THEN
+            ALLOCATE (xi2_sum(nmode, nfreq, nfreq, heading_pairs(nbeta), mot_nroute), STAT=st)
+            IF (st /= 0) CALL out_of_memory(body=.TRUE.)
+            xi2_sum = (0D0, 0D0)
+         END IF
+         ALLOCATE (mot_ok(0:SIZE(psi_need)), mot_rcond(0:SIZE(psi_need)), mot_free(nmode, 0:SIZE(psi_need)), &
+                   mot_solved(0:SIZE(psi_need)))
+         mot_ok = .FALSE.
+         mot_rcond = 0D0
+         mot_free = .FALSE.
+         mot_solved = .FALSE.
+      END SUBROUTINE init_motion
 
       SUBROUTINE init_free_surface()
          ! The free-surface store of qtf_terms = full, touched (default initialisation and zeros) so that it is taken now
@@ -487,6 +564,7 @@ CONTAINS
          IF (opts%qtf_terms == QTF_TERMS_BODY) THEN
             WRITE (*, '(a)') ' QTF warning: qtf_terms = body with the sum frequency leaves out the free-surface integral. The'
             WRITE (*, '(a)') ' sum QTF without it is not usable (WAMIT advises against it); use qtf_terms = full.'
+            IF (mot_active) WRITE (*, '(a)') ' The same holds for QTF_Motion.11s, the motion from that force.'
          END IF
          IF (sum_cut_irr < HUGE(1D0)) THEN
             nleft = 0
@@ -503,6 +581,7 @@ CONTAINS
                   ntot, ' pairs (i <= j)'//TRIM(also)//'.'
                WRITE (*, '(a)') ' Set If_remove_irr_freq = 1 to keep them. The estimate is a lower bound for a wall-sided hull'// &
                   ' only; near the true irregular frequency a row can still show a spike.'
+               IF (mot_active) WRITE (*, '(a)') ' QTF_Motion.11s leaves out the same pairs.'
             END IF
          END IF
       END SUBROUTINE sum_warnings
@@ -1558,7 +1637,7 @@ CONTAINS
       qtf_kept = nkept
    END FUNCTION qtf_kept
 
-   REAL(8) FUNCTION qtf_stored_mb(n_panels, nwl, nbody, nfreq, nb, npsi, npairs, ncs, nfs, npw, nsum_pairs)
+   REAL(8) FUNCTION qtf_stored_mb(n_panels, nwl, nbody, nfreq, nb, npsi, npairs, ncs, nfs, npw, nsum_pairs, nmotion)
       ! Size of the store in MB for nfreq frequencies and nb headings: 8 complex values per panel, 6 per body, 1 per segment.
       ! With npsi, also psi at npsi difference frequencies: 6*nbody complex values per panel. With npairs heading pairs, also
       ! T_pot: 6*nbody complex values per frequency pair and heading pair. With ncs points of C and F (qtf_b2 = control, with
@@ -1570,13 +1649,16 @@ CONTAINS
       ! per slice, nsum_pairs = 2 x the heading pairs (Phase 6b: 1 x with qtf_direct = 0, where tpot_sum is the only
       ! store). npsi then counts the sum frequencies of the list too, and nfs the points of the inner mesh built for the
       ! largest sum frequency.
+      ! With nmotion (Phase 6c, qtf_motion = 1), the motion stores xi2 and xi2_sum: 6*nbody complex values per frequency
+      ! pair and per slice, nmotion = the routes x the heading pairs, for each of the difference and the sum that is on.
       INTEGER, INTENT(IN) :: n_panels, nwl, nbody, nfreq, nb
-      INTEGER, INTENT(IN), OPTIONAL :: npsi, npairs, ncs, nfs, npw, nsum_pairs
+      INTEGER, INTENT(IN), OPTIONAL :: npsi, npairs, ncs, nfs, npw, nsum_pairs, nmotion
 
       qtf_stored_mb = 16D0*REAL(8*n_panels + 6*nbody + nwl, 8)*REAL(nfreq, 8)*REAL(nb, 8)/1D6
       IF (PRESENT(npsi)) qtf_stored_mb = qtf_stored_mb + 16D0*REAL(n_panels, 8)*REAL(6*nbody, 8)*REAL(npsi, 8)/1D6
       IF (PRESENT(npairs)) qtf_stored_mb = qtf_stored_mb + 16D0*REAL(6*nbody, 8)*REAL(nfreq, 8)**2*REAL(npairs, 8)/1D6
       IF (PRESENT(nsum_pairs)) qtf_stored_mb = qtf_stored_mb + 16D0*REAL(6*nbody, 8)*REAL(nfreq, 8)**2*REAL(nsum_pairs, 8)/1D6
+      IF (PRESENT(nmotion)) qtf_stored_mb = qtf_stored_mb + 16D0*REAL(6*nbody, 8)*REAL(nfreq, 8)**2*REAL(nmotion, 8)/1D6
       IF (PRESENT(ncs)) THEN
          qtf_stored_mb = qtf_stored_mb + 16D0*3D0*REAL(ncs, 8)*REAL(nfreq, 8)*REAL(nb, 8)/1D6
          IF (PRESENT(npsi)) qtf_stored_mb = qtf_stored_mb + 16D0*3D0*REAL(ncs, 8)*REAL(6*nbody, 8)*REAL(npsi, 8)/1D6
@@ -1615,6 +1697,8 @@ CONTAINS
       ! T+_pot with or without the direct solves (Phase 6b), once: with qtf_direct = 1 after them, as QTF_DirectTermsSum.txt
       ! has the parts of tdir_sum beside it; before the writers, which add it to .10s
       IF (body_active .AND. sum_on) CALL potential_part_sum(mesh, geom, refl)
+      ! The motion from the forces of the files, after both potential parts and before the writers
+      IF (mot_active) CALL qtf_motion_part(mesh, geom)
       IF (kind_qtf == 1 .OR. kind_qtf == 3) CALL write_file('/Wamit_format/QTF_Quadratic.10d', KERNEL_DIFF)
       IF (kind_qtf == 2 .OR. kind_qtf == 3) CALL write_file('/Wamit_format/QTF_Quadratic.10s', KERNEL_SUM)
       WRITE (*, '(a,I0,a,I0,a)') ' QTF quadratic part: ', nkept, ' frequencies and ', nbeta, ' headings'
@@ -1629,6 +1713,7 @@ CONTAINS
       CALL free_sum_stores()
       CALL free_control_surface()
       CALL free_free_surface()
+      CALL free_motion_stores()
       active = .FALSE.
       body_active = .FALSE.
       direct_active = .FALSE.
@@ -1647,12 +1732,15 @@ CONTAINS
          ! qtf_direct = 1 QTF_Direct.12d, the same with T_dir in place of T_pot. With the sum on (Phase 7c-2) the sum kernel
          ! writes QTF_Direct.12s: the rows of .10s whose sum is kept (sum_pair_index > 0), in the order of .10s, each
          ! .10s + T+_dir, the diagonal included. Phase 6b: with the sum on, with or without qtf_direct, it also writes
-         ! QTF_Indirect.11s, the same rows, each .10s + T+_pot (tpot_sum, from potential_part_sum), the diagonal included
+         ! QTF_Indirect.11s, the same rows, each .10s + T+_pot (tpot_sum, from potential_part_sum), the diagonal included.
+         ! Phase 6c, qtf_motion = 1: QTF_Motion.11d (.11s) beside .11d (.11s), and with qtf_direct = 1 QTF_Motion.12d (.12s)
+         ! beside .12d (.12s), each the rows of its force file whose Omega has a regular matrix (mot_ok), in the same order
          CHARACTER(LEN=*), INTENT(IN) :: name
          INTEGER, INTENT(IN) :: kernel
          COMPLEX(8) :: total(6, mesh%nbody)
          INTEGER :: unit, unit_indirect, unit_direct, unit_dsum, unit_isum, b1, b2, i, j, b, c, k
-         LOGICAL :: sum_row
+         INTEGER :: unit_mot(2), r, mrow, h
+         LOGICAL :: sum_row, mot_row
 
          OPEN (NEWUNIT=unit, FILE=outdir//name, STATUS='REPLACE', ACTION='WRITE')
          unit_indirect = 0
@@ -1671,6 +1759,12 @@ CONTAINS
          IF (kernel == KERNEL_SUM .AND. body_active .AND. sum_on) THEN
             OPEN (NEWUNIT=unit_isum, FILE=outdir//'/Wamit_format/QTF_Indirect.11s', STATUS='REPLACE', ACTION='WRITE')
          END IF
+         unit_mot = 0
+         IF (mot_active .AND. ((kernel == KERNEL_DIFF .AND. diff_on) .OR. (kernel == KERNEL_SUM .AND. sum_on))) THEN
+            DO r = 1, mot_nroute
+               CALL open_motion_file(kernel, r, unit_mot(r))
+            END DO
+         END IF
          DO b1 = 1, nbeta
             DO b2 = 1, nbeta
                IF (all_headings_pairs == 0 .AND. b1 /= b2) CYCLE
@@ -1682,6 +1776,24 @@ CONTAINS
                      CALL qtf_pair_load(mesh, geom, kernel, i, b1, j, b2, total)
                      sum_row = .FALSE.
                      IF (unit_dsum /= 0 .OR. unit_isum /= 0) sum_row = sum_pair_index(i, j) > 0
+                     ! The row of the motion files: its Omega (0 on the difference diagonal) has a regular matrix
+                     mot_row = .FALSE.
+                     IF (unit_mot(1) /= 0) THEN
+                        IF (kernel == KERNEL_DIFF) THEN
+                           ! 0 is the diagonal; off it, 0 (beyond qtf_max_dw, filtered above) or -1 is no row
+                           mrow = 0
+                           IF (store(i, 1)%omega /= store(j, 1)%omega) THEN
+                              mrow = difference_pair_index(i, j)
+                              IF (mrow == 0) mrow = -1
+                           END IF
+                           mot_row = mrow >= 0
+                        ELSE
+                           mrow = sum_pair_index(i, j)
+                           mot_row = sum_row .AND. mrow > 0
+                        END IF
+                        IF (mot_row) mot_row = mot_ok(mrow)
+                     END IF
+                     h = heading_pair(b1, b2)
                      DO b = 1, mesh%nbody
                         DO c = 1, 6
                            k = 6*(b - 1) + c
@@ -1695,6 +1807,16 @@ CONTAINS
                            ! flip a -0)
                            IF (unit_indirect /= 0) CALL write_sum(unit_indirect, tpot, total(c, b), i, j, b1, b2, 6*(b - 1) + c, c > 3)
                            IF (unit_direct /= 0) CALL write_sum(unit_direct, tdir, total(c, b), i, j, b1, b2, 6*(b - 1) + c, c > 3)
+                           IF (.NOT. mot_row) CYCLE
+                           DO r = 1, mot_nroute
+                              IF (kernel == KERNEL_DIFF) THEN
+                                 CALL write_motion_row(unit_mot(r), store_oufr(i), store_oufr(j), beta_deg(b1), beta_deg(b2), &
+                                                       k, xi2(k, i, j, h, r), refl, c > 3)
+                              ELSE
+                                 CALL write_motion_row(unit_mot(r), store_oufr(i), store_oufr(j), beta_deg(b1), beta_deg(b2), &
+                                                       k, xi2_sum(k, i, j, h, r), refl, c > 3)
+                              END IF
+                           END DO
                         END DO
                      END DO
                   END DO
@@ -1706,8 +1828,38 @@ CONTAINS
          IF (unit_direct /= 0) CLOSE (unit_direct)
          IF (unit_dsum /= 0) CLOSE (unit_dsum)
          IF (unit_isum /= 0) CLOSE (unit_isum)
+         DO r = 1, 2
+            IF (unit_mot(r) /= 0) CLOSE (unit_mot(r))
+         END DO
 
       END SUBROUTINE write_file
+
+      SUBROUTINE open_motion_file(kernel, route, u)
+         ! Opens the motion file of kernel and route and writes its header: the force file it follows and every Omega of
+         ! that kernel whose matrix is singular (mot_ok false), with its rcond and the modes without restoring
+         INTEGER, INTENT(IN) :: kernel, route
+         INTEGER, INTENT(OUT) :: u
+         CHARACTER(LEN=16), PARAMETER :: motion_names(2, 2) = RESHAPE([CHARACTER(LEN=16) :: 'QTF_Motion.11d', &
+                                         'QTF_Motion.12d', 'QTF_Motion.11s', 'QTF_Motion.12s'], [2, 2])
+         CHARACTER(LEN=16), PARAMETER :: force_names(2, 2) = RESHAPE([CHARACTER(LEN=16) :: 'QTF_Indirect.11d', &
+                                         'QTF_Direct.12d', 'QTF_Indirect.11s', 'QTF_Direct.12s'], [2, 2])
+         CHARACTER(LEN=200), ALLOCATABLE :: left(:)
+         INTEGER :: m, kc
+
+         kc = MERGE(1, 2, kernel == KERNEL_DIFF)
+         OPEN (NEWUNIT=u, FILE=outdir//'/Wamit_format/'//TRIM(motion_names(route, kc)), STATUS='REPLACE', ACTION='WRITE')
+         ALLOCATE (left(0))
+         DO m = 0, SIZE(psi_need)
+            IF (m == 0 .AND. kernel /= KERNEL_DIFF) CYCLE
+            IF (m > 0) THEN
+               IF (kernel == KERNEL_DIFF .AND. .NOT. psi_is_diff(m)) CYCLE
+               IF (kernel == KERNEL_SUM .AND. .NOT. psi_is_sum(m)) CYCLE
+            END IF
+            IF (mot_ok(m) .OR. .NOT. mot_solved(m)) CYCLE
+            left = [left, omega_left_text(m)]
+         END DO
+         CALL write_motion_header(u, TRIM(force_names(route, kc)), MERGE('indirect', 'direct  ', route == 1), left)
+      END SUBROUTINE open_motion_file
 
       SUBROUTINE write_sum(u, tpart, base, i, j, b1, b2, k, moment)
          ! One row of .11d or .12d into unit u: the row base of .10d plus the potential part tpart of the same pair and mode
@@ -2114,6 +2266,253 @@ CONTAINS
       END SUBROUTINE check_stored
 
    END SUBROUTINE potential_part_sum
+
+   SUBROUTINE free_motion_stores()
+      mot_active = .FALSE.
+      mot_nroute = 0
+      IF (ALLOCATED(mot_mass)) DEALLOCATE (mot_mass, mot_c, mot_k, mot_b)
+      IF (ALLOCATED(xi2)) DEALLOCATE (xi2)
+      IF (ALLOCATED(xi2_sum)) DEALLOCATE (xi2_sum)
+      IF (ALLOCATED(mot_ok)) DEALLOCATE (mot_ok, mot_rcond, mot_free, mot_solved)
+   END SUBROUTINE free_motion_stores
+
+   SUBROUTINE qtf_motion_part(mesh, geom)
+      ! The second-order motion of every row of the difference and the sum files (Phase 6c, rulings R4 to R6 of its plan),
+      ! Omega by Omega, into xi2 and xi2_sum. Call after potential_part, potential_part_sum and the direct solves, which
+      ! fill the forces; qtf_finish does. Per Omega of the list with rows: A and B from psi (radiation_coefficients, with
+      ! the rho of the states), the matrix of (2) of QTFMotion (motion_matrix), and per kernel and route one solve over the
+      ! force columns of all the pairs of that Omega (motion_solve_omega). Each Omega is logged with its rcond; one below
+      ! 1e-12 (mot_ok false) also with the modes without restoring, and its rows are not written.
+      !
+      ! Omega = 0, the difference diagonal (R6): the equation is static, (C + K_ext) xi2 = F. motion_matrix at Omega = 0
+      ! gives exactly that: the -Omega^2 (M + A) and -i Omega (B + B_ext) terms vanish, so A and B are passed as zero.
+      !
+      ! The sign of Omega (R4). The force of the difference row (i, j) is the coefficient of e^{-i Omega t} with
+      ! Omega = omega_i - omega_j, negative when omega_i < omega_j. The matrix of (2) at Omega < 0 needs A and B at -|Omega|.
+      ! The radiation force (Omega^2 A + i Omega B) xi is the transform of a real response, so its coefficient at -Omega is
+      ! the conjugate of that at Omega: A and B are even in Omega. With M, C, K_ext and B_ext real, the matrix at -|Omega| is
+      ! then conj(lhs), lhs the matrix at |Omega|. conj(lhs) xi = F is lhs conj(xi) = conj(F): the column conj(F) is solved
+      ! with the factors of lhs, and xi is the conjugate of the result. So an Omega has one matrix for both signs.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(surface_geom), INTENT(IN) :: geom
+      INTEGER, ALLOCATABLE :: diff_m(:, :), sum_m(:, :)   ! (nkept, nkept): Omega index of each row, -1 (diff) or 0 (sum): none
+      REAL(8), ALLOCATABLE :: a(:, :), b(:, :)
+      COMPLEX(8), ALLOCATABLE :: lhs(:, :)
+      REAL(8) :: rho
+      INTEGER :: nmode, i, j, m
+
+      IF (.NOT. mot_active) RETURN
+      nmode = 6*mesh%nbody
+      IF (nmode /= SIZE(mot_mass, 1) .OR. nkept /= SIZE(store, 1)) THEN
+         WRITE (*, '(a)') ' QTF motion: the mesh or the kept frequencies do not fit the store of qtf_init.'
+         ERROR STOP 1
+      END IF
+      ! rho of the first-order states, which potential_pair uses for the forces too
+      rho = store(1, 1)%rho
+      ALLOCATE (diff_m(nkept, nkept), sum_m(nkept, nkept), a(nmode, nmode), b(nmode, nmode), lhs(nmode, nmode))
+      diff_m = -1
+      sum_m = 0
+      DO i = 1, nkept
+         DO j = 1, nkept
+            IF (diff_on) THEN
+               IF (store(i, 1)%omega == store(j, 1)%omega) THEN
+                  diff_m(i, j) = 0
+               ELSE
+                  ! 0 (beyond qtf_max_dw: not a row) and -1 (not in the list: potential_part has stopped) are no row
+                  diff_m(i, j) = difference_pair_index(i, j)
+                  IF (diff_m(i, j) == 0) diff_m(i, j) = -1
+               END IF
+            END IF
+            IF (sum_on) sum_m(i, j) = MAX(sum_pair_index(i, j), 0)
+         END DO
+      END DO
+      IF (diff_on) THEN
+         a = 0D0
+         b = 0D0
+         CALL motion_matrix(0D0, mot_mass, a, b, mot_b, mot_c, mot_k, lhs)
+         CALL solve_kernel(KERNEL_DIFF, 0)
+         CALL log_omega(0, 0D0)
+      END IF
+      DO m = 1, SIZE(psi_need)
+         IF (.NOT. (ANY(diff_m == m) .OR. ANY(sum_m == m))) CYCLE
+         CALL radiation_coefficients(mesh, psi_store(:, :, m), psi_need(m), rho, a, b)
+         CALL motion_matrix(psi_need(m), mot_mass, a, b, mot_b, mot_c, mot_k, lhs)
+         IF (ANY(diff_m == m)) CALL solve_kernel(KERNEL_DIFF, m)
+         IF (ANY(sum_m == m)) CALL solve_kernel(KERNEL_SUM, m)
+         CALL log_omega(m, psi_need(m))
+      END DO
+
+   CONTAINS
+
+      SUBROUTINE solve_kernel(kernel, mm)
+         ! Every row of kernel at the Omega of index mm, one motion_solve_omega per route on lhs
+         INTEGER, INTENT(IN) :: kernel, mm
+         INTEGER, ALLOCATABLE :: pairs(:, :)
+         LOGICAL, ALLOCATABLE :: negative(:)
+         COMPLEX(8), ALLOCATABLE :: forces(:, :), xs(:, :)
+         COMPLEX(8) :: f(nmode)
+         REAL(8) :: rcond
+         LOGICAL :: ok
+         INTEGER :: b1, b2, ii, jj, np, p, r, h
+
+         ALLOCATE (pairs(4, nkept*nkept*heading_pairs(nbeta)), negative(nkept*nkept*heading_pairs(nbeta)))
+         np = 0
+         DO b1 = 1, nbeta
+            DO b2 = 1, nbeta
+               IF (all_headings_pairs == 0 .AND. b1 /= b2) CYCLE
+               DO ii = 1, nkept
+                  DO jj = 1, nkept
+                     IF (kernel == KERNEL_DIFF) THEN
+                        IF (diff_m(ii, jj) /= mm) CYCLE
+                     ELSE
+                        IF (sum_m(ii, jj) /= mm) CYCLE
+                     END IF
+                     np = np + 1
+                     pairs(:, np) = [ii, b1, jj, b2]
+                     negative(np) = kernel == KERNEL_DIFF .AND. store(ii, 1)%omega < store(jj, 1)%omega
+                  END DO
+               END DO
+            END DO
+         END DO
+         ALLOCATE (forces(nmode, np), xs(nmode, np))
+         DO r = 1, mot_nroute
+            DO p = 1, np
+               CALL pair_force(mesh, geom, kernel, r, pairs(1, p), pairs(2, p), pairs(3, p), pairs(4, p), f)
+               forces(:, p) = MERGE(CONJG(f), f, negative(p))
+            END DO
+            CALL motion_solve_omega(lhs, forces, xs, ok, rcond)
+            DO p = 1, np
+               h = heading_pair(pairs(2, p), pairs(4, p))
+               IF (kernel == KERNEL_DIFF) THEN
+                  xi2(:, pairs(1, p), pairs(3, p), h, r) = MERGE(CONJG(xs(:, p)), xs(:, p), negative(p))
+               ELSE
+                  xi2_sum(:, pairs(1, p), pairs(3, p), h, r) = xs(:, p)
+               END IF
+            END DO
+         END DO
+         ! The matrix is the same for every route and kernel of the Omega, and so are ok and rcond
+         mot_ok(mm) = ok
+         mot_rcond(mm) = rcond
+         mot_solved(mm) = .TRUE.
+         IF (.NOT. ok) mot_free(:, mm) = free_modes(lhs)
+      END SUBROUTINE solve_kernel
+
+      SUBROUTINE log_omega(mm, om)
+         ! One log line per Omega: its rcond, and when it is below the bound the modes and that its rows are left out
+         INTEGER, INTENT(IN) :: mm
+         REAL(8), INTENT(IN) :: om
+
+         IF (mot_ok(mm)) THEN
+            WRITE (*, '(a,F10.5,a,ES10.3)') ' QTF motion: Omega =', om, ' rad/s, rcond', mot_rcond(mm)
+         ELSE
+            WRITE (*, '(a)') ' QTF motion: '//TRIM(omega_left_text(mm))//'; its pairs are left out of the QTF_Motion files.'
+         END IF
+      END SUBROUTINE log_omega
+
+   END SUBROUTINE qtf_motion_part
+
+   FUNCTION free_modes(lhs) RESULT(free)
+      ! The modes without restoring in a singular matrix of the motion: those whose row or column is zero to rounding
+      ! (1e-12 of the largest entry), as surge, sway and yaw of C + K_ext for an unmoored body (R6)
+      COMPLEX(8), INTENT(IN) :: lhs(:, :)
+      LOGICAL :: free(SIZE(lhs, 1))
+      REAL(8) :: bound
+      INTEGER :: k
+
+      bound = 1D-12*MAXVAL(ABS(lhs))
+      DO k = 1, SIZE(lhs, 1)
+         free(k) = ALL(ABS(lhs(k, :)) <= bound) .OR. ALL(ABS(lhs(:, k)) <= bound)
+      END DO
+   END FUNCTION free_modes
+
+   FUNCTION omega_left_text(m) RESULT(text)
+      ! "Omega = ... rad/s, rcond ... < 1e-12 (modes 1 2 6 without restoring)" for the Omega of index m (0: Omega = 0),
+      ! for the log and the header of the motion files. The modes are I of the files (6 (body - 1) + mode).
+      INTEGER, INTENT(IN) :: m
+      CHARACTER(LEN=200) :: text
+      CHARACTER(LEN=12) :: num
+      CHARACTER(LEN=:), ALLOCATABLE :: modes
+      REAL(8) :: om
+      INTEGER :: k
+
+      om = 0D0
+      IF (m > 0) om = psi_need(m)
+      modes = ''
+      DO k = 1, SIZE(mot_free, 1)
+         IF (.NOT. mot_free(k, m)) CYCLE
+         WRITE (num, '(I0)') k
+         modes = modes//' '//TRIM(num)
+      END DO
+      IF (LEN(modes) > 0) THEN
+         modes = '(modes'//modes//' without restoring)'
+      ELSE
+         modes = '(no single mode without restoring)'
+      END IF
+      WRITE (text, '(a,F10.5,a,ES10.3,a)') 'Omega =', om, ' rad/s, rcond', mot_rcond(m), ' < 1e-12 '//modes
+   END FUNCTION omega_left_text
+
+   SUBROUTINE pair_force(mesh, geom, kernel, route, i, b1, j, b2, f)
+      ! The force f(6 nbody) of the row (i, b1, j, b2) of the file of kernel and route, unscaled, e^{-i Omega t}: the
+      ! quadratic part (qtf_pair_load) plus T_pot (route 1) or T_dir (route 2), or for the sum T+_pot or T+_dir. The same
+      ! sums as write_file, element by element, so that the force is the one of the file to the bit; on the difference
+      ! diagonal the potential part is left out, as write_sum does.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(surface_geom), INTENT(IN) :: geom
+      INTEGER, INTENT(IN) :: kernel, route, i, b1, j, b2
+      COMPLEX(8), INTENT(OUT) :: f(:)
+      COMPLEX(8) :: total(6, mesh%nbody)
+      INTEGER :: h
+
+      CALL qtf_pair_load(mesh, geom, kernel, i, b1, j, b2, total)
+      ! Mode k = 6 (body - 1) + c, as the rows of the files
+      f = RESHAPE(total, [6*mesh%nbody])
+      h = heading_pair(b1, b2)
+      IF (kernel == KERNEL_DIFF) THEN
+         IF (store(i, b1)%omega == store(j, b2)%omega) RETURN
+         IF (route == 1) THEN
+            f = f + tpot(:, i, j, h)
+         ELSE
+            f = f + tdir(:, i, j, h)
+         END IF
+      ELSE
+         IF (route == 1) THEN
+            f = f + tpot_sum(:, i, j, h)
+         ELSE
+            f = f + tdir_sum(:, i, j, h)
+         END IF
+      END IF
+   END SUBROUTINE pair_force
+
+   SUBROUTINE qtf_motion_load(mesh, geom, kernel, route, i, b1, j, b2, xi, f, ok)
+      ! For the tests: xi2 (6 nbody) of the stored row (frequency i, heading b1; frequency j, heading b2) of kernel and
+      ! route as qtf_motion_part left it, the force f it was solved for (pair_force) and ok, the regularity of its Omega.
+      ! Call after qtf_motion_part and before qtf_finish, which frees the stores.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(surface_geom), INTENT(IN) :: geom
+      INTEGER, INTENT(IN) :: kernel, route, i, b1, j, b2
+      COMPLEX(8), INTENT(OUT) :: xi(:), f(:)
+      LOGICAL, INTENT(OUT) :: ok
+      INTEGER :: m
+
+      IF (.NOT. mot_active .OR. route < 1 .OR. route > mot_nroute) THEN
+         WRITE (*, '(a)') ' QTF motion: qtf_motion_load needs qtf_motion = 1 and a route of the run.'
+         ERROR STOP 1
+      END IF
+      CALL pair_force(mesh, geom, kernel, route, i, b1, j, b2, f)
+      ok = .FALSE.
+      IF (kernel == KERNEL_DIFF) THEN
+         xi = xi2(:, i, j, heading_pair(b1, b2), route)
+         ! 0 is the diagonal; a pair beyond qtf_max_dw (difference_pair_index 0) is no row
+         m = 0
+         IF (store(i, 1)%omega /= store(j, 1)%omega) m = MERGE(-1, difference_pair_index(i, j), &
+                                                              difference_pair_index(i, j) == 0)
+         IF (m >= 0) ok = mot_ok(m)
+      ELSE
+         xi = xi2_sum(:, i, j, heading_pair(b1, b2), route)
+         m = sum_pair_index(i, j)
+         IF (m > 0) ok = mot_ok(m)
+      END IF
+   END SUBROUTINE qtf_motion_load
 
    SUBROUTINE out_of_memory(body, fs)
       ! body: the store of qtf_terms = body (psi, T_pot, the fields on C and F), whose size the log gave before; fs: also

@@ -157,10 +157,7 @@ CONTAINS
          msg = 'qtf_motion = 1 needs qtf = 1, 2 or 3 in SecondOrder.in.'
       END IF
       IF (.NOT. ok) RETURN
-
-      ! A fixed body does not move, so there is no second-order motion to compute; say so once
-      IF (opts%qtf_motion == 1 .AND. opts%motion_fixed) &
-         WRITE (*, '(a)') ' QTF note: qtf_motion = 1 with motion_state = fixed: no second-order motion is computed.'
+      ! qtf_motion = 1 with motion_state = fixed is accepted: qtf_init of QTFDriver skips the motion and logs it once
 
       opts%active = opts%mean_drift > 0
       ! Without drift_methods the far-field method is used

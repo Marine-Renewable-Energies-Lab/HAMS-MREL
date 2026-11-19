@@ -58,7 +58,8 @@ MODULE SecondOrderDriver
    USE Const_mod, ONLY: G, RHO
    USE HAMS_mod, ONLY: SYBO, IRSP
    USE WaveDyn_mod, ONLY: AMP, BETA, BLNR, H, NBETA, NBODY, NK, NPER, OUFR, TP, V, W1, WK, WVFQ, WVHD, WVNB, AMAS, BDMP, EXFC, &
-                          DSPL, AMAS_MULTI_COMB, BDMP_MULTI_COMB, BLNR_MULTI, EXFC_MULTI_COMB, DSPL_MULTI_COMB
+                          DSPL, AMAS_MULTI_COMB, BDMP_MULTI_COMB, BLNR_MULTI, EXFC_MULTI_COMB, DSPL_MULTI_COMB, BQDR, &
+                          BQDR_MULTI
    USE Body_mod, ONLY: CRS, KSTF, MATX, REFL, XR, XR_MULTI, CRS_MULTI, KSTF_MULTI, MATX_MULTI
    USE PanelMesh_mod, ONLY: DS, DXYZ_P, GEONRM_P, GEONRM_MULTI_COMB, ISX, ISY, NCN, NCON, NELEM, NSYS, PNSZ, XYZ, XYZ_P, &
                             DS_MULTI_COMB, DXYZ_MULTI_COMB, NCN_MULTI_COMB, NCON_MULTI_COMB, NELEM_MULTI, NTND_MULTI, &
@@ -334,17 +335,22 @@ CONTAINS
       ! The QTF store with psi at the difference frequencies of the main grid, and QTF_PsiCheck.txt (write_terms >= 1).
       ! The main-grid frequencies come from the input values (WVNB, before the frequency loop converts them). With
       ! qtf_terms = full also the inner free surface and the circle (fs_setup), and their share of the store.
+      ! With qtf_motion = 1 (Phase 6c) also the body matrices of the second-order motion, as so_after_motion_single and
+      ! so_after_motion_multi take them: MATX, CRS, KSTF and BLNR of one body, or the _MULTI forms block-diagonally, and
+      ! the share of the motion stores.
       TYPE(so_options), INTENT(IN) :: opts
       INTEGER, INTENT(IN) :: nqtf
       CHARACTER(LEN=*), INTENT(IN) :: inputdir, outputdir
-      REAL(8) :: omegas(nqtf), mb, mb_cs, mb_fs, mb_dfs
+      REAL(8) :: omegas(nqtf), mb, mb_cs, mb_fs, mb_dfs, mb_mot
+      REAL(8), ALLOCATABLE :: mot_mass(:, :), mot_c(:, :), mot_k(:, :), mot_b(:, :)
+      LOGICAL :: motion, bqdr_on
       INTEGER :: dmg, dnev
       REAL(8), ALLOCATABLE :: need(:)
       INTEGER, ALLOCATABLE :: reuse(:)
       LOGICAL, ALLOCATABLE :: is_diff(:), is_sum(:)
       REAL(8) :: cut_irr, sum_top
       LOGICAL :: want_sum
-      INTEGER :: i, first, nneed, nreuse, npairs, nmask, nsum_pairs
+      INTEGER :: i, first, nneed, nreuse, npairs, nmask, nsum_pairs, nmotion
 
       first = MERGE(2, 0, SYBO == 1)
       DO i = 1, nqtf
@@ -370,10 +376,17 @@ CONTAINS
       ! The sum stores (Phase 7c-2): tdir_sum and tpot_sum, one slice each per heading pair
       nsum_pairs = 0
       IF (want_sum) nsum_pairs = MERGE(2, 1, opts%qtf_direct == 1)*npairs   ! tpot_sum, and tdir_sum with the direct solve
+      ! The motion stores (Phase 6c): xi2 with the difference, xi2_sum with the sum, one slice per heading pair and route
+      ! (the indirect, and the direct with qtf_direct = 1); none for a fixed body
+      motion = opts%qtf_motion == 1 .AND. .NOT. opts%motion_fixed
+      nmotion = 0
+      IF (motion) nmotion = MERGE(2, 1, opts%qtf_direct == 1)*npairs*(MERGE(1, 0, opts%qtf == 1 .OR. opts%qtf == 3) + &
+                                                                     MERGE(1, 0, want_sum))
       ! qtf_direct = 1 keeps T_dir beside T_pot, of the same size; both only with the difference QTF (qtf = 1 or 3)
       IF (opts%qtf_direct == 1) npairs = 2*npairs
       IF (.NOT. (opts%qtf == 1 .OR. opts%qtf == 3)) npairs = 0
-      mb = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs, nsum_pairs=nsum_pairs)
+      mb = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs, nsum_pairs=nsum_pairs, &
+                         nmotion=nmotion)
       fs_terms = uses_fs(opts)
       mb_dfs = 0D0
       IF (fs_terms) THEN
@@ -384,7 +397,7 @@ CONTAINS
             CALL fs_setup(opts, inputdir, omegas)
          END IF
          mb_fs = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs, nfs=fs_pts%n, &
-                               npw=(2*fs_mmax + 1)*(fs_nev + 1), nsum_pairs=nsum_pairs) - mb
+                               npw=(2*fs_mmax + 1)*(fs_nev + 1), nsum_pairs=nsum_pairs, nmotion=nmotion) - mb
          WRITE (*, '(a,F10.1,a,I0,a)') ' QTF free surface: the store takes', mb_fs, ' MB more for the fields at the ', &
             fs_pts%n, ' inner points and the partial waves (qtf_terms = full)'
          IF (opts%qtf_direct == 1) THEN
@@ -398,19 +411,50 @@ CONTAINS
       IF (b2_control) THEN
          ! The share of C and F is what the points add to the store, so qtf_stored_mb is the one formula
          mb_cs = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs, ncs=b2_pts%n, &
-                               nsum_pairs=nsum_pairs) - mb
+                               nsum_pairs=nsum_pairs, nmotion=nmotion) - mb
          WRITE (*, '(a,F10.1,a,F10.1,a,I0,a)') ' QTF: with psi and the potential part the store takes', mb + mb_dfs + mb_cs, &
             ' MB, of which', mb_cs, ' MB for the fields at the ', b2_pts%n, ' points of C and F (qtf_b2 = control)'
       ELSE
          WRITE (*, '(a,F10.1,a)') ' QTF: with psi and the potential part the store takes', mb + mb_dfs, ' MB'
       END IF
+      IF (motion) THEN
+         mb_mot = qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs, &
+                                nsum_pairs=nsum_pairs, nmotion=nmotion) - &
+                  qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs, nsum_pairs=nsum_pairs)
+         WRITE (*, '(a,F10.1,a)') ' QTF motion: of which', mb_mot, ' MB for the second-order motions (qtf_motion = 1)'
+      END IF
+      ! The body matrices of the motion, (6 nbody, 6 nbody), as the first-order equation of motion has them
+      IF (multi_arrays) THEN
+         mot_mass = block_diagonal(MATX_MULTI)
+         mot_c = block_diagonal(CRS_MULTI)
+         mot_k = block_diagonal(KSTF_MULTI)
+         mot_b = block_diagonal(BLNR_MULTI)
+      ELSE
+         mot_mass = MATX
+         mot_c = CRS
+         mot_k = KSTF
+         mot_b = BLNR
+      END IF
+      ! R5: B_quad is a linearisation on |xi1| with no second-order form, so the motion uses B(Omega) + BLNR only
+      IF (motion) THEN
+         IF (multi_arrays) THEN
+            bqdr_on = ANY(BQDR_MULTI /= 0D0)
+         ELSE
+            bqdr_on = ANY(BQDR /= 0D0)
+         END IF
+         IF (bqdr_on) THEN
+            WRITE (*, '(a)') ' QTF warning: the quadratic damping BQDR is not used by the second-order motion (qtf_motion = 1),'
+            WRITE (*, '(a)') ' which has no second-order form of it; the motion takes B(Omega) + BLNR. Give the low-frequency'
+            WRITE (*, '(a)') ' damping of the mooring or the hull as BLNR if it is needed there.'
+         END IF
+      END IF
       IF (fs_terms) THEN
          CALL qtf_init(opts, nqtf, WVHD(1:NBETA), geom%nwl, mesh%n, mesh%nbody, outputdir, omegas_main=omegas, fs_pts=fs_pts, &
                        fs_centre=fs_centre, fs_radius=fs_radius, fs_depth=H, fs_mmax=fs_mmax, fs_nev=fs_nev, &
-                       fs_np_circle=fs_np, geom=geom, g=G, irsp=IRSP)
+                       fs_np_circle=fs_np, geom=geom, g=G, irsp=IRSP, mass=mot_mass, c_hyd=mot_c, k_ext=mot_k, b_ext=mot_b)
       ELSE
          CALL qtf_init(opts, nqtf, WVHD(1:NBETA), geom%nwl, mesh%n, mesh%nbody, outputdir, omegas_main=omegas, geom=geom, g=G, &
-                       irsp=IRSP)
+                       irsp=IRSP, mass=mot_mass, c_hyd=mot_c, k_ext=mot_k, b_ext=mot_b)
       END IF
       IF (qtf_psi_count() /= nneed .OR. qtf_psi_count(reused=.TRUE.) /= nreuse) THEN
          WRITE (*, '(a)') ' QTF: qtf_init found other difference frequencies than the log above.'
@@ -432,6 +476,22 @@ CONTAINS
             WRITE (*, '(a)') ' QTF_Indirect.11s: body forcing and the free-surface integral (qtf_terms = full).'
          ELSE
             WRITE (*, '(a)') ' QTF_Indirect.11s: body forcing only, the free-surface integral is omitted.'
+         END IF
+      END IF
+      IF (motion .AND. (opts%qtf == 1 .OR. opts%qtf == 3)) THEN
+         IF (opts%qtf_direct == 1) THEN
+            WRITE (*, '(a)') ' QTF_Motion.11d and .12d: the second-order motion from the force of QTF_Indirect.11d and'// &
+               ' QTF_Direct.12d.'
+         ELSE
+            WRITE (*, '(a)') ' QTF_Motion.11d: the second-order motion from the force of QTF_Indirect.11d.'
+         END IF
+      END IF
+      IF (motion .AND. opts%qtf >= 2) THEN
+         IF (opts%qtf_direct == 1) THEN
+            WRITE (*, '(a)') ' QTF_Motion.11s and .12s: the second-order motion from the force of QTF_Indirect.11s and'// &
+               ' QTF_Direct.12s.'
+         ELSE
+            WRITE (*, '(a)') ' QTF_Motion.11s: the second-order motion from the force of QTF_Indirect.11s.'
          END IF
       END IF
       IF (opts%qtf_direct == 1) THEN

@@ -17,9 +17,15 @@ module test_qtf_motion
   use AssbMatx, only : ASSB_DBC, DIFFRACTION_SOLVER
   use PotentWavForce, only : RFORCE, EFORCE
   use PotentWavForceMulti, only : RFORCE_MULTI
-  use SecondOrderTypes, only : panel_mesh
+  use SecondOrderTypes, only : panel_mesh, so_options, surface_geom, first_order_state, QTF_TERMS_BODY
   use FirstOrderState, only : radiation_psi
   use QTFMotion, only : radiation_coefficients, motion_matrix, motion_solve_omega
+  use QTFDriver, only : qtf_init, qtf_keep, qtf_keep_psi, qtf_radiation_omegas, qtf_finish, potential_part, &
+                        qtf_motion_part, qtf_motion_load
+  use NearFieldDrift, only : KERNEL_DIFF
+  use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
+  use IO, only : CreateDirectory
+  use test_qtf_potential, only : make_state
   use second_order_fixtures, only : read_pnl_hull
   use test_waterline_field, only : set_wave, load_panels, load_multi
   use test_qtf_direct, only : radiation_at
@@ -112,7 +118,8 @@ contains
       new_unittest("motion_one_dof", test_one_dof), &
       new_unittest("motion_static_diagonal", test_static_diagonal), &
       new_unittest("motion_singular_flagged", test_singular_flagged), &
-      new_unittest("motion_columns_independent", test_columns_independent) &
+      new_unittest("motion_columns_independent", test_columns_independent), &
+      new_unittest("motion_two_bodies_coupled", test_two_bodies_coupled) &
     ]
   end subroutine collect_qtf_motion
 
@@ -630,5 +637,108 @@ contains
     print '(4x,a)', trim(line)
     call check(error, same .and. w <= column_limit, line)
   end subroutine test_columns_independent
+
+  !> Two bodies in one QTF store (Task 4): the two cylinders of load_multi (radius 5, draft 5, 30 m apart, depth 50),
+  !> qtf = 1, qtf_terms = body, grid 0.6, 0.8 rad/s, one heading, and qtf_init with the 12 x 12 block-diagonal body
+  !> matrices that the multi-body adapter of SecondOrderDriver builds. xi2 of the pair (0.8, 0.6) solves the coupled
+  !> system at Omega = 0.2 (backward error |lhs xi - F| / (|lhs| |xi|), infinity norms, 1e-13), lhs from the radiation
+  !> solve of the test. Then only the force on body 2 changes (F(7:12) doubled): xi2 of body 1 changes by more than 1e-3
+  !> of its size, through the off-diagonal body blocks of A and B; with A = B = 0 the same change leaves it as it was
+  !> (1e-14), since M, C, K_ext and B_ext are block-diagonal.
+  subroutine test_two_bodies_coupled(error)
+    type(error_type), allocatable, intent(out) :: error
+    character(len=*), parameter :: root = "hams_test_qtf_motion"
+    real(8), parameter :: w(2) = [0.6d0, 0.8d0], om = 0.2d0, h50 = 50d0
+    real(8), parameter :: m_diag(6) = [4.025d5, 4.025d5, 4.025d5, 2.0d6, 2.0d6, 5.0d6]
+    real(8), parameter :: c_diag(6) = [0d0, 0d0, 7.9d5, 1.5d6, 1.5d6, 0d0]
+    real(8), parameter :: k_diag(6) = [4d4, 4d4, 0d0, 0d0, 0d0, 1d6]
+    real(8), parameter :: b_diag(6) = [2d4, 2d4, 0d0, 0d0, 0d0, 0d0]
+    type(so_options) :: opts
+    type(panel_mesh) :: mesh
+    type(surface_geom) :: geom
+    type(first_order_state) :: s
+    complex(8), allocatable :: wl(:), psi(:, :)
+    real(8), allocatable :: rad(:)
+    real(8) :: mass(12, 12), c_hyd(12, 12), k_ext(12, 12), b_ext(12, 12), a(12, 12), b(12, 12), zero(12, 12)
+    real(8) :: berr, change, change0, rcond, rho_state
+    complex(8) :: xi(12), f(12), lhs(12, 12), fcol(12, 2), xcol(12, 2), xm(6, 2)
+    character(len=:), allocatable :: msg
+    character(len=250) :: line
+    character(len=32) :: os_name
+    logical :: ok
+    integer :: i, md, bd, estat
+
+    call set_wave(h50)
+    NTHREAD = 4
+    ISOLV = 1
+    call load_multi(0, mesh)
+    call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+    call check(error, ok .and. mesh%nbody == 2, "build_surface_geom stopped, or not two bodies")
+    if (allocated(error)) return
+    call CreateDirectory(root//"/Wamit_format", ok)
+    call check(error, ok, "could not create the test folder")
+    if (allocated(error)) return
+    mass = 0d0
+    c_hyd = 0d0
+    k_ext = 0d0
+    b_ext = 0d0
+    zero = 0d0
+    do bd = 0, 1
+      do md = 1, 6
+        mass(6*bd + md, 6*bd + md) = m_diag(md)
+        c_hyd(6*bd + md, 6*bd + md) = c_diag(md)
+        k_ext(6*bd + md, 6*bd + md) = k_diag(md)
+        b_ext(6*bd + md, 6*bd + md) = b_diag(md)
+      end do
+    end do
+    opts%mean_drift = 1; opts%qtf = 1; opts%qtf_terms = QTF_TERMS_BODY; opts%qtf_motion = 1
+    call qtf_init(opts, 2, [0d0], geom%nwl, mesh%n, mesh%nbody, root, omegas_main=w, mass=mass, c_hyd=c_hyd, &
+                  k_ext=k_ext, b_ext=b_ext)
+    do i = 1, 2
+      ! Rigid motions that differ per body and frequency
+      xm(:, 1) = [(0.3d0, 0.1d0), (-0.2d0, 0.4d0), (0.5d0, -0.1d0), (0.02d0, 0.05d0), (-0.04d0, 0.03d0), (0.06d0, -0.02d0)]
+      xm(:, 2) = [(-0.1d0, 0.2d0), (0.3d0, 0d0), (0.2d0, 0.2d0), (-0.03d0, 0.01d0), (0.05d0, 0d0), (0.01d0, 0.04d0)]
+      xm = xm*exp((0d0, 0.7d0)*i)
+      call make_state(mesh, geom, w(i), 0d0, h50, xm, s, wl)
+      call qtf_keep(1, s, wl, w(i))
+    end do
+    rho_state = s%rho
+    rad = qtf_radiation_omegas()
+    call check(error, size(rad) == 1 .and. abs(rad(1) - om) <= 1d-12, "the radiation-only list is not [0.2]")
+    if (allocated(error)) return
+    allocate (psi(mesh%n, 12))
+    call radiation_at(om, .true., mesh%nbase)
+    call radiation_psi(mesh, om, MXPOT_MULTI_COMB, psi)
+    call qtf_keep_psi(om, psi)
+    call potential_part(mesh, geom, 1d0)
+    call qtf_motion_part(mesh, geom)
+    call qtf_motion_load(mesh, geom, KERNEL_DIFF, 1, 2, 1, 1, 1, xi, f, ok)
+    call qtf_finish(mesh, geom, 1d0)
+    call restore_symmetry()
+    call check(error, ok, "Omega = 0.2 is flagged")
+    if (allocated(error)) return
+    call radiation_coefficients(mesh, psi, om, rho_state, a, b)
+    call motion_matrix(om, mass, a, b, b_ext, c_hyd, k_ext, lhs)
+    berr = maxval(abs(matmul(lhs, xi) - f))/(maxval(sum(abs(lhs), dim=2))*maxval(abs(xi)))
+    ! Only body 2's force changes
+    fcol(:, 1) = f
+    fcol(:, 2) = f
+    fcol(7:12, 2) = 2d0*f(7:12)
+    call motion_solve_omega(lhs, fcol, xcol, ok, rcond)
+    change = maxval(abs(xcol(1:6, 2) - xcol(1:6, 1)))/maxval(abs(xcol(1:6, 1)))
+    call motion_matrix(om, mass, zero, zero, b_ext, c_hyd, k_ext, lhs)
+    call motion_solve_omega(lhs, fcol, xcol, ok, rcond)
+    change0 = maxval(abs(xcol(1:6, 2) - xcol(1:6, 1)))/maxval(abs(xcol(1:6, 1)))
+    write (line, '(a,es10.2,a,es10.2,a,es10.2,a,es10.2)') "two bodies: backward error ", berr, &
+      "; body 1 changes by ", change, " with A and B, by ", change0, " without; off-diagonal |A| ", maxval(abs(a(1:6, 7:12)))
+    print '(4x,a)', trim(line)
+    call get_environment_variable("OS", os_name)
+    if (trim(os_name) == "Windows_NT") then
+      call execute_command_line("if exist "//root//" rmdir /s /q "//root, exitstat=estat)
+    else
+      call execute_command_line("rm -rf "//root, exitstat=estat)
+    end if
+    call check(error, berr <= 1d-13 .and. change > 1d-3 .and. change0 <= 1d-14, line)
+  end subroutine test_two_bodies_coupled
 
 end module test_qtf_motion
