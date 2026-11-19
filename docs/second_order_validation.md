@@ -1090,18 +1090,18 @@ HAMS leaves out the 81 pairs with Ω⁺ ≥ 1.995 rad/s, its estimate of the low
 
 **This is open.** It is not known which code is closer to the truth for the OC4 hull at the sum frequency. Possible next checks: a direct-solve run (`qtf_direct = 1`, `.12s`) as an independent HAMS route, and Nemoh with the HAMS circle and inner mesh. Figure: `validation-runs/snellius-qtf-indirectsum/indirectsum_oc4.png`, not copied into the repository.
 
-### OC4 against WAMIT
+### OC4 sum QTF against WAMIT
 
-`validation-runs/snellius-qtf-indirectsum/wamit_check/findings_wamit.md` compares both OC4 runs with the OpenFAST WAMIT sum file `marin_semi.12s` (heading 0, the 150 pairs HAMS writes). It is a different OC4 model (braces, centre of gravity at z = −9.9 m, mass 1.37e7 kg; the runs have z = −13.5 m and 1.31e7 kg). The first-order excitation differs by about 5%, and the difference QTF `.11d` of HAMS against WAMIT's `.12d` has a median of 2.6 / 7.2 / 3.0% (F_x / F_z / M_y), which is the level of the model difference. Median errors against `marin_semi.12s`, F_x / F_z / M_y [measured]:
+`validation-runs/snellius-qtf-indirectsum/wamit_check/findings_wamit.md` compares both OC4 runs with the OpenFAST WAMIT sum file `marin_semi.12s` (heading 0, the 150 pairs HAMS writes). It is a different OC4 model (braces, centre of gravity at z = −9.9 m, mass 1.37e7 kg; the runs have z = −13.5 m and 1.31e7 kg). The first-order excitation differs by about 5%, except heave at 0.40 rad/s (11 against 22), and the difference QTF `.11d` of HAMS against WAMIT's `.12d` has a median of 2.6 / 7.2 / 3.0% (F_x / F_z / M_y), which is the level of the model difference. Median errors against `marin_semi.12s`, F_x / F_z / M_y [measured]:
 
 | Assembly | HAMS | Nemoh |
 | :--- | :--- | :--- |
 | quadratic + body terms | 5.0 / 8.9 / 16% | 7.4 / 7.3 / 16% |
 | total, with the free-surface part | 32 / 108 / 81% | 36 / 96 / 89% |
 
-The WAMIT file matches the quadratic and body terms without the free-surface part, and is 3 to 10 times further off with it. So it appears to hold no free-surface forcing [inferred from the numbers, not from the WAMIT run settings, which are not available]. It cannot settle the HAMS-Nemoh gap, which lies largely in the free-surface part. On the body part the two codes are about equally close to WAMIT. A run of the WAMIT model itself (the full hull, with braces) in both codes is being prepared; it has not been run.
+The WAMIT file matches the quadratic and body terms without the free-surface part, and is 3 to 10 times further off with it. So it appears to hold no free-surface forcing [inferred from the numbers, not from the WAMIT run settings, which are not available]. It cannot settle the HAMS-Nemoh gap, which is in both the body terms (F_x 76 / 13%) and the free-surface terms (50 / 19%), with the larger maximum in the body terms; the file has no free-surface part to test the second. On the body part the two codes are about equally close to WAMIT. A run of the WAMIT model itself (the full hull, with braces) in both codes is being prepared; it has not been run.
 
-### Cost
+### Cost of the indirect sum
 
 Fat_genoa, 24 CPUs billed per job (`findings.md`, cost tables).
 
@@ -1126,10 +1126,10 @@ HAMS without the direct solve took 50 minutes at m1, against 54 minutes for the 
 ### Limits of the checks
 
 - **The exact reference is one hull.** The absolute check is the sharp cylinder at two meshes (m1, m2), free body, one heading, one depth (100 m). The rounded hull, other headings, fixed and damped bodies and several bodies have no sum-frequency reference run. Two hulls are tested by the byte-for-byte check against the direct route only.
-- **The maxima stay.** `.11s` is within 8% at m1 and 6% at m2 (max, F_x), away from the resonance. The largest errors are in the body part at the sharp edge, not in the free-surface part. m3 was not run.
-- **The pairs at 0.75 to 0.80 rad/s are left out**, as in the other sections; with them the errors at the resonance are larger.
+- **The maxima stay.** `.11s` is within 8% at m1 and 6% at m2 (max, F_x), away from the resonance. The largest errors are in the body part, not in the free-surface part (table of the body and free-surface parts above); that the body error comes from the sharp edge is derived from the direct sum, where the body forcing at the sharp edge dominates the gap ([Snellius validation](#snellius-validation-task-8)), and was not tested here. Only m1 and m2 were run (`findings.md`, stages 1 and 2).
+- **The pairs at 0.75 to 0.80 rad/s are left out**, as in the other sections.
 - **The Nemoh mesh test is at the sharp cylinder only.** Nemoh's body error in F_z (17%) does not fall with the mesh, and its cause is not found.
-- **OC4 is open.** There is no exact reference, the WAMIT file does not hold the free-surface part and is another model, the free-surface meshes and circles differ, and the first-order motions differ at the heave resonance (0.40 to 0.45 rad/s). It is one mesh (m1, 1224 panels).
+- **OC4 is open.** There is no exact reference, the WAMIT file appears not to hold the free-surface part (inferred from the numbers) and is another model, the free-surface meshes and circles differ, and the first-order motions differ at the heave resonance (0.40 to 0.45 rad/s). It is one mesh (m1, 1224 panels).
 - **The OC4 cut** at Ω⁺ ≥ 1.995 rad/s (81 of 231 pairs) is HAMS's estimate of the lowest irregular frequency; it is not a measured value for this hull.
 - **The unit and integration tests pin the route** (files, lists, byte equality with the direct route), not the physics. The integration suite was not run in full at 22086da.
 - The code of the Snellius runs is a0b974c; the later commits change the B2 form for `qtf = 2`, the docs and one test, not the `qtf = 3` route that was run.
@@ -1227,7 +1227,7 @@ The relative differences are over the largest value at the points. The radiation
 - Direct method with the free-surface forcing (`qtf_terms = full`): checked on the laptop against the indirect free-surface terms (unit and integration tests, depth 20 m and 100 m), finite depth only. On Snellius it was checked on one rounded hull and one sharp cylinder, free body only ([Snellius validation](#snellius-validation)). No fixed, damped or multi-body case was run there.
 - Direct method at the sum frequency (`QTF_Direct.12s`): checked against the in-run indirect sum (unit and integration tests, rounded hull on Snellius to 1.2% at m3) and against the exact sum QTF of the sharp cylinder on Snellius (`.12s` within 5–15% max and 0.3–1.1% median at m3, away from the resonance); the free-surface part is within 2.0 / 0.5% (max / median, F_x, sharp m2) with the near-waterline fit (47d5911), 8–9% (median) before it; and `FINGREEN3D` is about 2e-4 off the exact series at ν h ≈ 50 with small R/h ([direct method at the sum frequency](#direct-method-at-the-sum-frequency)).
 - Two unit tests failed under ifx 2024a on Snellius (job of 2026-11-09, the build of the hull-form runs): `control_surface_mesh/separate_bodies_accepted` and `field_velocity/field_green_is_smooth_in_z`, in modules the potential part does not change. Both are fixed on the `second-order-drift` branch by commit 60a972e, which this branch does not contain yet. With ifort 2022.1 on Windows all tests pass ([Developer Documentation](developer_documentation.md#qtf-potential-part)).
-- Indirect method at the sum frequency (`QTF_Indirect.11s`): the sharp cylinder is checked against the exact sum QTF at two meshes (7.8 / 6.0 / 3.0% at m1 and 6.1 / 4.1 / 2.1% at m2, max, F_x / F_z / M_y). For the OC4 semisubmersible HAMS and Nemoh differ by 82 / 33 / 27% (max) and the cause is open; the WAMIT sum file holds no free-surface part ([indirect method at the sum frequency](#indirect-method-at-the-sum-frequency)).
+- Indirect method at the sum frequency (`QTF_Indirect.11s`): the sharp cylinder is checked against the exact sum QTF at two meshes (7.8 / 6.0 / 3.0% at m1 and 6.1 / 4.1 / 2.1% at m2, max, F_x / F_z / M_y). For the OC4 semisubmersible HAMS and Nemoh differ by 82 / 33 / 27% (max) and the cause is open; the WAMIT sum file appears to hold no free-surface part ([indirect method at the sum frequency](#indirect-method-at-the-sum-frequency)).
 - WAMIT: the OC4 comparison with the public WAMIT run of OpenFAST now exists ([OC4 against WAMIT](#oc4-against-wamit)). A WAMIT licence would still be needed to settle the conjugation and axes of the WAMIT-format output on a hull with a known answer, since the diagonal of that comparison is real. The semi-analytical reference covers the signs of the mean drift values (210 values agree at 7168 panels), not the phases of the complex outputs.
 
 ## Sources
