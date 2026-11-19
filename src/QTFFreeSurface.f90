@@ -527,21 +527,32 @@ CONTAINS
       TYPE(pw_radial) :: rad
       COMPLEX(8) :: phi
       REAL(8) :: worst, big, e
+      LOGICAL :: bad
       INTEGER :: i
 
       CALL pw_radial_at(pw, pw%radius, rad)
       worst = 0D0
       big = 0D0
+      bad = .FALSE.
+      ! The points are independent (pw_eval_point is pure and rad is read only) and MAX does not depend on the order, so the
+      ! result is the same for any number of threads. A non-finite value sets bad, and the result is HUGE.
+      !$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(phi, e) SCHEDULE(STATIC) REDUCTION(MAX: worst, big) &
+      !$OMP REDUCTION(.OR.: bad)
       DO i = 1, pts%n
          CALL pw_eval_point(pw, pts%x(:, i), phi, rad=rad)
          e = ABS(phi - samples(i))
          IF (.NOT. (IEEE_IS_FINITE(e) .AND. IEEE_IS_FINITE(ABS(samples(i))))) THEN
-            fs_mode_miss = HUGE(1D0)
-            RETURN
+            bad = .TRUE.
+         ELSE
+            worst = MAX(worst, e)
+            big = MAX(big, ABS(samples(i)))
          END IF
-         worst = MAX(worst, e)
-         big = MAX(big, ABS(samples(i)))
       END DO
+      !$OMP END PARALLEL DO
+      IF (bad) THEN
+         fs_mode_miss = HUGE(1D0)
+         RETURN
+      END IF
       IF (PRESENT(scale)) THEN
          IF (scale > 0D0) big = scale
       END IF

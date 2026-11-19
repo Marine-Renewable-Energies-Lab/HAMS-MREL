@@ -6,7 +6,7 @@ module test_qtf_free_surface
   use SecondOrderIncident, only : incident2, incident2_pair, incident2_phi, incident2_grad, free_surface_forcing
   use NearFieldDrift, only : KERNEL_DIFF, KERNEL_SUM
   use QTFFreeSurface, only : fs_point_field, fs_forcing_diff, fs_inner_fields, fs_inner_steps, fs_circle_modes, &
-                             fs_mode_warning, fs_auto_modes, FS_MODE_TOL, fs_sample_phi, fs_mode_scales, fs_auto_evanescent, &
+                             fs_mode_warning, fs_auto_modes, FS_MODE_TOL, fs_mode_miss, fs_sample_phi, fs_mode_scales, fs_auto_evanescent, &
                              fs_inner_pair, fs_outer_pair, fs_outer_annulus, fs_outer_tail, fs_outer_ring, fs_outer_rfar, &
                              fs_outer_sliver, fs_radius_message, FS_SIGN, fs_pair_order_message, fs_pair_terms, &
                              fs_coverage_check, fs_outer_moments, fs_forcing_points, fs_local_rankine, &
@@ -25,7 +25,8 @@ module test_qtf_free_surface
   use second_order_fixtures, only : make_cylinder, maccamy_fuchs_state, read_pnl_hull
   use test_waterline_field, only : set_wave, load_panels
   use Const_mod, only : g_const => G
-  use, intrinsic :: ieee_arithmetic, only : ieee_is_finite
+  use, intrinsic :: ieee_arithmetic, only : ieee_is_finite, ieee_value, ieee_quiet_nan
+  use omp_lib, only : omp_get_wtime
   use PanelMesh_mod, only : pm_xyz => XYZ, pm_ncn => NCN, pm_ncon => NCON
   use SingularIntgr, only : SGLINTBD_TRI2, SGLINTBD_QUAD2
   implicit none
@@ -105,7 +106,8 @@ subroutine collect_qtf_free_surface(testsuite)
     new_unittest("fs_fields_exact_integral", test_fields_exact_integral), &
     new_unittest("fs_fields_exact_integral_diff", test_fields_exact_integral_diff), &
     new_unittest("fs_inner_centre_is_sample_phi", test_inner_centre_is_sample_phi), &
-    new_unittest("fs_circle_modes_split", test_circle_modes_split) &
+    new_unittest("fs_circle_modes_split", test_circle_modes_split), &
+    new_unittest("fs_mode_miss_threads", test_mode_miss_threads) &
     ]
 end subroutine collect_qtf_free_surface
 
@@ -393,6 +395,66 @@ subroutine test_circle_modes_split(error)
   print '(4x,a,3es10.2,a,3es10.2,a,l1)', "split mode check ", miss, "; separate ", miss1, miss2, "; the same bits ", same
   call check(error, same, "fs_circle_modes with nsplit differs from the two separate calls")
 end subroutine test_circle_modes_split
+
+!> fs_mode_miss on 1 and on 4 threads gives the same bits (MAX over the points does not depend on the order), with and
+!> without a given scale, with one sample off (a nonzero miss), and with a non-finite sample (HUGE on both). The samples
+!> and partial waves are those of state 1 of fs_circle_modes_split. Prints the wall time of 20 calls on each count.
+subroutine test_mode_miss_threads(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: radius = 15d0
+  integer, parameter :: nev = 8, mmax = 6
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: one(1)
+  type(cs_points) :: circle
+  type(pw_set) :: pw(1)
+  complex(8), allocatable :: samples(:, :), off(:), nan(:)
+  real(8) :: kev(nev), miss(1), m1(5), m4(5), t1, t4
+  integer :: nthread_saved
+  logical :: same
+
+  call cylinder_fixture(mesh, one, error)
+  if (allocated(error)) return
+  call pw_evanescent_from_wvn(nev, kev)
+  call pw_sample_points([0d0, 0d0], radius, fx_depth, mmax, nev, circle)
+  allocate (samples(circle%n, 1))
+  nthread_saved = NTHREAD
+  NTHREAD = 1
+  call fs_sample_phi(mesh, circle, one, .false., samples, centroid_only=.true.)
+  call fs_circle_modes(mesh, circle, one, .false., [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pw, miss)
+  off = samples(:, 1)
+  off(circle%n/2) = off(circle%n/2)*1.05d0
+  nan = samples(:, 1)
+  nan(circle%n/3) = cmplx(ieee_value(1d0, ieee_quiet_nan), 0d0, 8)
+  call five_misses(1, m1, t1)
+  call five_misses(4, m4, t4)
+  NTHREAD = nthread_saved
+  same = all(transfer(m1, [0_8]) == transfer(m4, [0_8])) .and. m1(3) > 1d-3 .and. m1(3) > m1(1) .and. &
+         m1(5) == huge(1d0)
+  print '(4x,a,5es10.2,a,2f8.3)', "mode miss, 1 thread ", m1, "; wall s of 20 calls on 1 and 4 threads ", t1, t4
+  call check(error, same, "fs_mode_miss differs between 1 and 4 threads, or the checks are off")
+
+contains
+
+  subroutine five_misses(nt, m, wall)
+    integer, intent(in) :: nt
+    real(8), intent(out) :: m(5), wall
+    real(8) :: w0, dummy
+    integer :: i
+
+    NTHREAD = nt
+    m(1) = fs_mode_miss(pw(1), circle, samples(:, 1))
+    m(2) = fs_mode_miss(pw(1), circle, samples(:, 1), 2d0)
+    m(3) = fs_mode_miss(pw(1), circle, off)
+    m(4) = fs_mode_miss(pw(1), circle, off, 0d0)
+    m(5) = fs_mode_miss(pw(1), circle, nan)
+    w0 = omp_get_wtime()
+    dummy = 0d0
+    do i = 1, 20
+      dummy = dummy + fs_mode_miss(pw(1), circle, samples(:, 1))
+    end do
+    wall = omp_get_wtime() - w0 + 0d0*dummy
+  end subroutine five_misses
+end subroutine test_mode_miss_threads
 
 !> True if a point of the stencil of fs_inner_fields at x with offset d (x +- d e_x, x +- d e_y) lies in a waterplane.
 !> An independent copy, on purpose, of the private test of QTFFreeSurface: the test checks the module's offsets with its
