@@ -327,6 +327,12 @@ module test_integration_drift
     character(len=*), parameter :: deep_kh_files(4) = [character(len=40) :: qtf_indirect_file, qtf_indirect_sum_file, &
                                                        pot_terms_file, pot_sum_terms_file]
     real(8), parameter :: deep_kh_limits(4) = [2.2d-6, 2.2d-3, 1.8d-4, 2.3d-3]
+    ! psi and grad psi of a main-grid frequency in the fields passes (spec D4 of the free-surface speed-ups): the fixtures of
+    ! run_psi_reuse_cases, and all the cases of psi_reuse_byte_identical (two with psi on the grid among the 88e19bd fixtures)
+    character(len=20), parameter :: psi_reuse_new(4) = [character(len=20) :: "qtf_psi_reuse", "qtf_psi_reuse_src", &
+                                                        "qtf_psi_reuse_two", "qtf_psi_reuse_half"]
+    character(len=20), parameter :: psi_reuse_cases(6) = [character(len=20) :: "qtf_fs_main", "qtf_b2c_main", &
+                                                          psi_reuse_new]
 
 contains
 
@@ -388,6 +394,7 @@ contains
             new_unittest("run_qtf_directsum_cases", run_qtf_directsum_cases), &
             new_unittest("run_qtf_indsum_cases", run_qtf_indsum_cases), &
             new_unittest("run_qtf_deep_kh_cases", run_qtf_deep_kh_cases), &
+            new_unittest("run_psi_reuse_cases", run_psi_reuse_cases), &
             new_unittest("run_control_cyl", run_control_cyl), &
             new_unittest("run_control_cyl_sybo", run_control_cyl_sybo), &
             new_unittest("run_control_cases", run_control_cases) &
@@ -542,7 +549,9 @@ contains
             new_unittest("indirect_sum_log_lines", indirect_sum_log_lines), &
             new_unittest("qtf_deep_kh_log", qtf_deep_kh_log), &
             new_unittest("qtf_deep_kh_finite_pass_unchanged", qtf_deep_kh_finite_pass_unchanged), &
-            new_unittest("qtf_deep_kh_within_limits", qtf_deep_kh_within_limits) &
+            new_unittest("qtf_deep_kh_within_limits", qtf_deep_kh_within_limits), &
+            new_unittest("psi_reuse_byte_identical", psi_reuse_byte_identical), &
+            new_unittest("psi_reuse_log_counts", psi_reuse_log_counts) &
         ]
     end subroutine collect_tests_drift
 
@@ -6943,6 +6952,122 @@ contains
             if (allocated(error)) return
         end do
     end subroutine qtf_deep_kh_within_limits
+
+    ! ---------------------------------------------------------------------------------------------- psi reuse on the grid
+
+    !> The fixtures of the psi reuse on the main grid (spec D4 of the free-surface speed-ups), with the run time of each.
+    !> Each has psi at 0.2 rad/s, a main-grid frequency, and no psi off the grid (qtf_max_dw = 0.2):
+    !>   qtf_psi_reuse       qtf_fs_main with qtf_b2 = control (cs_velocity = green) and field_deep_kh = 0.25, so that the
+    !>                       merged passes take the deep-water rows at every frequency, 0.2 rad/s (k0 h = 0.29) first;
+    !>   qtf_psi_reuse_src   the same with cs_velocity = source and the default field_deep_kh (k0 h <= 2.2: off);
+    !>   qtf_psi_reuse_two   qtf_fs_two (two bodies, 12 modes) with 0.2 rad/s on the grid and qtf_b2 = control;
+    !>   qtf_psi_reuse_half  qtf_fs_half (half mesh, images) with 0.2 rad/s on the grid and qtf_b2 = control.
+    subroutine run_psi_reuse_cases(error)
+        type(error_type), allocatable, intent(out) :: error
+        type(error_type), allocatable :: one
+        integer(8) :: t0, t1, rate
+        integer :: c
+
+        do c = 1, size(psi_reuse_new)
+            call system_clock(t0, rate)
+            call run_case(trim(psi_reuse_new(c)), [character(len=40) :: qtf_indirect_file, pot_terms_file], one)
+            call system_clock(t1)
+            print '(4x,a,": run time ",F8.1," s")', trim(psi_reuse_new(c)), real(t1 - t0, 8)/real(rate, 8)
+            if (allocated(one)) then
+                print '(4x,a)', trim(psi_reuse_new(c))//": "//one%message
+                if (.not. allocated(error)) call move_alloc(one, error)
+            end if
+        end do
+    end subroutine run_psi_reuse_cases
+
+    !> psi and grad psi of a main-grid frequency taken in the fields passes of that frequency give every output file
+    !> unchanged, line for line, against expected_output of each case:
+    !>   qtf_fs_main (free surface only, qtf_b2 = body) and qtf_b2c_main (C and F only, qtf_terms = body): the outputs at
+    !>   88e19bd (validation-runs/fs-speedups/base_88e19bd), with field_deep_kh = 0 in SecondOrder.in (their largest
+    !>   k0 h, 2.2 and 5.1, is below the default 10 too, so the default gives the same);
+    !>   the four psi_reuse fixtures (run_psi_reuse_cases): the outputs at 85d867e, before the reuse.
+    subroutine psi_reuse_byte_identical(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: files(11) = [character(len=22) :: "AmssDamp.1", "ExcForce.3", "Hydrostat.hst", &
+            "MeanDriftMomentum.8", "MeanDriftPressure.9", "MeanDriftTerms.txt", "Motion.4", "QTF_Indirect.11d", &
+            "QTF_PotentialTerms.txt", "QTF_PsiCheck.txt", "QTF_Quadratic.10d"]
+        character(len=:), allocatable :: name
+        integer :: c, f
+
+        do c = 1, size(psi_reuse_cases)
+            name = trim(psi_reuse_cases(c))
+            do f = 1, size(files)
+                call check_same_file(get_repo_root_path()//"test/data/"//name//"/expected_output/"//trim(files(f)), &
+                                     output_dir(name)//"Wamit_format/"//trim(files(f)), error)
+                if (allocated(error)) return
+            end do
+        end do
+        print '(4x,i0,a,i0,a)', size(psi_reuse_cases), " cases, ", size(files), " files each: the same lines as before the reuse"
+    end subroutine psi_reuse_byte_identical
+
+    !> The log of each psi_reuse case has no separate pass of psi on the inner free surface ("QTF free surface psi:") nor of
+    !> grad psi on C and F ("control surface grad psi:") at the main-grid psi frequency: the fields passes of that frequency
+    !> name the psi modes they took. With cs_velocity = source (qtf_psi_reuse_src) grad psi keeps its own pass
+    !> (fields_source gives no grad psi). qtf_deep_kh has psi off the grid only (0.15 rad/s and the sum frequencies): its
+    !> four passes of each stay. The deep-water line of qtf_psi_reuse is there once, at 0.2 rad/s, the first frequency.
+    subroutine psi_reuse_log_counts(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: fs_psi = "QTF free surface psi:", cs_psi = "control surface grad psi:"
+        character(len=*), parameter :: deep = "QTF field rows: the deep-water Green function from k0 h ="
+        ! Per case: the separate psi passes, the separate grad psi passes, and the fields passes on the inner free surface
+        ! and on C and F at the psi frequency that name psi modes
+        integer, parameter :: want(4, 7) = reshape([0, 0, 1, 0, &   ! qtf_fs_main
+                                                    0, 0, 0, 1, &   ! qtf_b2c_main (psi at 0.23 rad/s)
+                                                    0, 0, 1, 1, &   ! qtf_psi_reuse
+                                                    0, 1, 1, 0, &   ! qtf_psi_reuse_src
+                                                    0, 0, 1, 1, &   ! qtf_psi_reuse_two
+                                                    0, 0, 1, 1, &   ! qtf_psi_reuse_half
+                                                    4, 4, 0, 0], [4, 7])   ! qtf_deep_kh
+        character(len=20) :: cases(7)
+        character(len=:), allocatable :: log, at
+        character(len=12) :: got
+        integer :: c, n(4)
+
+        cases(1:6) = psi_reuse_cases
+        cases(7) = "qtf_deep_kh"
+        do c = 1, size(cases)
+            log = get_running_exe_path()//trim(cases(c))//".log"
+            at = "omega   0.20000,"
+            if (trim(cases(c)) == "qtf_b2c_main") at = "omega   0.23000,"
+            n(1) = count_log_lines(log, fs_psi)
+            n(2) = count_log_lines(log, cs_psi)
+            n(3) = count_lines_with(log, "QTF free surface fields: "//at, "psi modes")
+            n(4) = count_lines_with(log, "QTF B2 control surface fields: "//at, "psi modes")
+            write (got, '(4i3)') n
+            print '(4x,a,": separate psi, grad psi passes; merged free surface, C and F:",a)', trim(cases(c)), got
+            call check(error, all(n == want(:, c)), trim(cases(c))//": the psi pass lines (separate psi, grad psi; "// &
+                       "merged free surface, C and F) are "//got)
+            if (allocated(error)) return
+        end do
+        log = get_running_exe_path()//"qtf_psi_reuse.log"
+        call check(error, count_log_lines(log, deep), 1, "qtf_psi_reuse: the deep-water line is not there once")
+        if (allocated(error)) return
+        call check(error, count_lines_with(log, deep, "omega =   0.20000 rad/s"), 1, &
+                   "qtf_psi_reuse: the deep-water line is not at 0.2 rad/s")
+    end subroutine psi_reuse_log_counts
+
+    !> The number of lines of the file at path that contain both text and also
+    integer function count_lines_with(path, text, also)
+        character(len=*), intent(in) :: path, text, also
+        character(len=512) :: line
+        integer :: unit, ios
+
+        count_lines_with = -1
+        open (newunit=unit, file=path, status='old', action='read', iostat=ios)
+        if (ios /= 0) return
+        count_lines_with = 0
+        do
+            read (unit, '(A)', iostat=ios) line
+            if (ios /= 0) exit
+            if (index(line, text) > 0 .and. index(line, also) > 0) count_lines_with = count_lines_with + 1
+        end do
+        close (unit)
+    end function count_lines_with
 
     !> The 15 numbers of every row of QTF_DirectTermsSum.txt of a qtf_terms = full run (the five keys, D_I2, D_D, D_FS, P_BODY,
     !> P_FS, each Re and Im)

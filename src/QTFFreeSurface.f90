@@ -196,7 +196,7 @@ CONTAINS
       END IF
    END FUNCTION pair_omega
 
-   SUBROUTINE fs_inner_fields(mesh, pts, states, step, is_multi, f, delta, deep)
+   SUBROUTINE fs_inner_fields(mesh, pts, states, step, is_multi, f, delta, deep, centre)
       ! The total first-order fields of every state at the inner points of the free surface: phi, grad phi and phi_zz.
       ! phi_P comes from the boundary integral formula (stock route, fs_sample_phi) at each point x and at its four
       ! horizontal offsets x +- delta e_x, x +- delta e_y, all five with x as decision point (near or far, and the series of
@@ -213,6 +213,10 @@ CONTAINS
       ! (fields_green at cs_fd_step) to rounding, at 5 rows per point in place of 25 (fs_laplace_residual).
       ! delta(pts%n), if given, is the offset of each point; otherwise fs_inner_steps gives it: step x the point size, smaller
       ! next to a waterline. All states must be at the current global frequency. deep, if present, goes to fs_sample_phi.
+      ! centre(pts%n, SIZE(states)), if present, receives phi_P at the centre of each stencil as it is, before the incident
+      ! part is added: the row of fs_sample_phi at the point (same point, same decision point), so for a state without
+      ! incident wave (psi_k of the driver) it is fs_sample_phi of the point to the bit (spec D4 of the free-surface
+      ! speed-ups; fs_inner_centre_is_sample_phi).
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(cs_points), INTENT(IN) :: pts
       TYPE(first_order_state), INTENT(IN) :: states(:)
@@ -221,6 +225,7 @@ CONTAINS
       TYPE(fs_point_field), INTENT(OUT) :: f(pts%n, SIZE(states))
       REAL(8), INTENT(IN), OPTIONAL :: delta(:)
       LOGICAL, INTENT(IN), OPTIONAL :: deep
+      COMPLEX(8), INTENT(OUT), OPTIONAL :: centre(pts%n, SIZE(states))
       ! The stencil: the centre, +x, -x, +y, -y, and below z = -delta also +z, -z
       REAL(8), PARAMETER :: OFF(3, 7) = RESHAPE([0D0, 0D0, 0D0, 1D0, 0D0, 0D0, -1D0, 0D0, 0D0, 0D0, 1D0, 0D0, 0D0, -1D0, 0D0, &
                                                  0D0, 0D0, 1D0, 0D0, 0D0, -1D0], [3, 7])
@@ -275,6 +280,7 @@ CONTAINS
       DO ist = 1, SIZE(states)
          DO i = 1, pts%n
             p(1:nst(i)) = ph(first(i):first(i) + nst(i) - 1, ist)
+            IF (PRESENT(centre)) centre(i, ist) = p(1)
             CALL incident_at(states(ist), pts%x(:, i), phi_i, grad_i)
             f(i, ist)%phi = p(1) + phi_i
             f(i, ist)%grad(1) = (p(2) - p(3))/(2D0*d(i)) + grad_i(1)
@@ -450,7 +456,7 @@ CONTAINS
       !$OMP END PARALLEL
    END SUBROUTINE fs_sample_phi
 
-   SUBROUTINE fs_circle_modes(mesh, circle, states, is_multi, centre, radius, h, k0, kev, mmax, nev, pw, miss, deep)
+   SUBROUTINE fs_circle_modes(mesh, circle, states, is_multi, centre, radius, h, k0, kev, mmax, nev, pw, miss, deep, nsplit)
       ! The partial waves of the perturbation potential of every state outside the circle r = radius about centre: phi_P at
       ! the samples circle of pw_sample_points(centre, radius, h, mmax, nev), by the centroid route (fs_sample_phi), so that
       ! the samples are a sum of the free-surface modes, then pw_decompose with the propagating wave number k0 and the
@@ -460,6 +466,8 @@ CONTAINS
       ! deep, if present, goes to fs_sample_phi. The modes stay those of depth h: at k0 h >= 10 the deep-water rows are
       ! within 1.3e-3 of the row maximum of the finite-depth rows or, where they are not (k0 h = 40: 3.4e-3, the error of
       ! the finite-depth field mode), of the direct eigenfunction sum (deep of field_influence_row), and miss shows the fit.
+      ! nsplit, if present, splits the states into two groups, 1:nsplit and nsplit+1:SIZE(states), each with the scales of
+      ! fs_mode_scales of its own (the headings and the psi modes of one frequency in one call give the miss of two calls).
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(cs_points), INTENT(IN) :: circle
       TYPE(first_order_state), INTENT(IN) :: states(:)
@@ -469,13 +477,21 @@ CONTAINS
       TYPE(pw_set), INTENT(OUT) :: pw(SIZE(states))
       REAL(8), INTENT(OUT) :: miss(SIZE(states))
       LOGICAL, INTENT(IN), OPTIONAL :: deep
+      INTEGER, INTENT(IN), OPTIONAL :: nsplit
       COMPLEX(8), ALLOCATABLE :: samples(:, :)
       REAL(8) :: scale(SIZE(states))
-      INTEGER :: ist
+      INTEGER :: ist, ns
 
       ALLOCATE (samples(circle%n, SIZE(states)))
       CALL fs_sample_phi(mesh, circle, states, is_multi, samples, centroid_only=.TRUE., deep=deep)
-      scale = fs_mode_scales(samples)
+      ns = SIZE(states)
+      IF (PRESENT(nsplit)) ns = nsplit
+      IF (ns < 0 .OR. ns > SIZE(states)) THEN
+         WRITE (*, '(a)') ' fs_circle_modes: nsplit must be between 0 and the number of states.'
+         ERROR STOP 1
+      END IF
+      scale(1:ns) = fs_mode_scales(samples(:, 1:ns))
+      scale(ns + 1:) = fs_mode_scales(samples(:, ns + 1:))
       DO ist = 1, SIZE(states)
          CALL pw_decompose(samples(:, ist), centre, radius, h, k0, kev, mmax, nev, pw(ist))
          miss(ist) = fs_mode_miss(pw(ist), circle, samples(:, ist), scale(ist))

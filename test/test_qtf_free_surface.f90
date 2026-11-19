@@ -103,7 +103,9 @@ subroutine collect_qtf_free_surface(testsuite)
     new_unittest("fs_fields_exact_inner", test_fields_exact_inner), &
     new_unittest("fs_fields_exact_circle", test_fields_exact_circle), &
     new_unittest("fs_fields_exact_integral", test_fields_exact_integral), &
-    new_unittest("fs_fields_exact_integral_diff", test_fields_exact_integral_diff) &
+    new_unittest("fs_fields_exact_integral_diff", test_fields_exact_integral_diff), &
+    new_unittest("fs_inner_centre_is_sample_phi", test_inner_centre_is_sample_phi), &
+    new_unittest("fs_circle_modes_split", test_circle_modes_split) &
     ]
 end subroutine collect_qtf_free_surface
 
@@ -304,6 +306,93 @@ subroutine test_laplace_residual(error)
   write (info, '(a,2es10.3)') "lap_h phi + phi_zz relative to |lap_h phi| at delta = 0.1, 0.05 m ", worst
   call check(error, worst(1) <= 1d-3, trim(info))
 end subroutine test_laplace_residual
+
+!> The centre value of fs_inner_fields (its optional centre) is fs_sample_phi at the point, to the bit, for every state,
+!> with and without the deep-water rows: the driver takes psi_k on the inner free surface from the centre of the stencil of
+!> the headings' pass (spec D4 of the free-surface speed-ups), in place of a pass of fs_sample_phi. Three points at z = 0
+!> and one at z = -2 m (7-point stencil); state 1 is the fixture's scattered wave without incident part, as psi_k, state 2
+!> the same with the incident wave (amp 1), which changes phi but not the centre.
+subroutine test_inner_centre_is_sample_phi(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: rp(4) = [12d0, 14.5d0, 19d0, 13d0], thp(4) = [0.3d0, 2.0d0, -1.9d0, 1.0d0], &
+                        zp(4) = [0d0, 0d0, 0d0, -2d0]
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: one(1), states(2)
+  type(cs_points) :: pts
+  type(fs_point_field) :: f(4, 2)
+  complex(8) :: centre(4, 2), ph(4, 2)
+  real(8) :: x(3, 4)
+  integer :: i, id, nthread_saved
+  logical :: dw, same
+
+  call cylinder_fixture(mesh, one, error)
+  if (allocated(error)) return
+  states = one(1)
+  states(2)%amp = 1d0
+  do i = 1, 4
+    x(:, i) = [rp(i) * cos(thp(i)), rp(i) * sin(thp(i)), zp(i)]
+  end do
+  call free_points(x, 1d0, pts)
+  nthread_saved = NTHREAD
+  NTHREAD = 4
+  do id = 1, 2
+    dw = id == 2
+    call fs_inner_fields(mesh, pts, states, 0.1d0, .false., f, deep=dw, centre=centre)
+    call fs_sample_phi(mesh, pts, states, .false., ph, deep=dw)
+    same = all(transfer(centre, [0_8]) == transfer(ph, [0_8]))
+    print '(4x,a,l1,a,es10.2,a,l1)', "fs_inner centre, deep ", dw, ": max |centre - fs_sample_phi| ", &
+      maxval(abs(centre - ph)), ", the same bits ", same
+    call check(error, same, "the centre of fs_inner_fields is not fs_sample_phi to the bit")
+    if (allocated(error)) exit
+    call check(error, all(f(:, 1)%phi == centre(:, 1)), "phi of the state without incident wave is not its centre value")
+    if (allocated(error)) exit
+    call check(error, any(f(:, 2)%phi /= centre(:, 2)), "phi of the state with the incident wave is its centre value")
+    if (allocated(error)) exit
+  end do
+  NTHREAD = nthread_saved
+end subroutine test_inner_centre_is_sample_phi
+
+!> fs_circle_modes with nsplit gives each of the two groups of states the partial waves and the mode check of a call with
+!> that group alone, to the bit (the driver evaluates the headings and the psi modes of one frequency in one call, spec D4
+!> of the free-surface speed-ups). The states of fs_mode_check_per_state, with state 1 as the first group: under the scale
+!> of all three states, states 2 and 3 would be held to state 1's samples.
+subroutine test_circle_modes_split(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: radius = 15d0
+  integer, parameter :: nev = 8, mmax = 6
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: states(3), one(1)
+  type(cs_points) :: circle
+  type(pw_set) :: pw(3), pw1(1), pw2(2)
+  real(8) :: kev(nev), miss(3), miss1(1), miss2(2)
+  integer :: j, k, nthread_saved
+  logical :: same
+
+  call cylinder_fixture(mesh, one, error)
+  if (allocated(error)) return
+  states = one(1)
+  j = minloc(norm2(mesh%xc - spread([10d0, 0d0, -0.5d0], 2, mesh%n), dim=1), dim=1)
+  states(2)%phi_p = (0d0, 0d0)
+  states(2)%dphi_p_dn = (0d0, 0d0)
+  states(2)%phi_p(j) = (1d-4, 0d0)
+  states(3) = states(2)
+  states(3)%phi_p(j) = (1d-16, 0d0)
+  call pw_evanescent_from_wvn(nev, kev)
+  call pw_sample_points([0d0, 0d0], radius, fx_depth, mmax, nev, circle)
+  nthread_saved = NTHREAD
+  NTHREAD = 4
+  call fs_circle_modes(mesh, circle, states, .false., [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pw, miss, nsplit=1)
+  call fs_circle_modes(mesh, circle, states(1:1), .false., [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pw1, miss1)
+  call fs_circle_modes(mesh, circle, states(2:3), .false., [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pw2, miss2)
+  NTHREAD = nthread_saved
+  same = all(transfer(miss, [0_8]) == transfer([miss1, miss2], [0_8])) .and. &
+         all(transfer(pw(1)%a, [0_8]) == transfer(pw1(1)%a, [0_8]))
+  do k = 1, 2
+    same = same .and. all(transfer(pw(k + 1)%a, [0_8]) == transfer(pw2(k)%a, [0_8]))
+  end do
+  print '(4x,a,3es10.2,a,3es10.2,a,l1)', "split mode check ", miss, "; separate ", miss1, miss2, "; the same bits ", same
+  call check(error, same, "fs_circle_modes with nsplit differs from the two separate calls")
+end subroutine test_circle_modes_split
 
 !> True if a point of the stencil of fs_inner_fields at x with offset d (x +- d e_x, x +- d e_y) lies in a waterplane.
 !> An independent copy, on purpose, of the private test of QTFFreeSurface: the test checks the module's offsets with its

@@ -1,0 +1,14 @@
+! Mean drift options of this integration test
+! qtf_fs_two with 0.2 rad/s on the main grid and B2 on C and F (qtf_b2 = control): the 12 psi modes of two bodies join
+! the fields passes (psi_reuse_* tests)
+mean_drift = 1
+drift_methods = far near
+motion_state = free
+write_terms = 1
+qtf_terms = full
+qtf = 1
+qtf_b2 = control
+qtf_edge_weights = off
+qtf_fs_radius = 25.0
+qtf_max_dw = 0.2
+field_deep_kh = 0

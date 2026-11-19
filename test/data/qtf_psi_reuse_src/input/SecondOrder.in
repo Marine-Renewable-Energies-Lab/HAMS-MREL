@@ -1,0 +1,14 @@
+! Mean drift options of this integration test
+! qtf_psi_reuse with cs_velocity = source and the default field_deep_kh: grad psi keeps its own pass, psi on the inner
+! free surface joins the fields pass (psi_reuse_* tests)
+mean_drift = 1
+drift_methods = far near
+motion_state = free
+write_terms = 1
+qtf_terms = full
+qtf = 1
+qtf_b2 = control
+cs_velocity = source
+qtf_edge_weights = off
+qtf_fs_radius = 10.0
+qtf_max_dw = 0.2

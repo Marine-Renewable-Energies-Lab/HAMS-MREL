@@ -130,6 +130,9 @@ MODULE SecondOrderDriver
    ! Radiation potentials of the indirect method (qtf_terms = body)
    LOGICAL :: body_terms = .FALSE.                     ! psi is kept at the difference frequencies
    COMPLEX(8), ALLOCATABLE :: psi_main(:,:)            ! (n, 6*nbody), psi of the current main-grid frequency
+   ! psi_main is kept, and its pass on the inner free surface (psi_fs_merge) and of grad psi on C and F (psi_cs_merge) is
+   ! left to the fields passes of so_end_frequency at the same frequency (spec D4 of the free-surface speed-ups)
+   LOGICAL :: psi_fs_merge = .FALSE., psi_cs_merge = .FALSE.
    INTEGER :: unit_psi = 0                             ! QTF_PsiCheck.txt (write_terms >= 1)
    LOGICAL :: b2_control = .FALSE.                     ! qtf_b2 = control: fields on C and F go to the QTF store
    TYPE(cs_points) :: b2_pts                           ! the points of C and F of cs_pts (no Gamma_c), for B2
@@ -640,9 +643,16 @@ CONTAINS
       ! Call after the radiation solve of main-grid frequency kk, before the diffraction solves overwrite the scattered
       ! column of MXPOT. With qtf_terms = body, takes psi of this frequency: for the excitation check of the headings, and into
       ! the QTF store if the frequency is also a difference frequency.
+      ! The fields of psi there (on the inner free surface, and grad psi on C and F) are taken by the fields passes of the
+      ! headings in so_end_frequency, which run at this frequency with the same rows (spec D4 of the free-surface
+      ! speed-ups): grad psi only with cs_velocity = green, as fields_source gives no grad psi; otherwise its own pass here.
       TYPE(so_options), INTENT(IN) :: opts
       INTEGER, INTENT(IN) :: kk
 
+      IF (psi_fs_merge .OR. psi_cs_merge) THEN
+         WRITE (*, '(a)') ' QTF: psi of the previous main-grid frequency was not taken by its fields passes.'
+         ERROR STOP 1
+      END IF
       IF (.NOT. body_terms .OR. opts%qtf_terms < QTF_TERMS_BODY .OR. is_limit_frequency()) RETURN
       IF (ABS(W1 - WVFQ(kk)) > 1D-12*W1) THEN
          WRITE (*, '(a,I0)') ' QTF: so_after_radiation called with the wave of another frequency than ', kk
@@ -655,8 +665,9 @@ CONTAINS
       END IF
       IF (qtf_psi_index(W1) > 0) THEN
          CALL qtf_keep_psi(W1, psi_main)
-         IF (b2_control) CALL keep_cs_psi(opts, W1, psi_main)
-         IF (fs_terms) CALL keep_fs_psi(opts, W1, psi_main)
+         psi_cs_merge = b2_control .AND. opts%cs_velocity /= 2
+         psi_fs_merge = fs_terms
+         IF (b2_control .AND. .NOT. psi_cs_merge) CALL keep_cs_psi(opts, W1, psi_main)
       END IF
       CALL write_psi_rows(W1, 1, psi_main)
    END SUBROUTINE so_after_radiation
@@ -1220,14 +1231,21 @@ CONTAINS
       ! current global frequency, whose WVN gives the evanescent wave numbers. Above nu*h = 50 the field mode of FINGREEN3D
       ! keeps the Limes acceleration of PIDCOCK, as on the control surface, so the same warning, unless the rows take the
       ! deep-water Green function there (field_deep).
+      ! With psi_fs_merge the 6 x nbody psi states of psi_main (psi_states) join the headings, in place of the pass of
+      ! keep_fs_psi (spec D4 of the free-surface speed-ups): psi at an inner point is the centre value of its stencil, the
+      ! row of fs_sample_phi at the point, before the waterline fit (which stays that of the headings); the circle samples
+      ! are those of keep_fs_psi, and each group has its own mode-check scales (nsplit). Every state's sums are its own, so
+      ! the values are those of the separate passes to the bit; the deep flag is the one both passes would take.
       TYPE(so_options), INTENT(IN) :: opts
       TYPE(fs_point_field), ALLOCATABLE :: f(:, :)
+      TYPE(first_order_state), ALLOCATABLE :: sts(:), ps(:)
       TYPE(pw_set), ALLOCATABLE :: pw(:)
+      COMPLEX(8), ALLOCATABLE :: centre(:, :)
       REAL(8), ALLOCATABLE :: miss(:)
       REAL(8), PARAMETER :: LIMES_NUH = 50D0
       REAL(8) :: kev(fs_nev)
       INTEGER(8) :: t0, t1, rate
-      INTEGER :: ib
+      INTEGER :: ib, nh, nst
       LOGICAL :: deep
 
       deep = field_deep(opts)
@@ -1235,21 +1253,40 @@ CONTAINS
          WRITE (*, '(a,F10.5,a,F8.2,a)') ' QTF free surface warning: omega', W1, ', nu*h =', states(1)%nu*H, &
             ' > 50: the finite-depth field values may scatter (the Green function series still uses Limes there).'
       END IF
-      ALLOCATE (f(fs_pts%n, SIZE(states)), pw(SIZE(states)), miss(SIZE(states)))
+      nh = SIZE(states)
+      IF (psi_fs_merge) THEN
+         ! As keep_fs_psi: the warning is about the finite-depth series, which deep-water rows do not use
+         IF (.NOT. deep) CALL warn_second_order_nuh(W1)
+         CALL psi_states(W1, psi_main, ps)
+         sts = [states, ps]
+      ELSE
+         sts = states
+      END IF
+      nst = SIZE(sts)
+      ALLOCATE (f(fs_pts%n, nst), pw(nst), miss(nst), centre(fs_pts%n, nst))
       CALL SYSTEM_CLOCK(t0, rate)
-      CALL fs_inner_fields(mesh, fs_pts, states, fs_step, multi_arrays, f, fs_delta, deep=deep)
-      CALL fs_waterline_fit_apply(mesh, fs_fit, states, fs_step, multi_arrays, f, deep=deep)
+      CALL fs_inner_fields(mesh, fs_pts, sts, fs_step, multi_arrays, f, fs_delta, deep=deep, centre=centre)
+      CALL fs_waterline_fit_apply(mesh, fs_fit, states, fs_step, multi_arrays, f(:, 1:nh), deep=deep)
       CALL pw_evanescent_from_wvn(fs_nev, kev)
-      CALL fs_circle_modes(mesh, fs_circle, states, multi_arrays, fs_centre, fs_radius, H, WK, kev, fs_mmax, fs_nev, pw, miss, &
-                           deep=deep)
+      CALL fs_circle_modes(mesh, fs_circle, sts, multi_arrays, fs_centre, fs_radius, H, WK, kev, fs_mmax, fs_nev, pw, miss, &
+                           deep=deep, nsplit=nh)
       CALL SYSTEM_CLOCK(t1)
-      CALL log_mode_check(miss, W1, 'heading')
-      DO ib = 1, SIZE(states)
+      CALL log_mode_check(miss(1:nh), W1, 'heading')
+      DO ib = 1, nh
          CALL qtf_keep_fs_state(ib, f(:, ib), pw(ib))
       END DO
-      WRITE (*, '(a,F10.5,a,F10.2,a,I0,a,I0,a,I0,a)') ' QTF free surface fields: omega', W1, ',', &
-         REAL(t1 - t0, 8)/REAL(rate, 8), ' s for ', fs_pts%n, ' inner points, ', fs_circle%n, ' samples on the circle and ', &
-         SIZE(states), ' headings'
+      IF (psi_fs_merge) THEN
+         CALL log_mode_check(miss(nh + 1:), W1, 'psi of mode')
+         CALL qtf_keep_fs_psi(W1, centre(:, nh + 1:), pw(nh + 1:))
+         psi_fs_merge = .FALSE.
+         WRITE (*, '(a,F10.5,a,F10.2,a,I0,a,I0,a,I0,a,I0,a)') ' QTF free surface fields: omega', W1, ',', &
+            REAL(t1 - t0, 8)/REAL(rate, 8), ' s for ', fs_pts%n, ' inner points, ', fs_circle%n, &
+            ' samples on the circle, ', nh, ' headings and ', nst - nh, ' psi modes'
+      ELSE
+         WRITE (*, '(a,F10.5,a,F10.2,a,I0,a,I0,a,I0,a)') ' QTF free surface fields: omega', W1, ',', &
+            REAL(t1 - t0, 8)/REAL(rate, 8), ' s for ', fs_pts%n, ' inner points, ', fs_circle%n, &
+            ' samples on the circle and ', nh, ' headings'
+      END IF
    END SUBROUTINE fs_frequency
 
    SUBROUTINE heading_pairs(opts)
@@ -1289,10 +1326,18 @@ CONTAINS
       ! When B2 takes these fields (qtf_b2 = control), the green route takes the deep-water Green function where field_deep
       ! says so, and then does not warn; the control-surface drift of the same run then uses these fields too. Without B2
       ! on C and F the rows stay those of the depth.
+      ! With psi_cs_merge (B2 on C and F, cs_velocity = green) the 6 x nbody psi states of psi_main (psi_states) join the
+      ! headings in the one fields_green call, in place of the pass of keep_cs_psi (spec D4 of the free-surface speed-ups):
+      ! grad psi at the points of B2 is that at b2_idx. The points are independent and each state's sums are its own, so
+      ! the values are those of the separate passes to the bit, with the deep flag both would take.
       TYPE(so_options), INTENT(IN) :: opts
       TYPE(cs_fields), INTENT(OUT) :: fields(:)
       REAL(8), PARAMETER :: LIMES_NUH = 50D0
+      TYPE(first_order_state), ALLOCATABLE :: ps(:)
+      TYPE(cs_fields), ALLOCATABLE :: fall(:)
+      COMPLEX(8), ALLOCATABLE :: grad(:, :, :)
       INTEGER(8) :: t0, t1, rate
+      INTEGER :: k, nh, npsi
       CHARACTER(LEN=:), ALLOCATABLE :: who
       LOGICAL :: deep
 
@@ -1310,15 +1355,33 @@ CONTAINS
                ' water (H < 0) where kh is large.'
          END IF
       END IF
+      nh = SIZE(states)
+      npsi = 0
       CALL SYSTEM_CLOCK(t0, rate)
       IF (opts%cs_velocity == 2) THEN
          CALL fields_source(mesh, cs_pts, states, cs_sigma, multi_arrays, fields)
+      ELSE IF (psi_cs_merge) THEN
+         CALL psi_states(W1, psi_main, ps)
+         npsi = SIZE(ps)
+         ALLOCATE (fall(nh + npsi), grad(3, b2_pts%n, npsi))
+         CALL fields_green(mesh, cs_pts, [states, ps], opts%cs_fd_step, multi_arrays, fall, deep=deep)
+         fields = fall(1:nh)
+         DO k = 1, npsi
+            grad(:, :, k) = fall(nh + k)%grad(:, b2_idx)
+         END DO
       ELSE
          CALL fields_green(mesh, cs_pts, states, opts%cs_fd_step, multi_arrays, fields, deep=deep)
       END IF
       CALL SYSTEM_CLOCK(t1)
-      WRITE (*, '(a,F10.5,a,F10.2,a,I0,a,I0,a)') ' '//who//' fields: omega', W1, ',', &
-         REAL(t1 - t0, 8)/REAL(rate, 8), ' s for ', cs_pts%n, ' points and ', SIZE(states), ' headings'
+      IF (npsi > 0) THEN
+         CALL qtf_keep_cs_psi(W1, grad)
+         psi_cs_merge = .FALSE.
+         WRITE (*, '(a,F10.5,a,F10.2,a,I0,a,I0,a,I0,a)') ' '//who//' fields: omega', W1, ',', &
+            REAL(t1 - t0, 8)/REAL(rate, 8), ' s for ', cs_pts%n, ' points, ', nh, ' headings and ', npsi, ' psi modes'
+      ELSE
+         WRITE (*, '(a,F10.5,a,F10.2,a,I0,a,I0,a)') ' '//who//' fields: omega', W1, ',', &
+            REAL(t1 - t0, 8)/REAL(rate, 8), ' s for ', cs_pts%n, ' points and ', nh, ' headings'
+      END IF
    END SUBROUTINE control_fields
 
    SUBROUTINE control_frequency(opts, fields)
