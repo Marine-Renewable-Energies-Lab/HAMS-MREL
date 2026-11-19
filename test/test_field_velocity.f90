@@ -832,22 +832,29 @@ contains
 
   !> The deep-water row against the finite-depth row (field mode, as the field passes) at k0 h = 10, 20 and 40, h = 200 m,
   !> points at z = 0 from 0.6 m off the hull to 40 m, stock and centroid routes: max |deep - finite| / max |finite| over
-  !> each row, G and dG/dn. Limit 1.3e-3, the tolerance of the spec (D1: gbench measured 1.25e-3 at k0 h = 10). The
-  !> near-panel Rankine and image integrals are the same in both rows, so the rows differ by the Green functions alone.
-  !> Measured: 5.7e-4 at k0 h = 10, 8.8e-4 at 20, 3.4e-3 at 40. At k0 h = 40 the finite-depth row is the one that is off:
-  !> at its worst entry (point 3 m off the hull, waterline panel, R/h = 0.016, nu h = 40) FINGREEN3D in field mode misses
-  !> the direct eigenfunction sum (direct_sum_green) by 3.3e-3 in G (absolute, in 1/m) and INFGREEN3D by 8e-5. So where the
-  !> rows differ by more than the limit, the test asks for the deep-water value of the worst entry to be the closer one to
-  !> the direct sum.
+  !> each row, G and dG/dn. The near-panel Rankine and image integrals are the same in both rows, so an entry of the
+  !> difference is the panel area times the difference of the wave parts of the two Green functions.
+  !> Checks:
+  !> (a) at k0 h = 10 and 20, max |deep - finite| / row max <= 1.3e-3, the tolerance of the spec (D1; gbench measured
+  !>     1.25e-3 at k0 h = 10 on the OC4 rows). Measured here 5.7e-4 and 8.8e-4.
+  !> (b) at k0 h = 40, the same gap below 4.5e-3, 1.3 x the 3.416e-3 measured. The gap is the error of the finite-depth
+  !>     field mode, not of the deep-water row: at the worst entry (point 3 m off the hull, waterline panel, R/h = 0.016,
+  !>     nu h = 40) FINGREEN3D in field mode misses the direct eigenfunction sum (direct_sum_green) by 3.3e-3 in G (1/m),
+  !>     INFGREEN3D by 8e-5.
+  !> (c) at every entry with |deep - finite| > 1.3e-3 of the row max, the deep-water entry within 1.3e-3 of the row max of
+  !>     the entry of the direct sum, and closer to it than the finite-depth entry.
   subroutine test_row_deep_within_tol(error)
     type(error_type), allocatable, intent(out) :: error
     real(8), parameter :: depth = 200d0, k0h(3) = [10d0, 20d0, 40d0], deep_row_limit = 1.3d-3
+    ! (b): 1.3 x 3.416e-3 measured at k0 h = 40, rounded up to two digits
+    real(8), parameter :: gap_limit(3) = [deep_row_limit, deep_row_limit, 4.5d-3]
     type(panel_mesh) :: mesh
     type(cs_points) :: pts
     complex(8), allocatable :: fg(:, :), fdg(:, :), dg(:, :), ddg(:, :)
-    real(8) :: worst, rel, e_fin, e_inf
-    integer :: i, ik, inear, iw, jw, loc(2)
-    character(len=160) :: info
+    complex(8) :: wf(3), wi(3), wd(3), d_fin, d_inf
+    real(8) :: worst, worst_direct, gmax, dmax, q(3), x(3), nrm(3), rh(2), rr
+    integer :: i, j, ik, inear, kind, nchecked
+    character(len=200) :: info
 
     call set_wave(depth)
     call load_single(0, 0, mesh)
@@ -856,35 +863,52 @@ contains
     do ik = 1, size(k0h)
       call set_k0h(k0h(ik), depth)
       worst = 0d0
-      iw = 1
-      jw = 1
+      worst_direct = 0d0
+      nchecked = 0
       do inear = 1, 2
         do i = 1, pts%n
           call field_influence_row(mesh, pts%x(:, i), .false., fg, fdg, pts%x(:, i), field_mode=.true., &
                                    near_panel=inear == 1)
           call field_influence_row(mesh, pts%x(:, i), .false., dg, ddg, pts%x(:, i), field_mode=.true., &
                                    near_panel=inear == 1, deep=.true.)
-          rel = maxval(abs(dg - fg))/maxval(abs(fg))
-          loc = maxloc(abs(dg - fg))
-          if (maxval(abs(ddg - fdg))/maxval(abs(fdg)) > rel) then
-            rel = maxval(abs(ddg - fdg))/maxval(abs(fdg))
-            loc = maxloc(abs(ddg - fdg))
-          end if
-          if (rel > worst) then
-            worst = rel
-            iw = i
-            jw = loc(1)
-          end if
+          gmax = maxval(abs(fg))
+          dmax = maxval(abs(fdg))
+          worst = max(worst, maxval(abs(dg - fg))/gmax, maxval(abs(ddg - fdg))/dmax)
+          ! (c) The whole mesh (nsys = 1): the source of entry j is the centroid of panel j, the point unmirrored
+          x = pts%x(:, i)
+          do j = 1, mesh%nbase
+            do kind = 1, 2
+              if (kind == 1 .and. abs(dg(j, 1) - fg(j, 1)) <= deep_row_limit*gmax) cycle
+              if (kind == 2 .and. abs(ddg(j, 1) - fdg(j, 1)) <= deep_row_limit*dmax) cycle
+              q = mesh%xc(:, j)
+              nrm = mesh%nrm(:, j)
+              call pair_waves(q, x, V, WVN, NK, H, wf, wi, wd)
+              if (kind == 1) then
+                d_fin = mesh%area(j)*(wf(1) - wd(1))/gmax
+                d_inf = mesh%area(j)*(wi(1) - wd(1))/gmax
+              else
+                ! dG/dn with the gradient with respect to the source point: dG/dR along the horizontal of q - x
+                rr = sqrt((q(1) - x(1))**2 + (q(2) - x(2))**2)
+                rh = (q(1:2) - x(1:2))/rr
+                d_fin = mesh%area(j)*((wf(2) - wd(2))*dot_product(rh, nrm(1:2)) + (wf(3) - wd(3))*nrm(3))/dmax
+                d_inf = mesh%area(j)*((wi(2) - wd(2))*dot_product(rh, nrm(1:2)) + (wi(3) - wd(3))*nrm(3))/dmax
+              end if
+              nchecked = nchecked + 1
+              worst_direct = max(worst_direct, abs(d_inf))
+              write (info, '(a,f6.2,a,i3,a,i4,a,i2,a,2es10.3)') "k0 h = ", WK*H, ", point ", i, ", panel ", j, &
+                ", kind ", kind, ": deep and finite against the direct sum ", abs(d_inf), abs(d_fin)
+              call check(error, abs(d_inf) <= deep_row_limit .and. abs(d_inf) < abs(d_fin), trim(info))
+              if (allocated(error)) return
+            end do
+          end do
         end do
       end do
-      print '(4x,a,f6.2,a,es10.3)', "deep against finite rows at k0 h = ", WK*H, ": max |deep - finite| / row max ", worst
-      if (worst <= deep_row_limit) cycle
-      ! The whole mesh (nsys = 1): the source of the worst entry is the centroid of panel jw, the point itself unmirrored
-      call pair_errors(mesh%xc(:, jw), pts%x(:, iw), V, WVN, NK, H, e_fin, e_inf)
-      print '(4x,a,es10.3,a,es10.3)', "  worst entry against the direct sum: finite ", e_fin, ", deep water ", e_inf
-      write (info, '(a,f6.2,a,es10.3,a,2es10.3)') "k0 h = ", WK*H, ": deep against finite row ", worst, &
-        " and deep water not closer to the direct sum: ", e_inf, e_fin
-      call check(error, e_inf < e_fin, trim(info))
+      print '(4x,a,f6.2,a,es10.3,a,i0,a,es10.3)', "deep against finite rows at k0 h = ", WK*H, &
+        ": max |deep - finite| / row max ", worst, "; entries above 1.3e-3 checked against the direct sum: ", nchecked, &
+        ", worst |deep - direct| / row max ", worst_direct
+      write (info, '(a,f6.2,a,es10.3,a,es10.3)') "k0 h = ", WK*H, ": deep against finite row ", worst, " above ", &
+        gap_limit(ik)
+      call check(error, worst <= gap_limit(ik), trim(info))
       if (allocated(error)) return
     end do
   end subroutine test_row_deep_within_tol
@@ -916,23 +940,39 @@ contains
   end subroutine test_deep_beats_limes
 
   !> The errors of FINGREEN3D in field mode (e_fin) and of INFGREEN3D (e_inf) against the direct eigenfunction sum
-  !> (direct_sum_green) for the source xq and the field point xf: the largest of the wave parts G, dG/dR and dG/dz, in
-  !> units of h (G h, dG/dR h^2, dG/dz h^2). The wave part of a FLAG = 0 result is G - 1/r - 1/r1 with its gradient, the
-  !> gradient taken with respect to the source point, as direct_sum_green has it (radial of gbench/outlier_check.f90).
+  !> (direct_sum_green) for the source xq and the field point xf: the largest of the wave parts G, dG/dR and dG/dz
+  !> (pair_waves), in units of h (G h, dG/dR h^2, dG/dz h^2).
   subroutine pair_errors(xq, xf, nu, wvn, nk_in, depth, e_fin, e_inf)
     real(8), intent(in) :: xq(3), xf(3), nu, wvn(:), depth
     integer, intent(in) :: nk_in
     real(8), intent(out) :: e_fin, e_inf
-    real(8) :: rr, scale(3)
-    complex(8) :: gf(4), gi(4), gd(3)
+    real(8) :: scale(3)
+    complex(8) :: wf(3), wi(3), wd(3)
+
+    call pair_waves(xq, xf, nu, wvn, nk_in, depth, wf, wi, wd)
+    scale = [depth, depth**2, depth**2]
+    e_fin = maxval(abs(wf - wd)*scale)
+    e_inf = maxval(abs(wi - wd)*scale)
+
+  end subroutine pair_errors
+
+  !> The wave parts (G, dG/dR, dG/dz) of FINGREEN3D in field mode (wf), of INFGREEN3D (wi) and of the direct eigenfunction
+  !> sum (wd, direct_sum_green) for the source xq and the field point xf. The wave part of a FLAG = 0 result is
+  !> G - 1/r - 1/r1 with its gradient, taken with respect to the source point, as direct_sum_green has it (radial of
+  !> gbench/outlier_check.f90).
+  subroutine pair_waves(xq, xf, nu, wvn, nk_in, depth, wf, wi, wd)
+    real(8), intent(in) :: xq(3), xf(3), nu, wvn(:), depth
+    integer, intent(in) :: nk_in
+    complex(8), intent(out) :: wf(3), wi(3), wd(3)
+    real(8) :: rr
+    complex(8) :: gf(4), gi(4)
 
     rr = sqrt((xq(1) - xf(1))**2 + (xq(2) - xf(2))**2)
     call FINGREEN3D(xq(1), xf(1), xq(2), xf(2), xq(3), xf(3), nu, wvn, nk_in, depth, gf, 0, FIELD=.true.)
     call INFGREEN3D(xq(1), xf(1), xq(2), xf(2), xq(3), xf(3), nu, gi, 0)
-    call direct_sum_green(rr, xq(3), xf(3), nu, wvn(1), depth, gd)
-    scale = [depth, depth**2, depth**2]
-    e_fin = maxval(abs(wave_part(gf) - gd)*scale)
-    e_inf = maxval(abs(wave_part(gi) - gd)*scale)
+    call direct_sum_green(rr, xq(3), xf(3), nu, wvn(1), depth, wd)
+    wf = wave_part(gf)
+    wi = wave_part(gi)
 
   contains
 
@@ -947,6 +987,6 @@ contains
       w(2) = (gr(2)*(xq(1) - xf(1)) + gr(3)*(xq(2) - xf(2)))/rr + (rr/sr**3 + rr/sr1**3)
       w(3) = gr(4) + ((xq(3) - xf(3))/sr**3 + (xf(3) + xq(3))/sr1**3)
     end function wave_part
-  end subroutine pair_errors
+  end subroutine pair_waves
 
 end module test_field_velocity

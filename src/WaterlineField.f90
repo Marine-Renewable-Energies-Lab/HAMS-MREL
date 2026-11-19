@@ -68,11 +68,13 @@ CONTAINS
       ! panel integrals of 1/r and of its image near the point satisfy phi_z = 0 on z = 0, not the free-surface condition,
       ! so they are not (PartialWaves; the circle samples of the QTF free-surface integral, QTFFreeSurface).
       ! deep, if present and true, takes the deep-water Green function (INFGREEN3D, as for H < 0) at finite depth too: the
-      ! second-order field passes pass it where k0 h >= field_deep_kh (field_deep of SecondOrderDriver). There it is within
-      ! 1.3e-3 of the row maximum of the finite-depth row for k0 h >= 10 (measured 1.25e-3 at k0 h = 10, test
-      ! field_row_deep_within_tol), and above nu h = 50 closer to the direct eigenfunction sum than field mode, which keeps
-      ! the Limes of PIDCOCK there (field_deep_beats_limes). The panel integrals of 1/r and of its image (flag = 1) do not
-      ! depend on the depth and stay as they are. Absent or false: H decides, as before.
+      ! second-order field passes pass it where k0 h >= field_deep_kh (field_deep of SecondOrderDriver). Measured gap to
+      ! the finite-depth row in field mode, over the row maximum: 1.25e-3 at k0 h = 10 on the OC4 rows (gbench), and
+      ! 5.7e-4, 8.8e-4 and 3.4e-3 at k0 h = 10, 20 and 40 on the test cylinder (field_row_deep_within_tol). At k0 h = 40
+      ! the gap is the error of field mode: it misses the direct eigenfunction sum by 3.3e-3 in G at R/h = 0.016,
+      ! nu h = 40, while the deep-water value is within 8e-5. Above nu h = 50 field mode keeps the Limes of PIDCOCK, and
+      ! the deep-water value is again the closer one to the direct sum (field_deep_beats_limes). The panel integrals of 1/r
+      ! and of its image (flag = 1) do not depend on the depth and stay as they are. Absent or false: H decides, as before.
       !   row_g, row_dg   (nbase, nsys)
       TYPE(panel_mesh), INTENT(IN) :: mesh
       REAL(8), INTENT(IN) :: xp(3)

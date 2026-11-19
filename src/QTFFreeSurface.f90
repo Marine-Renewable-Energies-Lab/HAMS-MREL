@@ -457,8 +457,9 @@ CONTAINS
       ! evanescent kev(1:nev) (pw_evanescent_from_wvn) of the current frequency. miss is the mode check of each state
       ! (fs_mode_miss), relative to fs_mode_scales: each state's own largest sample, so that every state is held to the
       ! tolerance of itself. The samples are evaluated in the fluid whatever their kind (CS_WALL from pw_sample_points).
-      ! deep, if present, goes to fs_sample_phi. The modes stay those of depth h: at k0 h >= 10 the deep-water rows differ
-      ! from the finite-depth rows by about 1e-3 of the row maximum (field_row_deep_within_tol), and miss shows the fit.
+      ! deep, if present, goes to fs_sample_phi. The modes stay those of depth h: at k0 h >= 10 the deep-water rows are
+      ! within 1.3e-3 of the row maximum of the finite-depth rows or, where they are not (k0 h = 40: 3.4e-3, the error of
+      ! the finite-depth field mode), of the direct eigenfunction sum (deep of field_influence_row), and miss shows the fit.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(cs_points), INTENT(IN) :: circle
       TYPE(first_order_state), INTENT(IN) :: states(:)

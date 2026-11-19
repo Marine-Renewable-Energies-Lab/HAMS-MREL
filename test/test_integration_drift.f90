@@ -320,8 +320,10 @@ module test_integration_drift
     ! (qtf_fs_panel = 5, qtf_fs_modes = 8, qtf_fs_evanescent = 8, cs_panel_size = 5: 68 s and 123 s on the laptop).
     ! max |on - off| / max |off| of each file (Re and Im of .11d and .11s, every term of the terms files), measured
     ! 1.624e-6 (.11d: only the fields at 1.05 rad/s switch), 1.657e-3 (.11s), 1.379e-4 (QTF_PotentialTerms.txt) and
-    ! 1.730e-3 (QTF_PotentialTermsSum.txt); the limits are 1.3x measured, rounded up to two digits. The rows differ by up
-    ! to 1.3e-3 of the row maximum (field_row_deep_within_tol of test_field_velocity).
+    ! 1.730e-3 (QTF_PotentialTermsSum.txt); the limits are 1.3x measured, rounded up to two digits. The rows themselves
+    ! differ by 5.7e-4, 8.8e-4 and 3.4e-3 of the row maximum at k0 h = 10, 20 and 40 on the test cylinder (gbench: 1.25e-3
+    ! at k0 h = 10 on OC4); at 40 that is the error of the finite-depth field mode, 3.3e-3 from the direct sum, with the
+    ! deep-water row within 8e-5 (field_row_deep_within_tol of test_field_velocity).
     character(len=*), parameter :: deep_kh_files(4) = [character(len=40) :: qtf_indirect_file, qtf_indirect_sum_file, &
                                                        pot_terms_file, pot_sum_terms_file]
     real(8), parameter :: deep_kh_limits(4) = [2.2d-6, 2.2d-3, 1.8d-4, 2.3d-3]
@@ -539,10 +541,10 @@ contains
             new_unittest("direct_sum_qtf2_default_b2", direct_sum_qtf2_default_b2), &
             new_unittest("indirect_sum_log_lines", indirect_sum_log_lines), &
             new_unittest("qtf_deep_kh_log", qtf_deep_kh_log), &
+            new_unittest("qtf_deep_kh_finite_pass_unchanged", qtf_deep_kh_finite_pass_unchanged), &
             new_unittest("qtf_deep_kh_within_limits", qtf_deep_kh_within_limits) &
         ]
     end subroutine collect_tests_drift
-
 
     ! ---------------------------------------------------------------------------------------------- running the cases
 
@@ -4849,6 +4851,9 @@ contains
     !> finite, the other four terms are the same to rounding, and B2 differs, by no more than the measured gap between C
     !> and the hull. A wiring error of the multi-body or IRSP route (the body of a point of C, its reference point, the
     !> per-body dpsi/dn) would show as a B2 far outside the gap.
+    !> The default field_deep_kh = 10 moves qtf_irsp_control against the outputs at 88e19bd: its main grid reaches k0 h = 12.3
+    !> at 1.10 rad/s (h = 100 m), where the fields on C and F take the deep-water Green function. .11d moved by 3.8e-6 and
+    !> QTF_PotentialTerms.txt by 1.8e-4 of the file maximum (the B2 column); this test passed before and after.
     subroutine qtf_b2_default_twins(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=21), parameter :: control(2) = [character(len=21) :: "qtf_two_round_control", "qtf_irsp_control"]
@@ -6862,8 +6867,9 @@ contains
         end do
     end subroutine run_qtf_deep_kh_cases
 
-    !> The log of qtf_deep_kh names the switch to the deep-water field rows once, at the first pass with k0 h >= 10; that of
-    !> qtf_deep_kh_off (field_deep_kh = 0) does not
+    !> The log of qtf_deep_kh names the switch to the deep-water field rows once, at the first pass with k0 h >= 10: the
+    !> main-grid 1.05 rad/s, k0 h = 11.24 (it comes before the sum frequencies); that of qtf_deep_kh_off (field_deep_kh = 0)
+    !> does not
     subroutine qtf_deep_kh_log(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=*), parameter :: line = "QTF field rows: the deep-water Green function from k0 h ="
@@ -6871,9 +6877,37 @@ contains
         call check(error, count_log_lines(get_running_exe_path()//"qtf_deep_kh.log", line) == 1, &
                    "qtf_deep_kh: the log does not name the deep-water field rows once")
         if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_deep_kh.log", line//"   11.24 (field_deep_kh =") == 1, &
+                   "qtf_deep_kh: the deep-water field rows do not start at k0 h = 11.24")
+        if (allocated(error)) return
         call check(error, count_log_lines(get_running_exe_path()//"qtf_deep_kh_off.log", line) == 0, &
                    "qtf_deep_kh_off: the log names the deep-water field rows with field_deep_kh = 0")
     end subroutine qtf_deep_kh_log
+
+    !> The .11d rows of w1 = w2 = 0.90 rad/s (k0 h = 8.3, below field_deep_kh, psi at the difference 0) take only
+    !> finite-depth passes, so they are the same text in qtf_deep_kh and qtf_deep_kh_off
+    subroutine qtf_deep_kh_finite_pass_unchanged(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: key = "  9.000000E-01  9.000000E-01"
+        character(len=:), allocatable :: a(:), b(:)
+        integer :: r, n
+
+        call read_lines(output_dir("qtf_deep_kh")//qtf_indirect_file, a, error)
+        if (allocated(error)) return
+        call read_lines(output_dir("qtf_deep_kh_off")//qtf_indirect_file, b, error)
+        if (allocated(error)) return
+        call check(error, size(a) == size(b), "qtf_deep_kh .11d: other rows than qtf_deep_kh_off")
+        if (allocated(error)) return
+        n = 0
+        do r = 1, size(a)
+            if (a(r)(1:len(key)) /= key) cycle
+            n = n + 1
+            call check(error, a(r) == b(r), "qtf_deep_kh .11d: a row at 0.90, 0.90 rad/s differs: "//trim(a(r)))
+            if (allocated(error)) return
+        end do
+        print '(4x,a,i0,a)', "qtf_deep_kh .11d: ", n, " rows at 0.90, 0.90 rad/s the same as with field_deep_kh = 0"
+        call check(error, n > 0, "qtf_deep_kh .11d: no rows at 0.90, 0.90 rad/s")
+    end subroutine qtf_deep_kh_finite_pass_unchanged
 
     !> Each output of qtf_deep_kh against that of qtf_deep_kh_off, row by row (the same rows in both): max |on - off| over
     !> max |off| of the values, below deep_kh_limits, and above 0, or the runs did not switch
