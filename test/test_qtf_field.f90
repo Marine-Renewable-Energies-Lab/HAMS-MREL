@@ -3,7 +3,7 @@
 module test_qtf_field
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use QTFField, only : field_pair, build_field_points, field_direct, qfield_init, qfield_keep, qfield_keep_direct, &
-                       qfield_direct_active, qfield_finish
+                       qfield_direct_active, qfield_finish, radiated_potential, qfield_add_radiated, qfield_radiated_active
   use Const_mod, only : G_SOLVER => G, RHO_SOLVER => RHO
   use IO, only : CreateDirectory
   use SecondOrderTypes, only : panel_mesh, cs_points, so_options, first_order_state, cs_fields
@@ -55,7 +55,9 @@ subroutine collect_qtf_field_serial(testsuite)
     new_unittest("field_direct_sum_only", test_direct_sum_only), &
     new_unittest("field_direct_both_kernels", test_direct_both_kernels), &
     new_unittest("field_direct_off", test_direct_off), &
-    new_unittest("field_header_qtf1_c716ed7", test_header_qtf1) &
+    new_unittest("field_header_qtf1_c716ed7", test_header_qtf1), &
+    new_unittest("field_radiated_rows", test_radiated_rows), &
+    new_unittest("field_radiated_off", test_radiated_off) &
     ]
 end subroutine collect_qtf_field_serial
 
@@ -506,7 +508,11 @@ end subroutine test_direct_pressure_elevation
 !> Runs the field store for two frequencies (0.5, 0.7), one heading and two points (pressure at z = -1, elevation at z = 0),
 !> qtf = 3, with the first-order fields set by hand. With direct, phi_D of the pair (1, 2) is phi12(ip) and that of (2, 1) its
 !> conjugate, as direct_at_omega gives them (Omega < 0 conjugated); the pairs (1, 1), (2, 2) are not given (Omega = 0).
-subroutine run_field_store(root, direct, phi12, phisum, sumkept, qtf_kind, both)
+!> Phase 6c: with motion, opts%qtf_motion = 1; with phir12 (and phirsum, radsum), the radiated wave phi_R is added
+!> (qfield_add_radiated) to the difference pair (1, 2), its conjugate to (2, 1), and phirsum(:, s) to the sum slot s of
+!> (1, 1), (1, 2), (2, 1), (2, 2) where radsum(s), as the driver adds them after the motion. Without motion the calls are made
+!> as well, and must change nothing (qtf_motion = 0).
+subroutine run_field_store(root, direct, phi12, phisum, sumkept, qtf_kind, both, motion, phir12, phirsum, radsum)
   character(len=*), intent(in) :: root
   logical, intent(in) :: direct
   complex(8), intent(in) :: phi12(2)
@@ -514,6 +520,10 @@ subroutine run_field_store(root, direct, phi12, phisum, sumkept, qtf_kind, both)
   logical, intent(in), optional :: sumkept(3)         ! which of the three sum pairs the direct solve gives
   integer, intent(in), optional :: qtf_kind           ! opts%qtf (default 3)
   logical, intent(in), optional :: both               ! with phisum: also keep the difference pairs
+  logical, intent(in), optional :: motion             ! opts%qtf_motion = 1
+  complex(8), intent(in), optional :: phir12(2)       ! phi_R of the difference pair (1, 2) at the 2 points
+  complex(8), intent(in), optional :: phirsum(2, 4)   ! phi_R of the sum slots (1, 1), (1, 2), (2, 1), (2, 2)
+  logical, intent(in), optional :: radsum(4)          ! the sum slots that get phi_R
   type(so_options) :: opts
   type(cs_points) :: pts
   type(first_order_state) :: st(1)
@@ -529,6 +539,7 @@ subroutine run_field_store(root, direct, phi12, phisum, sumkept, qtf_kind, both)
   opts%qtf_field = 1
   opts%qtf_direct = merge(1, 0, direct)
   opts%mean_drift = 1
+  if (present(motion)) opts%qtf_motion = merge(1, 0, motion)
   pts%n = 2
   allocate (pts%x(3, 2), pts%nrm(3, 2), pts%w(2), pts%psize(2), pts%kind(2), pts%body(2))
   pts%x = reshape([2d0, -1d0, -1d0, 2d0, -1d0, 0d0], [3, 2])
@@ -556,6 +567,16 @@ subroutine run_field_store(root, direct, phi12, phisum, sumkept, qtf_kind, both)
     if (sumkept(1)) call qfield_keep_direct(1, 1, 1, 1, phisum(:, 1), KERNEL_SUM)
     if (sumkept(2)) call qfield_keep_direct(2, 1, 1, 1, phisum(:, 2), KERNEL_SUM)
     if (sumkept(3)) call qfield_keep_direct(2, 1, 2, 1, phisum(:, 3), KERNEL_SUM)
+  end if
+  if (present(phir12)) then
+    call qfield_add_radiated(1, 1, 2, 1, phir12, KERNEL_DIFF)
+    call qfield_add_radiated(2, 1, 1, 1, conjg(phir12), KERNEL_DIFF)
+  end if
+  if (present(phirsum)) then
+    if (radsum(1)) call qfield_add_radiated(1, 1, 1, 1, phirsum(:, 1), KERNEL_SUM)
+    if (radsum(2)) call qfield_add_radiated(1, 1, 2, 1, phirsum(:, 2), KERNEL_SUM)
+    if (radsum(3)) call qfield_add_radiated(2, 1, 1, 1, phirsum(:, 3), KERNEL_SUM)
+    if (radsum(4)) call qfield_add_radiated(2, 1, 2, 1, phirsum(:, 4), KERNEL_SUM)
   end if
   call qfield_finish(1d0)
 end subroutine run_field_store
@@ -888,6 +909,181 @@ subroutine test_header_qtf1(error)
              index(m3, "K = 2: the sum pairs of QTF_Direct.12s") > 0, "qtf = 3: the header does not name the sum")
   call remove_dir(root3)
 end subroutine test_header_qtf1
+
+!> The radiated wave of the second-order motion in QTF_Field.txt (Phase 6c, ruling R7). The forms, to 1e-14: radiated_potential
+!> of a stored xi (6 modes) and psi at 2 points is sum_j (-i Omega xi_j) psi_j by hand; the mirror row, Omega < 0 with xi
+!> conjugated, is its conjugate (psi is conjugated at -|Omega|); field_direct of it is i rho Omega phi_R and (i Omega/g) phi_R.
+!> The file, qtf = 3, qtf_motion = 1: phi_R is added to the difference pairs (1, 2), (2, 1) and to the sum slots (1, 1),
+!> (1, 2), (2, 1); the slot (2, 2) is left out, as a row of an Omega whose motion is left out (R6). Re_dir Im_dir are the forms
+!> of phi_D + phi_R, conjugated and scaled as the other columns, with has_rad = 1; the left-out slot has phi_D only and
+!> has_rad = 0, the mean rows 0 0 0 0. The 15 columns of QTF_FieldPartial.txt are unchanged. 7 digits in the file: 1e-5.
+subroutine test_radiated_rows(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "qtf_field_rad_tmp"
+  complex(8), parameter :: phi12(2) = [(0.4d0, -0.3d0), (-0.1d0, 0.6d0)]
+  complex(8), parameter :: ps(2, 3) = reshape([(0.2d0, 0.5d0), (-0.7d0, 0.1d0), (0.9d0, -0.4d0), (0.3d0, 0.3d0), &
+                                               (-0.5d0, -0.2d0), (0.1d0, 0.8d0)], [2, 3])
+  complex(8), parameter :: xi(6) = [(0.3d0, -0.1d0), (0.05d0, 0.2d0), (-0.4d0, 0.25d0), (0.01d0, -0.02d0), &
+                                    (-0.03d0, 0.015d0), (0.002d0, 0.004d0)]
+  complex(8), parameter :: psi(2, 6) = reshape([(1.1d0, 0.3d0), (-0.2d0, 0.7d0), (0.4d0, -0.9d0), (0.6d0, 0.1d0), &
+                                                (-1.3d0, 0.2d0), (0.5d0, 0.5d0), (2.1d0, -0.4d0), (-0.8d0, 1.2d0), &
+                                                (0.3d0, 0.6d0), (-1.5d0, -0.3d0), (4.0d0, 1.0d0), (-2.0d0, 3.0d0)], [2, 6])
+  real(8), parameter :: w(2) = [0.5d0, 0.7d0]
+  logical, parameter :: radsum(4) = [.true., .true., .true., .false.]
+  character(len=600) :: rows(32), prows(32), line
+  complex(8) :: phir(2), hand(2), mirror(2), phir12(2), phirs(2, 4), e, d, p
+  real(8) :: dv(2), om, gap_form, gap_rows
+  integer :: n, np, r, ih, ir, kk, ii, jj, pp, k, s, unit, ios
+  logical :: has_column, has_words
+
+  ! The forms at Omega = 0.2 and its mirror
+  om = 0.2d0
+  do pp = 1, 2
+    hand(pp) = (0d0, 0d0)
+    do k = 1, 6
+      hand(pp) = hand(pp) + (-ci*om*xi(k))*psi(pp, k)
+    end do
+  end do
+  phir = radiated_potential(om, xi, psi)
+  gap_form = maxval(abs(phir - hand))/maxval(abs(hand))
+  mirror = radiated_potential(-om, conjg(xi), psi)
+  gap_form = max(gap_form, maxval(abs(mirror - conjg(phir)))/maxval(abs(phir)))
+  do pp = 1, 2
+    d = field_direct(om, phir(pp), RHO_SOLVER, G_SOLVER, .false.)
+    gap_form = max(gap_form, abs(d - ci*RHO_SOLVER*om*phir(pp))/abs(RHO_SOLVER*om*phir(pp)))
+    d = field_direct(om, phir(pp), RHO_SOLVER, G_SOLVER, .true.)
+    gap_form = max(gap_form, abs(d - ci*om/G_SOLVER*phir(pp))/abs(om/G_SOLVER*phir(pp)))
+  end do
+  write (line, '(a,es10.2)') "radiated wave forms against the hand values, relative ", gap_form
+  print '(4x,a)', trim(line)
+  call check(error, gap_form <= 1d-14, line)
+  if (allocated(error)) return
+  call check(error, all(radiated_potential(0d0, xi, psi) == (0d0, 0d0)), "Omega = 0 does not give phi_R = 0")
+  if (allocated(error)) return
+
+  ! The file. The pair (1, 2) has Omega = w1 - w2 < 0 and the motion xi; (2, 1) the conjugates (run_field_store)
+  phir12 = radiated_potential(w(1) - w(2), xi, psi)
+  do s = 1, 4
+    ii = (s - 1)/2 + 1
+    jj = mod(s - 1, 2) + 1
+    ! The sum motion is symmetric in the pair: slots (1, 2) and (2, 1) the same xi; another xi per sum frequency
+    phirs(:, s) = radiated_potential(w(ii) + w(jj), xi*cmplx(1d0, 0.1d0*(ii + jj), 8), psi)
+  end do
+  call run_field_store(root, .true., phi12, ps, [.true., .true., .true.], both=.true., motion=.true., phir12=phir12, &
+                       phirsum=phirs, radsum=radsum)
+  call read_rows(root // "/Wamit_format/QTF_Field.txt", rows, n)
+  call read_rows(root // "/Wamit_format/QTF_FieldPartial.txt", prows, np)
+  call check(error, n == 16 .and. np == 16, "16 rows in both files")
+  if (allocated(error)) return
+  gap_rows = 0d0
+  r = 0
+  do kk = 1, 2
+    do ii = 1, 2
+      do jj = 1, 2
+        s = (ii - 1)*2 + jj
+        do pp = 1, 2
+          r = r + 1
+          call check(error, rows(r)(1:len_trim(prows(r))) == trim(prows(r)), "5b columns changed by the radiated wave")
+          if (allocated(error)) return
+          read (rows(r)(len_trim(prows(r)) + 1:), '(2ES14.6,2I6)') dv, ih, ir
+          if (kk == 1 .and. ii == jj) then
+            call check(error, ih == 0 .and. ir == 0 .and. dv(1) == 0d0 .and. dv(2) == 0d0, "a mean row has a direct part")
+            if (allocated(error)) return
+            cycle
+          end if
+          if (kk == 1) then
+            om = w(ii) - w(jj)
+            p = merge(phi12(pp) + phir12(pp), conjg(phi12(pp) + phir12(pp)), ii == 1)
+            call check(error, ih == 1 .and. ir == 1, "a difference row with phi_R does not have has_direct = has_rad = 1")
+          else
+            om = w(ii) + w(jj)
+            p = ps(pp, ii + jj - 1)
+            if (radsum(s)) p = p + phirs(pp, s)
+            call check(error, ih == 1 .and. (ir == 1 .eqv. radsum(s)), "has_rad of a sum row is not 1 with phi_R, 0 without")
+          end if
+          if (allocated(error)) return
+          ! e^{-i Omega t} forms, then conjugated and scaled as the other columns (pressure / (rho g), refl = 1)
+          if (pp == 1) then
+            e = conjg(ci*RHO_SOLVER*om*p)/(RHO_SOLVER*G_SOLVER)
+          else
+            e = conjg(ci*om/G_SOLVER*p)
+          end if
+          gap_rows = max(gap_rows, abs(cmplx(dv(1), dv(2), 8) - e)/abs(e))
+        end do
+      end do
+    end do
+  end do
+  write (line, '(a,es10.2)') "Re_dir Im_dir of the rows against phi_D + phi_R, relative ", gap_rows
+  print '(4x,a)', trim(line)
+  call check(error, gap_rows <= 1d-5, line)
+  if (allocated(error)) return
+  ! The header names the column and the radiated wave
+  has_column = .false.
+  has_words = .false.
+  open (newunit=unit, file=root // "/Wamit_format/QTF_Field.txt", status='old', action='read')
+  do
+    read (unit, '(a)', iostat=ios) line
+    if (ios /= 0) exit
+    if (index(line, "# Columns:") == 1 .and. index(line, "has_direct has_rad") > 0) has_column = .true.
+    if (index(line, "radiated wave of the second-order motion included where has_rad = 1") > 0) has_words = .true.
+  end do
+  close (unit)
+  call check(error, has_column .and. has_words, "the header of QTF_Field.txt does not name has_rad and the radiated wave")
+  if (allocated(error)) return
+  call remove_dir(root)
+end subroutine test_radiated_rows
+
+!> qtf_motion = 0: QTF_Field.txt of the store with both kernels and their direct parts is the file of Phase 7c-2, line by line
+!> and character by character, the header included: test/data/qtf_field_radiated_off/QTF_Field.txt, which this run wrote at
+!> b8d7936 (before Phase 6c Task 5). qfield_add_radiated is called for every row as the driver would, and must change nothing:
+!> without qtf_motion the store does not take the radiated wave.
+subroutine test_radiated_off(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "qtf_field_radoff_tmp"
+  character(len=*), parameter :: reference = "test/data/qtf_field_radiated_off/QTF_Field.txt"
+  complex(8), parameter :: phi12(2) = [(0.4d0, -0.3d0), (-0.1d0, 0.6d0)]
+  complex(8), parameter :: ps(2, 3) = reshape([(0.2d0, 0.5d0), (-0.7d0, 0.1d0), (0.9d0, -0.4d0), (0.3d0, 0.3d0), &
+                                               (-0.5d0, -0.2d0), (0.1d0, 0.8d0)], [2, 3])
+  complex(8), parameter :: phirs(2, 4) = reshape([(0.1d0, 0.1d0), (0.2d0, -0.1d0), (-0.3d0, 0.2d0), (0.1d0, 0.4d0), &
+                                                  (-0.3d0, 0.2d0), (0.1d0, 0.4d0), (0.5d0, -0.5d0), (0.2d0, 0.2d0)], [2, 4])
+  character(len=700), allocatable :: got(:), want(:)
+  logical :: exists
+  integer :: r
+
+  call run_field_store(root, .true., phi12, ps, [.true., .true., .true.], both=.true., motion=.false., &
+                       phir12=[(0.3d0, 0.2d0), (-0.4d0, 0.1d0)], phirsum=phirs, radsum=[.true., .true., .true., .true.])
+  call check(error, .not. qfield_radiated_active(), "the store took the radiated wave with qtf_motion = 0")
+  if (allocated(error)) return
+  inquire (file=reference, exist=exists)
+  call check(error, exists, "missing reference " // reference)
+  if (allocated(error)) return
+  call all_lines(root // "/Wamit_format/QTF_Field.txt", got)
+  call all_lines(reference, want)
+  call check(error, size(got) == size(want) .and. size(got) > 16, "QTF_Field.txt has another number of lines")
+  if (allocated(error)) return
+  do r = 1, size(want)
+    call check(error, got(r) == want(r), "QTF_Field.txt with qtf_motion = 0 differs from the Phase 7c-2 file at a line")
+    if (allocated(error)) return
+  end do
+  call remove_dir(root)
+end subroutine test_radiated_off
+
+!> Every line of a text file, as it is (no line skipped)
+subroutine all_lines(path, lines)
+  character(len=*), intent(in) :: path
+  character(len=700), allocatable, intent(out) :: lines(:)
+  character(len=700) :: line
+  integer :: unit, ios
+
+  allocate (lines(0))
+  open (newunit=unit, file=path, status='old', action='read')
+  do
+    read (unit, '(a)', iostat=ios) line
+    if (ios /= 0) exit
+    lines = [lines, line]
+  end do
+  close (unit)
+end subroutine all_lines
 
 !> The header lines of a field file that start with "# Re_dir Im_dir:", "# phi_D" and "# has_direct:"
 subroutine header_lines(path, l1, l2, l3)

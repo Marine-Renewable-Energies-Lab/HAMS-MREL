@@ -244,7 +244,7 @@ CONTAINS
    END SUBROUTINE write_qtf_terms_row
 
    SUBROUTINE write_field_row(unit, oufr1, oufr2, beta1_deg, beta2_deg, kernel, ipt, surface, quad, pot, refl, direct, &
-                              has_direct)
+                              has_direct, has_radiated)
       ! Writes one row PER1 PER2 BETA1 BETA2 K IPT TYPE Mod Pha Re Im Re_quad Im_quad Re_inc Im_inc of QTF_FieldPartial.txt.
       ! quad and pot are the quadratic part and the second-order incident part, per unit amplitude pair, e^{-i omega t}, of
       ! the pressure (surface false, TYPE 1) or the elevation (surface true, TYPE 2). The row holds their sum and each part,
@@ -256,12 +256,14 @@ CONTAINS
       ! amplitude pair, e^{-i omega t}, as quad and pot), conjugated and scaled as they are, and not added to the sum
       ! columns. has_direct (default .TRUE.) = .FALSE. marks a row the direct solve does not cover (mean row, sum row): it
       ! gets 0 0 0 whatever direct holds.
+      ! With has_radiated (QTF_Field.txt with qtf_motion = 1, Phase 6c), the column has_rad follows: 1 where direct holds the
+      ! radiated wave of the second-order motion as well, else 0 (QTFField header). Absent, the row is the one of Phase 7c-2.
       INTEGER, INTENT(IN) :: unit, kernel, ipt
       REAL(8), INTENT(IN) :: oufr1, oufr2, beta1_deg, beta2_deg, refl
       LOGICAL, INTENT(IN) :: surface
       COMPLEX(8), INTENT(IN) :: quad, pot
       COMPLEX(8), INTENT(IN), OPTIONAL :: direct
-      LOGICAL, INTENT(IN), OPTIONAL :: has_direct
+      LOGICAL, INTENT(IN), OPTIONAL :: has_direct, has_radiated
       REAL(8), PARAMETER :: RAD_TO_DEG = 180D0/3.141592653589793D0
       COMPLEX(8) :: total, q, p, d
       LOGICAL :: have
@@ -279,6 +281,12 @@ CONTAINS
       IF (PRESENT(has_direct)) have = has_direct
       d = (0D0, 0D0)
       IF (have) d = field_value(direct, refl, surface)
+      IF (PRESENT(has_radiated)) THEN
+         WRITE (unit, '(4ES14.6,3I6,10ES14.6,2I6)') oufr1, oufr2, beta1_deg, beta2_deg, kernel, ipt, MERGE(2, 1, surface), &
+            ABS(total), ATAN2(AIMAG(total), REAL(total, 8))*RAD_TO_DEG, REAL(total, 8), AIMAG(total), REAL(q, 8), AIMAG(q), &
+            REAL(p, 8), AIMAG(p), REAL(d, 8), AIMAG(d), MERGE(1, 0, have), MERGE(1, 0, have .AND. has_radiated)
+         RETURN
+      END IF
       WRITE (unit, '(4ES14.6,3I6,10ES14.6,I6)') oufr1, oufr2, beta1_deg, beta2_deg, kernel, ipt, MERGE(2, 1, surface), &
          ABS(total), ATAN2(AIMAG(total), REAL(total, 8))*RAD_TO_DEG, REAL(total, 8), AIMAG(total), REAL(q, 8), AIMAG(q), &
          REAL(p, 8), AIMAG(p), REAL(d, 8), AIMAG(d), MERGE(1, 0, have)

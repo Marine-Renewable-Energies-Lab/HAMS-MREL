@@ -66,6 +66,28 @@ MODULE QTFField
    ! free-surface forcing is left out of the field, as for the difference.
    ! The value with the direct part is the sum of the Re Im of QTF_FieldPartial.txt and Re_dir Im_dir of QTF_Field.txt; the
    ! first file is written as without qtf_direct, to the byte.
+   !
+   ! The radiated wave of the second-order motion (Phase 6c, qtf_motion = 1 with qtf_direct = 1, ruling R7 of its plan).
+   ! A free body moves at Omega with xi (QTF_Motion.12d, .12s: the motion of the direct route, e^{-i Omega t}, unscaled),
+   ! and radiates phi_R. With the velocity -i Omega xi_j of mode j and psi_j the unit-velocity radiation potential at Omega
+   ! (header of QTFMotion: phi = psi_k (-i Omega xi_k)),
+   !   phi_R = sum_j (-i Omega xi_j) psi_j                                                         (radiated_potential)
+   ! psi_j at the points comes from Green's formula with the body values of psi_j and dpsi_j/dn = n_j (psi_at_points of
+   ! QTFDriver: direct_field_at_points on the 6 nbody columns). phi_R is a second-order potential at Omega like phi_D, so
+   ! it enters as phi_D does, p_R = i rho Omega phi_R and eta_R = (i Omega/g) phi_R (field_direct), and the driver adds
+   ! it to the stored phi_D of the row (qfield_add_radiated): Re_dir Im_dir then hold phi_D + phi_R.
+   ! The sign of Omega. psi is solved at |Omega| > 0. A difference row with Omega = omega_i - omega_j < 0 holds phi_D
+   ! conjugated (above): the e^{-i Omega t} amplitude at the signed Omega, conj of the pair (j, i). Its xi is stored the
+   ! same way (qtf_motion_part: conj(lhs) xi = F at Omega < 0). The radiation potential of unit velocity amplitude at
+   ! -|Omega| is conj(psi(|Omega|)): the velocity Re(V e^{+i|Omega|t}) = Re(conj(V) e^{-i|Omega|t}) radiates
+   ! Re(conj(V) psi e^{-i|Omega|t}) = Re(V conj(psi) e^{+i|Omega|t}). So phi_R of the row (i, j) at Omega < 0 is
+   ! sum_j (-i Omega xi_j) conj(psi_j), which is conj(phi_R of (j, i)): the row is conj of its mirror, as phi_D, and
+   ! field_direct with the signed Omega gives p_R(i, j) = conj(p_R(j, i)), as for the direct rows. The file conjugates
+   ! once more (e^{+i omega t}, write_field_row), as for every column.
+   ! Rows left out of the motion (an Omega whose matrix has rcond < 1e-12, R6, as QTF_Motion leaves them out) get no
+   ! phi_R. QTF_Field.txt then has the column has_rad after has_direct, as has_direct marks the rows without a direct part:
+   ! 1 where Re_dir Im_dir include phi_R, 0 where they do not (no direct part, or the motion is left out). With
+   ! qtf_motion = 0 neither the column nor the header lines change: the file is that of Phase 7c-2, to the byte.
 
    USE Const_mod, ONLY: G
    USE SecondOrderIncident, ONLY: incident2, incident2_pair, incident2_phi
@@ -79,6 +101,7 @@ MODULE QTFField
    PUBLIC :: field_pair, build_field_points, body_winding
    PUBLIC :: qfield_init, qfield_keep, qfield_finish, qfield_stored_mb, FIELD_FD_STEP
    PUBLIC :: field_direct, qfield_keep_direct, qfield_direct_active, qfield_direct_points
+   PUBLIC :: radiated_potential, qfield_add_radiated, qfield_radiated_active
 
    ! Central-difference step of the first-order gradient at the field points, as a fraction of the size of the nearest hull
    ! panel: the default of cs_fd_step, which fields_green takes for the control surface
@@ -100,6 +123,10 @@ MODULE QTFField
    LOGICAL, ALLOCATABLE :: dir_have(:, :, :)            ! (nfreq, nfreq, nheading pairs), phi_D of the pair was kept
    COMPLEX(8), ALLOCATABLE :: dir_store_sum(:, :, :, :) ! the same for the sum kernel, both slots of a pair filled
    LOGICAL, ALLOCATABLE :: dir_have_sum(:, :, :)
+   ! The radiated wave of the second-order motion (qtf_motion = 1, Phase 6c): phi_R is added to dir_store (dir_store_sum)
+   ! of the row, and rad_have (rad_have_sum) marks the rows that have it, as dir_have
+   LOGICAL :: radiated_on = .FALSE.
+   LOGICAL, ALLOCATABLE :: rad_have(:, :, :), rad_have_sum(:, :, :)   ! as dir_have, dir_have_sum
 
 CONTAINS
 
@@ -149,6 +176,27 @@ CONTAINS
          field_direct = CI*rho*omega*phi_d
       END IF
    END FUNCTION field_direct
+
+   PURE FUNCTION radiated_potential(omega, xi, psi_pts) RESULT(phi_r)
+      ! The radiated wave phi_R = sum_j (-i omega xi_j) psi_j at the points (header), e^{-i omega t}, of a row with the
+      ! signed frequency omega (difference omega_1 - omega_2, or the sum) and the motion xi (6 nbody, as xi2 of QTFDriver
+      ! stores it). psi_pts (npt, 6 nbody) is psi at the points at |omega| (psi_at_points); for omega < 0 the radiation
+      ! potential at omega is its conjugate (header), so conj(psi_pts) is taken. omega = 0 gives 0.
+      REAL(8), INTENT(IN) :: omega
+      COMPLEX(8), INTENT(IN) :: xi(:), psi_pts(:, :)
+      COMPLEX(8) :: phi_r(SIZE(psi_pts, 1))
+      COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
+      INTEGER :: k
+
+      phi_r = (0D0, 0D0)
+      DO k = 1, SIZE(xi)
+         IF (omega < 0D0) THEN
+            phi_r = phi_r + (-CI*omega*xi(k))*CONJG(psi_pts(:, k))
+         ELSE
+            phi_r = phi_r + (-CI*omega*xi(k))*psi_pts(:, k)
+         END IF
+      END DO
+   END FUNCTION radiated_potential
 
    SUBROUTINE build_field_points(mesh, xfp, pts, surface, ok, msg)
       ! Field points xfp(3,:) as a cs_points set (kind CS_FREE, nrm = 0, w = 0). Type as PressureElevation: |z| <= 1e-6 is
@@ -298,6 +346,8 @@ CONTAINS
       direct_diff = opts%qtf_direct == 1 .AND. (opts%qtf == 1 .OR. opts%qtf == 3)
       direct_sum = opts%qtf_direct == 1 .AND. (opts%qtf == 2 .OR. opts%qtf == 3)
       direct_on = direct_diff .OR. direct_sum
+      ! The radiated wave needs the direct part (R7) and a free body: a fixed one has no motion (QTFDriver computes none)
+      radiated_on = direct_on .AND. opts%qtf_motion == 1 .AND. .NOT. opts%motion_fixed
       nbeta = SIZE(beta_in_deg)
       npt = pts%n
       nkept = 0
@@ -308,6 +358,8 @@ CONTAINS
       IF (ALLOCATED(phi_store)) DEALLOCATE (phi_store, grad_store, w_store, k_store, h_store, b_store, rho_store, oufr_store)
       IF (ALLOCATED(dir_store)) DEALLOCATE (dir_store, dir_have)
       IF (ALLOCATED(dir_store_sum)) DEALLOCATE (dir_store_sum, dir_have_sum)
+      IF (ALLOCATED(rad_have)) DEALLOCATE (rad_have)
+      IF (ALLOCATED(rad_have_sum)) DEALLOCATE (rad_have_sum)
       ALLOCATE (phi_store(npt, nfreq, nbeta), grad_store(3, npt, nfreq, nbeta), w_store(nfreq, nbeta), k_store(nfreq, nbeta), &
                 h_store(nfreq, nbeta), b_store(nfreq, nbeta), rho_store(nfreq, nbeta), oufr_store(nfreq), STAT=st)
       IF (st /= 0) THEN
@@ -337,6 +389,14 @@ CONTAINS
          IF (st /= 0) CALL direct_memory_stop()
          dir_store_sum = (0D0, 0D0)
          dir_have_sum = .FALSE.
+      END IF
+      IF (radiated_on .AND. direct_diff) THEN
+         ALLOCATE (rad_have(nfreq, nfreq, SIZE(dir_store, 4)))
+         rad_have = .FALSE.
+      END IF
+      IF (radiated_on .AND. direct_sum) THEN
+         ALLOCATE (rad_have_sum(nfreq, nfreq, SIZE(dir_store_sum, 4)))
+         rad_have_sum = .FALSE.
       END IF
    CONTAINS
       SUBROUTINE direct_memory_stop()
@@ -417,6 +477,50 @@ CONTAINS
       dir_have(i, j, h) = .TRUE.
    END SUBROUTINE qfield_keep_direct
 
+   LOGICAL FUNCTION qfield_radiated_active()
+      ! The store takes the radiated wave of the second-order motion: the direct part with qtf_motion = 1 and a free body
+      ! (header), set up by qfield_init
+      qfield_radiated_active = qfield_direct_active() .AND. radiated_on
+   END FUNCTION qfield_radiated_active
+
+   SUBROUTINE qfield_add_radiated(i1, b1, i2, b2, phi_r, kernel)
+      ! Adds phi_R at the points (npt, radiated_potential) to the direct part of the row (frequency i1, heading b1; frequency
+      ! i2, heading b2) of kernel (KERNEL_DIFF or KERNEL_SUM), and marks the row (has_rad = 1). phi_R is in the form of the
+      ! stored phi_D of that row: e^{-i Omega t} at the signed Omega (header). One slot only: for the sum, whose two slots
+      ! keep_direct fills with one call, the driver calls this for each slot, with the xi of each. No-op unless the store
+      ! takes the radiated wave. Stops for a row without a direct part (R7: the radiated wave goes only into rows that have
+      ! one) or a row given twice.
+      INTEGER, INTENT(IN) :: i1, b1, i2, b2, kernel
+      COMPLEX(8), INTENT(IN) :: phi_r(:)
+      INTEGER :: h
+
+      IF (.NOT. qfield_radiated_active()) RETURN
+      IF (i1 < 1 .OR. i2 < 1 .OR. i1 > SIZE(phi_store, 2) .OR. i2 > SIZE(phi_store, 2) .OR. b1 < 1 .OR. b2 < 1 .OR. &
+          b1 > nbeta .OR. b2 > nbeta .OR. SIZE(phi_r) /= npt .OR. (all_headings_pairs == 0 .AND. b1 /= b2)) THEN
+         WRITE (*, '(a)') ' QTF field: qfield_add_radiated called with a pair or a size that is not in the store.'
+         ERROR STOP 1
+      END IF
+      h = heading_pair_index(b1, b2)
+      IF (kernel == KERNEL_SUM .AND. direct_sum) THEN
+         IF (.NOT. dir_have_sum(i1, i2, h) .OR. rad_have_sum(i1, i2, h)) CALL row_stop()
+         dir_store_sum(:, i1, i2, h) = dir_store_sum(:, i1, i2, h) + phi_r
+         rad_have_sum(i1, i2, h) = .TRUE.
+      ELSE IF (kernel == KERNEL_DIFF .AND. direct_diff) THEN
+         IF (.NOT. dir_have(i1, i2, h) .OR. rad_have(i1, i2, h)) CALL row_stop()
+         dir_store(:, i1, i2, h) = dir_store(:, i1, i2, h) + phi_r
+         rad_have(i1, i2, h) = .TRUE.
+      ELSE
+         WRITE (*, '(a)') ' QTF field: qfield_add_radiated called with a kernel the direct part does not have.'
+         ERROR STOP 1
+      END IF
+   CONTAINS
+      SUBROUTINE row_stop()
+         WRITE (*, '(a,4(1x,I0))') ' QTF field: qfield_add_radiated: the row has no direct part or has phi_R already:', &
+            i1, b1, i2, b2
+         ERROR STOP 1
+      END SUBROUTINE row_stop
+   END SUBROUTINE qfield_add_radiated
+
    PURE INTEGER FUNCTION heading_pair_index(b1, b2)
       ! The heading pair of the direct store: all pairs with mean_drift = 2, else only b1 = b2
       INTEGER, INTENT(IN) :: b1, b2
@@ -462,7 +566,7 @@ CONTAINS
       COMPLEX(8) :: quad, pot, d
       REAL(8) :: g_wave
       INTEGER :: unit, unit_full, kern, kn, b1, b2, i, j, ip, nrows, h
-      LOGICAL :: have
+      LOGICAL :: have, rad
 
       IF (.NOT. active) RETURN
       OPEN (NEWUNIT=unit, FILE=outdir//'/Wamit_format/QTF_FieldPartial.txt', STATUS='REPLACE', ACTION='WRITE')
@@ -511,8 +615,17 @@ CONTAINS
                            IF (have .AND. kn == KERNEL_SUM) &
                               d = field_direct(w_store(i, b1) + w_store(j, b2), dir_store_sum(ip, i, j, h), rho_store(i, b1), &
                                                G, is_surface(ip))
-                           CALL write_field_row(unit_full, oufr_store(i), oufr_store(j), beta_deg(b1), beta_deg(b2), kern, &
-                                                ip, is_surface(ip), quad, pot, refl, d, have)
+                           IF (radiated_on) THEN
+                              ! has_rad: the row has phi_R in d (qfield_add_radiated); 0 where it has no direct part
+                              rad = .FALSE.
+                              IF (have .AND. kn == KERNEL_DIFF) rad = rad_have(i, j, h)
+                              IF (have .AND. kn == KERNEL_SUM) rad = rad_have_sum(i, j, h)
+                              CALL write_field_row(unit_full, oufr_store(i), oufr_store(j), beta_deg(b1), beta_deg(b2), &
+                                                   kern, ip, is_surface(ip), quad, pot, refl, d, have, rad)
+                           ELSE
+                              CALL write_field_row(unit_full, oufr_store(i), oufr_store(j), beta_deg(b1), beta_deg(b2), &
+                                                   kern, ip, is_surface(ip), quad, pot, refl, d, have)
+                           END IF
                         END IF
                         nrows = nrows + 1
                      END DO
@@ -527,7 +640,10 @@ CONTAINS
       DEALLOCATE (phi_store, grad_store, w_store, k_store, h_store, b_store, rho_store, oufr_store, px, is_surface, beta_deg)
       IF (direct_diff) DEALLOCATE (dir_store, dir_have)
       IF (direct_sum) DEALLOCATE (dir_store_sum, dir_have_sum)
+      IF (ALLOCATED(rad_have)) DEALLOCATE (rad_have)
+      IF (ALLOCATED(rad_have_sum)) DEALLOCATE (rad_have_sum)
       active = .FALSE.
+      radiated_on = .FALSE.
       direct_on = .FALSE.
       direct_diff = .FALSE.
       direct_sum = .FALSE.
@@ -539,7 +655,14 @@ CONTAINS
       INTEGER, INTENT(IN) :: unit
       LOGICAL, INTENT(IN) :: complete
       INTEGER :: ip
+      CHARACTER(LEN=:), ALLOCATABLE :: rad_text
 
+      ! With qtf_motion = 0 the words of Phase 7c-2, so that the header stays as it was, to the byte
+      IF (radiated_on) THEN
+         rad_text = 'radiated wave of the second-order motion included where has_rad = 1 (Phase 6c)'
+      ELSE
+         rad_text = 'radiated wave of the second-order motion not included (Phase 6c)'
+      END IF
       IF (complete) THEN
          WRITE (unit, '(a)') '# QTF_Field.txt: second-order pressure and elevation at the field points of ControlFile.in: '// &
             'the rows of QTF_FieldPartial.txt and the direct part'
@@ -550,7 +673,7 @@ CONTAINS
             WRITE (unit, '(a)') '# Re_dir Im_dir: the direct part, i rho Omega phi_D (pressure) and (i Omega/g) phi_D (elevation),'// &
                ' Omega = omega_1 - omega_2, per unit amplitude pair, conjugated and scaled as Re Im. Add it to Re Im.'
             WRITE (unit, '(a)') '# phi_D of the direct solve with body forcing; free-surface forcing not included (it is in .12d with qtf_terms = full);'// &
-               ' radiated wave of the second-order motion not included (Phase 6c)'
+               ' '//rad_text
             WRITE (unit, '(a)') '# has_direct: 1 where the direct solve covers the row (difference frequency, omega_1 /='// &
                ' omega_2), else 0 with Re_dir = Im_dir = 0 (mean rows and sum rows).'
          ELSE
@@ -558,13 +681,22 @@ CONTAINS
                ' Omega = omega_1 - omega_2 (K = 1) or omega_1 + omega_2 (K = 2), per unit amplitude pair, conjugated and scaled'// &
                ' as Re Im. Add it to Re Im.'
             WRITE (unit, '(a)') '# phi_D of the direct solve with body forcing, for both kernels; free-surface forcing not'// &
-               ' included (it is in .12d and .12s with qtf_terms = full); radiated wave of the second-order motion not included'// &
-               ' (Phase 6c)'
+               ' included (it is in .12d and .12s with qtf_terms = full); '//rad_text
             WRITE (unit, '(a)') '# has_direct: 1 where the direct solve covers the row (K = 1: omega_1 /= omega_2; K = 2: the'// &
                ' sum pairs of QTF_Direct.12s), else 0 with Re_dir = Im_dir = 0 (mean rows and rows outside the direct solve).'
          END IF
-         WRITE (unit, '(a)') '# Columns: PER1 PER2 BETA1 BETA2 K IPT TYPE Mod Pha Re Im Re_quad Im_quad Re_inc Im_inc'// &
-            ' Re_dir Im_dir has_direct'
+         IF (radiated_on) THEN
+            ! The radiated wave (R7): what Re_dir Im_dir add, and the column that marks the rows left out of the motion
+            WRITE (unit, '(a)') '# has_rad: 1 where Re_dir Im_dir also hold the radiated wave of the second-order motion,'// &
+               ' i rho Omega phi_R (pressure) and (i Omega/g) phi_R (elevation), phi_R = sum_j (-i Omega xi_j) psi_j, xi of'// &
+               ' QTF_Motion.12d (K = 1) or .12s (K = 2); else 0: no direct part, or the Omega of the row is left out of the'// &
+               ' motion (rcond < 1e-12, see the header of QTF_Motion) and Re_dir Im_dir hold phi_D only.'
+            WRITE (unit, '(a)') '# Columns: PER1 PER2 BETA1 BETA2 K IPT TYPE Mod Pha Re Im Re_quad Im_quad Re_inc Im_inc'// &
+               ' Re_dir Im_dir has_direct has_rad'
+         ELSE
+            WRITE (unit, '(a)') '# Columns: PER1 PER2 BETA1 BETA2 K IPT TYPE Mod Pha Re Im Re_quad Im_quad Re_inc Im_inc'// &
+               ' Re_dir Im_dir has_direct'
+         END IF
          WRITE (unit, '(a)') '# K: 1 difference frequency (T-), 2 sum frequency (T+). TYPE: 1 pressure, 2 elevation.'
          WRITE (unit, '(a)') '# e^{+i omega t} as the other WAMIT-format files; pressure / (rho g A^2 / L), elevation / (A^2 /'// &
             ' L), L = Reference_body_length.'

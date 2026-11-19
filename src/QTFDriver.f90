@@ -107,6 +107,10 @@ MODULE QTFDriver
    ! QTF_Motion.11d, .11s (and .12d, .12s): the rows of the force file in its order, scaled by A^2/L (translations) and
    ! A^2/L^2 (rotations) and conjugated as .10d (R4), after a header that names the route and what is left out. A fixed
    ! body (motion_state = fixed) gets none: qtf_init logs it and allocates nothing for the motion.
+   ! With qtf_field = 1 and qtf_direct = 1 the radiated wave of that motion also goes into QTF_Field.txt (R7): at each
+   ! Omega qtf_direct_at_omega takes psi_j at the field points (psi_at_points, into mot_psi_pts), and qtf_finish, after the
+   ! motion, adds phi_R = sum_j (-i Omega xi_j) psi_j of the direct route to the direct part of every row whose Omega has a
+   ! regular matrix (motion_field_part; QTFField has the forms and the conjugation of Omega < 0).
    !
    ! A psi with NaN or Inf (a radiation solve that failed) is kept, but counted and logged by qtf_keep_psi, and every pair
    ! whose terms are not finite is counted by potential_part. The files are still written (.10d does not use psi); the main
@@ -123,8 +127,10 @@ MODULE QTFDriver
                                 write_motion_header
    USE QTFMotion, ONLY: radiation_coefficients, motion_matrix, motion_solve_omega
    USE QTFPotential, ONLY: potential_pair, psi_surface_gradient, psi_waterline, NPOT_TERMS
-   USE QTFDirect, ONLY: direct_at_omega, direct_fs_data
-   USE QTFField, ONLY: qfield_direct_active, qfield_direct_points, qfield_keep_direct
+   USE QTFDirect, ONLY: direct_at_omega, direct_fs_data, direct_field_at_points
+   USE QTFField, ONLY: qfield_direct_active, qfield_direct_points, qfield_keep_direct, qfield_radiated_active, &
+                       qfield_add_radiated, radiated_potential
+   USE WaveDyn_mod, ONLY: W1
    USE FirstOrderState, ONLY: wave_gravity
    USE, INTRINSIC :: IEEE_ARITHMETIC, ONLY: IEEE_IS_FINITE
    IMPLICIT NONE
@@ -138,7 +144,7 @@ MODULE QTFDriver
    PUBLIC :: qtf_direct_sum_load, qtf_direct_diff_load, qtf_indirect_sum_load, potential_part_sum, psi_bad_files
    PUBLIC :: qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, qtf_set_edge_weights
    PUBLIC :: qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active
-   PUBLIC :: potential_part, qtf_motion_part, qtf_motion_load
+   PUBLIC :: potential_part, qtf_motion_part, qtf_motion_load, psi_at_points
 
    LOGICAL :: active = .FALSE.
    INTEGER :: kind_qtf = 0, nbeta = 0, nkept = 0, all_headings_pairs = 0
@@ -221,6 +227,9 @@ MODULE QTFDriver
    REAL(8), ALLOCATABLE :: mot_rcond(:)                  ! (0:nneed)
    LOGICAL, ALLOCATABLE :: mot_free(:, :)                ! (6*nbody, 0:nneed)
    LOGICAL, ALLOCATABLE :: mot_solved(:)                 ! (0:nneed), the Omega has rows and was solved
+   ! psi_j at the field points of QTFField per Omega of the list (qtf_field = 1 with qtf_direct = 1), for the radiated wave
+   COMPLEX(8), ALLOCATABLE :: mot_psi_pts(:, :, :)       ! (npt, 6*nbody, nneed), e^{-i Omega t} at Omega > 0
+   LOGICAL, ALLOCATABLE :: mot_psi_kept(:)               ! (nneed)
    ! Non-finite results of the potential part, over the run (reset by qtf_init, kept after qtf_finish for the exit code)
    INTEGER :: n_bad_psi = 0                              ! difference frequencies whose psi has NaN or Inf
    INTEGER :: n_bad_pairs = 0                            ! frequency and heading pairs whose T_pot has NaN or Inf
@@ -268,6 +277,9 @@ CONTAINS
       ! does not move, so nothing is computed for it (plan review focus 2), and this is the one log line that says so
       IF (opts%qtf_motion == 1 .AND. opts%motion_fixed) &
          WRITE (*, '(a)') ' QTF note: qtf_motion = 1 with motion_state = fixed: no second-order motion is computed.'
+      ! The stores of a previous run first (free_motion_stores clears mot_active), then the one assignment of this run,
+      ! which sum_warnings below reads already
+      CALL free_motion_stores()
       mot_active = opts%qtf_motion == 1 .AND. .NOT. opts%motion_fixed .AND. body_active
       IF (body_active) THEN
          IF (.NOT. PRESENT(omegas_main)) THEN
@@ -401,8 +413,6 @@ CONTAINS
             tdir_fs = (0D0, 0D0)
          END IF
       END IF
-      CALL free_motion_stores()
-      mot_active = opts%qtf_motion == 1 .AND. .NOT. opts%motion_fixed .AND. body_active
       IF (mot_active) CALL init_motion()
 
    CONTAINS
@@ -1520,6 +1530,9 @@ CONTAINS
             IF (.NOT. ALL(IEEE_IS_FINITE(REAL(t(:, p), 8)) .AND. IEEE_IS_FINITE(AIMAG(t(:, p))))) nbad = nbad + 1
          END DO
       END IF
+      ! Phase 6c: psi_j at the field points at this Omega, for the radiated wave of the motion in QTF_Field.txt (R7); after
+      ! the direct solves, whose results it does not touch. Its time goes with the field evaluation (sec(4)).
+      IF (mot_active .AND. qfield_radiated_active()) CALL keep_psi_points()
       IF (PRESENT(npair)) npair = nd
       IF (PRESENT(nsum)) nsum = ns
       IF (PRESENT(seconds)) seconds = sec
@@ -1552,7 +1565,82 @@ CONTAINS
          d%np = fs_store_np
       END SUBROUTINE direct_fs_store
 
+      SUBROUTINE keep_psi_points()
+         ! psi of this Omega (kept by qtf_keep_psi before the direct solve) at the field points, into mot_psi_pts(:, :, m)
+         REAL(8), ALLOCATABLE :: xp(:, :)
+         INTEGER(8) :: c0, c1, rate
+
+         IF (.NOT. psi_kept(m)) THEN
+            WRITE (*, '(a,ES14.6,a)') ' QTF motion: psi at Omega =', omega, ' rad/s is not kept before the direct solve.'
+            ERROR STOP 1
+         END IF
+         CALL SYSTEM_CLOCK(c0, rate)
+         CALL qfield_direct_points(xp)
+         IF (.NOT. ALLOCATED(mot_psi_pts)) THEN
+            ALLOCATE (mot_psi_pts(SIZE(xp, 2), SIZE(psi_store, 2), SIZE(psi_need)), mot_psi_kept(SIZE(psi_need)))
+            mot_psi_pts = (0D0, 0D0)
+            mot_psi_kept = .FALSE.
+         END IF
+         CALL psi_at_points(mesh, psi_store(:, :, m), omega, xp, mot_psi_pts(:, :, m))
+         mot_psi_kept(m) = .TRUE.
+         CALL SYSTEM_CLOCK(c1)
+         sec(4) = sec(4) + REAL(c1 - c0, 8)/REAL(rate, 8)
+      END SUBROUTINE keep_psi_points
+
    END SUBROUTINE qtf_direct_at_omega
+
+   SUBROUTINE psi_at_points(mesh, psi, omega, points, psi_pts)
+      ! The radiation potentials psi_j (6 nbody columns) at the field points, e^{-i omega t}, by Green's formula with their
+      ! body values and dpsi_j/dn = n_j: direct_field_at_points of QTFDirect on the 6 nbody columns (ruling R7 of Phase 6c).
+      !   psi      (n, 6 nbody)    radiation_psi at omega on the full panels, as psi_store holds it
+      !   points   (3, npt)        points in the fluid off the hull, full coordinates
+      !   psi_pts  (npt, 6 nbody)  out
+      ! The solver globals must be those of omega (> 0), as for direct_at_omega: W1 is checked.
+      !
+      ! Signs and images. psi_k is the unit-velocity potential of mode k with dpsi_k/dn = n_k on the body of mode k and 0
+      ! on the others, n out of the fluid (into the body): the normal of radiation_psi, of radiation_coefficients (QTFMotion
+      ! header) and of Green's formula in direct_field_at_points, 4 pi phi(x) = int_S [G dphi/dn - phi dG/dn] dS
+      ! (QTFDirectField header). So the panel forcing vf of column k is n_k, in the layout of pair_forcing:
+      ! vf(base(f), k, image(f)) on the full panel f. mesh%nj of an image panel holds the image signs RX, RY already (as
+      ! radiation_coefficients uses it with no factor), so vf takes it as it is; the images of the Green function are those
+      ! of direct_field_at_points (the panels in place, x mirrored). The radiation identity of 7c-1
+      ! (direct_field_radiation_identity: psi_3 through direct_field_at_points equals fields_green of the state with
+      ! phi_p = psi_3, dphi_p/dn = n_3) pins this sign. psi has no B2 part: a, c, e and cl are zero, and an empty waterline
+      ! (a surface_geom with nwl = 0) skips the line integrals of b2_stokes_at_point, which would add zero.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      COMPLEX(8), INTENT(IN) :: psi(:, :)
+      REAL(8), INTENT(IN) :: omega, points(:, :)
+      COMPLEX(8), INTENT(OUT) :: psi_pts(:, :)
+      TYPE(surface_geom) :: no_waterline
+      COMPLEX(8), ALLOCATABLE :: vf(:, :, :), a(:, :), c(:, :, :), e(:, :), cl(:, :, :, :)
+      INTEGER :: nmode, k, kb, km, f
+
+      nmode = 6*mesh%nbody
+      IF (.NOT. (omega > 0D0) .OR. ABS(W1 - omega) > 1D-12*omega) THEN
+         WRITE (*, '(a,ES14.6,a,ES14.6,a)') ' psi_at_points: Omega =', omega, ' rad/s, but the solver is at', W1, ' rad/s.'
+         ERROR STOP 1
+      END IF
+      IF (SIZE(psi, 1) /= mesh%n .OR. SIZE(psi, 2) /= nmode .OR. SIZE(points, 1) /= 3 .OR. &
+          SIZE(psi_pts, 1) /= SIZE(points, 2) .OR. SIZE(psi_pts, 2) /= nmode) THEN
+         WRITE (*, '(a)') ' psi_at_points: psi, points or psi_pts does not have the size of the mesh and of each other.'
+         ERROR STOP 1
+      END IF
+      ALLOCATE (vf(mesh%nbase, nmode, mesh%nsys), a(mesh%n, nmode), c(3, mesh%n, nmode), e(0, nmode), &
+                cl(3, 4, mesh%n, nmode))
+      vf = (0D0, 0D0)
+      DO k = 1, nmode
+         kb = (k - 1)/6 + 1
+         km = k - 6*(kb - 1)
+         DO f = 1, mesh%n
+            IF (mesh%body(f) == kb) vf(mesh%base(f), k, mesh%image(f)) = CMPLX(mesh%nj(km, f), 0D0, KIND=8)
+         END DO
+      END DO
+      a = (0D0, 0D0)
+      c = (0D0, 0D0)
+      cl = (0D0, 0D0)
+      ! The multi-body arrays for several bodies, as direct_at_omega decides by default
+      CALL direct_field_at_points(mesh, no_waterline, points, psi, vf, a, c, e, cl, mesh%nbody > 1, psi_pts)
+   END SUBROUTINE psi_at_points
 
    SUBROUTINE fs_incident_all(inc)
       ! The incident fields of every kept state at the inner free-surface points, as fs_inner_fields adds them: phi_I,
@@ -1699,6 +1787,8 @@ CONTAINS
       IF (body_active .AND. sum_on) CALL potential_part_sum(mesh, geom, refl)
       ! The motion from the forces of the files, after both potential parts and before the writers
       IF (mot_active) CALL qtf_motion_part(mesh, geom)
+      ! Its radiated wave at the field points, into the store of QTFField before qfield_finish writes QTF_Field.txt
+      IF (mot_active) CALL motion_field_part()
       IF (kind_qtf == 1 .OR. kind_qtf == 3) CALL write_file('/Wamit_format/QTF_Quadratic.10d', KERNEL_DIFF)
       IF (kind_qtf == 2 .OR. kind_qtf == 3) CALL write_file('/Wamit_format/QTF_Quadratic.10s', KERNEL_SUM)
       WRITE (*, '(a,I0,a,I0,a)') ' QTF quadratic part: ', nkept, ' frequencies and ', nbeta, ' headings'
@@ -2274,7 +2364,68 @@ CONTAINS
       IF (ALLOCATED(xi2)) DEALLOCATE (xi2)
       IF (ALLOCATED(xi2_sum)) DEALLOCATE (xi2_sum)
       IF (ALLOCATED(mot_ok)) DEALLOCATE (mot_ok, mot_rcond, mot_free, mot_solved)
+      IF (ALLOCATED(mot_psi_pts)) DEALLOCATE (mot_psi_pts, mot_psi_kept)
    END SUBROUTINE free_motion_stores
+
+   SUBROUTINE motion_field_part()
+      ! The radiated wave of the second-order motion at the field points (R7), after qtf_motion_part: for every row of
+      ! QTF_Field.txt with a direct part (K = 1: omega_i /= omega_j within qtf_max_dw, the pairs of qtf_direct_pairs; K = 2:
+      ! the kept sums, sum_pair_index > 0) whose Omega has a regular matrix (mot_ok), phi_R = radiated_potential(Omega,
+      ! xi, psi at the points) with Omega signed and xi of the direct route (route 2, QTF_Motion.12d and .12s, whose force
+      ! is the one of the direct part), handed to qfield_add_radiated. A row of an Omega left out of the motion (R6) gets
+      ! none, so QTF_Field.txt marks it has_rad = 0. The difference diagonal has no direct part (and phi_R = 0 at
+      ! Omega = 0). No-op unless QTFField takes the radiated wave.
+      COMPLEX(8), ALLOCATABLE :: phi_r(:)
+      INTEGER :: b1, b2, i, j, m, h
+      REAL(8) :: om
+
+      IF (.NOT. (mot_active .AND. qfield_radiated_active())) RETURN
+      IF (mot_nroute /= 2 .OR. .NOT. ALLOCATED(mot_psi_pts)) THEN
+         WRITE (*, '(a)') ' QTF motion: the radiated wave in QTF_Field.txt needs qtf_direct = 1 and psi at the field points.'
+         ERROR STOP 1
+      END IF
+      DO b1 = 1, nbeta
+         DO b2 = 1, nbeta
+            IF (all_headings_pairs == 0 .AND. b1 /= b2) CYCLE
+            h = heading_pair(b1, b2)
+            DO i = 1, nkept
+               DO j = 1, nkept
+                  IF (diff_on) THEN
+                     m = difference_pair_index(i, j)
+                     IF (m > 0) THEN
+                        IF (mot_ok(m)) THEN
+                           CALL check_psi(m)
+                           ! Omega as QTFField takes it for the row (field_direct), signed
+                           om = store(i, b1)%omega - store(j, b2)%omega
+                           phi_r = radiated_potential(om, xi2(:, i, j, h, 2), mot_psi_pts(:, :, m))
+                           CALL qfield_add_radiated(i, b1, j, b2, phi_r, KERNEL_DIFF)
+                        END IF
+                     END IF
+                  END IF
+                  IF (sum_on) THEN
+                     m = sum_pair_index(i, j)
+                     IF (m > 0) THEN
+                        IF (mot_ok(m)) THEN
+                           CALL check_psi(m)
+                           om = store(i, b1)%omega + store(j, b2)%omega
+                           phi_r = radiated_potential(om, xi2_sum(:, i, j, h, 2), mot_psi_pts(:, :, m))
+                           CALL qfield_add_radiated(i, b1, j, b2, phi_r, KERNEL_SUM)
+                        END IF
+                     END IF
+                  END IF
+               END DO
+            END DO
+         END DO
+      END DO
+   CONTAINS
+      SUBROUTINE check_psi(mm)
+         INTEGER, INTENT(IN) :: mm
+         IF (.NOT. mot_psi_kept(mm)) THEN
+            WRITE (*, '(a,ES14.6,a)') ' QTF motion: psi at the field points is missing at Omega =', psi_need(mm), ' rad/s.'
+            ERROR STOP 1
+         END IF
+      END SUBROUTINE check_psi
+   END SUBROUTINE motion_field_part
 
    SUBROUTINE qtf_motion_part(mesh, geom)
       ! The second-order motion of every row of the difference and the sum files (Phase 6c, rulings R4 to R6 of its plan),

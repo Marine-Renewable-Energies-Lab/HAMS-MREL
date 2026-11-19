@@ -8,9 +8,9 @@
 module test_qtf_motion
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use HAMS_mod, only : NTHREAD, ISOLV
-  use WaveDyn_mod, only : WK, W1, TP, BETA, AMP, OUFR, BLNR, BQDR
+  use WaveDyn_mod, only : WK, W1, TP, BETA, AMP, OUFR, BLNR, BQDR, VWAVE => V
   use Body_mod, only : MATX, CRS, KSTF, REFL
-  use Const_mod, only : RHO
+  use Const_mod, only : RHO, G
   use PanelMesh_mod, only : ISX, ISY, NSYS, IPIV
   use Potentials_mod, only : MXPOT, MXPOT_MULTI_COMB
   use LinearMatrix_mod, only : AMAT
@@ -21,12 +21,14 @@ module test_qtf_motion
   use FirstOrderState, only : radiation_psi
   use QTFMotion, only : radiation_coefficients, motion_matrix, motion_solve_omega
   use QTFDriver, only : qtf_init, qtf_keep, qtf_keep_psi, qtf_radiation_omegas, qtf_finish, potential_part, &
-                        qtf_motion_part, qtf_motion_load
+                        qtf_motion_part, qtf_motion_load, psi_at_points
+  use FarFieldDrift, only : far_amplitude
+  use FirstOrderState, only : depth_factor
   use NearFieldDrift, only : KERNEL_DIFF
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use IO, only : CreateDirectory
   use test_qtf_potential, only : make_state
-  use second_order_fixtures, only : read_pnl_hull
+  use second_order_fixtures, only : read_pnl_hull, make_cylinder
   use test_waterline_field, only : set_wave, load_panels, load_multi
   use test_qtf_direct, only : radiation_at
   implicit none
@@ -119,7 +121,9 @@ contains
       new_unittest("motion_static_diagonal", test_static_diagonal), &
       new_unittest("motion_singular_flagged", test_singular_flagged), &
       new_unittest("motion_columns_independent", test_columns_independent), &
-      new_unittest("motion_two_bodies_coupled", test_two_bodies_coupled) &
+      new_unittest("motion_two_bodies_coupled", test_two_bodies_coupled), &
+      new_unittest("psi_at_points_near_panel", test_psi_near_panel), &
+      new_unittest("psi_at_points_far_kochin", test_psi_far_kochin) &
     ]
   end subroutine collect_qtf_motion
 
@@ -740,5 +744,197 @@ contains
     end if
     call check(error, berr <= 1d-13 .and. change > 1d-3 .and. change0 <= 1d-14, line)
   end subroutine test_two_bodies_coupled
+
+  ! ------------------------------------------------------------------------------------------------ psi at the points
+
+  !> psi_at_points on the truncated cylinder of test_qtf_direct_field (radius 5, draft 5, 16 x 4 x 3 panels, depth 10,
+  !> L = 10 its diameter), whole and as the half mesh ISY = 1, after the radiation solve at 0.4 rad/s. psi_j at 0.25 panel
+  !> sizes and at 1e-3 L off the centroid of a side panel at mid draft, along -n into the fluid, against the panel value
+  !> psi_j there, for every mode whose panel value is not small (|psi_j| above 1e-3 of its largest panel value; yaw is
+  !> zero on a circle): the gap falls from 0.25 panel sizes to 1e-3 L, as the field of phi_D tends to its panel value
+  !> (direct_field_approaches_panel of 7c-1). Most of the gap at a distance d is the true change of psi_j over d: with n
+  !> into the body, psi_j(x_c - d n) = psi_j - d dpsi_j/dn + O(d^2) = psi_j - d n_j + O(d^2). So at 1e-3 L the check is
+  !> on psi_j - d n_j, below near_limit. Two panels on the half mesh: one of the kept half and one of its image
+  !> (mesh%image = 2), whose nj carry the image signs.
+  subroutine test_psi_near_panel(error)
+    type(error_type), allocatable, intent(out) :: error
+    ! Measured with -d n_j: 9.8e-5 for surge to pitch, 1.8e-4 for yaw (whose panel value is the small remainder of a
+    ! 16-sided circle); without it 2.7e-3 at 1e-3 L and 1.0e-1 at 0.25 panel sizes. The limit is 1.3 times the worst
+    real(8), parameter :: near_limit = 2.4d-4
+    real(8), parameter :: om = 0.4d0, length = 10d0
+    type(panel_mesh) :: full, mesh
+    complex(8), allocatable :: psi(:, :), pts(:, :)
+    real(8) :: xp(3, 2), gap(2), worst(2), gap_t, worst_t
+    integer :: icase, ipanel, ip, k, nchecked
+    logical :: falls
+    character(len=250) :: line
+
+    call make_cylinder(5d0, 5d0, 16, 4, 3, full, .true.)
+    worst = 0d0
+    worst_t = 0d0
+    falls = .true.
+    nchecked = 0
+    do icase = 1, 2
+      call set_wave(10d0)
+      NTHREAD = 4
+      ISOLV = 1
+      call load_panels(full, 0, icase - 1, mesh)
+      call radiation_at(om, .false., mesh%nbase)
+      allocate (psi(mesh%n, 6), pts(2, 6))
+      call radiation_psi(mesh, om, MXPOT, psi)
+      do ipanel = 1, icase
+        ip = side_panel(mesh, ipanel)
+        xp(:, 1) = mesh%xc(:, ip) - 0.25d0*mesh%psize(ip)*mesh%nrm(:, ip)
+        xp(:, 2) = mesh%xc(:, ip) - 1d-3*length*mesh%nrm(:, ip)
+        call psi_at_points(mesh, psi, om, xp, pts)
+        do k = 1, 6
+          if (abs(psi(ip, k)) < 1d-3*maxval(abs(psi(:, k)))) cycle
+          gap = abs(pts(:, k) - psi(ip, k))/abs(psi(ip, k))
+          gap_t = abs(pts(2, k) - (psi(ip, k) - 1d-3*length*mesh%nj(k, ip)))/abs(psi(ip, k))
+          write (line, '(a,i0,a,i0,a,i0,a,3es10.2)') "case ", icase, ", panel ", ip, ", mode ", k, &
+            ": gap at 0.25 panel sizes, at 1e-3 L, at 1e-3 L with -d n_j ", gap, gap_t
+          print '(4x,a)', trim(line)
+          worst = max(worst, gap)
+          worst_t = max(worst_t, gap_t)
+          falls = falls .and. gap(2) < gap(1)
+          nchecked = nchecked + 1
+        end do
+      end do
+      deallocate (psi, pts)
+    end do
+    call restore_symmetry()
+    write (line, '(a,i0,a,es10.2,a,es10.2,a,es10.2)') "psi near a panel, ", nchecked, &
+      " modes and panels: worst gap at 0.25 panel sizes ", worst(1), ", at 1e-3 L ", worst(2), ", with -d n_j ", worst_t
+    print '(4x,a)', trim(line)
+    call check(error, nchecked >= 9 .and. falls .and. worst_t <= near_limit, line)
+
+  contains
+
+    !> A side panel (horizontal normal) in the row nearest mid draft, away from the planes x = 0 and y = 0: of image 1
+    !> (which = 1) or of image 2 (which = 2)
+    integer function side_panel(m, which) result(ip)
+      type(panel_mesh), intent(in) :: m
+      integer, intent(in) :: which
+      real(8) :: best
+      integer :: i
+      ip = 0
+      best = huge(1d0)
+      do i = 1, m%n
+        if (m%image(i) /= which .or. abs(m%nrm(3, i)) > 0.1d0) cycle
+        if (abs(m%nrm(1, i)) < 0.3d0 .or. abs(m%nrm(2, i)) < 0.3d0) cycle
+        if (abs(m%xc(3, i) + 2.5d0) < best - 1d-9) then
+          best = abs(m%xc(3, i) + 2.5d0)
+          ip = i
+        end if
+      end do
+      if (ip == 0) error stop 'test_psi_near_panel: no side panel'
+    end function side_panel
+
+  end subroutine test_psi_near_panel
+
+  !> psi_at_points far from the body against the far field of its Kochin function: the cylinder of test_psi_near_panel,
+  !> whole, depth 10, the radiation solve at 0.8 rad/s, 8 points at r = 20 L = 200 (4 azimuths, z = 0 and z = -4). The
+  !> Kochin function a_j(theta) is far_amplitude of FarFieldDrift (the far-field amplitude eta ~ a e^{ikr}/sqrt(r), from
+  !> the panel values psi_j and dpsi_j/dn = n_j), so psi_j ~ (g/(i omega)) Z(z) a_j(theta) e^{ikr}/sqrt(r) as r -> oo
+  !> (eta = (i omega/g) phi at z = 0, Z of depth_factor). That plain form has the 1/(kr) error of the Hankel asymptotics
+  !> (kr = 18 here, measured below); the check takes the far field of the same Kochin function without it: a_j(theta)
+  !> on 64 azimuths, its Fourier modes a_m, and phi = (g/(i omega)) Z(z) sum_m a_m e^{im theta} H_m(kr) / h_m with
+  !> h_m = sqrt(2/(pi k)) e^{-i(m pi/2 + pi/4)} (H_m ~ h_m e^{ikr}/sqrt(r)), the outgoing propagating field for r beyond
+  !> the body (Graf's addition theorem; Abramowitz and Stegun 1964, 9.1.79 and 9.2.3). At r = 200 the evanescent modes of
+  !> depth 10 are below e^{-60}. The gap of each mode is relative to its largest |psi_j| at the points; modes with a far
+  !> field below 1e-4 of the largest (yaw) are skipped. Limit 1e-3 (the brief). Measured: 6.8e-6 for every mode; the
+  !> plain asymptotic form is 6.9e-3 off for heave and 2.1e-2 for the other modes (1/(8 kr) = 6.9e-3 at kr = 18.1).
+  subroutine test_psi_far_kochin(error)
+    type(error_type), allocatable, intent(out) :: error
+    real(8), parameter :: om = 0.8d0, depth = 10d0, length = 10d0, far_limit = 1d-3
+    real(8), parameter :: pi = 3.141592653589793d0
+    real(8), parameter :: thetas(4) = [0.3d0, 1.4d0, 2.6d0, 4.0d0], zs(2) = [0d0, -4d0]
+    integer, parameter :: nth = 64, mmax = nth/2 - 1
+    type(panel_mesh) :: full, mesh
+    type(first_order_state) :: s
+    complex(8), allocatable :: psi(:, :)
+    complex(8) :: pts(8, 6), a(nth), da, am(-mmax:mmax), far(8), plain(8), hm, aplain
+    real(8) :: xp(3, 8), r, kr, zf, dzf, th, gap, gap_plain, worst, worst_plain, fmax(6)
+    integer :: ip, it, iz, k, j, m, nchecked
+    character(len=250) :: line
+
+    call make_cylinder(5d0, 5d0, 16, 4, 3, full, .true.)
+    call set_wave(depth)
+    NTHREAD = 4
+    ISOLV = 1
+    call load_panels(full, 0, 0, mesh)
+    call radiation_at(om, .false., mesh%nbase)
+    allocate (psi(mesh%n, 6))
+    call radiation_psi(mesh, om, MXPOT, psi)
+    r = 20d0*length
+    ip = 0
+    do iz = 1, 2
+      do it = 1, 4
+        ip = ip + 1
+        xp(:, ip) = [r*cos(thetas(it)), r*sin(thetas(it)), zs(iz)]
+      end do
+    end do
+    call psi_at_points(mesh, psi, om, xp, pts)
+
+    s%omega = om
+    s%k = WK
+    s%nu = VWAVE
+    s%h = depth
+    s%g = G
+    kr = WK*r
+    worst = 0d0
+    worst_plain = 0d0
+    nchecked = 0
+    do k = 1, 6
+      s%phi_p = psi(:, k)
+      s%dphi_p_dn = cmplx(mesh%nj(k, :), 0d0, kind=8)
+      do j = 1, nth
+        call far_amplitude(mesh, s, 2d0*pi*real(j - 1, 8)/real(nth, 8), a(j), da)
+      end do
+      do m = -mmax, mmax
+        am(m) = sum(a*exp(cmplx(0d0, -m*2d0*pi*[(real(j - 1, 8), j = 1, nth)]/real(nth, 8), kind=8)))/real(nth, 8)
+      end do
+      do ip = 1, 8
+        th = atan2(xp(2, ip), xp(1, ip))
+        call depth_factor(WK, xp(3, ip), depth, zf, dzf)
+        far(ip) = (0d0, 0d0)
+        do m = -mmax, mmax
+          hm = hankel1(abs(m), kr)
+          if (m < 0 .and. mod(abs(m), 2) == 1) hm = -hm
+          far(ip) = far(ip) + am(m)*exp(cmplx(0d0, m*th, kind=8))*hm/ &
+                    (sqrt(2d0/(pi*WK))*exp(cmplx(0d0, -(m*pi/2d0 + pi/4d0), kind=8)))
+        end do
+        far(ip) = G/cmplx(0d0, om, kind=8)*zf*far(ip)
+        call far_amplitude(mesh, s, th, aplain, da)
+        plain(ip) = G/cmplx(0d0, om, kind=8)*zf*aplain*exp(cmplx(0d0, kr, kind=8))/sqrt(r)
+      end do
+      fmax(k) = maxval(abs(far))
+      if (k > 1) then
+        if (fmax(k) < 1d-4*maxval(fmax(1:k - 1))) cycle
+      end if
+      gap = maxval(abs(pts(:, k) - far))/maxval(abs(far))
+      gap_plain = maxval(abs(pts(:, k) - plain))/maxval(abs(far))
+      write (line, '(a,i0,a,es10.2,a,es10.2,a,es10.2)') "mode ", k, ": max |psi| ", maxval(abs(far)), &
+        ", gap to the Kochin far field ", gap, ", to its plain asymptotic form ", gap_plain
+      print '(4x,a)', trim(line)
+      worst = max(worst, gap)
+      worst_plain = max(worst_plain, gap_plain)
+      nchecked = nchecked + 1
+    end do
+    write (line, '(a,f6.2,a,i0,a,es10.2,a,es10.2)') "psi at r = 20 L, kr = ", kr, ", ", nchecked, &
+      " modes: worst gap ", worst, "; plain asymptotic form ", worst_plain
+    print '(4x,a)', trim(line)
+    call check(error, nchecked >= 5 .and. worst <= far_limit, line)
+
+  contains
+
+    !> H_n^(1)(x) = J_n(x) + i Y_n(x), n >= 0
+    complex(8) function hankel1(n, x)
+      integer, intent(in) :: n
+      real(8), intent(in) :: x
+      hankel1 = cmplx(bessel_jn(n, x), bessel_yn(n, x), kind=8)
+    end function hankel1
+
+  end subroutine test_psi_far_kochin
 
 end module test_qtf_motion

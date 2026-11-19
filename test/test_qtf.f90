@@ -14,7 +14,9 @@ module test_qtf
                         qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active, qtf_stored_mb, &
                         qtf_direct_sum_pairs, qtf_direct_at_omega, qtf_direct_sum_load, qtf_direct_pairs, &
                         qtf_direct_diff_load, qtf_sum_omega, qtf_diff_omega, qtf_psi_count, qtf_indirect_sum_load, &
-                        potential_part_sum, psi_bad_files, potential_part, qtf_motion_part, qtf_motion_load
+                        potential_part_sum, psi_bad_files, potential_part, qtf_motion_part, qtf_motion_load, psi_at_points
+  use QTFField, only : qfield_init, qfield_keep, qfield_finish, field_direct, radiated_potential
+  use SecondOrderTypes, only : cs_fields
   use QTFMotion, only : radiation_coefficients, motion_matrix, motion_solve_omega
   use QTFFreeSurface, only : fs_point_field
   use HAMS_mod, only : NTHREAD, ISOLV
@@ -97,6 +99,7 @@ subroutine collect_qtf(testsuite)
     new_unittest("qtf_stored_mb_motion", test_stored_mb_motion), &
     new_unittest("motion_off_unchanged", test_motion_off_unchanged), &
     new_unittest("motion_fixed_no_file", test_motion_fixed_no_file), &
+    new_unittest("field_radiated_pipeline", test_field_radiated_pipeline), &
     new_unittest("qtf_files", test_files) &
     ]
 end subroutine collect_qtf
@@ -1150,7 +1153,7 @@ end subroutine test_stored_mb_indirect_sum
 !> mean_drift = 2, qtf = 2, qtf_terms = body, qtf_direct = 1, write_terms = 1. States: the incident wave and rigid motions
 !> (make_state). At every frequency of the list the radiation solve (radiation_at), psi into the store, and
 !> qtf_direct_at_omega, as RadiationOnlySolves and so_after_radiation_only do it. max_sw is qtf_max_sw.
-subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid, indirect_only, motion, fixed, irsp0)
+subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid, indirect_only, motion, fixed, irsp0, field)
   type(error_type), allocatable, intent(out) :: error
   real(8), intent(in) :: max_sw
   type(panel_mesh), intent(out) :: mesh
@@ -1164,6 +1167,9 @@ subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid, 
   integer, intent(in), optional :: motion
   logical, intent(in), optional :: fixed      ! motion_state = fixed (with motion, no matrices are passed)
   logical, intent(in), optional :: irsp0      ! IRSP = 0 with the geometry: the sums at or above the irregular estimate are cut
+  ! qtf_field = 1 at these points (3, npt), z = 0 an elevation point, with zero first-order fields there (Phase 6c Task 5:
+  ! only the direct columns of QTF_Field.txt are read); qfield_finish after qtf_finish writes the file
+  real(8), intent(in), optional :: field(:, :)
   real(8) :: mass(6, 6), c_hyd(6, 6), k_ext(6, 6), b_ext(6, 6)
   integer :: rf, kq, nl, kd, kmot
   real(8), parameter :: hb(2) = [0d0, 30d0], h10 = 10d0
@@ -1177,6 +1183,10 @@ subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid, 
   integer :: i, ib, m
   logical :: ok, use_lid, use_irsp0
   character(len=:), allocatable :: msg
+  type(cs_points) :: fpts
+  type(first_order_state) :: fst(2)
+  type(cs_fields) :: ffl(2)
+  logical, allocatable :: fsurf(:)
 
   call CreateDirectory(root//"/Wamit_format", ok)
   call check(error, ok, "could not create the test folder")
@@ -1227,6 +1237,25 @@ subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid, 
   else
     call qtf_init(opts, size(w), hb, geom%nwl, mesh%n, mesh%nbody, root, omegas_main=w)
   end if
+  if (present(field)) then
+    opts%qtf_field = 1
+    fpts%n = size(field, 2)
+    allocate (fpts%x(3, fpts%n), fpts%nrm(3, fpts%n), fpts%w(fpts%n), fpts%psize(fpts%n), fpts%kind(fpts%n), &
+              fpts%body(fpts%n))
+    fpts%x = field
+    fpts%nrm = 0d0
+    fpts%w = 0d0
+    fpts%psize = 1d0
+    fpts%kind = CS_FREE
+    fpts%body = 1
+    fsurf = field(3, :) == 0d0
+    call qfield_init(opts, size(w), hb, fpts, fsurf, root)
+    do ib = 1, 2
+      allocate (ffl(ib)%phi(fpts%n), ffl(ib)%grad(3, fpts%n))
+      ffl(ib)%phi = (0d0, 0d0)
+      ffl(ib)%grad = (0d0, 0d0)
+    end do
+  end if
   call motions(x1, x2)
   do i = 1, size(w)
     do ib = 1, 2
@@ -1234,7 +1263,9 @@ subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid, 
       xi = merge(x1, x2, mod(i, 2) == 1) * exp(ci * 0.4d0 * ib)
       call make_state(mesh, geom, w(i), hb(ib) * 3.141592653589793d0 / 180d0, h10, xi, s, wl)
       call qtf_keep(ib, s, wl, w(i))
+      if (present(field)) fst(ib) = s
     end do
+    if (present(field)) call qfield_keep(fst, ffl, w(i))
   end do
   if (kd == 1) then
     call direct_setup(mesh, DEFAULT_EDGE_DEG)
@@ -1260,6 +1291,150 @@ end subroutine sum_pipeline
 !> a sum (0.3 + 0.3), so its direct solve has both kinds of columns with qtf = 3. With two headings and mean_drift = 2,
 !> tdir and its two parts of every difference pair are the same to the bit with qtf = 1 and qtf = 3, without the lid and
 !> with it (IRSP = 1, the least-squares solve of HAMS with A^T r). The fixture has no field points (qtf_field = 0).
+!> The radiated wave of the second-order motion through the driver into QTF_Field.txt (Phase 6c Task 5, ruling R7): the
+!> moored cylinder of sum_pipeline, qtf = 3, qtf_direct = 1, two field points (a pressure point at (12, 3, -2) and an
+!> elevation point at (-8, 9, 0)), once with qtf_motion = 1 and once with 0. Every row with a direct part gets has_rad = 1
+!> (no Omega of the moored body is singular), the mean rows 0. Re_dir Im_dir of the motion run minus those of the run
+!> without are, for every such row, field_direct(Omega, phi_R) conjugated and scaled as the file: phi_R of
+!> radiated_potential with xi of the direct route (qtf_motion_load, route 2, as QTF_Motion.12d and .12s) and psi_j at the
+!> points from a fresh radiation solve at |Omega| (psi_at_points). This pins the route, the Omega of each row and the
+!> conjugation of Omega < 0 through the driver. The file has 7 digits, so the gap is relative to max |Re_dir|: 1e-5
+!> (1.7e-7 measured, with max |p_R| 0.16 against max |Re_dir| 0.073).
+subroutine test_field_radiated_pipeline(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: xf(3, 2) = reshape([12d0, 3d0, -2d0, -8d0, 9d0, 0d0], [3, 2])
+  real(8), parameter :: w(2) = [0.4d0, 0.5d0], hb(2) = [0d0, 30d0]
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  character(len=600), allocatable :: rows(:, :)
+  real(8), allocatable :: dir(:, :, :)
+  integer, allocatable :: hdir(:, :), hrad(:)
+  complex(8), allocatable :: xis(:, :), psi(:, :), pp(:, :)
+  complex(8) :: xi(6), f(6), phi_r(2), e, got
+  real(8) :: om, gap, big, rad_max, v4(4), v8(8)
+  integer :: run, n, r, kk, b1, b2, i, j, ip, nrad, iv3(3)
+  logical :: ok
+  character(len=250) :: line
+
+  allocate (rows(64, 2), dir(2, 64, 2), hdir(64, 2), hrad(64), xis(6, 64))
+  do run = 1, 2
+    if (run == 1) then
+      call sum_pipeline(error, 0d0, mesh, geom, kind_qtf=3, motion=2, field=xf)
+    else
+      call sum_pipeline(error, 0d0, mesh, geom, kind_qtf=3, field=xf)
+    end if
+    if (allocated(error)) return
+    if (run == 1) then
+      ! The motion of every row as the driver stores it (qtf_finish repeats these steps before it writes)
+      call potential_part(mesh, geom, 1d0)
+      call potential_part_sum(mesh, geom, 1d0)
+      call qtf_motion_part(mesh, geom)
+      r = 0
+      do kk = 1, 2
+        do b1 = 1, 2
+          do b2 = 1, 2
+            do i = 1, 2
+              do j = 1, 2
+                call qtf_motion_load(mesh, geom, merge(KERNEL_DIFF, KERNEL_SUM, kk == 1), 2, i, b1, j, b2, xi, f, ok)
+                do ip = 1, 2
+                  r = r + 1
+                  xis(:, r) = xi
+                end do
+              end do
+            end do
+          end do
+        end do
+      end do
+    end if
+    call qtf_finish(mesh, geom, 1d0)
+    call qfield_finish(1d0)
+    call field_rows(root//"/Wamit_format/QTF_Field.txt", rows(:, run), n)
+    call check(error, n == 64, "QTF_Field.txt does not have 2 kernels x 4 heading pairs x 4 frequency pairs x 2 points rows")
+    if (allocated(error)) return
+    do r = 1, 64
+      ! PER1 PER2 BETA1 BETA2 K IPT TYPE, the 8 partial values, Re_dir Im_dir, has_direct (and has_rad)
+      if (run == 1) then
+        read (rows(r, run), *) v4, iv3, v8, dir(:, r, run), hdir(r, run), hrad(r)
+      else
+        read (rows(r, run), *) v4, iv3, v8, dir(:, r, run), hdir(r, run)
+      end if
+    end do
+    call remove_files()
+  end do
+
+  ! The expected difference, row by row in the order of the file (kernel, heading pair, frequency pair, point)
+  allocate (psi(mesh%n, 6), pp(2, 6))
+  gap = 0d0
+  big = maxval(abs(dir))
+  rad_max = 0d0
+  nrad = 0
+  r = 0
+  do kk = 1, 2
+    do b1 = 1, 2
+      do b2 = 1, 2
+        do i = 1, 2
+          do j = 1, 2
+            om = merge(w(i) - w(j), w(i) + w(j), kk == 1)
+            if (om /= 0d0) then
+              call radiation_at(abs(om), .false., mesh%nbase)
+              call radiation_psi(mesh, abs(om), MXPOT, psi)
+              call psi_at_points(mesh, psi, abs(om), xf, pp)
+              phi_r = radiated_potential(om, xis(:, r + 1), pp)
+            end if
+            do ip = 1, 2
+              r = r + 1
+              call check(error, hdir(r, 1) == hdir(r, 2), "has_direct differs between the runs")
+              if (allocated(error)) return
+              if (hdir(r, 1) == 0) then
+                call check(error, hrad(r) == 0 .and. om == 0d0, "a row without a direct part has has_rad = 1, or a sum row none")
+                if (allocated(error)) return
+                cycle
+              end if
+              call check(error, hrad(r) == 1, "a row of a regular Omega has has_rad = 0")
+              if (allocated(error)) return
+              nrad = nrad + 1
+              ! The rho of the states (make_state: 1025), which field_direct takes in QTFField; the file scales the pressure
+              ! by the rho and g of Const_mod
+              e = field_direct(om, phi_r(ip), rho, G_SOLVER, xf(3, ip) == 0d0)
+              ! Conjugated and scaled as the file: pressure / (rho g), refl = 1
+              if (xf(3, ip) /= 0d0) e = e/(RHO_SOLVER*G_SOLVER)
+              e = conjg(e)
+              got = cmplx(dir(1, r, 1) - dir(1, r, 2), dir(2, r, 1) - dir(2, r, 2), 8)
+              gap = max(gap, abs(got - e))
+              rad_max = max(rad_max, abs(e))
+            end do
+          end do
+        end do
+      end do
+    end do
+  end do
+  write (line, '(a,i0,a,es10.2,a,es10.2,a,es10.2)') "field_radiated_pipeline: ", nrad, " rows with phi_R, max |p_R| ", &
+    rad_max, " against max |Re_dir| ", big, "; gap ", gap/big
+  print '(4x,a)', trim(line)
+  call check(error, nrad == 48 .and. rad_max > 1d-3*big .and. gap <= 1d-5*big, line)
+  call remove_files()
+end subroutine test_field_radiated_pipeline
+
+!> The data rows of a QTF_Field.txt (the lines that do not start with #)
+subroutine field_rows(path, rows, n)
+  character(len=*), intent(in) :: path
+  character(len=600), intent(out) :: rows(:)
+  integer, intent(out) :: n
+  character(len=600) :: line
+  integer :: unit, ios
+
+  n = 0
+  open (newunit=unit, file=path, status='old', action='read')
+  do
+    read (unit, '(a)', iostat=ios) line
+    if (ios /= 0) exit
+    if (line(1:1) == '#' .or. len_trim(line) == 0) cycle
+    n = n + 1
+    if (n <= size(rows)) rows(n) = line
+  end do
+  close (unit)
+end subroutine field_rows
+
 subroutine test_qtf3_diff_unchanged(error)
   type(error_type), allocatable, intent(out) :: error
   real(8), parameter :: w3(3) = [0.3d0, 0.6d0, 0.9d0]
