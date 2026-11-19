@@ -976,10 +976,9 @@ CONTAINS
    END SUBROUTINE heap_sort
 
    FUNCTION qtf_radiation_omegas() RESULT(w)
-      ! The frequencies of the list that are not on the main grid: each needs a radiation-only solve. These are the
-      ! difference frequencies (qtf = 1 or 3) and, with the sum on, the sum frequencies Omega = omega_i + omega_j (Phase 6b:
-      ! with qtf_direct = 0 only those, since the difference frequencies are not solved again for qtf = 2). Empty unless
-      ! qtf_terms = body.
+      ! The off-grid entries of the union list: each needs a radiation-only solve. These are the difference frequencies
+      ! (qtf = 1 or 3) and, with the sum on, the sum frequencies Omega = omega_i + omega_j. RadiationOnlySolves uses the
+      ! list with qtf_direct = 0. Empty unless qtf_terms = body or full.
       REAL(8), ALLOCATABLE :: w(:)
 
       IF (ALLOCATED(psi_need)) THEN
@@ -1127,7 +1126,12 @@ CONTAINS
             ' values with NaN or Inf, the first in mode ', k - 6*((k - 1)/6), ' of body ', (k - 1)/6 + 1, ' (', &
             TRIM(MERGE('radiation solve of the main grid', 'radiation-only solve            ', psi_reuse(m) > 0))//').'
          bad_files = psi_bad_files(psi_is_sum(m), psi_is_diff(m), pot_terms, pot_sum_terms)
-         WRITE (*, '(a)') ' '//TRIM(bad_files)//' are not valid at that Omega; the run will end with exit code 1.'
+         ! "is" for one file, "are" for a list (psi_bad_files joins a list with a comma or "and")
+         IF (INDEX(bad_files, ',') > 0 .OR. INDEX(bad_files, ' and ') > 0) THEN
+            WRITE (*, '(a)') ' '//TRIM(bad_files)//' are not valid at that Omega; the run will end with exit code 1.'
+         ELSE
+            WRITE (*, '(a)') ' '//TRIM(bad_files)//' is not valid at that Omega; the run will end with exit code 1.'
+         END IF
       END IF
       psi_store(:, :, m) = psi
       psi_kept(m) = .TRUE.
@@ -2120,8 +2124,9 @@ CONTAINS
       WRITE (*, '(a)') ' headings or panels, or qtf = 0.'
       IF (PRESENT(body)) THEN
          IF (body) THEN
-            WRITE (*, '(a)') ' With qtf_terms = body the store also holds psi at every difference frequency (count in the log'
-            WRITE (*, '(a)') ' above): a smaller qtf_max_dw, or a uniform omega grid (whose differences coincide), needs fewer.'
+            WRITE (*, '(a)') ' With qtf_terms = body the store also holds psi at every difference frequency and, with qtf = 2'
+            WRITE (*, '(a)') ' or 3, every sum frequency (count in the log above): a smaller qtf_max_dw or qtf_max_sw, or a'
+            WRITE (*, '(a)') ' uniform omega grid (whose differences coincide), needs fewer.'
             WRITE (*, '(a)') ' With qtf_b2 = control the fields on C and F add to it: qtf_b2 = body avoids them, a larger'
             WRITE (*, '(a)') ' cs_panel_size reduces them.'
          END IF

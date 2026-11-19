@@ -6747,6 +6747,7 @@ contains
     subroutine indirect_sum_two_bodies(error)
         type(error_type), allocatable, intent(out) :: error
         real(8), allocatable :: d11(:,:)
+        integer :: nrow1, ii
 
         call check_same_file(output_dir("qtf_indsum_two")//qtf_indirect_sum_file, &
                              output_dir("qtf_indsum_two_dir")//qtf_indirect_sum_file, error)
@@ -6760,6 +6761,14 @@ contains
         if (allocated(error)) return
         call check(error, nint(minval(d11(:,5))) == 1 .and. nint(maxval(d11(:,5))) == 12, &
                    "qtf_indsum_two: the index I of .11s does not cover the 12 modes of two bodies")
+        if (allocated(error)) return
+        ! Every I in 1..12 has the same number of rows as I = 1 (one row per I for each pair, heading pair and key)
+        nrow1 = count(nint(d11(:,5)) == 1)
+        do ii = 1, 12
+            call check(error, count(nint(d11(:,5)) == ii) == nrow1, &
+                       "qtf_indsum_two: the rows of .11s are not the same in number for every index I of the two bodies")
+            if (allocated(error)) return
+        end do
     end subroutine indirect_sum_two_bodies
 
     !> The control-surface B2 for the sum QTF with qtf = 2 (user ruling, 2026-11-19): qtf_indsum_b2_q2 (qtf = 2) and

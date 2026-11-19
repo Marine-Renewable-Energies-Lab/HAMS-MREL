@@ -1463,8 +1463,8 @@ end subroutine test_indirect11s_rows
 !> .11s - .10s is T+_pot of the row: tpot_sum as the driver holds it (qtf_indirect_sum_load), conjugated and scaled as the
 !> writer does (refl = 1: 1/(rho g) for forces and moments), against the rows of the files to their 7 digits, the diagonal
 !> included. The terms file (16 digits) has 15 columns with qtf_terms = body (5 keys and 5 terms of 2 values) and its terms
-!> add up to the same T+_pot to 1e-14 of the largest, for every pair and its mirror. (The brief said 15 and 11 columns,
-!> which does not fit its own list of 5 keys and 5 terms; ruling in the report, as in Phase 7c-2.)
+!> add up to the same T+_pot to 1e-14 of the largest term of the row (rowmax), for every pair and its mirror. (The brief said
+!> 15 and 11 columns, which does not fit its own list of 5 keys and 5 terms; ruling in the report, as in Phase 7c-2.)
 subroutine test_indirect11s_equals_tpot(error)
   type(error_type), allocatable, intent(out) :: error
   type(panel_mesh) :: mesh

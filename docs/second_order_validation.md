@@ -1007,7 +1007,7 @@ The indirect method at the sum frequency (Phase 6b, `qtf = 2` or `3` with `qtf_d
 
 ### Unit and integration tests
 
-The unit tester has 412 tests, all passing [measured at 257662b, 2026-11-19]. The integration tester has 233, all passing [measured at 257662b]; 22086da adds `direct_sum_qtf2_default_b2`. That test was run in the filtered integration run of its fix (56 passed, 0 failed); a full integration run at 22086da is not recorded. Sources: `git log --oneline 4ba2ddb..HEAD` and the task reports of the 6b work. The fixtures are `test/data/qtf_indsum_*`, written by `make_drift_fixtures.py`: the 7c-2 fixtures with `qtf_direct = 0`, a half-mesh pair, a two-hull case with `qtf_fs_panel` and `qtf_fs_modes` given (and its `qtf_direct = 1` and `qtf = 1` twins), and a GMRES case.
+The unit tester has 412 tests and the integration tester 234, all passing, 0 failed [measured at 22086da source; 43c75ad to 14cb8bc change docs only; ifort, Windows, 2026-11-19]. Sources: `git log --oneline 4ba2ddb..HEAD` and the task reports of the 6b work. The fixtures are `test/data/qtf_indsum_*`, written by `make_drift_fixtures.py`: the 7c-2 fixtures with `qtf_direct = 0`, a half-mesh pair, a two-hull case with `qtf_fs_panel` and `qtf_fs_modes` given (and its `qtf_direct = 1` and `qtf = 1` twins), and a GMRES case.
 
 | Test | What it pins | Measured | Limit |
 | :--- | :--- | :--- | :--- |
@@ -1017,7 +1017,7 @@ The unit tester has 412 tests, all passing [measured at 257662b, 2026-11-19]. Th
 | `indirect11s_equals_tpot` (unit) | `.11s` − `.10s` is T⁺_pot as the driver holds it, to the 7 digits of the file; the terms of the terms file add up to it | 5.75e-16 (terms sum, per row) | 1e-14 |
 | `indirect11s_routes_agree` (unit) | `.10s`, `.11s` and the terms file with `qtf_direct = 0` and `1`: the same to the byte | exact | exact |
 | `psi_bad_files_text` (unit) | The message of a non-finite ψ names the terms files only when they are written | exact | exact |
-| `qtf_sum_indirect_accepted`, `qtf_sum_body_warns` (input unit) | `qtf = 2` and `3` with `qtf_terms` = `body` or `full` and `qtf_direct = 0` are read; `full` needs a finite depth; `body` warns that the free-surface integral is left out | exact | exact |
+| `qtf_sum_indirect_accepted`, `qtf_sum_body_warns` (input unit) | `qtf = 2` and `3` with `qtf_terms` = `body` or `full` and `qtf_direct = 0` are read; `full` needs a finite depth; `body` is accepted (the warning that the free-surface integral is left out is pinned by `indirect_sum_cutoff_rows`) | exact | exact |
 | `potential_sum_terms_header` (output unit) | Header and column count of `QTF_PotentialTermsSum.txt`: 19 columns with `full`, 15 with `body` | exact | exact |
 | `indirect_sum_cutoff_rows` (integration, round hull, `body`) | `.11s` has 12 rows (only the pair (0.70, 0.70), below the cutoff), the terms file has the same rows, the log warns "5 of 6 pairs" once and the free-surface warning once | exact | exact |
 | `indirect_sum_matches_direct_run` (integration, lid hull) | `.11s` and the terms file are those of the `qtf_direct = 1` run, to the byte; `.11s` − `.10s` against P_BODY + P_FS of `QTF_DirectTermsSum.txt` | 7.3e-7 | 1e-5 |
@@ -1027,7 +1027,7 @@ The unit tester has 412 tests, all passing [measured at 257662b, 2026-11-19]. Th
 | `indirect_sum_isolv_factored` (integration, GMRES) | With ISOLV = 2, `.11s` and the terms file are those of the `qtf_direct = 1` twin, to the byte; T⁺_pot against the LU solve | 6.9e-4 | 1e-3 (GMRES stops at 1e-4) |
 | `indirect_sum_qtf3_diff_unchanged` (integration) | `.10d` and `.11d` of the `qtf = 3` two-hull run are those of the `qtf = 1` run, to the byte | exact | exact |
 | `indirect_sum_off_unchanged` (integration) | `QTF_Direct.12s` and `QTF_DirectTermsSum.txt` of `qtf_directsum_round` and `_irsp` are those of the 7c-2 merge build 4ba2ddb, to the byte | exact | exact |
-| `indirect_sum_log_lines` (integration) | The end message names `.11s` (and `.11d` for `qtf = 3` only) and says whether the free-surface integral is in it | exact | exact |
+| `indirect_sum_log_lines` (integration) | The set-up log lines of `SecondOrderDriver.f90` (not the end message of `ReportCompletion`) name `.11s` (and `.11d` for `qtf = 3` only) and say whether the free-surface integral is in it | exact | exact |
 | `indirect_sum_b2_qtf2_matches_qtf3` (integration) | `qtf = 2` takes the control-surface B2 as `qtf = 3` does (user ruling, 2026-11-19): same input, same `.11s` and terms file, to the byte, and the log has the line of the points of C and F | exact | exact |
 | `direct_sum_qtf2_default_b2` (integration) | `qtf = 2`, `qtf_direct = 1` and the default `qtf_b2` = `control`: `QTF_Direct.12s` and the D columns are those of the `qtf_b2 = body` run, to the byte; P_BODY changes; the log has the line of C and F | exact | exact |
 
@@ -1131,7 +1131,7 @@ HAMS without the direct solve took 50 minutes at m1, against 54 minutes for the 
 - **The Nemoh mesh test is at the sharp cylinder only.** Nemoh's body error in F_z (17%) does not fall with the mesh, and its cause is not found.
 - **OC4 is open.** There is no exact reference, the WAMIT file appears not to hold the free-surface part (inferred from the numbers) and is another model, the free-surface meshes and circles differ, and the first-order motions differ at the heave resonance (0.40 to 0.45 rad/s). It is one mesh (m1, 1224 panels).
 - **The OC4 cut** at Ω⁺ ≥ 1.995 rad/s (81 of 231 pairs) is HAMS's estimate of the lowest irregular frequency; it is not a measured value for this hull.
-- **The unit and integration tests pin the route** (files, lists, byte equality with the direct route), not the physics. The integration suite was not run in full at 22086da.
+- **The unit and integration tests pin the route** (files, lists, byte equality with the direct route), not the physics. 
 - The code of the Snellius runs is a0b974c; the later commits change the B2 form for `qtf = 2`, the docs and one test, not the `qtf = 3` route that was run.
 
 ## Partial second-order field
