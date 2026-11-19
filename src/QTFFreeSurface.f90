@@ -48,9 +48,10 @@ MODULE QTFFreeSurface
    USE NearFieldDrift, ONLY: KERNEL_DIFF, KERNEL_SUM
    USE SecondOrderTypes, ONLY: panel_mesh, first_order_state, cs_points, cs_fields, CS_FREE, surface_geom
    USE PartialWaves, ONLY: pw_set, pw_radial, pw_decompose, pw_eval_point, pw_radial_at, pw_bessel_k_scaled, &
-                           pw_bessel_k_scaled_c, pw_hankel_scaled
+                           pw_bessel_k_scaled_c, pw_hankel_scaled, pw_from_panels
    USE FieldVelocity, ONLY: incident_at
-   USE FirstOrderState, ONLY: wave_gravity
+   USE FirstOrderState, ONLY: wave_gravity, image_signs
+   USE PanelMesh_mod, ONLY: ISX, ISY
    USE WaterlineField, ONLY: field_influence_row, field_potential
    USE QTFField, ONLY: body_winding
    USE HAMS_mod, ONLY: NTHREAD
@@ -456,7 +457,8 @@ CONTAINS
       !$OMP END PARALLEL
    END SUBROUTINE fs_sample_phi
 
-   SUBROUTINE fs_circle_modes(mesh, circle, states, is_multi, centre, radius, h, k0, kev, mmax, nev, pw, miss, deep, nsplit)
+   SUBROUTINE fs_circle_modes(mesh, circle, states, is_multi, centre, radius, h, k0, kev, mmax, nev, pw, miss, deep, nsplit, &
+                              graf)
       ! The partial waves of the perturbation potential of every state outside the circle r = radius about centre: phi_P at
       ! the samples circle of pw_sample_points(centre, radius, h, mmax, nev), by the centroid route (fs_sample_phi), so that
       ! the samples are a sum of the free-surface modes, then pw_decompose with the propagating wave number k0 and the
@@ -468,6 +470,11 @@ CONTAINS
       ! the finite-depth field mode), of the direct eigenfunction sum (deep of field_influence_row), and miss shows the fit.
       ! nsplit, if present, splits the states into two groups, 1:nsplit and nsplit+1:SIZE(states), each with the scales of
       ! fs_mode_scales of its own (the headings and the psi modes of one frequency in one call give the miss of two calls).
+      ! graf, if present and true (qtf_fs_circle = panels; spec D3 of the free-surface speed-ups), takes the partial waves
+      ! straight from the hull integral (circle_from_panels: pw_from_panels, Graf's addition theorem on the finite-depth
+      ! eigenfunction series) in place of the samples and their fit; the mode check then runs on every 8th sample only
+      ! (circle_check_subset), by the centroid route there. deep does not apply on that route: its coefficients are those
+      ! of the finite-depth field, and the check samples are finite-depth too. Absent or false: the samples route above.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(cs_points), INTENT(IN) :: circle
       TYPE(first_order_state), INTENT(IN) :: states(:)
@@ -478,18 +485,35 @@ CONTAINS
       REAL(8), INTENT(OUT) :: miss(SIZE(states))
       LOGICAL, INTENT(IN), OPTIONAL :: deep
       INTEGER, INTENT(IN), OPTIONAL :: nsplit
+      LOGICAL, INTENT(IN), OPTIONAL :: graf
       COMPLEX(8), ALLOCATABLE :: samples(:, :)
+      TYPE(cs_points) :: sub
       REAL(8) :: scale(SIZE(states))
       INTEGER :: ist, ns
+      LOGICAL :: from_panels
 
-      ALLOCATE (samples(circle%n, SIZE(states)))
-      CALL fs_sample_phi(mesh, circle, states, is_multi, samples, centroid_only=.TRUE., deep=deep)
+      from_panels = .FALSE.
+      IF (PRESENT(graf)) from_panels = graf
       ns = SIZE(states)
       IF (PRESENT(nsplit)) ns = nsplit
       IF (ns < 0 .OR. ns > SIZE(states)) THEN
          WRITE (*, '(a)') ' fs_circle_modes: nsplit must be between 0 and the number of states.'
          ERROR STOP 1
       END IF
+      IF (from_panels) THEN
+         CALL circle_from_panels(mesh, states, centre, radius, h, k0, kev, mmax, nev, pw)
+         CALL circle_check_subset(circle, mmax, sub)
+         ALLOCATE (samples(sub%n, SIZE(states)))
+         CALL fs_sample_phi(mesh, sub, states, is_multi, samples, centroid_only=.TRUE.)
+         scale(1:ns) = fs_mode_scales(samples(:, 1:ns))
+         scale(ns + 1:) = fs_mode_scales(samples(:, ns + 1:))
+         DO ist = 1, SIZE(states)
+            miss(ist) = fs_mode_miss(pw(ist), sub, samples(:, ist), scale(ist))
+         END DO
+         RETURN
+      END IF
+      ALLOCATE (samples(circle%n, SIZE(states)))
+      CALL fs_sample_phi(mesh, circle, states, is_multi, samples, centroid_only=.TRUE., deep=deep)
       scale(1:ns) = fs_mode_scales(samples(:, 1:ns))
       scale(ns + 1:) = fs_mode_scales(samples(:, ns + 1:))
       DO ist = 1, SIZE(states)
@@ -497,6 +521,74 @@ CONTAINS
          miss(ist) = fs_mode_miss(pw(ist), circle, samples(:, ist), scale(ist))
       END DO
    END SUBROUTINE fs_circle_modes
+
+   SUBROUTINE circle_from_panels(mesh, states, centre, radius, h, k0, kev, mmax, nev, pw)
+      ! The partial waves of phi_P of every state from the hull integral (pw_from_panels): the sources are the panels of
+      ! field_potential, panel i the base panel mesh%base(i) in image mesh%image(i). field_influence_row mirrors the field
+      ! point x for an image and keeps the panel, G(S x, xi) = G(x, S xi) for the reflection S of image_signs (G depends on
+      ! the horizontal distance and the two depths only), and n . grad_xi G(S x, xi) = (S n) . grad G(x, .) at S xi: so the
+      ! image source is at S xi with normal S n and the same area. pw_from_panels stops if a source (an image included)
+      ! is not inside the circle.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(first_order_state), INTENT(IN) :: states(:)
+      REAL(8), INTENT(IN) :: centre(2), radius, h, k0, kev(:)
+      INTEGER, INTENT(IN) :: mmax, nev
+      TYPE(pw_set), INTENT(OUT) :: pw(SIZE(states))
+      REAL(8), ALLOCATABLE :: xs(:, :), ns(:, :), area(:)
+      COMPLEX(8), ALLOCATABLE :: q(:, :), ph(:, :)
+      REAL(8) :: s(3)
+      INTEGER :: i, jb, ist
+
+      ALLOCATE (xs(3, mesh%n), ns(3, mesh%n), area(mesh%n), q(mesh%n, SIZE(states)), ph(mesh%n, SIZE(states)))
+      DO i = 1, mesh%n
+         jb = mesh%base(i)
+         s = image_signs(mesh%image(i), ISX, ISY)
+         xs(:, i) = s*mesh%xc(:, jb)
+         ns(:, i) = s*mesh%nrm(:, jb)
+         area(i) = mesh%area(jb)
+      END DO
+      DO ist = 1, SIZE(states)
+         q(:, ist) = states(ist)%dphi_p_dn(1:mesh%n)
+         ph(:, ist) = states(ist)%phi_p(1:mesh%n)
+      END DO
+      CALL pw_from_panels(xs, ns, area, q, ph, centre, radius, h, k0, kev, mmax, nev, pw)
+   END SUBROUTINE circle_from_panels
+
+   SUBROUTINE circle_check_subset(circle, mmax, sub)
+      ! Every 8th sample of the circle of pw_sample_points(.., mmax, ..) for the mode check of the graf route: sample
+      ! (theta_j, z_l) with j - (l - 1) a multiple of 8, so that the angles shift from one depth to the next and all of them
+      ! are used over 8 depths, as the full check would. Same order as circle.
+      TYPE(cs_points), INTENT(IN) :: circle
+      INTEGER, INTENT(IN) :: mmax
+      TYPE(cs_points), INTENT(OUT) :: sub
+      INTEGER, ALLOCATABLE :: idx(:)
+      INTEGER :: nth, nz, j, l, k
+
+      nth = 4*mmax + 4
+      nz = circle%n/nth
+      IF (nz*nth /= circle%n) THEN
+         WRITE (*, '(a)') ' fs_circle_modes: the circle is not that of pw_sample_points for these modes.'
+         ERROR STOP 1
+      END IF
+      ALLOCATE (idx(circle%n))
+      k = 0
+      DO l = 1, nz
+         DO j = 0, nth - 1
+            IF (MODULO(j - (l - 1), 8) == 0) THEN
+               k = k + 1
+               idx(k) = j + 1 + nth*(l - 1)
+            END IF
+         END DO
+      END DO
+      sub%n = k
+      ALLOCATE (sub%x(3, k), sub%nrm(3, k), sub%w(k), sub%psize(k), sub%kind(k), sub%body(k))
+      sub%x = circle%x(:, idx(1:k))
+      sub%nrm = circle%nrm(:, idx(1:k))
+      sub%w = circle%w(idx(1:k))
+      sub%psize = circle%psize(idx(1:k))
+      sub%kind = circle%kind(idx(1:k))
+      sub%body = circle%body(idx(1:k))
+   END SUBROUTINE circle_check_subset
 
    PURE FUNCTION fs_mode_scales(samples) RESULT(scale)
       ! The scale of the mode check of each state (column) of samples: its own largest |sample|, but at least FS_SCALE_FLOOR

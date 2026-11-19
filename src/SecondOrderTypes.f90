@@ -67,6 +67,9 @@ MODULE SecondOrderTypes
       REAL(8) :: qtf_fs_panel = 0D0      ! m, panel size of the generated inner mesh; 0: lambda/10 at the largest frequency
       INTEGER :: qtf_fs_modes = 0        ! angular modes M of the outer region
       INTEGER :: qtf_fs_evanescent = 0   ! evanescent vertical modes N_ev of the outer region
+      ! The partial waves outside R: 1 samples (the centroid route at the circle samples, fitted), 2 panels (straight from the
+      ! hull integral by Graf's addition theorem, mode check on every 8th sample; spec D3 of the free-surface speed-ups)
+      INTEGER :: qtf_fs_circle = 1
       ! Field-pass rows (psi, grad psi at the hull, free-surface and field points): the deep-water Green function is used
       ! where k0 h >= field_deep_kh (k0 the wave number of the frequency, h the depth); 0 switches it off
       REAL(8) :: field_deep_kh = 10D0

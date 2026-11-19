@@ -47,6 +47,7 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("field_deep_kh_default", test_field_deep_kh_default), &
     new_unittest("field_deep_kh_read", test_field_deep_kh_read), &
     new_unittest("field_deep_kh_negative_stops", test_field_deep_kh_negative_stops), &
+    new_unittest("qtf_fs_circle_key", test_qtf_fs_circle_key), &
     new_unittest("qtf_sum_full_deep_stops", test_qtf_sum_full_deep_stops), &
     new_unittest("qtf_edge_keys", test_qtf_edge_keys), &
     new_unittest("qtf_field_key", test_qtf_field_key) &
@@ -1000,6 +1001,40 @@ subroutine test_field_deep_kh_negative_stops(error)
                            "field_deep_kh must not be negative in SecondOrder.in.")
   call remove_directory(root)
 end subroutine test_field_deep_kh_negative_stops
+
+!> qtf_fs_circle (spec D3 of the free-surface speed-ups): absent gives samples (1, the circle samples and their fit),
+!> panels gives 2 (the partial waves from the hull integral), any other word stops with the invalid-value message
+subroutine test_qtf_fs_circle_key(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_fs_circle"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_fs_circle, 1, "qtf_fs_circle default")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_fs_circle = panels"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "panels rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_fs_circle, 2, "qtf_fs_circle = panels")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_fs_circle = samples"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "samples rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_fs_circle, 1, "qtf_fs_circle = samples")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_fs_circle = graf"], &
+                           'Invalid value "graf" for key "qtf_fs_circle" in SecondOrder.in.')
+  call remove_directory(root)
+end subroutine test_qtf_fs_circle_key
 
 subroutine expect_read_message(error, root, lines, expected)
   type(error_type), allocatable, intent(out) :: error

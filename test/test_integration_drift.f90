@@ -331,6 +331,10 @@ module test_integration_drift
     ! run_psi_reuse_cases, and all the cases of psi_reuse_byte_identical (two with psi on the grid among the 88e19bd fixtures)
     character(len=20), parameter :: psi_reuse_new(4) = [character(len=20) :: "qtf_psi_reuse", "qtf_psi_reuse_src", &
                                                         "qtf_psi_reuse_two", "qtf_psi_reuse_half"]
+    ! qtf_fs_circle = panels against the samples route on qtf_fs_main (fs_circle_panels_close): FS terms over max |FS|,
+    ! measured 4.7e-6 (Task 5; the centroid samples are about 1e-6 off the exact series, pw_from_panels_matches_samples),
+    ! limit 2x rounded up
+    real(8), parameter :: fs_panels_limit = 1d-5
     character(len=20), parameter :: psi_reuse_cases(6) = [character(len=20) :: "qtf_fs_main", "qtf_b2c_main", &
                                                           psi_reuse_new]
 
@@ -395,6 +399,7 @@ contains
             new_unittest("run_qtf_indsum_cases", run_qtf_indsum_cases), &
             new_unittest("run_qtf_deep_kh_cases", run_qtf_deep_kh_cases), &
             new_unittest("run_psi_reuse_cases", run_psi_reuse_cases), &
+            new_unittest("run_qtf_fs_panels", run_qtf_fs_panels), &
             new_unittest("run_control_cyl", run_control_cyl), &
             new_unittest("run_control_cyl_sybo", run_control_cyl_sybo), &
             new_unittest("run_control_cases", run_control_cases) &
@@ -551,7 +556,8 @@ contains
             new_unittest("qtf_deep_kh_finite_pass_unchanged", qtf_deep_kh_finite_pass_unchanged), &
             new_unittest("qtf_deep_kh_within_limits", qtf_deep_kh_within_limits), &
             new_unittest("psi_reuse_byte_identical", psi_reuse_byte_identical), &
-            new_unittest("psi_reuse_log_counts", psi_reuse_log_counts) &
+            new_unittest("psi_reuse_log_counts", psi_reuse_log_counts), &
+            new_unittest("fs_circle_panels_close", fs_circle_panels_close) &
         ]
     end subroutine collect_tests_drift
 
@@ -7050,6 +7056,57 @@ contains
         call check(error, count_lines_with(log, deep, "omega =   0.20000 rad/s"), 1, &
                    "qtf_psi_reuse: the deep-water line is not at 0.2 rad/s")
     end subroutine psi_reuse_log_counts
+
+    ! ---------------------------------------------------------------------------------------------- circle from the panels
+
+    !> qtf_fs_panels: qtf_fs_main with qtf_fs_circle = panels (the partial waves outside R from the hull integral, spec D3
+    !> of the free-surface speed-ups), with its run time
+    subroutine run_qtf_fs_panels(error)
+        type(error_type), allocatable, intent(out) :: error
+        integer(8) :: t0, t1, rate
+
+        call system_clock(t0, rate)
+        call run_case("qtf_fs_panels", [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file], error)
+        call system_clock(t1)
+        print '(4x,a,F8.1,a)', "qtf_fs_panels: run time ", real(t1 - t0, 8)/real(rate, 8), " s"
+    end subroutine run_qtf_fs_panels
+
+    !> qtf_fs_circle = panels changes the free-surface terms only: the files without them are those of qtf_fs_main
+    !> (expected_output, the samples route) line for line, and FS_inner + FS_outer of every row are within fs_panels_limit
+    !> of qtf_fs_main's, over max |FS| of the forces or moments (fs_against). The log has no mode-check warning, as
+    !> qtf_fs_main's has none. Prints the free-surface pass times of both logs (indicative).
+    subroutine fs_circle_panels_close(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: files(7) = [character(len=22) :: "AmssDamp.1", "ExcForce.3", "Hydrostat.hst", &
+            "MeanDriftMomentum.8", "MeanDriftPressure.9", "Motion.4", "QTF_Quadratic.10d"]
+        character(len=13), parameter :: logs(2) = [character(len=13) :: "qtf_fs_main", "qtf_fs_panels"]
+        character(len=:), allocatable :: lines(:)
+        real(8) :: worst
+        integer :: f, matched, c, r
+
+        do f = 1, size(files)
+            call check_same_file(get_repo_root_path()//"test/data/qtf_fs_main/expected_output/"//trim(files(f)), &
+                                 output_dir("qtf_fs_panels")//"Wamit_format/"//trim(files(f)), error)
+            if (allocated(error)) return
+        end do
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_fs_panels.log", &
+                   "QTF free surface: the partial waves miss the field"), 0, "qtf_fs_panels: a mode-check warning")
+        if (allocated(error)) return
+        do c = 1, size(logs)
+            call read_lines(get_running_exe_path()//trim(logs(c))//".log", lines, error)
+            if (allocated(error)) return
+            do r = 1, size(lines)
+                if (index(lines(r), "QTF free surface fields: omega") > 0 .or. &
+                    index(lines(r), "QTF free surface psi: omega") > 0) print '(4x,a,": ",a)', trim(logs(c)), trim(lines(r))
+            end do
+        end do
+        call fs_against("qtf_fs_main", "qtf_fs_panels", worst, matched, error)
+        if (allocated(error)) return
+        call report("fs_circle_panels_close", worst)
+        call check(error, matched > 0, "qtf_fs_panels: no rows matched to qtf_fs_main")
+        if (allocated(error)) return
+        call check_below(error, "fs_circle_panels_close", worst, fs_panels_limit)
+    end subroutine fs_circle_panels_close
 
     !> The number of lines of the file at path that contain both text and also
     integer function count_lines_with(path, text, also)

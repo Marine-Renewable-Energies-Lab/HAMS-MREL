@@ -18,8 +18,9 @@ module test_qtf_free_surface
   use FieldVelocity, only : fields_green, incident_at
   use QTFField, only : body_winding
   use PartialWaves, only : pw_set, pw_sample_points, pw_evanescent_from_wvn, pw_eval_surface, pw_radial, pw_radial_at, &
-                           pw_bessel_k, pw_green_modes, pw_green_mmax
-  use FirstOrderState, only : incident_phi, incident_grad, wave_gravity
+                           pw_bessel_k, pw_green_modes, pw_green_mmax, pw_decompose, pw_eval_point
+  use FirstOrderState, only : incident_phi, incident_grad, wave_gravity, image_signs
+  use direct_sum_green_mod, only : direct_sum_green
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use ControlSurfaceMesh, only : build_fs_inner
   use second_order_fixtures, only : make_cylinder, maccamy_fuchs_state, read_pnl_hull
@@ -27,7 +28,7 @@ module test_qtf_free_surface
   use Const_mod, only : g_const => G
   use, intrinsic :: ieee_arithmetic, only : ieee_is_finite, ieee_value, ieee_quiet_nan
   use omp_lib, only : omp_get_wtime
-  use PanelMesh_mod, only : pm_xyz => XYZ, pm_ncn => NCN, pm_ncon => NCON
+  use PanelMesh_mod, only : pm_xyz => XYZ, pm_ncn => NCN, pm_ncon => NCON, ISX, ISY
   use SingularIntgr, only : SGLINTBD_TRI2, SGLINTBD_QUAD2
   implicit none
   private
@@ -107,7 +108,9 @@ subroutine collect_qtf_free_surface(testsuite)
     new_unittest("fs_fields_exact_integral_diff", test_fields_exact_integral_diff), &
     new_unittest("fs_inner_centre_is_sample_phi", test_inner_centre_is_sample_phi), &
     new_unittest("fs_circle_modes_split", test_circle_modes_split), &
-    new_unittest("fs_mode_miss_threads", test_mode_miss_threads) &
+    new_unittest("fs_mode_miss_threads", test_mode_miss_threads), &
+    new_unittest("pw_from_panels_matches_samples", test_from_panels_samples), &
+    new_unittest("fs_circle_panels_mode_check", test_circle_panels_check) &
     ]
 end subroutine collect_qtf_free_surface
 
@@ -455,6 +458,229 @@ contains
     wall = omp_get_wtime() - w0 + 0d0*dummy
   end subroutine five_misses
 end subroutine test_mode_miss_threads
+
+!> The circle partial waves from the hull integral (fs_circle_modes with graf, pw_from_panels; spec D3 of the free-surface
+!> speed-ups) on the 448-panel cylinder, R = 15 m, h = 15 m, mmax = 40 and nev = 20 (enough: (10/15)^40 = 9e-8 for the
+!> hull's largest r, e^{-k_20 5 m} = 1e-9 for the nearest panel). Two states: the MacCamy-Fuchs scattered wave of the
+!> fixture and a made-up hull field (q = n_x, phi_P = 0.02 x + 0.01 i z), as the full mesh and as the half mesh with its
+!> y-image (load_panels(full, 0, 1)), so that the image sources enter. Errors relative to the largest sample of the state.
+!>   1. At every 8th circle sample, the panel partial waves equal the same centroid sum with G from the direct eigen-sum
+!>      (direct_sum_green plus 1/r and 1/r1, good to 3e-11; images as field_influence_row places them): pw_limit.
+!>   2. At every circle sample they equal the centroid route (fs_sample_phi, centroid_only) to within samples_limit; the
+!>      gap is the error of FINGREEN3D in field mode, which item 1 shows by the same samples against the direct sum.
+!>   3. The amplitudes at R (a H_m(k0 R), a K_m(kn R)) equal pw_decompose of the centroid samples to within the
+!>      decomposition's own mode-check miss (fs_mode_miss on all samples), relative to the largest amplitude at R.
+!>   4. The miss of fs_circle_modes on the graf route (every 8th sample) is at most the gap of item 2.
+!>   5. The half mesh gives the full mesh's amplitudes, to 1e-10 relative.
+!> Prints the wall time of fs_circle_modes on both routes (indicative).
+!> Measured (Task 5), full and half mesh alike: item 1 3.6e-9 (MF) and 2.7e-9; item 2 1.7e-6 and 2.4e-7, with the
+!> samples themselves 1.7e-6 and 2.4e-7 off the direct sum (FINGREEN3D in field mode); item 3 2.4e-7 and 1.7e-8 against
+!> a miss of 1.1e-6 and 1.5e-7; item 4 1.7e-6 and 1.7e-7; item 5 1.7e-15. With mmax 50, nev 30 (other depth nodes) the
+!> samples were 2.9e-5 off the panel waves, as they are off the direct sum. So the brief's 1e-6 is put on the direct sum
+!> (item 1, pw_limit), and samples_limit is the measured sample error rounded up. The direct sum takes nu = k0 tanh k0h
+!> of the wave numbers (g = 9.807 of DISPERSION), as the partial waves do; with the V of the globals (g = 9.80665) both
+!> routes were 2e-6 to 4e-6 off it.
+subroutine test_from_panels_samples(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: radius = 15d0, pw_limit = 1d-8, samples_limit = 3d-6
+  integer, parameter :: nev = 20, mmax = 40
+  type(panel_mesh) :: full, mesh
+  type(first_order_state) :: states(2)
+  type(cs_points) :: circle
+  type(pw_set) :: pw(2), pd, pfull(2), pd2(2)
+  complex(8), allocatable :: samples(:, :)
+  real(8), allocatable :: kv(:)
+  real(8) :: t0, t1, t2
+  complex(8) :: phi, hk, rad_f, ref
+  real(8) :: kev(nev), miss(2), e_s(2), e_d(2), e_sd(2), e_a(2), m_d(2), sc, worst, big, e_img, nu
+  integer :: isym, ist, i, m, n, nthread_saved
+  character(len=200) :: info
+
+  call set_wave(fx_depth)
+  ! The nu of the wave numbers (DISPERSION, g = 9.807): k0 tanh k0h. V of the globals has g = 9.80665, 3.4e-5 apart
+  nu = WK * tanh(WK * fx_depth)
+  call make_cylinder(10d0, 10d0, 32, 8, 6, full, .true.)
+  call pw_evanescent_from_wvn(nev, kev)
+  call pw_sample_points([0d0, 0d0], radius, fx_depth, mmax, nev, circle)
+  allocate (samples(circle%n, 2), kv(0:mmax))
+  nthread_saved = NTHREAD
+  NTHREAD = 4
+  do isym = 0, 1
+    call load_panels(full, 0, isym, mesh)
+    call maccamy_fuchs_state(mesh, 10d0, fx_depth, WK, W1, 1d0, BETA, wave_gravity(W1, WK, fx_depth), 1000d0, states(1))
+    states(1)%amp = 0d0
+    states(2) = states(1)
+    do i = 1, mesh%n
+      states(2)%dphi_p_dn(i) = cmplx(mesh%nrm(1, i), 0d0, 8)
+      states(2)%phi_p(i) = cmplx(0.02d0 * mesh%xc(1, i), 0.01d0 * mesh%xc(3, i), 8)
+    end do
+    t0 = omp_get_wtime()
+    call fs_circle_modes(mesh, circle, states, .false., [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pd2, miss)
+    t1 = omp_get_wtime()
+    call fs_circle_modes(mesh, circle, states, .false., [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pw, miss, &
+                         graf=.true.)
+    t2 = omp_get_wtime()
+    print '(4x,a,i0,a,i0,a,2f8.3)', "fs_circle_modes wall s on 4 threads, ", circle%n, " samples, ", mesh%n, &
+      " panels: samples route, panels route ", t1 - t0, t2 - t1
+    call fs_sample_phi(mesh, circle, states, .false., samples, centroid_only=.true.)
+    do ist = 1, 2
+      big = maxval(abs(samples(:, ist)))
+      ! 1. and 2.: against the direct sum at every 8th sample, against the samples at all
+      e_s(ist) = 0d0; e_d(ist) = 0d0; e_sd(ist) = 0d0
+      do i = 1, circle%n
+        call pw_eval_point(pw(ist), circle%x(:, i), phi)
+        e_s(ist) = max(e_s(ist), abs(phi - samples(i, ist)))
+        if (mod(i - 1, 8) /= 0) cycle
+        ref = direct_centroid_field(mesh, states(ist), circle%x(:, i), nu)
+        e_d(ist) = max(e_d(ist), abs(phi - ref))
+        e_sd(ist) = max(e_sd(ist), abs(samples(i, ist) - ref))
+      end do
+      e_s(ist) = e_s(ist) / big
+      e_d(ist) = e_d(ist) / big
+      e_sd(ist) = e_sd(ist) / big
+      ! 3. the amplitudes at R against pw_decompose of the samples, and its miss
+      call pw_decompose(samples(:, ist), [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pd)
+      m_d(ist) = fs_mode_miss(pd, circle, samples(:, ist))
+      worst = 0d0; sc = 0d0
+      do n = 0, nev
+        if (n > 0) call pw_bessel_k(mmax, kev(n) * radius, kv)
+        do m = -mmax, mmax
+          if (n == 0) then
+            hk = cmplx(bessel_jn(abs(m), WK * radius), bessel_yn(abs(m), WK * radius), 8)
+            if (m < 0 .and. mod(abs(m), 2) == 1) hk = -hk
+            rad_f = hk
+          else
+            rad_f = kv(abs(m))
+          end if
+          worst = max(worst, abs((pw(ist)%a(m, n) - pd%a(m, n)) * rad_f))
+          sc = max(sc, abs(pw(ist)%a(m, n) * rad_f))
+        end do
+      end do
+      e_a(ist) = worst / sc
+    end do
+    print '(4x,a,i0,a,2es10.2,a,2es10.2,a,2es10.2)', "panel partial waves, isy ", isym, &
+      ": against the direct sum ", e_d, "; against the samples ", e_s, "; samples against the direct sum ", e_sd
+    print '(4x,a,2es10.2,a,2es10.2,a,2es10.2)', "  amplitudes against pw_decompose ", e_a, "; its miss ", m_d, &
+      "; graf miss (1/8) ", miss
+    write (info, '(a,i0,a,2es10.3)') "panel partial waves miss the direct-sum centroid field (isy ", isym, ") ", e_d
+    call check(error, all(e_d <= pw_limit), trim(info))
+    if (allocated(error)) exit
+    write (info, '(a,i0,a,2es10.3)') "panel partial waves miss the centroid samples (isy ", isym, ") ", e_s
+    call check(error, all(e_s <= samples_limit), trim(info))
+    if (allocated(error)) exit
+    write (info, '(a,i0,a,2es10.3,a,2es10.3)') "panel amplitudes differ from pw_decompose (isy ", isym, ") ", e_a, &
+      " by more than its miss ", m_d
+    call check(error, all(e_a <= m_d), trim(info))
+    if (allocated(error)) exit
+    write (info, '(a,2es10.3,a,2es10.3)') "graf mode check ", miss, " above the miss at all samples ", e_s
+    call check(error, all(miss <= e_s * (1d0 + 1d-12)), trim(info))
+    if (allocated(error)) exit
+    if (isym == 0) then
+      pfull = pw
+    else
+      e_img = 0d0
+      do ist = 1, 2
+        e_img = max(e_img, maxval(abs(pw(ist)%a - pfull(ist)%a)) / maxval(abs(pfull(ist)%a)))
+      end do
+      print '(4x,a,es10.2)', "half mesh with its image against the full mesh, amplitudes ", e_img
+      write (info, '(a,es10.3)') "the half mesh with its image differs from the full mesh ", e_img
+      call check(error, e_img <= 1d-10, trim(info))
+    end if
+  end do
+  NTHREAD = nthread_saved
+end subroutine test_from_panels_samples
+
+!> The centroid-route field of state s at x (fs_sample_phi with centroid_only, field_potential), with the full
+!> finite-depth G of the direct eigen-sum (direct_sum_green plus 1/r and 1/r1) in place of FINGREEN3D: panel i is the
+!> base panel mesh%base(i), and for its image the field point is mirrored (field_influence_row), G(S x, xi).
+complex(8) function direct_centroid_field(mesh, s, x, nu) result(phi)
+  type(panel_mesh), intent(in) :: mesh
+  type(first_order_state), intent(in) :: s
+  real(8), intent(in) :: x(3), nu
+  complex(8) :: grn(3), g, dg
+  real(8) :: xf(3), xq(3), nq(3), rho, sr, sr1, dh(2)
+  integer :: i, jb
+
+  phi = (0d0, 0d0)
+  do i = 1, mesh%n
+    jb = mesh%base(i)
+    xf = image_signs(mesh%image(i), ISX, ISY) * x
+    xq = mesh%xc(:, jb)
+    nq = mesh%nrm(:, jb)
+    rho = norm2(xq(1:2) - xf(1:2))
+    dh = (xq(1:2) - xf(1:2)) / rho
+    ! The panel point as the first point (ZF) of direct_sum_green: its grn(2:3) are d/dR and d/dZF
+    call direct_sum_green(rho, xq(3), xf(3), nu, WK, fx_depth, grn)
+    sr = sqrt(rho**2 + (xq(3) - xf(3))**2)
+    sr1 = sqrt(rho**2 + (xq(3) + xf(3))**2)
+    g = grn(1) + 1d0 / sr + 1d0 / sr1
+    dg = (grn(2) - rho / sr**3 - rho / sr1**3) * sum(dh * nq(1:2)) &
+         + (grn(3) - (xq(3) - xf(3)) / sr**3 - (xq(3) + xf(3)) / sr1**3) * nq(3)
+    phi = phi + mesh%area(jb) * (g * s%dphi_p_dn(i) - dg * s%phi_p(i))
+  end do
+  phi = phi / (4d0 * pi)
+end function direct_centroid_field
+
+!> The mode check of the graf route (fs_circle_modes with graf, every 8th circle sample against the centroid route there)
+!> warns as the samples route does (fs_mode_check_warns): with qtf_fs_modes = 2 the warning of fs_mode_warning, with the
+!> automatic M none. And with nsplit each group has its own scales: the states of fs_mode_check_per_state, state 2 (the
+!> field of one panel, truncated by M = 6) warns, states 1 and 3 do not.
+subroutine test_circle_panels_check(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: radius = 15d0
+  integer, parameter :: nev = 8
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: states(3), one(1)
+  type(cs_points) :: circle
+  type(pw_set) :: pw(3), pw1(1)
+  real(8) :: kev(nev), miss(3), miss1(1), miss_auto
+  integer :: j, mmax, nthread_saved
+  character(len=:), allocatable :: msg
+  character(len=200) :: info
+
+  call cylinder_fixture(mesh, one, error)
+  if (allocated(error)) return
+  call pw_evanescent_from_wvn(nev, kev)
+  nthread_saved = NTHREAD
+  NTHREAD = 4
+  call pw_sample_points([0d0, 0d0], radius, fx_depth, 2, nev, circle)
+  call fs_circle_modes(mesh, circle, one, .false., [0d0, 0d0], radius, fx_depth, WK, kev, 2, nev, pw1, miss1, graf=.true.)
+  msg = fs_mode_warning(miss1(1))
+  print '(4x,a,es10.2,a,a)', "graf mode check with M = 2: miss ", miss1(1), ", log: ", msg
+  call check(error, index(msg, "QTF free surface: the partial waves miss the field on the circle by ") == 1, &
+             "no warning on the graf route with M = 2: '"//msg//"'")
+  if (allocated(error)) then
+    NTHREAD = nthread_saved
+    return
+  end if
+  mmax = fs_auto_modes(0, WK, radius)
+  call pw_sample_points([0d0, 0d0], radius, fx_depth, mmax, nev, circle)
+  call fs_circle_modes(mesh, circle, one, .false., [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pw1, miss1, &
+                       graf=.true.)
+  miss_auto = miss1(1)
+  print '(4x,a,i0,a,es10.2)', "graf mode check with the automatic M = ", mmax, ": miss ", miss_auto
+  write (info, '(a,es10.3)') "graf route with the automatic M misses the samples by ", miss_auto
+  call check(error, miss_auto <= FS_MODE_TOL .and. miss_auto > 0d0, trim(info))
+  if (allocated(error)) then
+    NTHREAD = nthread_saved
+    return
+  end if
+
+  states = one(1)
+  j = minloc(norm2(mesh%xc - spread([10d0, 0d0, -0.5d0], 2, mesh%n), dim=1), dim=1)
+  states(2)%phi_p = (0d0, 0d0)
+  states(2)%dphi_p_dn = (0d0, 0d0)
+  states(2)%phi_p(j) = (1d-4, 0d0)
+  states(3) = states(2)
+  states(3)%phi_p(j) = (1d-16, 0d0)
+  call pw_sample_points([0d0, 0d0], radius, fx_depth, 6, nev, circle)
+  call fs_circle_modes(mesh, circle, states, .false., [0d0, 0d0], radius, fx_depth, WK, kev, 6, nev, pw, miss, &
+                       nsplit=1, graf=.true.)
+  NTHREAD = nthread_saved
+  print '(4x,a,3es10.2)', "graf mode check per state, nsplit = 1: miss ", miss
+  write (info, '(a,3es10.3)') "graf mode check per state (1 resolved, 2 truncated, 3 rounding): ", miss
+  call check(error, miss(1) <= FS_MODE_TOL .and. miss(2) > FS_MODE_TOL .and. miss(3) <= FS_MODE_TOL, trim(info))
+end subroutine test_circle_panels_check
 
 !> True if a point of the stencil of fs_inner_fields at x with offset d (x +- d e_x, x +- d e_y) lies in a waterplane.
 !> An independent copy, on purpose, of the private test of QTFFreeSurface: the test checks the module's offsets with its

@@ -215,8 +215,8 @@ CONTAINS
             ' full, qtf_b2 = control and qtf = 1, 2 or 3 (qtf_edge_angle also with qtf_direct = 1) only.'
       END IF
       IF (opts%qtf_fs_given .AND. .NOT. uses_fs(opts)) THEN
-         WRITE (*, '(a)') ' QTF note: qtf_fs_radius, qtf_fs_rows, qtf_fs_panel, qtf_fs_modes and qtf_fs_evanescent are ignored;'// &
-            ' they apply with qtf_terms = full and qtf = 1, 2 or 3 only.'
+         WRITE (*, '(a)') ' QTF note: qtf_fs_radius, qtf_fs_rows, qtf_fs_panel, qtf_fs_modes, qtf_fs_evanescent and'// &
+            ' qtf_fs_circle are ignored; they apply with qtf_terms = full and qtf = 1, 2 or 3 only.'
       END IF
       ALLOCATE (states(MERGE(NBETA, 1, keep_all_headings(opts))))
       ! Only the near-field and control-surface methods use the surface geometry (the control surface takes the waterplane
@@ -886,7 +886,7 @@ CONTAINS
       CALL fs_sample_phi(mesh, fs_pts, ps, multi_arrays, psi_pts, deep=deep)
       CALL pw_evanescent_from_wvn(fs_nev, kev)
       CALL fs_circle_modes(mesh, fs_circle, ps, multi_arrays, fs_centre, fs_radius, H, WK, kev, fs_mmax, fs_nev, pw, miss, &
-                           deep=deep)
+                           deep=deep, graf=opts%qtf_fs_circle == 2)
       CALL SYSTEM_CLOCK(t1)
       CALL log_mode_check(miss, omega, 'psi of mode')
       CALL qtf_keep_fs_psi(omega, psi_pts, pw)
@@ -1269,7 +1269,7 @@ CONTAINS
       CALL fs_waterline_fit_apply(mesh, fs_fit, states, fs_step, multi_arrays, f(:, 1:nh), deep=deep)
       CALL pw_evanescent_from_wvn(fs_nev, kev)
       CALL fs_circle_modes(mesh, fs_circle, sts, multi_arrays, fs_centre, fs_radius, H, WK, kev, fs_mmax, fs_nev, pw, miss, &
-                           deep=deep, nsplit=nh)
+                           deep=deep, nsplit=nh, graf=opts%qtf_fs_circle == 2)
       CALL SYSTEM_CLOCK(t1)
       CALL log_mode_check(miss(1:nh), W1, 'heading')
       DO ib = 1, nh

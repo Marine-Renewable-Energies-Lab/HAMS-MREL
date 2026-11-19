@@ -251,6 +251,9 @@ CONTAINS
       CASE ('qtf_fs_evanescent')
          READ(value, *, IOSTAT=ios) opts%qtf_fs_evanescent
          opts%qtf_fs_given = .TRUE.
+      CASE ('qtf_fs_circle')
+         CALL choose(value, 'samples', 'panels', opts%qtf_fs_circle, ios)
+         opts%qtf_fs_given = .TRUE.
       CASE ('qtf_b2')
          ! Read always, used with qtf_terms = body or full only
          CALL choose(value, 'body', 'control', opts%qtf_b2, ios)
