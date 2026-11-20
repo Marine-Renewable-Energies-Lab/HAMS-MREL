@@ -746,10 +746,10 @@ def qtf_motion_cases(grid):
 
 def linton_evans_cases():
     """The Linton & Evans array (--linton-evans): four bottom-mounted cylinders, fixed, mean drift far and near. Multiples 1, 2,
-    3 of the bottom-mounted hull per body: 256, 1024, 2304 panels per cylinder. Differencing, the closer velocity method on the
+    3, 4 of the bottom-mounted hull per body: 256, 1024, 2304, 4096 panels per cylinder. Differencing, the closer velocity method on the
     single bottom-mounted cylinder (group B)."""
     cases = []
-    for m in (1, 2, 3):
+    for m in (1, 2, 3, 4):
         cases.append(Case("l_square_diff_%s" % tag(m), "L", "le", "le_square", m, "fixed", "differencing",
                           frequencies=LE_FREQUENCIES, headings=LE_HEADINGS))
     # The wave field on a grid (le_field_grid) at two frequencies, heading 45 deg: the same meshes and settings
