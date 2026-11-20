@@ -6,8 +6,8 @@
 #SBATCH --cpus-per-task 24
 #SBATCH --mem=32G
 #SBATCH -t 18:00:00
-#SBATCH -o /home/vraghavan/HAMS_drift_study/run_roland/logs/volturnus_%j.log
-#SBATCH -A tdsei3290
+#SBATCH -o <run_root>/run_roland/logs/volturnus_%j.log
+#SBATCH -A <account>
 # VolturnUS-S (IEA 15 MW) matched to the second-order WAMIT run of IEA-15-240-RWT v1.1.18: difference QTF with the
 # free-surface integral (qtf_terms = full), indirect and direct methods (qtf_direct = 1), free body, heading 0, depth 200 m,
 # 34 frequencies 0.25-1.90 rad/s, 5076 hull panels (the IEA low-order mesh without its lid, mirrored), FSInnerMesh.pnl with
@@ -20,7 +20,7 @@ module load intel/2024a
 ulimit -s unlimited
 export OMP_NUM_THREADS=24
 export OMP_STACKSIZE=1G
-R=/home/vraghavan/HAMS_drift_study
+R=<run_root>
 RUN=$R/run_roland
 CASE=q_volturnus_free_full
 BIN=$R/run_fsspeed/hamsmrel_grn4

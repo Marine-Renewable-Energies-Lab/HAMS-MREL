@@ -30,7 +30,7 @@ for name, (exp, upper, limit) in options.items():
     y -= 1.0
 ax.set_yticks([p for p, _ in labels])
 ax.set_yticklabels([n for _, n in labels])
-ax.set_xlabel("core-hours (24 CPUs, fat_genoa, tdsei3290)")
+ax.set_xlabel("core-hours (24 CPUs, fat_genoa)")
 ax.set_xlim(0, 620)
 ax.grid(axis="x", color=GRID)
 for s in ("top", "right"):

@@ -1,12 +1,16 @@
 # VolturnUS-S on Snellius (cluster-side steps)
 
+Placeholders: `<user>` (cluster login), `<login_host>` (cluster login node), `<account>` (Slurm account), `<run_root>`
+(folder on the cluster that holds `run_fsspeed/` and `run_roland/`), `<work_dir>` (local folder outside the repository that
+holds `validation-runs/roland-benchmark/cases/`). Fill them in a local copy of these files for submitting.
+
 Nothing here has been submitted. Submit only after the user's approval of the cost (COST.md). Login by key only; in Git
 Bash every ssh/scp line needs the `MSYS_NO_PATHCONV=1` prefix.
 
-- Run root: `/home/vraghavan/HAMS_drift_study/run_roland` (new).
-- Binary: `/home/vraghavan/HAMS_drift_study/run_fsspeed/hamsmrel_grn4` (existing; see run_volturnus.sbatch).
+- Run root: `<run_root>/run_roland` (new).
+- Binary: `<run_root>/run_fsspeed/hamsmrel_grn4` (existing; see run_volturnus.sbatch).
 - Inputs: written on the laptop by `make_volturnus_case.py` into
-  `C:/Users/vraghavan1/Downloads/MREL_HAMS-MREL/validation-runs/roland-benchmark/cases/q_volturnus_free_full/input`
+  `<work_dir>/validation-runs/roland-benchmark/cases/q_volturnus_free_full/input`
   (outside git: derived from the IEA mesh) and checked on the cluster against `md5sums_input.txt`.
 
 ## 1. Copy (laptop, Git Bash)
@@ -14,14 +18,14 @@ Bash every ssh/scp line needs the `MSYS_NO_PATHCONV=1` prefix.
 A Windows checkout may give the job file and the checksum list CRLF line ends; the last line strips them on the cluster.
 
 ```
-C=/c/Users/vraghavan1/Downloads/MREL_HAMS-MREL/validation-runs/roland-benchmark/cases/q_volturnus_free_full
+C=<work_dir>/validation-runs/roland-benchmark/cases/q_volturnus_free_full
 J=validation-runs/roland-benchmark/snellius
-MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no vraghavan@snellius.surf.nl \
-    'mkdir -p /home/vraghavan/HAMS_drift_study/run_roland/logs /home/vraghavan/HAMS_drift_study/run_roland/q_volturnus_free_full/input'
-MSYS_NO_PATHCONV=1 scp $C/input/* vraghavan@snellius.surf.nl:/home/vraghavan/HAMS_drift_study/run_roland/q_volturnus_free_full/input/
-MSYS_NO_PATHCONV=1 scp $J/md5sums_input.txt $J/run_volturnus.sbatch vraghavan@snellius.surf.nl:/home/vraghavan/HAMS_drift_study/run_roland/
-MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no vraghavan@snellius.surf.nl \
-    "cd /home/vraghavan/HAMS_drift_study/run_roland && sed -i 's/\r\$//' md5sums_input.txt run_volturnus.sbatch"
+MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no <user>@<login_host> \
+    'mkdir -p <run_root>/run_roland/logs <run_root>/run_roland/q_volturnus_free_full/input'
+MSYS_NO_PATHCONV=1 scp $C/input/* <user>@<login_host>:<run_root>/run_roland/q_volturnus_free_full/input/
+MSYS_NO_PATHCONV=1 scp $J/md5sums_input.txt $J/run_volturnus.sbatch <user>@<login_host>:<run_root>/run_roland/
+MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no <user>@<login_host> \
+    "cd <run_root>/run_roland && sed -i 's/\r\$//' md5sums_input.txt run_volturnus.sbatch"
 ```
 
 For option B of COST.md (indirect only), delete the line `qtf_direct = 1` from `SecondOrder.in` before the copy, rewrite
@@ -30,7 +34,7 @@ For option B of COST.md (indirect only), delete the line `qtf_direct = 1` from `
 ## 2. Submit (only after the approval)
 
 ```
-cd /home/vraghavan/HAMS_drift_study/run_roland && sbatch run_volturnus.sbatch
+cd <run_root>/run_roland && sbatch run_volturnus.sbatch
 ```
 
 Log in `run_roland/logs/volturnus_<job>.log`; the case writes `log.txt`, `time.txt`, `result.json` and `output/`. Look
@@ -40,11 +44,11 @@ early in `log.txt` for the free-surface lines (inner points, circle R, modes) an
 ## 3. Back (laptop)
 
 ```
-MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no vraghavan@snellius.surf.nl 'cd /home/vraghavan/HAMS_drift_study/run_roland && \
+MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no <user>@<login_host> 'cd <run_root>/run_roland && \
     tar -czf volturnus_back.tgz q_volturnus_free_full/log.txt q_volturnus_free_full/time.txt q_volturnus_free_full/result.json \
     q_volturnus_free_full/output/Wamit_format'
-MSYS_NO_PATHCONV=1 scp vraghavan@snellius.surf.nl:/home/vraghavan/HAMS_drift_study/run_roland/volturnus_back.tgz \
-    /c/Users/vraghavan1/Downloads/MREL_HAMS-MREL/validation-runs/roland-benchmark/results/
+MSYS_NO_PATHCONV=1 scp <user>@<login_host>:<run_root>/run_roland/volturnus_back.tgz \
+    <work_dir>/validation-runs/roland-benchmark/results/
 ```
 
 Then `compare_diagonals.py` (figure 7) and `compare_maps.py` against `IEA-15-240-RWT-UMaineSemi.12d` (see ../README.md).
@@ -61,20 +65,20 @@ Each case runs in its own folder, `run_roland/<case>/` (log.txt, time.txt, resul
 22 h and 30 h fit. The commands (laptop, Git Bash, from the repository root):
 
 ```
-C=/c/Users/vraghavan1/Downloads/MREL_HAMS-MREL/validation-runs/roland-benchmark/cases
+C=<work_dir>/validation-runs/roland-benchmark/cases
 J=validation-runs/roland-benchmark/snellius
-R=/home/vraghavan/HAMS_drift_study/run_roland
+R=<run_root>/run_roland
 for c in q_oc4wfull_sym_free_L1_ext q_volturnus_free_full_ext; do
-  MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no vraghavan@snellius.surf.nl "mkdir -p $R/logs $R/$c/input"
-  MSYS_NO_PATHCONV=1 scp $C/$c/input/* vraghavan@snellius.surf.nl:$R/$c/input/
-  MSYS_NO_PATHCONV=1 scp $J/md5sums_$c.txt vraghavan@snellius.surf.nl:$R/
+  MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no <user>@<login_host> "mkdir -p $R/logs $R/$c/input"
+  MSYS_NO_PATHCONV=1 scp $C/$c/input/* <user>@<login_host>:$R/$c/input/
+  MSYS_NO_PATHCONV=1 scp $J/md5sums_$c.txt <user>@<login_host>:$R/
 done
-MSYS_NO_PATHCONV=1 scp $J/run_oc4_ext.sbatch $J/run_volturnus_ext.sbatch vraghavan@snellius.surf.nl:$R/
-MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no vraghavan@snellius.surf.nl \
+MSYS_NO_PATHCONV=1 scp $J/run_oc4_ext.sbatch $J/run_volturnus_ext.sbatch <user>@<login_host>:$R/
+MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no <user>@<login_host> \
     "cd $R && sed -i 's/\r\$//' md5sums_q_*_ext.txt run_*_ext.sbatch && \
      (cd q_oc4wfull_sym_free_L1_ext/input && md5sum -c ../../md5sums_q_oc4wfull_sym_free_L1_ext.txt) && \
      (cd q_volturnus_free_full_ext/input && md5sum -c ../../md5sums_q_volturnus_free_full_ext.txt)"
 ```
 
-Submit (only after the approval): `cd /home/vraghavan/HAMS_drift_study/run_roland && sbatch run_oc4_ext.sbatch && sbatch
+Submit (only after the approval): `cd <run_root>/run_roland && sbatch run_oc4_ext.sbatch && sbatch
 run_volturnus_ext.sbatch`.

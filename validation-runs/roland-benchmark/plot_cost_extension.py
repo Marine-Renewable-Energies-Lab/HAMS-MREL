@@ -34,7 +34,7 @@ for k, (name, (exp, upper, limit)) in enumerate(options.items()):
     ticks.append((y - 0.12, name))
 ax.set_yticks([t for t, _ in ticks])
 ax.set_yticklabels([n for _, n in ticks], fontsize=8.5)
-ax.set_xlabel("core-hours (24 CPUs, fat_genoa, tdsei3290); one job each, none submitted")
+ax.set_xlabel("core-hours (24 CPUs, fat_genoa); one job each, none submitted")
 ax.set_xlim(0, 1450)
 ax.grid(axis="x", color=GRID)
 for s in ("top", "right"):

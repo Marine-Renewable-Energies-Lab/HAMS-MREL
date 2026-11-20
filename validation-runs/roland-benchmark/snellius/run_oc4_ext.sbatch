@@ -6,8 +6,8 @@
 #SBATCH --cpus-per-task 24
 #SBATCH --mem=32G
 #SBATCH -t 22:00:00
-#SBATCH -o /home/vraghavan/HAMS_drift_study/run_roland/logs/oc4_ext_%j.log
-#SBATCH -A tdsei3290
+#SBATCH -o <run_root>/run_roland/logs/oc4_ext_%j.log
+#SBATCH -A <account>
 # OC4 full WAMIT hull, 9208 panels, over the range of Roland et al. (2026): difference QTF, qtf_terms = body (as the
 # existing 0.25-1.90 run), free body, heading 0, depth 200 m, 47 frequencies 0.25-2.55 rad/s, IRSP = 1 with a 1674-panel
 # lid, velocity_method = differencing. Inputs: make_oc4_extension.py on the laptop (meshes and matrices of the existing
@@ -18,7 +18,7 @@ module load intel/2024a
 ulimit -s unlimited
 export OMP_NUM_THREADS=24
 export OMP_STACKSIZE=1G
-R=/home/vraghavan/HAMS_drift_study
+R=<run_root>
 RUN=$R/run_roland
 CASE=q_oc4wfull_sym_free_L1_ext
 BIN=$R/run_fsspeed/hamsmrel_grn4

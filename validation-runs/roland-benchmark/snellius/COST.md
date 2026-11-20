@@ -1,6 +1,6 @@
 # VolturnUS-S run: cost (nothing submitted)
 
-fat_genoa, account tdsei3290, 24 CPUs (the billed minimum), 32G, one job. No build job: the run uses the existing binary
+fat_genoa, account <account>, 24 CPUs (the billed minimum), 32G, one job. No build job: the run uses the existing binary
 `run_fsspeed/hamsmrel_grn4` (fs-speedups branch, source of 3af6cf8) with `qtf_fs_circle = panels`, which equals the
 branch tip 80eaf3d (the later source changes are log lines and that default).
 
