@@ -541,7 +541,7 @@ CONTAINS
       ! i.e. with qtf_fs_panel = 0. With qtf_fs_panel given or a file mesh the mesh is that of the difference run, and
       ! the offsets stay step x psize, so that the difference files of qtf = 3 equal those of qtf = 1 (plan, global
       ! constraints). Direct versus indirect sum load on a mesh built for the first-order omega_max: 1.5e-2, on one built
-      ! for Omega+: 6.0e-3 (direct_fs_sum_equals_indirect, Phase 7c-2 Task 3).
+      ! for Omega+: 6.0e-3 (test direct_fs_sum_equals_indirect).
       TYPE(so_options), INTENT(IN) :: opts
       CHARACTER(LEN=*), INTENT(IN) :: inputdir
       REAL(8), INTENT(IN) :: omegas(:)
@@ -796,7 +796,7 @@ CONTAINS
       ! of the field evaluation at the field points (qtf_field = 1; 0 without).
       ! With qtf_terms = full the free-surface forcing (Phase 7b): direct_fs_setup at omega (the inner Green matrix and the
       ! Graf amplitudes of every row), whose time and size go to the log (the near-panel rule costs up to n^2 Green
-      ! function calls per near pair, ledger ruling F12), then direct_at_omega with it, which logs the time of the moments.
+      ! function calls per near pair), then direct_at_omega with it, which logs the time of the moments.
       ! With the sum on (Phase 7c-2) the sum pairs of omega are solved in the same call, and the log line gives the
       ! number of difference and of sum pairs.
       TYPE(so_options), INTENT(IN) :: opts

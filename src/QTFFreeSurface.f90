@@ -27,7 +27,7 @@ MODULE QTFFreeSurface
    ! with Q of SecondOrderIncident (free_surface_forcing): the incident-incident part is carried by the incident
    ! second-order potential, so only the difference of the total and the incident forcing enters here.
    !
-   ! The first-order fields the integral needs (Task 6): at the inner free-surface points, the total phi, grad phi and
+   ! The first-order fields the integral needs: at the inner free-surface points, the total phi, grad phi and
    ! phi_zz = -lap_h phi from phi at four horizontal offsets (fs_inner_fields; offsets shrunk next to a waterline,
    ! fs_inner_steps); outside the circle r = R, the partial waves of the scattered potential (fs_circle_modes), from samples
    ! on the cylinder by the all-centroid route of the boundary integral formula (fs_sample_phi), so that the samples are a
@@ -83,7 +83,7 @@ MODULE QTFFreeSurface
    ! more than FS_COVER_WARN of the free surface inside R, a stop above FS_COVER_STOP either way
    REAL(8), PARAMETER :: FS_COVER_WARN = 1D-2, FS_COVER_STOP = 1D-1
 
-   ! The sign s_FS of T_FS = s_FS (i Omega rho / g) int psi_k Q_D dS: +1, settled by the direct solve of the Task 2
+   ! The sign s_FS of T_FS = s_FS (i Omega rho / g) int psi_k Q_D dS: +1, settled by the direct solve of the
    ! reference (fs_sign_from_bvp: 7e-6 with +1, 1.25 with -1)
    REAL(8), PARAMETER :: FS_SIGN = 1D0
    ! The near-waterline fit of the inner fields (fs_waterline_fit_setup): WLFIT_N Gauss-Legendre samples on [d0, 3 d0],
@@ -102,7 +102,7 @@ MODULE QTFFreeSurface
    REAL(8), PARAMETER :: FS_CLOSE_TOL = 1D-6
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
    REAL(8), PARAMETER :: PI = 3.14159265358979323846D0
-   ! The outer integral (Task 7): Gauss-Legendre points per radial interval, Gauss-Laguerre points per tail contour, the
+   ! The outer integral: Gauss-Legendre points per radial interval, Gauss-Laguerre points per tail contour, the
    ! decay e^-EV_DROP below which an evanescent mode is dropped, ln(1e12) and the periods of the slowest phase class
    ! that set r_far (fs_outer_rfar), and the points per chord of the sliver (fs_outer_sliver)
    INTEGER, PARAMETER :: NGL = 8, NLAG = 48, NSL_TH = 8, NSL_R = 4
@@ -1068,7 +1068,7 @@ CONTAINS
       ! The evanescent modes N_ev of the partial waves: qtf_fs_evanescent (nev) if positive, else
       ! max(8, ceil(9 h / (pi (R - r_wl)))), r_wl the largest distance from the centre to a waterline node. The slowest
       ! evanescent mode kept, k_N > (N - 1/2) pi / h ~ N pi / h, then decays by about e^-9 (1e-4) from the waterline to R,
-      ! and the first one left out decays faster still (ruling of the Task 6 fix round). -1 when R <= r_wl.
+      ! and the first one left out decays faster still. -1 when R <= r_wl.
       INTEGER, INTENT(IN) :: nev
       REAL(8), INTENT(IN) :: h, radius, r_wl
 
@@ -1083,7 +1083,7 @@ CONTAINS
    END FUNCTION fs_auto_evanescent
 
 
-   ! ---------------------------------------------------------------------------------------- the integrals (Task 7)
+   ! ---------------------------------------------------------------------------------------- the integrals --------
 
    FUNCTION fs_radius_message(radius, r_wl) RESULT(msg)
       ! The stop message when the circle R does not clear the waterlines (R <= r_wl, the largest distance from the centre
@@ -1223,7 +1223,7 @@ CONTAINS
    END SUBROUTINE fs_pair_terms
 
    SUBROUTINE fs_coverage_check(w, radius, awp, miss, msg, stops)
-      ! The coverage of an inner free-surface mesh from FSInnerMesh.pnl (Task 7 review, minor 4). The outer integral starts
+      ! The coverage of an inner free-surface mesh from FSInnerMesh.pnl. The outer integral starts
       ! at the circle r = R, and a file mesh gets no sliver (fs_outer_sliver needs the polygon of the generated mesh), so
       ! the file mesh must reach R. With w the panel areas and awp the waterplane area of all bodies,
       !   miss = (pi R^2 - awp - sum w) / (pi R^2 - awp),
@@ -1324,7 +1324,7 @@ CONTAINS
 
    REAL(8) FUNCTION fs_outer_rfar(pw1, k1, pw2, k2, pw_psi, kernel)
       ! The radius where the outer integral turns from the real axis to the tail contours: the slowest evanescent mode of
-      ! all sets has decayed below 1e-12, e^{-k_1 (r_far - R)} = 1e-12 (the Task 2 reference: 5e-4 was left at 150 m beyond
+      ! all sets has decayed below 1e-12, e^{-k_1 (r_far - R)} = 1e-12 (the reference direct solve: 5e-4 was left at 150 m beyond
       ! R in 100 m of water), and r_far - R is at least 20 periods 2 pi / kappa_min of the slowest phase class of the tail:
       ! kappa = k_1 - k_2 + K always, -k_1 - k_2 + K with incident wave 1 (k1 > 0), k_1 + k_2 + K with incident wave 2.
       ! Only the classes that occur count (k_1 - k_2 - K, for one, never does; it tends to 0 in shallow water).
@@ -1447,7 +1447,7 @@ CONTAINS
       ! s = sign(kappa), t > 0, where e^{i kappa r} = e^{i kappa r_far} e^{-|kappa| t}:
       !   int_{r_far}^inf e^{i kappa r} G r dr = i s e^{i kappa r_far} int_0^inf e^{-|kappa| t} G(r) r dt,
       ! by Gauss-Laguerre of order NLAG, with the exponential factors of the Hankel functions taken out (pw_hankel_scaled),
-      ! as the Task 2 reference does. Checked against the real-axis integral in fs_outer_tail (r_far against 2 r_far).
+      ! as the reference direct solve does. Checked against the real-axis integral in fs_outer_tail (r_far against 2 r_far).
       !
       ! The sum frequency (kernel = KERNEL_SUM; R3 of the 7c-2 plan) [derived]. Field 2 now enters as it is, so its
       ! propagating part is a_2 H^(1)(k_2 r) ~ e^{+i k_2 r}, where the difference had conj(a_2) H^(2)(k_2 r) ~ e^{-i k_2 r};
@@ -1624,7 +1624,7 @@ CONTAINS
       ! |m| <= mg, n = 1..nev, r and theta about centre, k0 and kev(1:nev) the wave numbers at Omega = omega in depth h
       ! (Z_n(0) = 1). The pair arguments are those of fs_outer_pair (ordered pairs only, w1 > w2 and omega = w1 - w2 > 0;
       ! omega = 0 gives 0). No factor s_FS i Omega rho / g: the caller applies its own.
-      ! Contraction (ledger ruling F1): a field psi of partial waves pw_set a(m, n) on the circle is, on z = 0,
+      ! Contraction: a field psi of partial waves pw_set a(m, n) on the circle is, on z = 0,
       !   psi = sum_m [a(m, 0) H_m(k0 r) + sum_n a(m, n) K_m(kn R) K_m(kn r) / K_m(kn R)] e^{im theta}
       !       = sum_mn ap(m, n) B_mn,   ap(m, 0) = a(m, 0),   ap(m, n) = a(m, n) K_m(kn R)
       ! (the set_amplitudes form), so int psi Q_D dS = sum_mn ap(m, n) mom(m, n), and s_FS (i Omega rho / g) times it is
@@ -1702,7 +1702,7 @@ CONTAINS
       ! (phi_z = d phi, phi_zz = e phi on z = 0: d = k0 tanh k0 h and -k_n tan k_n h, e = k0^2 and -k_n^2), and the
       ! evanescent amplitudes at R, a(m, n) K_m(k_n R), with e^{k_n R} K_m(k_n R), so that the radial factor
       ! K_m(k_n r) / K_m(k_n R) = [e^x K_m](k_n r) / [e^x K_m](k_n R) e^{-k_n (r - R)} needs no K_m beyond 600 however far out
-      ! r is (review M3 of Task 5). Stops if the sets do not share the circle and depth, the psi sets their modes, or an
+      ! r is. Stops if the sets do not share the circle and depth, the psi sets their modes, or an
       ! incident wave number differs from that of its partial waves. kernel: KERNEL_DIFF or KERNEL_SUM (od%kernel); for
       ! the sum the tail amplitudes a2c of field 2 are its own, not conjugated (fs_outer_tail).
       REAL(8), INTENT(IN) :: w1, beta1, k1, w2, beta2, k2, g

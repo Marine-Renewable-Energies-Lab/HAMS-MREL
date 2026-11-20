@@ -1421,7 +1421,7 @@ CONTAINS
       ! that T_dir has the free-surface forcing. Stops if a free-surface field was not stored.
       ! With qtf_field = 1 the field points get phi_D of the body forcing only (direct_at_omega solves the free-surface
       ! part apart when both are present), as the header of QTF_Field.txt says; only the difference columns are kept there
-      ! (the sum rows of QTF_Field.txt are Task 5 of Phase 7c-2).
+      ! (the sum rows of QTF_Field.txt come from the second call below).
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       REAL(8), INTENT(IN) :: omega
@@ -1467,7 +1467,7 @@ CONTAINS
       END IF
       nd = SIZE(pd, 2)
       ns = SIZE(ps, 2)
-      ! Two calls of direct_at_omega with one factorisation (review of Task 4, fix round 1): first the difference columns,
+      ! Two calls of direct_at_omega with one factorisation: first the difference columns,
       ! exactly as without the sum (the call of 3f00f4d, so the same column blocks, ZGETRS and ZGEMM sizes and bits; MKL
       ! does not promise column p to be the same for another number of right sides), then the sum columns with
       ! factored = .TRUE. (the factors of the first call; with no difference pair the second call factors)

@@ -55,16 +55,16 @@ MODULE QTFDirectFS
    ! the waterline it carries the logarithm of the free-surface wave part and in finite depth the bottom images, so one
    ! point leaves errors of the order of (a / d)^2 of it (a the panel radius, d the distance): 1.7e-3 of r_in on the
    ! coarse default inner mesh of the 448-panel cylinder, away from the waterline as at it (test fs_rhs_inner_only with
-   ! one point, Task 3). With n from d / a (fs_remainder_order) it is 2.9e-7, about the accuracy of FINGREEN3D itself.
+   ! one point). With n from d / a (fs_remainder_order) it is 2.9e-7, about the accuracy of FINGREEN3D itself.
    !
    ! The outer part (beyond the inner mesh: the annulus, the tail and the sliver of fs_outer_moments): G(x_i, .) on z = 0
-   ! outside the circle R is a sum of partial waves (pw_green_modes, Graf's addition theorem, Task 1), so
+   ! outside the circle R is a sum of partial waves (pw_green_modes, Graf's addition theorem), so
    !    r_out(x_i) = sum_{m, n} a(m, n, i) mom(m, n)
-   ! with mom = int B_mn Q_D dS from fs_outer_moments and the amplitudes in the form of the contraction there (ledger ruling
-   ! F1, the set_amplitudes form of QTFFreeSurface): B_m0 = H_m(k0 r) e^{i m theta} with a(m, 0, i) = a_pw(m, 0), and
+   ! with mom = int B_mn Q_D dS from fs_outer_moments and the amplitudes in the form of the contraction there (the
+   ! set_amplitudes form of QTFFreeSurface): B_m0 = H_m(k0 r) e^{i m theta} with a(m, 0, i) = a_pw(m, 0), and
    ! B_mn = K_m(kn r) / K_m(kn R) e^{i m theta} with a(m, n, i) = a_pw(m, n) K_m(kn R), a_pw the amplitudes of
-   ! pw_green_modes(x_i). mom(m, n) pairs with a(m, n), same index (ruling F11: mom uses the coefficient q_{+m} of
-   ! e^{-i m theta} of Q_D, so that sum a mom is the integral; Task 2 test outer_moments_contract_green).
+   ! pw_green_modes(x_i). mom(m, n) pairs with a(m, n), same index (mom uses the coefficient q_{+m} of
+   ! e^{-i m theta} of Q_D, so that sum a mom is the integral; test outer_moments_contract_green).
    !
    ! Orders. The m-th Graf term at r >= R is at most of order (r_x / R)^m / m (A&S 9.3.1; I_m(a) / I_m(b) <= (a / b)^m
    ! for a < b, as I_m(x) / x^m increases), so mg = pw_green_mmax(r_max, R, DIRECT_FS_TOL), r_max the largest horizontal
@@ -72,7 +72,7 @@ MODULE QTFDirectFS
    ! A&S 9.7.1 and 9.7.2), and kn > (n - 1/2) pi / h (the roots of -Omega^2 / g = kn tan(kn h)), so the terms beyond n
    ! sum to at most e^{-kn d} / (1 - e^{-pi d / h}), d = R - r_max. nev is the smallest n with that below DIRECT_FS_TOL:
    !    nev = ceiling(L h / (pi d) + 1/2),   L = ln(1 / (DIRECT_FS_TOL (1 - e^{-pi d / h})))
-   ! It grows like 1 / d as the rows near the circle (a point at 0.9 R needed nev = 200, ledger ruling F7). The rows
+   ! It grows like 1 / d as the rows near the circle (a point at 0.9 R needed nev = 200). The rows
    ! nearest the circle (the waterline rows of a wall hull, or the lid points next to the waterline) set both. nev is
    ! capped where kn R exceeds PW_KR_MAX (pw_green_modes stops beyond), with a warning of the error left.
    ! pw_green_modes zeroes the orders whose H_{m+1}(k0 R) or K_{m+1}(kn R) overflow (long waves on small circles) and
@@ -80,9 +80,9 @@ MODULE QTFDirectFS
    ! not finite at those orders, so only |m| <= mcut is contracted (never Inf x 0). If mcut < mg, the outer part drops
    ! terms m > mcut, each at most q^m / m, q = r_max / R, so at most sum_{m > mcut} q^m / m <= q^(mcut + 1) /
    ! ((mcut + 1) (1 - q)) (geometric bound) of the leading terms (fs%cut_error). Above DIRECT_FS_TOL a warning states
-   ! that bound and the run goes on (ledger ruling F14): the loss is bounded and stated, and a stop at one low Omega would
+   ! that bound and the run goes on: the loss is bounded and stated, and a stop at one low Omega would
    ! end a long run. The bound is not small for every input: R close to the hull (q near 1) with a long wave (small
-   ! k0 R, low mcut) raises it (the review of Task 3 gives 3.4e-3 for R = 1.05 r_x, Omega = 0.01 rad/s in 15 m of
+   ! k0 R, low mcut) raises it (a measured case gives 3.4e-3 for R = 1.05 r_x, Omega = 0.01 rad/s in 15 m of
    ! water); the warning names the cure, a larger qtf_fs_radius.
    ! The sliver of fs_outer_moments lies between R cos(pi / np) and R, where the Graf series still converges for
    ! r_max < R cos(pi / np) at the slower rate (r_max / (R cos(pi / np)))^m; it covers a small fraction of the free

@@ -39,7 +39,7 @@ MODULE QTFDirect
    ! part in the plane). Only n x grad G enters, so the normal part does not matter.
    !
    ! Near panels, linear density. With one point per panel for the density c = (X x u) x n, the surface term converges
-   ! like h^0.65 at collocation points on S (measured, Phase 7a Task 2): grad_xi G ~ 1/rho^2 near x_i, so the linear
+   ! like h^0.65 at collocation points on S (measured): grad_xi G ~ 1/rho^2 near x_i, so the linear
    ! variation of c over the own panel and its neighbours carries an O(h) part that the centroid value drops. So on the
    ! panels that CALGREEN takes as near (within 50 panel sizes, the flag of the panel integrals) the Rankine part
    ! 1/r + 1/r1 is integrated against c linear on the panel, c(xi) = c_p + C_p (xi - xi_p): the zeroth moment as before,
@@ -643,7 +643,7 @@ CONTAINS
       END DO
       IF (PRESENT(seconds)) seconds = sec
       IF (PRESENT(fs)) THEN
-         ! The time of the free-surface forcing per Omega, for the cost of the moments on large runs (ledger ruling F12)
+         ! The time of the free-surface forcing per Omega, for the cost of the moments on large runs
          WRITE (*, '(a,F10.5,a,I0,a,F9.2,a,F9.2,a)') ' QTF direct free surface: Omega =', omega, ' rad/s, ', npair, &
             ' pairs, Q_D and outer moments', fsec(1), ' s, contraction', fsec(2), ' s'
       END IF
@@ -1078,7 +1078,7 @@ CONTAINS
       ! constructor, a vector subscript, SUM of an array expression) is a heap allocation, and the threads of
       ! direct_rhs_b2_block then wait on each other in the allocator. With this loop, rankine_moments and
       ! stored_panel_integrals written so, the B2 right side on 480 panels went from 0.9 s at both 1 and 4 threads to
-      ! 0.68 s and 0.34 s (Phase 7a Task 3). Outside it, xim (once per point) is an array constructor.
+      ! 0.68 s and 0.34 s. Outside it, xim (once per point) is an array constructor.
 
       xim = [x(1), x(2), -x(3)]
       out = (0D0, 0D0)

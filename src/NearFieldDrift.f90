@@ -60,7 +60,7 @@ CONTAINS
 
    PURE COMPLEX(8) FUNCTION pair_plus(f1, g1, f2, g2)
       ! Sum-frequency coefficient of the product f g for components 1 and 2: the part of Re(f(t)) Re(g(t)) at
-      ! e^{-i(omega_1 + omega_2) t} is Re[(pair_plus(1,2) + pair_plus(2,1)) a_1 a_2 e^{-i(omega_1 + omega_2) t}] (spec 5.4).
+      ! e^{-i(omega_1 + omega_2) t} is Re[(pair_plus(1,2) + pair_plus(2,1)) a_1 a_2 e^{-i(omega_1 + omega_2) t}].
       COMPLEX(8), INTENT(IN) :: f1, g1, f2, g2
 
       pair_plus = 0.25D0*(f1*g2 + f2*g1)
