@@ -55,3 +55,26 @@ The same steps for `q_oc4wfull_sym_free_L1_ext` (job file `run_oc4_ext.sbatch`, 
 and `q_volturnus_free_full_ext` (`run_volturnus_ext.sbatch`, inputs from `make_volturnus_case.py --fmax 2.50 --fs-panel
 1.25 --lid`): copy each case's `input/` to `run_roland/<case>/input/`, copy `md5sums_<case>.txt` and the job file to
 `run_roland/`, strip CR as above, then `sbatch` the job file. Both reuse the binary of section 2.
+
+Each case runs in its own folder, `run_roland/<case>/` (log.txt, time.txt, result.json, output/), with its Slurm log in
+`run_roland/logs/` (`oc4_ext_<job>.log`, `volturnus_ext_<job>.log`). fat_genoa allows up to 5 days, so the limits of
+22 h and 30 h fit. The commands (laptop, Git Bash, from the repository root):
+
+```
+C=/c/Users/vraghavan1/Downloads/MREL_HAMS-MREL/validation-runs/roland-benchmark/cases
+J=validation-runs/roland-benchmark/snellius
+R=/home/vraghavan/HAMS_drift_study/run_roland
+for c in q_oc4wfull_sym_free_L1_ext q_volturnus_free_full_ext; do
+  MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no vraghavan@snellius.surf.nl "mkdir -p $R/logs $R/$c/input"
+  MSYS_NO_PATHCONV=1 scp $C/$c/input/* vraghavan@snellius.surf.nl:$R/$c/input/
+  MSYS_NO_PATHCONV=1 scp $J/md5sums_$c.txt vraghavan@snellius.surf.nl:$R/
+done
+MSYS_NO_PATHCONV=1 scp $J/run_oc4_ext.sbatch $J/run_volturnus_ext.sbatch vraghavan@snellius.surf.nl:$R/
+MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no vraghavan@snellius.surf.nl \
+    "cd $R && sed -i 's/\r\$//' md5sums_q_*_ext.txt run_*_ext.sbatch && \
+     (cd q_oc4wfull_sym_free_L1_ext/input && md5sum -c ../../md5sums_q_oc4wfull_sym_free_L1_ext.txt) && \
+     (cd q_volturnus_free_full_ext/input && md5sum -c ../../md5sums_q_volturnus_free_full_ext.txt)"
+```
+
+Submit (only after the approval): `cd /home/vraghavan/HAMS_drift_study/run_roland && sbatch run_oc4_ext.sbatch && sbatch
+run_volturnus_ext.sbatch`.

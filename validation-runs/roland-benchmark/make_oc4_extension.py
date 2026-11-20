@@ -52,7 +52,11 @@ def main(argv):
     mm.write_mesh(os.path.join(out, "WaterPlaneMesh.pnl"), lid, title="Waterplane Mesh File")
     for name in os.listdir(out):
         path = os.path.join(out, name)
-        open(path, "wb").write(open(path, "rb").read().replace(b"\r\n", b"\n"))
+        data = open(path, "rb").read().replace(b"\r\n", b"\n")   # read first: opening for writing empties the file
+        open(path, "wb").write(data)
+    empty = [name for name in os.listdir(out) if os.path.getsize(os.path.join(out, name)) == 0]
+    if empty:
+        raise ValueError("empty input files: " + ", ".join(empty))
     print("hull: %d panels; %d waterline loops:" % (len(hull.panels), len(loops)))
     for pts, (x, y, r) in loops:
         print("  centre (%.3f, %.3f), mean radius %.3f m, %d nodes" % (x, y, r, len(pts)))
