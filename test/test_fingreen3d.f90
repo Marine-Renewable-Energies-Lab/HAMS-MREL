@@ -11,12 +11,12 @@ module test_fingreen3d
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use FinGreen3D_Open, only : FINGREEN3D_R, LINTON_SCALED, PIDCOCK
   use direct_sum_green_mod, only : direct_sum_green
+  use Const_mod, only : GRAV => G
   implicit none
   private
   public :: collect_fingreen3d
 
   integer, parameter :: NK = 200
-  real(8), parameter :: GRAV = 9.807d0
   real(8), parameter :: OMEGAS(3) = [0.3d0, 0.8d0, 1.5d0]
   real(8), parameter :: DEPTHS(2) = [70d0, 150d0]
 
