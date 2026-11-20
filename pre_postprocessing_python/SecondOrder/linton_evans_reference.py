@@ -212,12 +212,18 @@ EXACT_NOTE = ("Exact: the multiple-scattering theory of Linton & Evans (1990), J
               "theorem (1.4e-15), near-field against far-field drift (1.7e-15) and Kim (1993), Fig. 3 (within 0.0011).")
 
 
+NOTATION_NOTE = ("Notation: modes 1 to 6 are surge, sway, heave, roll, pitch and yaw. X_i is the exciting force or moment "
+                 "in mode i, F_i (with a bar) the mean drift load in mode i, and a superscript (k) the cylinder k. "
+                 "X_beta = X_1 cos beta + X_2 sin beta and F_beta = F_1 cos beta + F_2 sin beta are the components along "
+                 "the wave; 'single' is one cylinder alone.")
+
+
 def exact_note(fig):
-    """Add EXACT_NOTE under the figure, wrapped to its width (saved with bbox_inches = tight, so it is kept)."""
+    """Add EXACT_NOTE and NOTATION_NOTE under the figure, wrapped to its width (saved with bbox_inches = tight)."""
     import textwrap
     width = int(fig.get_size_inches()[0] * 13)
-    fig.text(0.01, -0.005, "\n".join(textwrap.wrap(EXACT_NOTE, width)), fontsize=7.5, va="top", ha="left",
-             color="0.25")
+    text = "\n".join(textwrap.wrap(EXACT_NOTE, width) + textwrap.wrap(NOTATION_NOTE, width))
+    fig.text(0.01, -0.005, text, fontsize=7.5, va="top", ha="left", color="0.25")
 
 
 
@@ -936,6 +942,14 @@ ERRORS = (("X forces", "X_force_err"), ("X moments", "X_moment_err"), ("near-fie
           ("near-field M", "near_M_err"), ("far-field F", "far_err"), ("far-field M_z", "Mz_err"), ("elevation", "eta_err"))
 
 
+# The legend of the convergence plot: each error of ERRORS with its mode indices (superscript (k): per cylinder)
+ERROR_SYMBOLS = {"X_force_err": r"$X_1^{(k)}, X_2^{(k)}$", "X_moment_err": r"$X_4^{(k)}, X_5^{(k)}$",
+                 "near_F_err": r"near-field $\bar F_1^{(k)}, \bar F_2^{(k)}$",
+                 "near_M_err": r"near-field $\bar F_4^{(k)}, \bar F_5^{(k)}$",
+                 "far_err": r"far-field $\bar F_1, \bar F_2$ (whole array)", "Mz_err": r"far-field $\bar F_6$ (whole array)",
+                 "eta_err": r"elevation $\eta$ (complex)"}
+
+
 def case_folders(results, prefix="l_square_diff_"):
     """(name, Wamit_format folder) of the cases under RESULTS whose name starts with prefix and that have output."""
     out = []
@@ -998,17 +1012,18 @@ def plot(results, out, ref_rows):
                     ax = axes[r, j]
                     if kind == "X":
                         ax.plot(ka, np.abs(X[:, j, idx - 1]), "k-", lw=1.2, label=EXACT_LEG)
-                        label = "|X_%d| / (rho g A) [m^2]" % idx
+                        label = r"$|X_%d^{(k)}|\,/\,(\rho g A)$ [m$^2$]" % idx
                     else:
                         ax.plot(ka, D[:, j, idx - 1], "k-", lw=1.2, label=EXACT_LEG)
                         ax.axhline(0.0, color="0.6", lw=0.6)
-                        label = "mean F_%s / (rho g A^2) [m]" % "xy"[idx - 1]
+                        label = r"$\bar F_%d^{(k)}\,/\,(\rho g A^2)$ [m]" % idx
                     for mi, (name, data) in enumerate(hams):
                         table = data[0] if kind == "X" else data[1]
                         xs, ys = _hams_points(table, 6 * j + idx, heading, h, a)
                         ax.plot(xs, [abs(v) for v in ys] if kind == "X" else ys, markers[mi % 4], ms=4, mfc="none",
                                 label=name)
-                    ax.set_title("cylinder %d at (%g, %g)" % (j + 1, arr.centres[j, 0], arr.centres[j, 1]), fontsize=9)
+                    ax.set_title("k = %d: cylinder at (%g, %g), %s" % (j + 1, arr.centres[j, 0], arr.centres[j, 1],
+                                 (r"$|X_%d^{(%d)}|$" if kind == "X" else r"$\bar F_%d^{(%d)}$") % (idx, j + 1)), fontsize=9)
                     if r == 1:
                         ax.set_xlabel("k a")
                     if j == 0:
@@ -1034,7 +1049,7 @@ def plot(results, out, ref_rows):
                 xs, ys = _hams_points(data[2], r + 1, heading, h, a)
                 ax.plot(xs, ys, markers[mi % 4], ms=4, mfc="none", label=name + " far-field")
             ax.set_xlabel("k a")
-            ax.set_ylabel("mean F_%s / (rho g A^2) [m]" % "xy"[r])
+            ax.set_ylabel(r"$\bar F_%d\,/\,(\rho g A^2)$ [m], whole array" % (r + 1))
             ax.grid(alpha=0.3)
         axes[0].legend(fontsize=7)
         fig.suptitle("Four bottom-mounted cylinders, heading %g deg: mean drift of the array (MeanDriftMomentum.8)" % heading)
@@ -1069,7 +1084,7 @@ def plot_convergence(results, out, ref_rows):
         xs = [dc.panels_of(cases[name]) for name in named if worst(rows, name, key) is not None]
         ys = [worst(rows, name, key) for name in named if worst(rows, name, key) is not None]
         if xs:
-            ax.loglog(xs, ys, "o-", label=label)
+            ax.loglog(xs, ys, "o-", label=ERROR_SYMBOLS.get(key, label))
     x = np.array([dc.panels_of(cases[name]) for name in named], dtype=float)
     ax.loglog(x, 0.1 * (x / x[0]) ** -1.0, "k:", lw=1, label="slope of second order (error ~ 1/panels)")
     ax.set_xlabel("panels in all (four cylinders)")
@@ -1127,16 +1142,16 @@ def plot_reference(out):
         ones = [Solution(single, w, math.radians(heading), order=LOAD_ORDER) for w in omegas]
         ka = np.array([s.k * arr.radii[0] for s in sols])
         for j in range(len(arr)):
-            axes[0, c].plot(ka, [abs(exciting_loads(s, j)[0]) for s in sols], label="cylinder %d" % (j + 1))
-            axes[1, c].plot(ka, [near_field_drift(s, j)[0] for s in sols], label="cylinder %d" % (j + 1))
+            axes[0, c].plot(ka, [abs(exciting_loads(s, j)[0]) for s in sols], label="k = %d" % (j + 1))
+            axes[1, c].plot(ka, [near_field_drift(s, j)[0] for s in sols], label="k = %d" % (j + 1))
         axes[0, c].plot(ka, [abs(exciting_loads(s, 0)[0]) for s in ones], "k--", lw=1, label="one cylinder alone")
         axes[1, c].plot(ka, [near_field_drift(s, 0)[0] for s in ones], "k--", lw=1, label="one cylinder alone")
         axes[0, c].set_title("heading %g deg" % heading)
         axes[1, c].set_xlabel("k a")
         for r in range(2):
             axes[r, c].grid(alpha=0.3)
-    axes[0, 0].set_ylabel("|X_1| / (rho g A) [m^2]")
-    axes[1, 0].set_ylabel("mean F_x / (rho g A^2) [m]")
+    axes[0, 0].set_ylabel(r"$|X_1^{(k)}|\,/\,(\rho g A)$ [m$^2$]")
+    axes[1, 0].set_ylabel(r"$\bar F_1^{(k)}\,/\,(\rho g A^2)$ [m]")
     axes[0, 0].legend(fontsize=8)
     fig.suptitle("Exact loads per cylinder in the square array, against one cylinder alone (MacCamy-Fuchs)")
     fig.tight_layout()
@@ -1148,12 +1163,12 @@ def plot_reference(out):
     fx, fy = kim_fig3()
     fig, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
     n = np.arange(1, 20)
-    for ax, ref, pub, label in ((axes[0], fx, KIM_FIG3_X, "|F_x|"), (axes[1], fy, KIM_FIG3_Y, "|F_y|")):
+    for ax, ref, pub, label in ((axes[0], fx, KIM_FIG3_X, r"$|X_1^{(n)}|$"), (axes[1], fy, KIM_FIG3_Y, r"$|X_2^{(n)}|$")):
         ax.plot(n, pub, "o", mfc="none", ms=9, label="Kim (1993), Fig. 3, digitised")
         ax.plot(n, ref, "k+", ms=9, label=EXACT_LEG)
-        ax.set_ylabel(label + " / (pi rho g a h A)")
+        ax.set_ylabel(label + r"$\,/\,(\pi \rho g a h A)$")
         ax.grid(alpha=0.3)
-    axes[1].set_xlabel("cylinder number")
+    axes[1].set_xlabel("cylinder number n")
     axes[0].legend(fontsize=8)
     fig.suptitle("19 bottom-mounted cylinders in a row, spacing 4a, h = 12a, k a = 0.5, heading 45 deg\n"
                  "largest difference %.4f (a marker is about 0.0015 high)"
@@ -1227,12 +1242,12 @@ def plot_linton_evans(results, out):
         ax2.plot(xd, yd1, markers[mi % 4], ms=5, color="C%d" % mi, label=label)
         ax2.plot(xd, yd3, markers[mi % 4], ms=5, mfc="none", color="C%d" % mi)
     ax.set_xlabel("k a")
-    ax.set_ylabel("f / f_1, total mean drift along the wave")
+    ax.set_ylabel(r"$\sum_k \bar F_\beta^{(k)}\,/\,\bar F_\beta^{\mathrm{single}}$")
     ax.set_title("total drift (grey: near-trapping band)", fontsize=10)
     ax.grid(alpha=0.3)
     ax.legend(fontsize=7)
     ax2.set_xlabel("k a")
-    ax2.set_ylabel("|X . e_beta| / |F|")
+    ax2.set_ylabel(r"$|X_\beta^{(k)}|\,/\,|X_\beta^{\mathrm{single}}|$")
     ax2.set_title("first-order force on the diagonal cylinders (HAMS: filled lee, open weather)", fontsize=10)
     ax2.grid(alpha=0.3)
     ax2.legend(fontsize=7)
@@ -1337,8 +1352,10 @@ def plot_published(results, out):
             ax.plot(*zip(*rest), "o", ms=4, color="0.6", mfc="none", label="digitised, left out (crossing)")
 
     for fig_name, panels, ylabel in (
-            ("Fig. 2", ["cylinder 1", "cylinder 2", "cylinder 4"], "|X/F|"),
-            ("Fig. 3", ["total", "cylinder 1", "cylinder 2", "cylinder 4"], "f / f_1")):
+            ("Fig. 2", ["cylinder 1", "cylinder 2", "cylinder 4"],
+             r"$|X_\beta^{(k)}|\,/\,|X_\beta^{\mathrm{single}}|$"),
+            ("Fig. 3", ["total", "cylinder 1", "cylinder 2", "cylinder 4"],
+             r"$\bar F_\beta^{(k)}\,/\,\bar F_\beta^{\mathrm{single}}$")):
         fig, axes = plt.subplots(len(panels), 1, figsize=(10, 3.0 * len(panels)), sharex=True)
         for ax, curve in zip(axes, panels):
             if curve == "total":
@@ -1346,10 +1363,11 @@ def plot_published(results, out):
             else:
                 j = LE_TO_HERE[curve]
                 if fig_name == "Fig. 2":
-                    ax.plot(kas, X[:, j], "k-", lw=1.2, label=EXACT_LEG + ", |X . e_beta|/|F|")
+                    ax.plot(kas, X[:, j], "k-", lw=1.2, label=EXACT_LEG + r", $|X_\beta^{(k)}|/|X_\beta^{\mathrm{single}}|$")
                     if curve in ("cylinder 1", "cylinder 3"):
                         ax.plot(kas, Xm[:, j], "k--", lw=1.0,
-                                label="same theory, (|X_x| cos b + |X_y| sin b)/|F|, the paper's form off the diagonal")
+                                label=r"same theory, $(|X_1^{(k)}| \cos\beta + |X_2^{(k)}| \sin\beta)/|X_\beta^{\mathrm{single}}|$, "
+                                      "the paper's form off the diagonal")
                 else:
                     ax.plot(kas, D[:, j], "k-", lw=1.2, label=EXACT_LEG)
             published(ax, fig_name, curve)
@@ -1365,8 +1383,9 @@ def plot_published(results, out):
             # the axes of the paper, extended to show the exact near-trapping extremes (2.27 in Fig. 2, -2.34 in Fig. 3);
             # f_1 goes to zero as k a goes to zero, so f/f_1 grows without bound there
             ax.set_ylim(*((0.0, 2.4) if fig_name == "Fig. 2" else (-2.5, 5.0)))
-            ax.set_ylabel(ylabel)
-            ax.set_title(curve, fontsize=10, loc="left")
+            ax.set_ylabel(r"$\sum_k \bar F_\beta^{(k)}\,/\,\bar F_\beta^{\mathrm{single}}$" if curve == "total" else ylabel)
+            ax.set_title("total (all four cylinders)" if curve == "total" else
+                         "k = %s (%s of the paper)" % (curve.split()[-1], curve), fontsize=10, loc="left")
             ax.grid(alpha=0.3)
             ax.set_xlim(0.0, 3.25)
         axes[0].legend(fontsize=7, ncol=2, loc="upper left" if fig_name == "Fig. 2" else "lower right")
