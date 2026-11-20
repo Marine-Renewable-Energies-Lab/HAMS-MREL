@@ -8,6 +8,7 @@ module test_control_surface_mesh
                                  free_surface_strips, build_fs_inner, hull_radius
   use QTFField, only : body_winding
   use second_order_fixtures, only : make_cylinder, make_two_bodies, set_panel
+  use FirstOrderState, only : expand_images, image_signs
   implicit none
   private
 
@@ -46,6 +47,7 @@ subroutine collect_control_surface_mesh(testsuite)
     new_unittest("fs_inner_panel_key", test_fs_inner_panel_key), &
     new_unittest("fs_inner_panel_too_large_stops", test_fs_inner_panel_too_large_stops), &
     new_unittest("fs_inner_hull_radius", test_fs_inner_hull_radius), &
+    new_unittest("fs_inner_hull_radius_images", test_fs_inner_hull_radius_images), &
     new_unittest("fs_inner_file_two_bodies", test_fs_inner_file_two_bodies), &
     new_unittest("fs_inner_file_in_waterplane_stops", test_fs_inner_file_in_waterplane_stops), &
     new_unittest("fs_two_bodies_generated_stops", test_fs_two_bodies_generated_stops), &
@@ -936,6 +938,74 @@ subroutine test_fs_inner_hull_radius(error)
   if (allocated(error)) return
   call check(error, radius >= 15d0 - 1d-9, "automatic R clears the hull: >= 1.5 r_hull")
 end subroutine test_fs_inner_hull_radius
+
+!> The setup check that the panels route (qtf_fs_circle = panels) relies on. pw_from_panels stops when a panel source
+!> (images included) is not inside the circle, and it runs in the free-surface pass of each frequency, after the
+!> first-order solve. build_fs_inner checks R at setup against every hull node, symmetry images included (hull_radius over
+!> the expanded mesh). Every source is a panel centroid, a convex combination of the panel's nodes, so its horizontal
+!> distance from the centre is at most r_hull, and a circle that passes setup never stops pw_from_panels. Half of the
+!> flared cylinder of fs_inner_hull_radius (nodes below z = -1 at twice the radius, 5 -> 10 m; base panels y > 0, the
+!> image y -> -y by expand_images, as a HAMS half mesh with ISY = 1): R = 9.99 m, between the waterline radius and the
+!> hull radius, stops with the hull-radius message; R = 10.01 m passes, and every source as circle_from_panels places it
+!> (base centroid mirrored by image_signs) lies inside R, the farthest at about 9.95 m.
+subroutine test_fs_inner_hull_radius_images(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: full, mesh
+  type(surface_geom) :: geom
+  type(so_options) :: opts
+  type(cs_points) :: pts
+  real(8) :: centre(2), radius, rmax, s(3)
+  real(8) :: xr(3, 1)
+  integer, allocatable :: base(:), body_b(:)
+  integer :: i, nb
+  logical :: ok
+  character(len=:), allocatable :: msg
+
+  call delete_inner_file()
+  call make_cylinder(5d0, 3d0, 32, 2, 2, full, .true.)
+  do i = 1, full%nnode
+    if (full%xnode(3, i) < -1d0) full%xnode(1:2, i) = 2d0*full%xnode(1:2, i)
+  end do
+  ! Centroids of the flared panels: the mean of their nodes (inside the panel, as the area centroid of HAMS is)
+  do i = 1, full%n
+    full%xc(:, i) = sum(full%xnode(:, full%ncon(1:full%ncn(i), i)), dim=2)/full%ncn(i)
+  end do
+  base = pack([(i, i = 1, full%n)], full%xc(2, :) > 0d0)
+  nb = size(base)
+  call check(error, 2*nb == full%n, "the half mesh holds half of the panels")
+  if (allocated(error)) return
+  allocate (body_b(nb))
+  body_b = 1
+  xr = 0d0
+  call expand_images(transpose(full%xc(:, base)), transpose(full%nrm(:, base)), transpose(full%nj(:, base)), &
+                     full%area(base), full%psize(base), transpose(full%xnode), full%ncn(base), &
+                     transpose(full%ncon(:, base)), body_b, xr, 0, 1, 2, mesh)
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call check(error, ok, "geometry: "//msg)
+  if (allocated(error)) return
+  call check(error, abs(hull_radius(mesh, [0d0, 0d0]) - 10d0) < 1d-12, "half flared hull with image: hull radius 10")
+  if (allocated(error)) return
+
+  opts%qtf_fs_radius = 9.99d0
+  call build_fs_inner(mesh, geom, opts, -1d0, '.', pts, centre, radius, ok, msg, omega_max=1.5d0)
+  call check(error, .not. ok, "R = 9.99 m inside the hull radius 10 m stops at setup")
+  if (allocated(error)) return
+  call check(error, index(msg, 'hull radius') > 0 .and. index(msg, 'qtf_fs_radius') > 0, "message: "//msg)
+  if (allocated(error)) return
+
+  opts%qtf_fs_radius = 10.01d0
+  call build_fs_inner(mesh, geom, opts, -1d0, '.', pts, centre, radius, ok, msg, omega_max=1.5d0)
+  call check(error, ok, "R = 10.01 m clears the hull: "//msg)
+  if (allocated(error)) return
+  rmax = 0d0
+  do i = 1, mesh%n
+    s = image_signs(mesh%image(i), 0, 1)
+    rmax = max(rmax, norm2(s(1:2)*mesh%xc(1:2, mesh%base(i)) - centre))
+  end do
+  call check(error, rmax < radius, "every panel source, images included, is inside the circle")
+  if (allocated(error)) return
+  call check(error, rmax > 9.9d0, "the sources reach the flare (the check is not trivial)")
+end subroutine test_fs_inner_hull_radius_images
 
 !> Every point of the generated inner mesh is outside the waterplane (winding number of body_winding, Phase 5b) and inside
 !> R, here for a box hull with the automatic R = r_wl + max(0.5 r_wl, 2 x largest hull panel size).
