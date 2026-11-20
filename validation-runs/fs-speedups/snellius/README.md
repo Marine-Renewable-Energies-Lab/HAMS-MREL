@@ -1,10 +1,13 @@
 # fs-speedups on Snellius: G1 item 3 and the OC4 comparison (cluster-side steps)
 
+Placeholders: `<user>` is the Snellius login, `<account>` the project account of `#SBATCH -A`, `<run root>` the folder
+of the runs on Snellius and `<laptop root>` the folder that holds this checkout on the laptop; set them before use.
+
 Nothing here has been submitted. Submit only after the cost is approved (COST.md: about 366 core-hours expected, 852 at
 most). Login by key only; in Git Bash every ssh/scp line needs the `MSYS_NO_PATHCONV=1` prefix (paths start with /).
 
-- Run root: `/home/vraghavan/HAMS_drift_study/run_fsspeed` (new).
-- Repository: `/home/vraghavan/HAMS_drift_study/repo_fsspeed` (new), a clone of a git bundle of feature/qtf-fs-speedups.
+- Run folder: `<run root>/run_fsspeed` (new).
+- Repository: `<run root>/repo_fsspeed` (new), a clone of a git bundle of feature/qtf-fs-speedups.
   The job scripts are run from the clone (`repo_fsspeed/validation-runs/fs-speedups/snellius/...`), so they arrive with
   Unix line endings and need no scp of their own. build.sbatch stops unless the source equals that of 3af6cf8.
 - Inputs of the OC4 run: those of the old OC4 run (code at 22086da), already on Snellius in `run_oc4wsum/q_oc4wfull_sym_indsum_free_L0/input`
@@ -29,7 +32,7 @@ other items of the branch are on by default (field_deep_kh = 10, psi reuse, the 
 ## 1. Bundle (laptop, Git Bash)
 
 ```
-cd /c/Users/vraghavan1/Downloads/MREL_HAMS-MREL
+cd <laptop root>
 mkdir -p validation-runs/fs-speedups/xfer
 git -C HAMS-MREL-fs-speed bundle create ../validation-runs/fs-speedups/xfer/fsspeed.bundle feature/qtf-fs-speedups
 md5sum validation-runs/fs-speedups/xfer/fsspeed.bundle
@@ -38,11 +41,11 @@ md5sum validation-runs/fs-speedups/xfer/fsspeed.bundle
 ## 2. Folders, bundle and clone (Snellius)
 
 ```
-MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no vraghavan@snellius.surf.nl \
-    'mkdir -p /home/vraghavan/HAMS_drift_study/run_fsspeed/logs /home/vraghavan/HAMS_drift_study/xfer_fsspeed'
+MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no <user>@snellius.surf.nl \
+    'mkdir -p <run root>/run_fsspeed/logs <run root>/xfer_fsspeed'
 MSYS_NO_PATHCONV=1 scp validation-runs/fs-speedups/xfer/fsspeed.bundle \
-    vraghavan@snellius.surf.nl:/home/vraghavan/HAMS_drift_study/xfer_fsspeed/
-MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no vraghavan@snellius.surf.nl 'cd /home/vraghavan/HAMS_drift_study && \
+    <user>@snellius.surf.nl:<run root>/xfer_fsspeed/
+MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no <user>@snellius.surf.nl 'cd <run root> && \
     md5sum xfer_fsspeed/fsspeed.bundle && \
     git clone -b feature/qtf-fs-speedups xfer_fsspeed/fsspeed.bundle repo_fsspeed && git -C repo_fsspeed log -2 --oneline && \
     ls run_oc4wsum/q_oc4wfull_sym_indsum_free_L0/input run_oc4wsum/q_oc4wfull_sym_indsum_free_L0/result.json'
@@ -53,7 +56,7 @@ MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no vraghavan@s
 ## 3. Submit (only after the approval)
 
 ```
-cd /home/vraghavan/HAMS_drift_study/repo_fsspeed/validation-runs/fs-speedups/snellius
+cd <run root>/repo_fsspeed/validation-runs/fs-speedups/snellius
 B=$(sbatch --parsable build.sbatch)
 sbatch --dependency=afterok:$B g1_item3/run_sharp.sbatch
 sbatch --dependency=afterok:$B g1_item3/run_round.sbatch
@@ -71,15 +74,15 @@ end). Cost check afterwards: `sacct -j <ids> -X --format=JobID,JobName,Elapsed,N
 Copy back into `validation-runs/fs-speedups/snellius/results/` (outside git: the outputs are large):
 
 ```
-MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no vraghavan@snellius.surf.nl 'cd /home/vraghavan/HAMS_drift_study/run_fsspeed && \
+MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no <user>@snellius.surf.nl 'cd <run root>/run_fsspeed && \
     tar -czf fsspeed_back.tgz g1_samples/*/log.txt g1_samples/*/result.json g1_samples/*/time.txt g1_samples/*/output/Wamit_format \
     g1_panels/*/log.txt g1_panels/*/result.json g1_panels/*/time.txt g1_panels/*/output/Wamit_format \
     q_oc4wfull_sym_indsum_free_L0_fsspeed/log.txt q_oc4wfull_sym_indsum_free_L0_fsspeed/result.json \
     q_oc4wfull_sym_indsum_free_L0_fsspeed/time.txt q_oc4wfull_sym_indsum_free_L0_fsspeed/output/Wamit_format \
     q_oc4wfull_sym_indsum_free_L0_fsspeed/compare_oc4.txt'
-MSYS_NO_PATHCONV=1 scp vraghavan@snellius.surf.nl:/home/vraghavan/HAMS_drift_study/run_fsspeed/fsspeed_back.tgz \
-    /c/Users/vraghavan1/Downloads/MREL_HAMS-MREL/validation-runs/fs-speedups/xfer/
-cd /c/Users/vraghavan1/Downloads/MREL_HAMS-MREL
+MSYS_NO_PATHCONV=1 scp <user>@snellius.surf.nl:<run root>/run_fsspeed/fsspeed_back.tgz \
+    <laptop root>/validation-runs/fs-speedups/xfer/
+cd <laptop root>
 mkdir -p validation-runs/fs-speedups/results && tar -xzf validation-runs/fs-speedups/xfer/fsspeed_back.tgz -C validation-runs/fs-speedups/results
 V=validation-runs; S=HAMS-MREL-fs-speed/validation-runs/fs-speedups/snellius
 python -I $S/g1_item3/g1_compare.py $V/fs-speedups/results HAMS-MREL-fs-speed \
@@ -115,7 +118,7 @@ FS parts against the exact FS, max / median %, difference kernel FS_inner + FS_o
 The difference totals stay far off (fixed F_z 15.8 / 11.4 %) because of the quadratic part .10d (20.8 / 15.0 % on its own),
 which is the same in both routes.
 
-G1 rule (spec G1): item 3 becomes the default only if no quantity of the panels runs is worse than the samples runs by
+G1 rule (the accuracy gate, ../gate/G1_table.md): item 3 becomes the default only if no quantity of the panels runs is worse than the samples runs by
 more than the larger of 0.5 percentage points and 10 % of the samples error, against the exact reference. Read the FS rows
 and the change column first: the totals carry the route-independent quadratic error, whose large values widen the 10 %
 margin.

@@ -892,7 +892,7 @@ subroutine test_green_modes_cut(error)
 end subroutine test_green_modes_cut
 
 ! ---------------------------------------------------------------------------------------------- source modes (Graf)
-!> pw_source_modes (spec D3 of the free-surface speed-ups): the partial waves of G(x_s, .) and of n . grad_{x_s} G(x_s, .)
+!> pw_source_modes (item 3 of the field-pass speed-ups): the partial waves of G(x_s, .) and of n . grad_{x_s} G(x_s, .)
 !> for a source x_s inside the circle, evaluated by pw_eval_point at 12 angles on r = 1.2 R, z = 0 and -10 m (the circle and
 !> depth of green_modes_match_fingreen, h = 50 m, omega = 0.3 rad/s, nev = 80, mmax = pw_green_mmax(r_s, 1.2 R, 1e-12)), for
 !> two sources off the axis. Each Graf form is pinned on its own, relative to the largest |G| (|n . grad G|) there:

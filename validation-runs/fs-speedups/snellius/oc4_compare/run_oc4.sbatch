@@ -6,8 +6,8 @@
 #SBATCH --cpus-per-task 24
 #SBATCH --mem=32G
 #SBATCH -t 9:00:00
-#SBATCH -o /home/vraghavan/HAMS_drift_study/run_fsspeed/logs/oc4_%j.log
-#SBATCH -A tdsei3290
+#SBATCH -o <run root>/run_fsspeed/logs/oc4_%j.log
+#SBATCH -A <account>
 # The OC4 WAMIT-model sum case of the old run (q_oc4wfull_sym_indsum_free_L0: qtf = 2, qtf_terms = full, 5022 hull panels,
 # FSInnerMesh.pnl with 4044 inner points, depth 200 m) with every item of the fs-speedups branch at its intended default:
 # field_deep_kh at its default (10, no key), psi reuse and the threaded mode check (always on), qtf_fs_circle = panels
@@ -21,7 +21,7 @@ module load intel/2024a
 ulimit -s unlimited
 export OMP_NUM_THREADS=24
 export OMP_STACKSIZE=1G
-R=/home/vraghavan/HAMS_drift_study
+R="<run root>"
 RUN=$R/run_fsspeed
 REPO=$R/repo_fsspeed
 JOBS=$REPO/validation-runs/fs-speedups/snellius

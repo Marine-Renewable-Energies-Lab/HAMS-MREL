@@ -122,8 +122,8 @@ def grid(out, kernel="sum"):
 
 
 def grid_psi(out, kernel="sum"):
-    """The psi data the source route of the inner integral needs on the grid of grid(kernel) (spec D2 of the free-surface
-    speed-ups: phi_zz removed by Green's theorem in the plane): grad_h psi_k at the grid points (psi_k = P(r) cos(m theta),
+    """The psi data the source route of the inner integral needs on the grid of grid(kernel) (item 2 of the field-pass
+    speed-ups in docs/developer_documentation.md: phi_zz removed by Green's theorem in the plane): grad_h psi_k at the grid points (psi_k = P(r) cos(m theta),
     so grad psi = D cos e_r - (m P / r) sin e_theta, P and D of _z0_modal), and psi_k on the two edges of the annulus,
     r = a (the waterline) and r = a + 5 m, at the grid's angles with its weights times r (the line element r dtheta).
     'GRIDPSI n' then n lines 'Re Im of d_x psi, d_y psi' for k = 1, 3, 5 in the grid's order; 'EDGE r n' then n lines

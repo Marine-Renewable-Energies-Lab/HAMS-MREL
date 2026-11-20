@@ -6,8 +6,8 @@
 #SBATCH --cpus-per-task 24
 #SBATCH --mem=32G
 #SBATCH -t 0:30:00
-#SBATCH -o /home/vraghavan/HAMS_drift_study/run_fsspeed/logs/build_%j.log
-#SBATCH -A tdsei3290
+#SBATCH -o <run root>/run_fsspeed/logs/build_%j.log
+#SBATCH -A <account>
 # The HAMS binary of the fs-speedups branch (feature/qtf-fs-speedups) for the G1 item-3 runs and the OC4 comparison.
 # repo_fsspeed is a clone of the git bundle of the branch (README.md, section 2). The source must be that of 3af6cf8 (the
 # commits after it change docs and validation-runs only): the job stops otherwise. Modules, flags and file list as
@@ -19,7 +19,7 @@ module load 2024
 module load intel/2024a
 ulimit -s unlimited
 set -e
-R=/home/vraghavan/HAMS_drift_study
+R="<run root>"
 REPO=$R/repo_fsspeed
 RUN=$R/run_fsspeed
 C1=3af6cf85b743a1c7e8d15eacadc0f1f302ac6ca2

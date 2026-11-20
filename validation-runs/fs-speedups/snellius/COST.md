@@ -1,6 +1,6 @@
 # Cost of the fs-speedups Snellius jobs (G1 item 3 and the OC4 comparison)
 
-Nothing here has been submitted. fat_genoa, account tdsei3290, 24 CPUs per job (the 24-CPU billing minimum), 32G (below
+Nothing here has been submitted. fat_genoa, account <account>, 24 CPUs per job (the 24-CPU billing minimum), 32G (below
 the memory that would be billed as more CPUs). Core-hours = wall time x 24 CPUs. Expected times come from the measured
 times of the same cases in earlier jobs (sacct and result.json); the maximum is the time limit x 24.
 

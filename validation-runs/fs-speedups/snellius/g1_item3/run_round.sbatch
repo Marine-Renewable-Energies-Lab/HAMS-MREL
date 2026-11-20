@@ -6,9 +6,9 @@
 #SBATCH --cpus-per-task 24
 #SBATCH --mem=32G
 #SBATCH -t 1:00:00
-#SBATCH -o /home/vraghavan/HAMS_drift_study/run_fsspeed/logs/g1_round_%A_%a.log
+#SBATCH -o <run root>/run_fsspeed/logs/g1_round_%A_%a.log
 #SBATCH --array=1-2%2
-#SBATCH -A tdsei3290
+#SBATCH -A <account>
 # G1 item 3 (qtf_fs_circle = panels against samples), round m2 case of Phase 7c-2 (qtf = 3: sum and difference,
 # qtf_direct = 1, qtf_terms = full, IRSP = 1), one task per line of round.txt (route, case). Expected about 0.27 h each:
 # stage 2 (job 29336170_2, ed27bd3) took 768 s, before the near-waterline fit, which made the sharp m2 run 28 % slower
@@ -19,7 +19,7 @@ module load intel/2024a
 ulimit -s unlimited
 export OMP_NUM_THREADS=24
 export OMP_STACKSIZE=1G
-JOBS=/home/vraghavan/HAMS_drift_study/repo_fsspeed/validation-runs/fs-speedups/snellius
+JOBS="<run root>/repo_fsspeed/validation-runs/fs-speedups/snellius"
 LINE=$(sed -n "${SLURM_ARRAY_TASK_ID}p" $JOBS/g1_item3/round.txt)
 test -n "$LINE"
 exec bash $JOBS/g1_item3/run_one.sh $LINE

@@ -29,7 +29,8 @@ MODULE QTFDriver
    ! Only what the near-field terms read is kept: phi_i, phi_p, grad_i, grad_p, xi. After the frequency loop, qtf_finish
    ! evaluates every pair and writes QTF_Quadratic.10d and .10s.
    !
-   ! With components a_i of amplitude and the time factor e^{-i omega t}, the second-order load is (spec 5.4)
+   ! With components a_i of amplitude and the time factor e^{-i omega t}, the second-order load is
+   ! (docs/output_files.md, there conjugated)
    !    F(t) = sum_i sum_j Re[ T-_ij a_i a_j* e^{-i(w_i - w_j)t} + T+_ij a_i a_j e^{-i(w_i + w_j)t} ],
    ! over all i and j. T-_ij is near_field_pair(state i, state j, KERNEL_DIFF) and T+_ij the same with KERNEL_SUM. The files
    ! hold their conjugates, scaled as MeanDriftPressure.9 (SecondOrderOutput), on the full square of frequency pairs.
@@ -195,7 +196,7 @@ MODULE QTFDriver
    COMPLEX(8), ALLOCATABLE :: fs_psi(:, :, :)            ! (n_fs, 6*nbody, nneed), psi_k at the inner points, as psi_store
    TYPE(pw_set), ALLOCATABLE :: fs_pw_psi(:, :)          ! (6*nbody, nneed), partial waves of each psi_k
    LOGICAL, ALLOCATABLE :: fs_psi_kept(:)                ! (nneed)
-   ! qtf_fs_inner = source (spec D2 of the free-surface speed-ups): the inner integral without phi_zz, which needs grad_h psi_k
+   ! qtf_fs_inner = source (item 2 of the field-pass speed-ups): the inner integral without phi_zz, which needs grad_h psi_k
    ! at the inner points too, (n_fs, 2, 6*nbody, nneed), kept by qtf_keep_fs_psi
    LOGICAL :: fs_source = .FALSE.
    COMPLEX(8), ALLOCATABLE :: fs_gpsi(:, :, :, :)
@@ -486,7 +487,7 @@ CONTAINS
       END SUBROUTINE check_pairs
 
       SUBROUTINE sum_warnings(w)
-         ! The log of what the sum leaves out (spec 4.1, rulings R2 and R5 of the Phase 7c-2 plan)
+         ! The log of what the sum leaves out (rulings R2 and R5, docs/developer_documentation.md, Phase 7c-2)
          REAL(8), INTENT(IN) :: w(:)
          INTEGER :: i, j, nleft, ntot
          CHARACTER(LEN=40) :: left_out, also   ! the files of the sum this run writes: the first, and the one after it
@@ -1518,7 +1519,7 @@ CONTAINS
    END SUBROUTINE fs_incident_all
 
    SUBROUTINE fs_boundary_all(mesh, geom, bnd, xe, wb)
-      ! qtf_fs_inner = source (spec D2 of the free-surface speed-ups): every kept state on the boundary of the inner free
+      ! qtf_fs_inner = source (item 2 of the field-pass speed-ups): every kept state on the boundary of the inner free
       ! surface for the line integral (fs_wl_state), bnd(nkept, nbeta): first the waterline segments of geom
       ! (fs_waterline_state, with the waterline potential of the store, as the near-field drift takes it), then the points
       ! xe(2, ne) of the outer edge (fs_edge_points of the store's circle, M and polygon; fs_edge_state from the state's

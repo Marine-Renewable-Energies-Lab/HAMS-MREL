@@ -6973,7 +6973,7 @@ contains
 
     ! ---------------------------------------------------------------------------------------------- psi reuse on the grid
 
-    !> The fixtures of the psi reuse on the main grid (spec D4 of the free-surface speed-ups), with the run time of each.
+    !> The fixtures of the psi reuse on the main grid (item 4 of the field-pass speed-ups), with the run time of each.
     !> Each has psi at 0.2 rad/s, a main-grid frequency, and no psi off the grid (qtf_max_dw = 0.2):
     !>   qtf_psi_reuse       qtf_fs_main with qtf_b2 = control (cs_velocity = green) and field_deep_kh = 0.25, so that the
     !>                       merged passes take the deep-water rows at every frequency, 0.2 rad/s (k0 h = 0.29) first;
@@ -7004,7 +7004,7 @@ contains
     !>   88e19bd (validation-runs/fs-speedups/base_88e19bd), with field_deep_kh = 0 in SecondOrder.in (their largest
     !>   k0 h, 2.2 and 5.1, is below the default 10 too, so the default gives the same);
     !>   the four psi_reuse fixtures (run_psi_reuse_cases): the outputs at 85d867e, before the reuse.
-    !> Stored again with qtf_fs_circle = panels as the default (accuracy gate G1, 2026-11-20): qtf_fs_main and qtf_psi_reuse_half,
+    !> Stored again with qtf_fs_circle = panels as the default (the accuracy gate, 2026-11-20): qtf_fs_main and qtf_psi_reuse_half,
     !> _src and _two moved by 1.3e-6 to 4.4e-6 of the largest value of QTF_Indirect.11d (laptop, per file, see the commit), the
     !> samples route's partial waves being about 1e-6 off the exact series. qtf_psi_reuse keeps qtf_fs_circle = samples (its
     !> deep-water field rows, k0 h >= 0.25, apply on that route only: panels moves it by 1.2e-2). It was stored again when
@@ -7078,8 +7078,8 @@ contains
     ! ---------------------------------------------------------------------------------------------- circle from the panels
 
     !> qtf_fs_samples: qtf_fs_main with qtf_fs_circle = samples (the partial waves outside R from the circle samples and their
-    !> fit, the route before the accuracy gate G1 made panels the default, spec D3
-    !> of the free-surface speed-ups), with its run time
+    !> fit, the route before the accuracy gate, validation-runs/fs-speedups/gate/G1_table.md, made panels the
+    !> default; item 3 of the field-pass speed-ups), with its run time
     subroutine run_qtf_fs_samples(error)
         type(error_type), allocatable, intent(out) :: error
         integer(8) :: t0, t1, rate
@@ -7130,7 +7130,7 @@ contains
     ! ------------------------------------------------------------------------------------- inner fields by the source route
 
     !> qtf_fs_source: qtf_fs_main with qtf_fs_inner = source (the inner fields from the source strengths, phi_zz removed
-    !> by Green's theorem in the plane, spec D2 of the free-surface speed-ups); qtf_fs_source_sum: qtf_indsum_half (sum
+    !> by Green's theorem in the plane, item 2 of the field-pass speed-ups); qtf_fs_source_sum: qtf_indsum_half (sum
     !> frequency, half mesh) with it. With their run times.
     subroutine run_qtf_fs_source(error)
         type(error_type), allocatable, intent(out) :: error

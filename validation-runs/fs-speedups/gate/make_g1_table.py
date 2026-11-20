@@ -14,7 +14,7 @@ Only numbers already measured at unit-test scale are used (no HAMS case). Source
 The stencil route's inner fields and inner integral do not use the circle (the partial waves enter only the outer
 integral and, on the source route, the line integral on the outer edge), so their panels values are those of samples by
 construction; the circle field does not depend on the inner route.
-G1 rule (spec G1): a route passes a quantity when its error is at most today's + max(0.5 percentage points, 10 % of today's).
+G1 rule (the accuracy gate of G1_table.md): a route passes a quantity when its error is at most today's + max(0.5 percentage points, 10 % of today's).
 """
 import os
 

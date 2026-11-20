@@ -7,7 +7,8 @@ module test_qtf_free_surface
   use NearFieldDrift, only : KERNEL_DIFF, KERNEL_SUM
   use QTFFreeSurface, only : fs_point_field, fs_forcing_diff, fs_inner_fields, fs_inner_steps, fs_circle_modes, &
                              circle_from_panels, &
-                             fs_mode_warning, fs_auto_modes, FS_MODE_TOL, fs_mode_miss, fs_sample_phi, fs_mode_scales, fs_auto_evanescent, &
+                             fs_mode_warning, fs_auto_modes, FS_MODE_TOL, fs_mode_miss, fs_sample_phi, fs_mode_scales, &
+                             fs_auto_evanescent, &
                              fs_inner_pair, fs_outer_pair, fs_outer_annulus, fs_outer_tail, fs_outer_ring, fs_outer_rfar, &
                              fs_outer_sliver, fs_radius_message, FS_SIGN, fs_pair_order_message, fs_pair_terms, &
                              fs_coverage_check, fs_outer_moments, fs_forcing_points, fs_local_rankine, &
@@ -62,7 +63,7 @@ module test_qtf_free_surface
   real(8), parameter :: sy_h = 20d0, sy_radius = 12d0, sy_centre(2) = [1.5d0, -0.7d0]
   integer, parameter :: sy_mmax = 3, sy_nev = 1
   complex(8), parameter :: ci_ = (0d0, 1d0)
-  ! fs_inner_source_matches_exact (Task 6, G1 input): gates on the source route, 1.3x measured, rounded up
+  ! fs_inner_source_matches_exact (input of the accuracy gate): gates on the source route, 1.3x measured, rounded up
   real(8), parameter :: SRC_FIELD_GATE = 7.6d-2, SRC_INT_GATE = 4.7d-2
 
 contains
@@ -328,7 +329,7 @@ end subroutine test_laplace_residual
 
 !> The centre value of fs_inner_fields (its optional centre) is fs_sample_phi at the point, to the bit, for every state,
 !> with and without the deep-water rows: the driver takes psi_k on the inner free surface from the centre of the stencil of
-!> the headings' pass (spec D4 of the free-surface speed-ups), in place of a pass of fs_sample_phi. Three points at z = 0
+!> the headings' pass (item 4 of the field-pass speed-ups), in place of a pass of fs_sample_phi. Three points at z = 0
 !> and one at z = -2 m (7-point stencil); state 1 is the fixture's scattered wave without incident part, as psi_k, state 2
 !> the same with the incident wave (amp 1), which changes phi but not the centre.
 subroutine test_inner_centre_is_sample_phi(error)
@@ -372,8 +373,8 @@ subroutine test_inner_centre_is_sample_phi(error)
 end subroutine test_inner_centre_is_sample_phi
 
 !> fs_circle_modes with nsplit gives each of the two groups of states the partial waves and the mode check of a call with
-!> that group alone, to the bit (the driver evaluates the headings and the psi modes of one frequency in one call, spec D4
-!> of the free-surface speed-ups). The states of fs_mode_check_per_state, with state 1 as the first group: under the scale
+!> that group alone, to the bit (the driver evaluates the headings and the psi modes of one frequency in one call, item 4
+!> of the field-pass speed-ups). The states of fs_mode_check_per_state, with state 1 as the first group: under the scale
 !> of all three states, states 2 and 3 would be held to state 1's samples.
 subroutine test_circle_modes_split(error)
   type(error_type), allocatable, intent(out) :: error
@@ -473,7 +474,7 @@ contains
   end subroutine five_misses
 end subroutine test_mode_miss_threads
 
-!> The circle partial waves from the hull integral (fs_circle_modes with graf, pw_from_panels; spec D3 of the free-surface
+!> The circle partial waves from the hull integral (fs_circle_modes with graf, pw_from_panels; item 3 of the field-pass
 !> speed-ups) on the 448-panel cylinder, R = 15 m, h = 15 m, mmax = 40 and nev = 20 (enough: (10/15)^40 = 9e-8 for the
 !> hull's largest r, e^{-k_20 5 m} = 1e-9 for the nearest panel). Two states: the MacCamy-Fuchs scattered wave of the
 !> fixture and a made-up hull field (q = n_x, phi_P = 0.02 x + 0.01 i z), as the full mesh and as the half mesh with its
@@ -3194,14 +3195,14 @@ subroutine run_fields_integral(file, kernel, gate, label, error)
 end subroutine run_fields_integral
 
 
-! ------------------------------------------------ inner fields by the source route, without phi_zz (spec D2, Task 6)
+! ------------------------------------------------ inner fields by the source route, without phi_zz (item 2) ---
 
-!> Green's theorem in the plane on the inner integral (spec D2 of the free-surface speed-ups): over an annulus a < r < b
+!> Green's theorem in the plane on the inner integral (item 2 of the field-pass speed-ups): over an annulus a < r < b
 !> (a "waterline" circle r = a, normal -e_r into it, and the outer circle r = b, normal e_r), with analytic fields whose
 !> horizontal Laplacian is known (states: a plane wave plus H_0(k r), H_1(k r) e^{i theta} and the harmonic r^-2 e^{2 i theta};
 !> psi_k: H_1(kp r) e^{i theta} plus a plane wave, and H_0(kp r)), the area form of fs_inner_pair_ibp plus fs_line_pair on
 !> both circles equals the phi_zz form of fs_inner_pair, phi_zz = -lap_h phi exactly, to 1e-10 of the largest term, for
-!> both kernels. Quadrature: 48 Gauss-Legendre nodes in r, 160 trapezoidal angles (spectral in theta).
+!> both kernels. Quadrature: 48 Gauss-Legendre nodes in r, 160 trapezoidal angles, spectral in theta.
 subroutine test_inner_ibp_identity(error)
   type(error_type), allocatable, intent(out) :: error
   real(8), parameter :: ra = 6d0, rb = 14d0, w1 = 1.3d0, w2 = 0.9d0
@@ -3354,7 +3355,7 @@ subroutine gauss01(n, x, w)
   end do
 end subroutine gauss01
 
-!> The waterline normal derivative of the source route (spec D2): (a) on a flared hull, fs_wl_normal_derivative with
+!> The waterline normal derivative of the source route (item 2): (a) on a flared hull, fs_wl_normal_derivative with
 !> V_n = grad Y . n and d_z Y = nu Y gives grad_h Y . n_h / |n_h| of the deep-water field Y = e^{nu z} e^{i nu x.e_b}
 !> (it satisfies the linear free-surface condition), for n_z = -0.6, -0.2, 0.3 and 0.7, to 1e-14; (b) on the wall-sided
 !> 448-panel cylinder, fs_waterline_state of a moving state gives d_n Y = V_n = -i omega (xi + alpha x r) . n on every
@@ -3487,10 +3488,11 @@ subroutine test_pair_terms_ibp_order(error)
   end do
 end subroutine test_pair_terms_ibp_order
 
-!> G1 input (spec G1 of the free-surface speed-ups): the inner fields and the inner integral of the stencil route (today:
-!> fs_inner_fields, the driver's offsets, the near-waterline fit) and of the source route (fs_inner_fields_source from
-!> the source strengths of velocity_source, without phi_zz), both from the exact potential on the sharp m1 hull, side by
-!> side against the exact values: phi and grad phi at the rings 0.1 to 3.5 m from the waterline (as fs_fields_exact_inner;
+!> Input of the accuracy gate (validation-runs/fs-speedups/gate/G1_table.md): the inner fields and the inner integral
+!> of the stencil route (today: fs_inner_fields, the driver's offsets, the near-waterline fit) and of the source route
+!> (fs_inner_fields_source from the source strengths of velocity_source, without phi_zz), both from the exact potential
+!> on the sharp m1 hull, side by side against the exact values: phi and grad phi at the rings 0.1 to 3.5 m from the
+!> waterline (as fs_fields_exact_inner;
 !> the source route with and without the gradient part of the near-waterline fit), and the inner integral of the sum
 !> pair (1.4, 1.0) and of the difference pair over a < r < a + 5 m (as fs_fields_exact_integral and _diff; the source
 !> route by fs_inner_pair_ibp + fs_line_pair, with the exact grad psi_k at the grid points and psi_k on both edges from
@@ -3519,7 +3521,7 @@ subroutine test_inner_source_matches_exact(error)
 
   nthread_saved = NTHREAD
   NTHREAD = 8
-  print '(a)', '# G1 input, Task 6 (spec D2): inner fields and inner integral, stencil route against the source route,'
+  print '(a)', '# Accuracy gate input, item 2: inner fields and inner integral, stencil route against the source route,'
   print '(a)', '# exact potential on the sharp m1 hull (448 panels), fixed body, test fs_inner_source_matches_exact.'
   print '(a)', '# Errors relative to the largest exact value of the ring (fields) or of the three psi_k (integral).'
   print '(a)', '# Regenerate: run the unit test fs_inner_source_matches_exact and copy the lines that start with # or a'

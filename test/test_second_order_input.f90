@@ -1005,8 +1005,8 @@ subroutine test_field_deep_kh_negative_stops(error)
   call remove_directory(root)
 end subroutine test_field_deep_kh_negative_stops
 
-!> qtf_fs_circle (spec D3 of the free-surface speed-ups): absent gives panels (2, the partial waves from the hull
-!> integral; the default since the accuracy gate G1), samples gives 1 (the circle samples and their fit),
+!> qtf_fs_circle (item 3 of the field-pass speed-ups): absent gives panels (2, the partial waves from the hull
+!> integral; the default since the accuracy gate), samples gives 1 (the circle samples and their fit),
 !> any other word stops with the invalid-value message
 subroutine test_qtf_fs_circle_key(error)
   type(error_type), allocatable, intent(out) :: error
@@ -1040,7 +1040,7 @@ subroutine test_qtf_fs_circle_key(error)
   call remove_directory(root)
 end subroutine test_qtf_fs_circle_key
 
-!> The defaults after the accuracy gate G1 (validation-runs/fs-speedups/gate/G1_table.md), read from an input without either
+!> The defaults after the accuracy gate (validation-runs/fs-speedups/gate/G1_table.md), read from an input without either
 !> key: qtf_fs_circle = panels (2, passed) and qtf_fs_inner = stencil (1, failed on the hull mesh and stays off)
 subroutine test_qtf_fs_defaults(error)
   type(error_type), allocatable, intent(out) :: error
@@ -1061,7 +1061,7 @@ subroutine test_qtf_fs_defaults(error)
   call remove_directory(root)
 end subroutine test_qtf_fs_defaults
 
-!> qtf_fs_inner (spec D2 of the free-surface speed-ups): absent gives stencil (1, the 5-point stencil with phi_zz), source
+!> qtf_fs_inner (item 2 of the field-pass speed-ups): absent gives stencil (1, the 5-point stencil with phi_zz), source
 !> gives 2 (the source route without phi_zz), any other word stops with the invalid-value message
 subroutine test_qtf_fs_inner_key(error)
   type(error_type), allocatable, intent(out) :: error

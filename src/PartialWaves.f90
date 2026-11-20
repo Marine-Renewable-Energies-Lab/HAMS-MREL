@@ -731,7 +731,7 @@ CONTAINS
       IF (PRESENT(mcut)) mcut = mrep
    END SUBROUTINE pw_green_modes
 
-   ! ------------------------------------------------------------------ the circle modes from the hull integral (spec D3)
+   ! ------------------------------------------------------------------ the circle modes from the hull integral (item 3)
    !
    ! Derivation (own, from the textbook formulas cited). The centroid-route field of a state outside the hull is the sum
    ! over the hull panels j (images included) of (1 / 4 pi) A_j [G(x, xi_j) q_j - n_j . grad_xi G(x, xi_j) phi_j]
@@ -850,7 +850,7 @@ CONTAINS
       ! one field per column of q(np, ns) = d phi_P / dn and phi(np, ns) = phi_P at the panels:
       !   phi_P(x) = (1 / 4 pi) sum_j A_j [G(x, xs_j) q_j - n_j . grad_xs G(x, xs_j) phi_j],
       ! the centroid route of fs_sample_phi (centroid_only) at finite depth, so that the result is the pw_set its samples
-      ! fit, without the samples (spec D3 of the free-surface speed-ups; derivation above pw_source_modes). k0 and
+      ! fit, without the samples (item 3 of the field-pass speed-ups; derivation above pw_source_modes). k0 and
       ! kev(1:nev) the wave numbers of the frequency (pw_evanescent_from_wvn). Every source must lie inside the circle
       ! (horizontally), else the run stops. Orders whose radial function at R overflows (H_{m+1}(k0 R) or K_{m+1}(kn R)
       ! above 1e300, as in pw_green_modes) are set to zero; mcut, if present, is the highest order kept in every mode.

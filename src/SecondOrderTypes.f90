@@ -68,12 +68,13 @@ MODULE SecondOrderTypes
       INTEGER :: qtf_fs_modes = 0        ! angular modes M of the outer region
       INTEGER :: qtf_fs_evanescent = 0   ! evanescent vertical modes N_ev of the outer region
       ! The partial waves outside R: 1 samples (the centroid route at the circle samples, fitted), 2 panels (straight from the
-      ! hull integral by Graf's addition theorem, mode check on every 8th sample; spec D3 of the free-surface speed-ups).
-      ! Default panels: the accuracy gate G1 passed on the sharp cylinder m2 (126 rows, none failed; 2026-11-20).
+      ! hull integral by Graf's addition theorem, mode check on every 8th sample; item 3 of the field-pass speed-ups).
+      ! Default panels: the accuracy gate passed on the sharp cylinder m2 (126 rows, none failed; 2026-11-20;
+      ! validation-runs/fs-speedups/gate/G1_table.md).
       INTEGER :: qtf_fs_circle = 2
       ! The inner free-surface fields: 1 stencil (the 5-point stencil of the Green route, with phi_zz), 2 source (phi and grad
-      ! phi from the source strengths, phi_zz removed from the inner integral by Green's theorem in the plane; spec D2 of the
-      ! free-surface speed-ups). Default stencil: source stays off because it failed G1 (the result depends on the hull
+      ! phi from the source strengths, phi_zz removed from the inner integral by Green's theorem in the plane; item 2 of the
+      ! field-pass speed-ups). Default stencil: source stays off because it failed the accuracy gate (the result depends on the hull
       ! mesh, see validation-runs/fs-speedups/gate/G1_table.md).
       INTEGER :: qtf_fs_inner = 1
       ! Field-pass rows (psi, grad psi at the hull, free-surface and field points): the deep-water Green function is used

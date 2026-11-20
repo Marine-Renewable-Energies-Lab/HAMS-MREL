@@ -3,7 +3,7 @@
 # runs HAMS as run_oc4wsum/jobs/run_hams.sbatch does (input and output folders with a trailing slash, log.txt, time.txt,
 # result.json), and checks that the route reached the log. Called by run_sharp.sbatch and run_round.sbatch.
 set -u
-R=/home/vraghavan/HAMS_drift_study
+R="<run root>"
 RUN=$R/run_fsspeed
 REPO=$R/repo_fsspeed
 JOBS=$REPO/validation-runs/fs-speedups/snellius

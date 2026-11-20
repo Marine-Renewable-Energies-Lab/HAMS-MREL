@@ -131,7 +131,7 @@ MODULE SecondOrderDriver
    LOGICAL :: body_terms = .FALSE.                     ! psi is kept at the difference frequencies
    COMPLEX(8), ALLOCATABLE :: psi_main(:,:)            ! (n, 6*nbody), psi of the current main-grid frequency
    ! psi_main is kept, and its pass on the inner free surface (psi_fs_merge) and of grad psi on C and F (psi_cs_merge) is
-   ! left to the fields passes of so_end_frequency at the same frequency (spec D4 of the free-surface speed-ups)
+   ! left to the fields passes of so_end_frequency at the same frequency (item 4 of the field-pass speed-ups)
    LOGICAL :: psi_fs_merge = .FALSE., psi_cs_merge = .FALSE.
    ! The frequency source_op was last built at (timed_source_build; -1: never), so that the source route of the inner
    ! free-surface fields (qtf_fs_inner = source) builds it only where velocity_method or cs_velocity = source did not
@@ -681,7 +681,7 @@ CONTAINS
       ! column of MXPOT. With qtf_terms = body, takes psi of this frequency: for the excitation check of the headings, and into
       ! the QTF store if the frequency is also a difference frequency.
       ! The fields of psi there (on the inner free surface, and grad psi on C and F) are taken by the fields passes of the
-      ! headings in so_end_frequency, which run at this frequency with the same rows (spec D4 of the free-surface
+      ! headings in so_end_frequency, which run at this frequency with the same rows (item 4 of the field-pass
       ! speed-ups): grad psi only with cs_velocity = green, as fields_source gives no grad psi; otherwise its own pass here.
       TYPE(so_options), INTENT(IN) :: opts
       INTEGER, INTENT(IN) :: kk
@@ -933,7 +933,7 @@ CONTAINS
       ALLOCATE (psi_pts(fs_pts%n, nmode), pw(nmode), miss(nmode))
       CALL SYSTEM_CLOCK(t0, rate)
       IF (opts%qtf_fs_inner == 2) THEN
-         ! The source route (spec D2 of the free-surface speed-ups): psi_k and grad_h psi_k from the source strengths of
+         ! The source route (item 2 of the field-pass speed-ups): psi_k and grad_h psi_k from the source strengths of
          ! this frequency, one row per point; the operator is built here (no first-order solve at this frequency)
          ALLOCATE (sig(mesh%n, nmode), fsrc(fs_pts%n, nmode), gpsi(fs_pts%n, 2, nmode))
          CALL fs_source_sigma(ps, 0, sig)
@@ -963,7 +963,7 @@ CONTAINS
 
    SUBROUTINE fs_source_sigma(sts, nh, sig)
       ! The source strengths sig(n, SIZE(sts)) of the states sts at the current frequency, for the source route of the inner
-      ! free-surface fields (qtf_fs_inner = source, spec D2 of the free-surface speed-ups). The source operator of this
+      ! free-surface fields (qtf_fs_inner = source, item 2 of the field-pass speed-ups). The source operator of this
       ! frequency is built here unless velocity_method or cs_velocity = source built it already (source_op_omega); the
       ! first nh states (the headings) take cs_sigma where cs_velocity = source solved them already (after_motion), so no
       ! second solve. Every other state takes one solve (velocity_source on a copy, as its grad_p is overwritten). One log
@@ -1334,7 +1334,7 @@ CONTAINS
       ! keeps the Limes acceleration of PIDCOCK, as on the control surface, so the same warning, unless the rows take the
       ! deep-water Green function there (field_deep).
       ! With psi_fs_merge the 6 x nbody psi states of psi_main (psi_states) join the headings, in place of the pass of
-      ! keep_fs_psi (spec D4 of the free-surface speed-ups): psi at an inner point is the centre value of its stencil, the
+      ! keep_fs_psi (item 4 of the field-pass speed-ups): psi at an inner point is the centre value of its stencil, the
       ! row of fs_sample_phi at the point, before the waterline fit (which stays that of the headings); the circle samples
       ! are those of keep_fs_psi, and each group has its own mode-check scales (nsplit). Every state's sums are its own, so
       ! the values are those of the separate passes to the bit; the deep flag is the one both passes would take.
@@ -1373,7 +1373,7 @@ CONTAINS
       ALLOCATE (f(fs_pts%n, nst), pw(nst), miss(nst), centre(fs_pts%n, nst))
       CALL SYSTEM_CLOCK(t0, rate)
       IF (opts%qtf_fs_inner == 2) THEN
-         ! The source route (spec D2 of the free-surface speed-ups): phi and grad phi of the headings and psi_k from the
+         ! The source route (item 2 of the field-pass speed-ups): phi and grad phi of the headings and psi_k from the
          ! source strengths, one row per point; no phi_zz, so the near-waterline fit gives at most the gradient
          ALLOCATE (sig(mesh%n, nst))
          CALL fs_source_sigma(sts, nh, sig)
@@ -1459,7 +1459,7 @@ CONTAINS
       ! The rows are always those of the depth: the deep-water rows of field_deep do not hold below z = 0, where they miss
       ! the seabed images (field_deep, test field_row_deep_seabed).
       ! With psi_cs_merge (B2 on C and F, cs_velocity = green) the 6 x nbody psi states of psi_main (psi_states) join the
-      ! headings in the one fields_green call, in place of the pass of keep_cs_psi (spec D4 of the free-surface speed-ups):
+      ! headings in the one fields_green call, in place of the pass of keep_cs_psi (item 4 of the field-pass speed-ups):
       ! grad psi at the points of B2 is that at b2_idx. The points are independent and each state's sums are its own, so
       ! the values are those of the separate passes to the bit.
       TYPE(so_options), INTENT(IN) :: opts

@@ -1,4 +1,4 @@
-# G1 input, Task 6 (spec D2): inner fields and inner integral, stencil route against the source route,
+# Accuracy gate input, item 2: inner fields and inner integral, stencil route against the source route,
 # exact potential on the sharp m1 hull (448 panels), fixed body, test fs_inner_source_matches_exact.
 # Errors relative to the largest exact value of the ring (fields) or of the three psi_k (integral).
 # Regenerate: run the unit test fs_inner_source_matches_exact and copy the lines that start with # or a

@@ -32,7 +32,7 @@ MODULE QTFFreeSurface
    ! fs_inner_steps); outside the circle r = R, the partial waves of the scattered potential (fs_circle_modes), from samples
    ! on the cylinder by the all-centroid route of the boundary integral formula (fs_sample_phi), so that the samples are a
    ! sum of the free-surface modes, with a check that the modes give the samples back (fs_mode_miss, fs_mode_warning).
-   ! qtf_fs_inner = source (spec D2 of the free-surface speed-ups) takes phi and grad phi at the inner points from the source
+   ! qtf_fs_inner = source (item 2 of the field-pass speed-ups) takes phi and grad phi at the inner points from the source
    ! strengths instead (fs_inner_fields_source, one row per point), and removes phi_zz from the inner integral by Green's
    ! theorem in the plane: an area part without it (fs_inner_pair_ibp) and line integrals on the waterlines and the outer
    ! edge (fs_line_pair, with fs_waterline_state and fs_edge_state).
@@ -149,7 +149,7 @@ MODULE QTFFreeSurface
 
    TYPE :: fs_wl_state
       ! One first-order state on the boundary of the inner free surface (the waterlines and the outer edge), for the source
-      ! route of the inner integral (qtf_fs_inner = source, spec D2 of the free-surface speed-ups): at each boundary point
+      ! route of the inner integral (qtf_fs_inner = source, item 2 of the field-pass speed-ups): at each boundary point
       ! the total potential phi and its derivative dn along the in-plane normal out of the inner free surface (into the
       ! waterplane on a waterline, outwards on the outer edge), and the same of the incident wave alone (phi_i, dn_i)
       COMPLEX(8), ALLOCATABLE :: phi(:), dn(:), phi_i(:), dn_i(:)
@@ -236,7 +236,7 @@ CONTAINS
       ! next to a waterline. All states must be at the current global frequency. deep, if present, goes to fs_sample_phi.
       ! centre(pts%n, SIZE(states)), if present, receives phi_P at the centre of each stencil as it is, before the incident
       ! part is added: the row of fs_sample_phi at the point (same point, same decision point), so for a state without
-      ! incident wave (psi_k of the driver) it is fs_sample_phi of the point to the bit (spec D4 of the free-surface
+      ! incident wave (psi_k of the driver) it is fs_sample_phi of the point to the bit (item 4 of the field-pass
       ! speed-ups; fs_inner_centre_is_sample_phi).
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(cs_points), INTENT(IN) :: pts
@@ -318,8 +318,8 @@ CONTAINS
    END SUBROUTINE fs_inner_fields
 
    SUBROUTINE fs_inner_fields_source(mesh, pts, states, sigmas, is_multi, f, deep)
-      ! The total first-order fields of every state at the inner points by the source route (qtf_fs_inner = source, spec D2
-      ! of the free-surface speed-ups): phi_P and its horizontal gradient from the source strengths sigmas(n, SIZE(states))
+      ! The total first-order fields of every state at the inner points by the source route (qtf_fs_inner = source, item 2
+      ! of the field-pass speed-ups): phi_P and its horizontal gradient from the source strengths sigmas(n, SIZE(states))
       ! of velocity_source (SurfaceVelocity), with the analytic gradient of G (fields_source of FieldVelocity), one row per
       ! point for all states and no stencil. On z = 0, d phi_P/dz is nu phi_P (the linear free-surface condition, as
       ! fs_inner_fields), the incident part is exact. phi_zz is not formed (left 0): the inner integral of this route has
@@ -370,7 +370,7 @@ CONTAINS
    END FUNCTION fs_wl_normal_derivative
 
    SUBROUTINE fs_waterline_state(mesh, geom, s, phi_wl, wl)
-      ! The state s on the waterline segments of geom, for the line integral of the source route (fs_wl_state, spec D2): at
+      ! The state s on the waterline segments of geom, for the line integral of the source route (fs_wl_state, item 2): at
       ! the midpoint x of each segment the total potential phi_wl (the waterline potential of the near-field drift), and
       ! its derivative along the in-plane normal into the waterplane by fs_wl_normal_derivative, with
       !   V_n = -i omega (xi + alpha x (x - x_r)) . n   (the normal velocity of the body of the segment, n of its panel,
@@ -409,7 +409,7 @@ CONTAINS
    END SUBROUTINE fs_waterline_state
 
    SUBROUTINE fs_edge_points(np, centre, radius, mmax, x, nh, w)
-      ! The quadrature of the outer edge of the inner free surface for the line integral of the source route (spec D2):
+      ! The quadrature of the outer edge of the inner free surface for the line integral of the source route (item 2):
       ! np >= 3, the polygon of np chords of a generated inner mesh (vertices at theta_j = 2 pi (j - 1) / np, as
       ! fs_outer_sliver), Gauss-Legendre of order 8 + ceil(3 pi M / np) on each chord, with the chord's outward normal;
       ! np < 3 (a mesh from FSInnerMesh.pnl, which reaches the circle), the circle r = R by the trapezoidal rule with
@@ -506,7 +506,7 @@ CONTAINS
    END SUBROUTINE fs_edge_psi
 
    SUBROUTINE fs_inner_pair_ibp(w1, f1, inc1, w2, f2, inc2, psi, gpsi, wts, g, rho, t_in, kernel)
-      ! The area part of the inner T_FS of the source route (qtf_fs_inner = source, spec D2 of the free-surface speed-ups):
+      ! The area part of the inner T_FS of the source route (qtf_fs_inner = source, item 2 of the field-pass speed-ups):
       ! the forcing without phi_zz, which Green's theorem in the plane moves to the boundary (fs_line_pair). With
       ! P = pair_product, f = -i w phi of each state, Q = Q_0 + Z, Q_0 the Q of free_surface_forcing with phi_zz = 0 and
       ! Z = P(f_1, a_zz, f_2, b_zz) = -P(f_1, lap_h a, f_2, lap_h b) (phi_zz = -lap_h phi, Laplace's equation for the
@@ -605,7 +605,7 @@ CONTAINS
       ! waterline of geom: the largest distance of a waterline point (both ends and the midpoint of every segment) from the
       ! nearest edge of the mesh, over the length of its segment. The source route (qtf_fs_inner = source) integrates the
       ! area over the mesh and the line over the waterline (fs_line_pair), so the two must bound the same region; 0 to
-      ! rounding when the mesh has nodes on the waterline nodes (the generated mesh, spec D2 review I2). It checks the inner
+      ! rounding when the mesh has nodes on the waterline nodes (the generated mesh, review of item 2). It checks the inner
       ! edge only: the outer edge is the circle or polygon of fs_edge_points. 0 for no waterline.
       TYPE(panel_mesh), INTENT(IN) :: fsp
       TYPE(surface_geom), INTENT(IN) :: geom
@@ -639,7 +639,7 @@ CONTAINS
       ! point of fit replaced by the fit of the perturbation gradient at its samples, fsamp(fit%samp%n, SIZE(states)) the
       ! source-route fields there (fs_inner_fields_source), plus the exact incident gradient at the point. phi keeps its
       ! value (ruling W4 of the stencil route), and phi_zz is not used on this route, so only the gradient part of the fit
-      ! applies (spec D2).
+      ! applies (item 2 of the field-pass speed-ups).
       TYPE(fs_wl_fit), INTENT(IN) :: fit
       TYPE(fs_point_field), INTENT(IN) :: fsamp(:, :)
       TYPE(first_order_state), INTENT(IN) :: states(:)
@@ -839,7 +839,7 @@ CONTAINS
       ! the finite-depth field mode), of the direct eigenfunction sum (deep of field_influence_row), and miss shows the fit.
       ! nsplit, if present, splits the states into two groups, 1:nsplit and nsplit+1:SIZE(states), each with the scales of
       ! fs_mode_scales of its own (the headings and the psi modes of one frequency in one call give the miss of two calls).
-      ! graf, if present and true (qtf_fs_circle = panels; spec D3 of the free-surface speed-ups), takes the partial waves
+      ! graf, if present and true (qtf_fs_circle = panels; item 3 of the field-pass speed-ups), takes the partial waves
       ! straight from the hull integral (circle_from_panels: pw_from_panels, Graf's addition theorem on the finite-depth
       ! eigenfunction series) in place of the samples and their fit; the mode check then runs on every 8th sample only
       ! (circle_check_subset), by the centroid route there. deep does not apply on that route: its coefficients are those
@@ -1144,7 +1144,7 @@ CONTAINS
       ! psi and pw_psi at Omega. The pair is evaluated ordered w1 >= w2, as (2, 1) when w1 < w2, with no conjugate:
       ! Q_S(2, 1) = Q_S(1, 2) (pair_plus is symmetric) and psi is the same, so T(1, 2) = T(2, 1) (test fs_sum_swap). The
       ! diagonal w1 = w2 is a regular pair at 2 w1 (test fs_sum_diagonal).
-      ! gpsi, b1, b2, psi_b, wb (optional, all or none; qtf_fs_inner = source, spec D2 of the free-surface speed-ups): t_in by
+      ! gpsi, b1, b2, psi_b, wb (optional, all or none; qtf_fs_inner = source, item 2 of the field-pass speed-ups): t_in by
       ! the source route without phi_zz, fs_inner_pair_ibp with gpsi(n, 2, 6 nbody) = grad_h psi_k at the points plus
       ! fs_line_pair on the boundary points (waterline segments and outer edge) with the states b1, b2 there, psi_k there
       ! psi_b(nb, 6 nbody) and the line weights wb(nb). The order rules above hold for it as they are (the line terms are

@@ -836,8 +836,8 @@ contains
   !> each row, G and dG/dn. The near-panel Rankine and image integrals are the same in both rows, so an entry of the
   !> difference is the panel area times the difference of the wave parts of the two Green functions.
   !> Checks:
-  !> (a) at k0 h = 10 and 20, max |deep - finite| / row max <= 1.3e-3, the tolerance of the spec (D1; gbench measured
-  !>     1.25e-3 at k0 h = 10 on the OC4 rows). Measured here 5.7e-4 and 8.8e-4.
+  !> (a) at k0 h = 10 and 20, max |deep - finite| / row max <= 1.3e-3, the tolerance of item 1 of the field-pass
+  !>     speed-ups (gbench measured 1.25e-3 at k0 h = 10 on the OC4 rows). Measured here 5.7e-4 and 8.8e-4.
   !> (b) at k0 h = 40, the same gap below 4.5e-3, 1.3 x the 3.416e-3 measured. The gap is the error of the finite-depth
   !>     field mode, not of the deep-water row: at the worst entry (point 3 m off the hull, waterline panel, R/h = 0.016,
   !>     nu h = 40) FINGREEN3D in field mode misses the direct eigenfunction sum (direct_sum_green) by 3.3e-3 in G (1/m),
