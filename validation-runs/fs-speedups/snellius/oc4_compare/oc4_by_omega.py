@@ -52,18 +52,19 @@ import matplotlib.pyplot as plt
 fig, axs = plt.subplots(1, 2, figsize=(11, 4), sharex=True)
 cols = ["#2a6fdb", "#e0892b", "#1b9e77", "#7a5bc7", "#c43c5c", "#7f7f7f"]
 for i, mm in enumerate(range(1, 7)):
-    axs[0].plot(Ws, curves[f".11s mode {mm}"], "-o", ms=3, lw=1.5, color=cols[i], label=f"mode {mm}")
+    axs[0].plot(Ws, curves[f".11s mode {mm}"], "-o", ms=3, lw=1.5, color=cols[i], label=f"QTF⁺_{mm}")
 for i, n in enumerate(("B2", "FS_inner", "FS_outer")):
     axs[1].plot(Ws, curves[f"term {n}"], "-o", ms=3, lw=1.5, color=cols[i], label=n)
 for ax, t in zip(axs, ("QTF_Indirect.11s, per mode (force or moment group)", "potential terms (all modes)")):
     ax.axvline(1.575, color="#999", lw=1, ls="--")
-    ax.text(1.59, ax.get_ylim()[1] * 0.92, "old run warns:\nnu h > 50 (Limes)", fontsize=8, color="#555", va="top")
+    ax.text(1.59, ax.get_ylim()[1] * 0.92, "old run warns:\nnu h > 50", fontsize=8, color="#555", va="top")
     ax.set_title(t, fontsize=10)
     ax.set_xlabel("sum frequency Omega (rad/s)")
     ax.grid(color="#ddd", lw=0.6)
     ax.spines[["top", "right"]].set_visible(False)
     ax.legend(fontsize=8, frameon=False, loc="upper left")
 axs[0].set_ylabel("max |new - old| / max |old|  (%)")
-fig.suptitle("OC4 WAMIT model: new HAMS against old HAMS", fontsize=11)
+fig.suptitle("OC4 WAMIT model, QTF_Indirect.11s: HAMS with the speed-ups (deep-water rows on FS, C and F) "
+             "against HAMS at 22086da (reference)", fontsize=10)
 fig.tight_layout()
 fig.savefig(out / "oc4_by_omega.png", dpi=150)

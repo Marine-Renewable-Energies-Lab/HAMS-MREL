@@ -119,17 +119,19 @@ def figure():
         today = row[1][0]
         lim = today + margin(today)
         ax.plot([i - 2 * w, i + 2 * w], [lim, lim], color="#333333", linewidth=1.2, linestyle="--")
-    ax.plot([], [], color="#333333", linewidth=1.2, linestyle="--", label="G1 limit: today + max(0.5 pp, 10 % of today)")
+    ax.plot([], [], color="#333333", linewidth=1.2, linestyle="--", label="gate limit: today + max(0.5 pp, 10 % of today)")
     ax.set_yscale("log")
     ax.set_ylim(1e-7, 30)
     ax.set_xticks(range(len(ROWS)))
     ax.set_xticklabels(labels, fontsize=9)
-    ax.set_ylabel("error against the exact value (% of the largest exact value)")
+    ax.set_ylabel("error against the reference (% of its largest value)")
     ax.grid(alpha=0.3, axis="y")
     ax.set_axisbelow(True)
     ax.legend(frameon=False, fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.14), ncol=3)
-    ax.set_title("G1, laptop: item 3 (panels) passes everywhere and puts the circle on the exact series;\n"
-                 "item 2 (source) fails grad phi at 0.1 m and the sum inner integral (sharp m1, exact data)", fontsize=10)
+    ax.set_title("Accuracy gate, laptop, sharp m1 hull, fixed body. Reference for phi, grad phi and the integrals: the\n"
+                 "semi-analytical potential (make_fs_fields_exact_fixture.py, truncated_cylinder_reference.py; Garrett 1971;\n"
+                 "Yeung 1981); for the circle: the direct Green-function sum over the hull (pw_from_panels_matches_samples)",
+                 fontsize=9)
     fig.tight_layout()
     fig.savefig(os.path.join(HERE, "G1_errors.png"), dpi=150)
 

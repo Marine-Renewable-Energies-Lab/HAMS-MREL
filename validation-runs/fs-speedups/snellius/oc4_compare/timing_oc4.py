@@ -87,9 +87,9 @@ def main():
     problems = []
     sacct = read_sacct(a.sacct)
     runs = []
-    for label, (d, jid) in (("HAMS old (stencil + samples)", a.hams_old),
-                            ("HAMS new (all speed-ups, circle = panels)", a.hams_new),
-                            ("Nemoh v3.0.3", a.nemoh)):
+    for label, (d, jid) in (("HAMS at 22086da (stencil + samples)", a.hams_old),
+                            ("HAMS with the speed-ups\n(deep-water rows on FS, C and F)", a.hams_new),
+                            ("Nemoh v3.0.3 (same mesh)", a.nemoh)):
         if jid not in sacct:
             problems.append(f"job {jid} not in {a.sacct}")
             continue
@@ -120,7 +120,7 @@ def main():
              f"{'run':44s} {'job':>9s} {'wall h':>7s} {'core-h':>7s}  split (h)"]
     for r in runs:
         split = "; ".join(f"{n} {t / 3600:.2f}" for n, t in r["parts"])
-        lines.append(f"{r['label']:44s} {r['jobid']:>9s} {r['wall_s'] / 3600:7.2f} {r['core_h']:7.1f}  {split}")
+        lines.append(f"{r['label'].replace(chr(10), ' '):44s} {r['jobid']:>9s} {r['wall_s'] / 3600:7.2f} {r['core_h']:7.1f}  {split}")
         lines.append(f"{'':44s} {'':>9s} {'':>7s} {'':>7s}  ({r['note']})")
     old, new = runs[0], runs[1]
     lines += ["", f"new / old HAMS: wall {new['wall_s'] / old['wall_s']:.3f}, core-h {new['core_h'] / old['core_h']:.3f}",
@@ -138,7 +138,7 @@ def main():
               "second order, body part": "#2a6fdb", "second order, free-surface part": "#e0892b",
               "second order (body + FS, not split in the logs)": "#7a5bc7"}
     fig, ax = plt.subplots(figsize=(9, 4.4))
-    names = [f"{r['label']}\njob {r['jobid']}" for r in runs][::-1]
+    names = [r["label"] for r in runs][::-1]
     seen = set()
     for i, r in enumerate(runs[::-1]):
         left = 0.0
