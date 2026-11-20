@@ -919,12 +919,12 @@ ERRORS = (("X forces", "X_force_err"), ("X moments", "X_moment_err"), ("near-fie
           ("near-field M", "near_M_err"), ("far-field F", "far_err"), ("far-field M_z", "Mz_err"), ("elevation", "eta_err"))
 
 
-def case_folders(results):
-    """(name, Wamit_format folder) of the l_square_* cases under RESULTS that have output."""
+def case_folders(results, prefix="l_square_diff_"):
+    """(name, Wamit_format folder) of the cases under RESULTS whose name starts with prefix and that have output."""
     out = []
     for name in sorted(os.listdir(results)):
         folder = os.path.join(results, name, "output", "Wamit_format")
-        if name.startswith("l_square_") and os.path.exists(os.path.join(folder, "ExcForce.3")):
+        if name.startswith(prefix) and os.path.exists(os.path.join(folder, "ExcForce.3")):
             out.append((name, folder))
     return out
 
@@ -1221,6 +1221,278 @@ def plot_linton_evans(results, out):
     plt.close(fig)
     return [path]
 
+
+DIGITISED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "linton_evans_digitised.csv")
+# Linton & Evans number their cylinders clockwise from (-h, h); this module's layout is counter-clockwise from (h, h)
+LE_TO_HERE = {"cylinder 1": 1, "cylinder 2": 0, "cylinder 3": 3, "cylinder 4": 2}
+LE_CITATION = ("Linton, C.M. & Evans, D.V. (1990), The interaction of waves with arrays of vertical circular cylinders, "
+               "J. Fluid Mech. 215, 549-569")
+
+
+def read_digitised(path=DIGITISED):
+    """Rows of linton_evans_digitised.csv (comment lines start with #)."""
+    with open(path) as f:
+        lines = [l for l in f if not l.startswith("#")]
+    return list(csv.DictReader(lines))
+
+
+def _le_curves(ka_values):
+    """Exact |X . e|/|F|, (|X_x| cos b + |X_y| sin b)/|F| and f . e/f_1 per cylinder (this module's order) of the square of
+    Linton & Evans (1990), Figs. 2 and 3, and the total f/f_1, at each k a."""
+    a, depth, beta = 1.0, 10.0, math.pi / 4.0
+    arr = Array([(h * 2.0, k * 2.0) for h, k in ((1, 1), (-1, 1), (-1, -1), (1, -1))], a, depth)
+    one = Array([(0.0, 0.0)], a, depth)
+    e = np.array([math.cos(beta), math.sin(beta)])
+    X, Xm, D = [], [], []
+    for ka in ka_values:
+        k = ka / a
+        omega = math.sqrt(G * k * math.tanh(k * depth))
+        s1 = Solution(one, omega, beta, order=LOAD_ORDER)
+        F = abs(np.dot(exciting_loads(s1, 0)[:2], e))
+        f1 = float(np.dot(near_field_drift(s1, 0)[:2], e))
+        sol = Solution(arr, omega, beta, order=LOAD_ORDER)
+        x = [exciting_loads(sol, j) for j in range(4)]
+        X.append([abs(np.dot(v[:2], e)) / F for v in x])
+        Xm.append([(abs(v[0]) * e[0] + abs(v[1]) * e[1]) / F for v in x])
+        D.append([float(np.dot(near_field_drift(sol, j)[:2], e)) / f1 for j in range(4)])
+    return np.array(X), np.array(Xm), np.array(D)
+
+
+def _hams_le(results):
+    """HAMS of the l_square_* cases at heading 45 deg, in the quantities of Linton & Evans Figs. 2 and 3: per case a dict
+    of k a, |X . e|/|F| and f . e/f_1 per cylinder (this module's order), and the total f/f_1 from far-field."""
+    arr = layout("square")
+    a, depth, beta = arr.radii[0], arr.depth, math.pi / 4.0
+    e = np.array([math.cos(beta), math.sin(beta)])
+    one = Array([(0.0, 0.0)], a, depth)
+    out = []
+    for name, folder in case_folders(results) if results else []:
+        X, near, far, _ = read_hams(folder)
+        rec = dict(name=name.replace("l_square_diff_", "HAMS "), ka=[], X=[], D=[], total=[])
+        for key in sorted(X):
+            if abs(key[1] - 45.0) > 1e-6 or key not in near or key not in far:
+                continue
+            s1 = Solution(one, key[0], beta, order=LOAD_ORDER)
+            F = abs(np.dot(exciting_loads(s1, 0)[:2], e))
+            f1 = float(np.dot(near_field_drift(s1, 0)[:2], e))
+            rec["ka"].append(wave_number(key[0], depth) * a)
+            # ExcForce.3 holds conj(X); the modulus of the component along e is the same
+            rec["X"].append([abs(X[key][6 * j + 1] * e[0] + X[key][6 * j + 2] * e[1]) / F for j in range(4)])
+            rec["D"].append([(near[key][6 * j + 1] * e[0] + near[key][6 * j + 2] * e[1]) / f1 for j in range(4)])
+            rec["total"].append((far[key][1] * e[0] + far[key][2] * e[1]) / f1)
+        out.append(rec)
+    return out
+
+
+def plot_published(results, out):
+    """PNGs of Linton & Evans (1990), Figs. 2 and 3, redrawn: the digitised published values (markers; hollow grey where
+    left out, linton_evans_digitised.csv), the exact reference (lines, k a step 0.01, 0.002 in the near-trapping band) and
+    HAMS (the l_square_* cases under RESULTS, if given; heading 45 deg, the same layout scaled by 5). One panel per
+    cylinder, numbered as in the paper, and the total for Fig. 3."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    os.makedirs(out, exist_ok=True)
+    dig = read_digitised()
+    kas = np.unique(np.round(np.r_[np.arange(0.05, 3.20, 0.01), np.arange(1.40, 2.06, 0.002)], 4))
+    X, Xm, D = _le_curves(kas)
+    hams = _hams_le(results)
+    markers = ["s", "^", "D"]
+    hcol = ["tab:blue", "tab:orange", "tab:green"]
+    written = []
+
+    def published(ax, fig_name, curve):
+        pts = [(float(r["ka"]), float(r["value"]), r["use"] == "1") for r in dig
+               if r["figure"] == "LE1990 " + fig_name and r["curve"] == curve]
+        use = [(k, v) for k, v, u in pts if u]
+        rest = [(k, v) for k, v, u in pts if not u]
+        if use:
+            ax.plot(*zip(*use), "o", ms=4.5, color="tab:red", mfc="none", mew=1.2,
+                    label="Linton & Evans (1990), %s, digitised" % fig_name)
+        if rest:
+            ax.plot(*zip(*rest), "o", ms=4, color="0.6", mfc="none", label="digitised, left out (crossing)")
+
+    for fig_name, panels, ylabel in (
+            ("Fig. 2", ["cylinder 1", "cylinder 2", "cylinder 4"], "|X/F|"),
+            ("Fig. 3", ["total", "cylinder 1", "cylinder 2", "cylinder 4"], "f / f_1")):
+        fig, axes = plt.subplots(len(panels), 1, figsize=(10, 3.0 * len(panels)), sharex=True)
+        for ax, curve in zip(axes, panels):
+            if curve == "total":
+                ax.plot(kas, D.sum(axis=1), "k-", lw=1.2, label="exact (this reference)")
+            else:
+                j = LE_TO_HERE[curve]
+                if fig_name == "Fig. 2":
+                    ax.plot(kas, X[:, j], "k-", lw=1.2, label="exact, |X . e_beta|/|F|")
+                    if curve in ("cylinder 1", "cylinder 3"):
+                        ax.plot(kas, Xm[:, j], "k--", lw=1.0,
+                                label="exact, (|X_x| cos b + |X_y| sin b)/|F|, the paper's form off the diagonal")
+                else:
+                    ax.plot(kas, D[:, j], "k-", lw=1.2, label="exact (this reference)")
+            published(ax, fig_name, curve)
+            for mi, rec in enumerate(hams):
+                if curve == "total":
+                    y = rec["total"]
+                    lab = rec["name"] + " (far-field)"
+                else:
+                    y = [row[LE_TO_HERE[curve]] for row in (rec["X"] if fig_name == "Fig. 2" else rec["D"])]
+                    lab = rec["name"] + (" (near-field)" if fig_name == "Fig. 3" else "")
+                ax.plot(rec["ka"], y, markers[mi % 3], ms=5, color=hcol[mi % 3], label=lab)
+            ax.axvspan(1.38, 2.07, color="0.93", zorder=0)
+            # the axes of the paper, extended to show the exact near-trapping extremes (2.27 in Fig. 2, -2.34 in Fig. 3);
+            # f_1 goes to zero as k a goes to zero, so f/f_1 grows without bound there
+            ax.set_ylim(*((0.0, 2.4) if fig_name == "Fig. 2" else (-2.5, 5.0)))
+            ax.set_ylabel(ylabel)
+            ax.set_title(curve, fontsize=10, loc="left")
+            ax.grid(alpha=0.3)
+            ax.set_xlim(0.0, 3.25)
+        axes[0].legend(fontsize=7, ncol=2, loc="upper left")
+        axes[-1].set_xlabel("k a")
+        what = "first-order force along the wave" if fig_name == "Fig. 2" else "mean drift force along the wave"
+        fig.suptitle("Four cylinders at the corners of a square, a/h = 1/2, R/h = 2, beta = pi/4: %s. Lines: exact; "
+                     "symbols: HAMS (the HAMS case, scaled by 5).\nRed circles: data from Linton, C.M. & Evans, D.V. "
+                     "(1990), The interaction of waves with arrays of vertical circular cylinders,\nJ. Fluid Mech. 215, "
+                     "549-569, %s, digitised (linton_evans_digitised.csv). Grey band: near-trapping."
+                     % (what, fig_name), fontsize=8.5)
+        fig.tight_layout(rect=(0, 0, 1, 0.94))
+        path = os.path.join(out, "le_linton_evans_%s.png" % fig_name.replace(". ", "").lower())
+        fig.savefig(path, dpi=130)
+        plt.close(fig)
+        written.append(path)
+    return written
+
+
+def published_differences():
+    """Largest |reference - digitised| per figure and curve over the points kept (use = 1), outside and inside the
+    near-trapping band 1.38 < k a < 2.07; Fig. 2 off the diagonal against the paper's form."""
+    dig = [r for r in read_digitised() if r["use"] == "1" and r["figure"].startswith("LE1990")]
+    kas = sorted(set(float(r["ka"]) for r in dig))
+    X, Xm, D = _le_curves(kas)
+    idx = {k: i for i, k in enumerate(kas)}
+    out = {}
+    for r in dig:
+        k, v = float(r["ka"]), float(r["value"])
+        i = idx[k]
+        if r["curve"] == "total":
+            ref = D[i].sum()
+        else:
+            j = LE_TO_HERE[r["curve"]]
+            if r["figure"] == "LE1990 Fig. 2":
+                ref = Xm[i, j] if r["curve"] in ("cylinder 1", "cylinder 3") else X[i, j]
+            else:
+                ref = D[i, j]
+        band = "band" if 1.38 < k < 2.07 else "outside"
+        key = (r["figure"], r["curve"], band)
+        out[key] = max(out.get(key, 0.0), abs(ref - v))
+    return out
+
+
+def plot_field_error(results, out, step=0.5):
+    """PNG of the error of HAMS's wave elevation at heading 45 deg, 1.10 and 1.70 rad/s: | |eta_HAMS| - |eta_exact| | / A in
+    percent (A the incident amplitude; a plain relative error blows up where |eta| is near zero). With the l_square_field_*
+    cases under RESULTS (le_field_grid, drift_convergence.py) as maps per mesh; otherwise at the 16 field points of the
+    l_square_diff_* cases, as coloured markers on the exact |eta| (m3) and a bar chart per point (m1 to m3)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import drift_convergence as dc
+    os.makedirs(out, exist_ok=True)
+    arr = layout("square")
+    xs = np.arange(-40.0, 40.0 + 1e-9, step)
+    gx, gy = np.meshgrid(xs, xs)
+    inside = np.zeros(gx.shape, dtype=bool)
+    for (cx, cy), a in zip(arr.centres, arr.radii):
+        inside |= np.hypot(gx - cx, gy - cy) < a
+    omegas = dc.LE_FIELD_FREQUENCIES
+    beta = math.radians(45.0)
+    exact = {}
+    for omega in omegas:
+        e = np.abs(Solution(arr, omega, beta).field(gx.ravel(), gy.ravel())).reshape(gx.shape)
+        e[inside] = np.nan
+        exact[omega] = e
+    grid_cases = [(n, f) for n, f in case_folders(results, "l_square_field_")] if results else []
+    written = []
+    if grid_cases:
+        pts = np.array(dc.le_field_grid())
+        fig, axes = plt.subplots(len(omegas), 1 + len(grid_cases), figsize=(4.6 * (1 + len(grid_cases)), 4.2 * len(omegas)))
+        axes = np.atleast_2d(axes)
+        for r, omega in enumerate(omegas):
+            sol = Solution(arr, omega, beta)
+            ex = np.abs(sol.field(pts[:, 0], pts[:, 1]))
+            k = wave_number(omega, arr.depth)
+            im = axes[r, 0].pcolormesh(gx, gy, exact[omega], shading="auto", cmap="viridis")
+            fig.colorbar(im, ax=axes[r, 0], label="|eta| / A, exact")
+            axes[r, 0].set_title("exact, %.2f rad/s, k a = %.2f" % (omega, k * arr.radii[0]), fontsize=9)
+            for c, (name, folder) in enumerate(grid_cases, start=1):
+                _, _, _, field = read_hams(folder)
+                vals = field.get(_key(omega, 45.0), {})
+                err = np.array([abs(abs(vals.get(i + 1, complex("nan"))) - ex[i]) for i in range(len(pts))]) * 100.0
+                n = int(round(80.0 / dc.LE_FIELD_STEP)) + 1
+                emap = np.full((n, n), np.nan)
+                ix = np.rint((pts[:, 0] + 40.0) / dc.LE_FIELD_STEP).astype(int)
+                iy = np.rint((pts[:, 1] + 40.0) / dc.LE_FIELD_STEP).astype(int)
+                emap[iy, ix] = err
+                axis = np.linspace(-40.0, 40.0, n)
+                im = axes[r, c].pcolormesh(axis, axis, emap, shading="auto", cmap="magma_r", vmin=0.0,
+                                           vmax=max(1.0, np.nanpercentile(err, 99.5)))
+                fig.colorbar(im, ax=axes[r, c], label="| |eta_HAMS| - |eta_exact| | / A  [%]")
+                axes[r, c].set_title("%s: largest %.2f %%, median %.2f %%" % (
+                    name.replace("l_square_field_", "HAMS "), np.nanmax(err), np.nanmedian(err)), fontsize=9)
+        for ax in axes.ravel():
+            ax.set_aspect("equal")
+            for (cx, cy), a in zip(arr.centres, arr.radii):
+                ax.add_patch(plt.Circle((cx, cy), a, color="0.85"))
+        fig.suptitle("Wave elevation around four bottom-mounted cylinders, heading 45 deg: error of HAMS on a 1.5 m grid",
+                     fontsize=10)
+        fig.tight_layout()
+        path = os.path.join(out, "le_field_error_grid.png")
+        fig.savefig(path, dpi=120)
+        plt.close(fig)
+        written.append(path)
+    folders = case_folders(results) if results else []
+    if folders:
+        pts = np.array(FIELD_POINTS)
+        fig, axes = plt.subplots(len(omegas), 2, figsize=(13, 5.0 * len(omegas)),
+                                 gridspec_kw=dict(width_ratios=(1.15, 1.0)))
+        for r, omega in enumerate(omegas):
+            sol = Solution(arr, omega, beta)
+            ex = np.abs(sol.field(pts[:, 0], pts[:, 1]))
+            errs = {}
+            for name, folder in folders:
+                _, _, _, field = read_hams(folder)
+                vals = field.get(_key(omega, 45.0), {})
+                errs[name] = np.array([abs(abs(vals.get(i + 1, complex("nan"))) - ex[i]) for i in range(len(pts))]) * 100
+            ax = axes[r, 0]
+            im = ax.pcolormesh(gx, gy, exact[omega], shading="auto", cmap="Greys", vmin=0.0)
+            fig.colorbar(im, ax=ax, label="|eta| / A, exact")
+            finest = folders[-1][0]
+            sc = ax.scatter(pts[:, 0], pts[:, 1], c=errs[finest], cmap="plasma", s=90, edgecolors="k", vmin=0.0)
+            fig.colorbar(sc, ax=ax, label="| |eta_HAMS| - |eta_exact| | / A  [%%], %s" %
+                         finest.replace("l_square_diff_", "HAMS "))
+            for i, (x, y) in enumerate(pts[:, :2], start=1):
+                ax.annotate(str(i), (x, y), textcoords="offset points", xytext=(5, 5), fontsize=7, color="tab:blue")
+            ax.set_aspect("equal")
+            ax.set_title("%.2f rad/s, k a = %.2f, heading 45 deg" % (omega, wave_number(omega, arr.depth) * arr.radii[0]),
+                         fontsize=9)
+            ax2 = axes[r, 1]
+            width = 0.8 / len(folders)
+            for c, (name, _) in enumerate(folders):
+                ax2.bar(np.arange(1, len(pts) + 1) + (c - (len(folders) - 1) / 2.0) * width, errs[name], width,
+                        label=name.replace("l_square_diff_", "HAMS "))
+            ax2.set_yscale("log")
+            ax2.set_xlabel("field point")
+            ax2.set_ylabel("| |eta_HAMS| - |eta_exact| | / A  [%]")
+            ax2.set_xticks(np.arange(1, len(pts) + 1))
+            ax2.grid(alpha=0.3, which="both", axis="y")
+            ax2.legend(fontsize=8)
+        fig.suptitle("Wave elevation at the 16 field points of the HAMS cases: error of |eta| over the incident amplitude",
+                     fontsize=10)
+        fig.tight_layout()
+        path = os.path.join(out, "le_field_error_points.png")
+        fig.savefig(path, dpi=120)
+        plt.close(fig)
+        written.append(path)
+    return written
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command")
@@ -1257,6 +1529,8 @@ def main(argv=None):
     if args.command == "plot":
         written = plot_reference(args.out)
         written += plot_linton_evans(args.results, args.out)
+        written += plot_published(args.results, args.out)
+        written += plot_field_error(args.results, args.out)
         if args.results:
             ref = read_rows(args.reference) if args.reference else reference_rows()
             written += plot(args.results, args.out, ref)

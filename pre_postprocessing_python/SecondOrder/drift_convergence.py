@@ -233,6 +233,23 @@ LE_FIELD_POINTS = ((0.0, 0.0, 0.0), (10.0, 0.0, 0.0), (0.0, 10.0, 0.0), (-10.0, 
                    (5.0, 5.0, 0.0), (-5.0, -5.0, 0.0), (25.0, 0.0, 0.0), (-25.0, 0.0, 0.0), (0.0, 25.0, 0.0),
                    (0.0, -25.0, 0.0), (25.0, 25.0, 0.0), (-25.0, -25.0, 0.0), (40.0, 10.0, 0.0), (-40.0, 10.0, 0.0),
                    (10.0, 17.0, 0.0))
+# The wave field of the array on a grid (l_square_field_*): z = 0, x and y from -40 to 40 m in steps of 1.5 m, outside a
+# circle of 5.5 m about each centre (0.5 m off the wall), at the two frequencies of the field plots of linton_evans_reference.py
+LE_FIELD_FREQUENCIES = (1.10, 1.70)
+LE_FIELD_STEP = 1.5
+LE_FIELD_CLEARANCE = 0.5
+
+
+def le_field_grid():
+    """The field points of the l_square_field_* cases, (x, y, 0), row by row in y then x."""
+    n = int(round(80.0 / LE_FIELD_STEP))
+    points = []
+    for iy in range(n + 1):
+        for ix in range(n + 1):
+            x, y = -40.0 + ix * LE_FIELD_STEP, -40.0 + iy * LE_FIELD_STEP
+            if all(math.hypot(x - cx, y - cy) > BOTTOM_RADIUS + LE_FIELD_CLEARANCE for cx, cy in LE_CENTRES):
+                points.append((x, y, 0.0))
+    return tuple(points)
 
 
 def scaled(mesh, keys, multiple):
@@ -735,6 +752,10 @@ def linton_evans_cases():
     for m in (1, 2, 3):
         cases.append(Case("l_square_diff_%s" % tag(m), "L", "le", "le_square", m, "fixed", "differencing",
                           frequencies=LE_FREQUENCIES, headings=LE_HEADINGS))
+    # The wave field on a grid (le_field_grid) at two frequencies, heading 45 deg: the same meshes and settings
+    for m in (1, 2, 3):
+        cases.append(Case("l_square_field_%s" % tag(m), "L", "le-field", "le_square", m, "fixed", "differencing",
+                          frequencies=LE_FIELD_FREQUENCIES, headings=(45.0,)))
     return cases
 
 
@@ -1000,7 +1021,9 @@ def write_hams_case(case, root, threads):
     array = case.hull == "le_square"
     fixtures.write_control(os.path.join(path, "ControlFile.in"), depth=HULLS[case.hull]["depth"], frequencies=case.frequencies,
                            headings=case.headings, solver=2 if case.isolv == 2 else None, irsp=case.irsp, threads=threads,
-                           body_origins=list(LE_CENTRES) if array else None, field_points=LE_FIELD_POINTS if array else ())
+                           body_origins=list(LE_CENTRES) if array else None,
+                           field_points=(le_field_grid() if case.name.startswith("l_square_field") else LE_FIELD_POINTS)
+                           if array else ())
     options = dict(mean_drift=case.mean_drift, drift_methods="far near", motion_state=case.motion,
                    write_terms=1 if case.mean_drift == 1 else 0, velocity_method=case.velocity,
                    waterline_method=case.waterline)
