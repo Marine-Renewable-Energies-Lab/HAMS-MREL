@@ -10,8 +10,10 @@
 #SBATCH --array=1-4%4
 #SBATCH -A tdsei3290
 # G1 item 3 (qtf_fs_circle = panels against samples), sharp m2 cases of Phase 7c-2 (qtf = 3: sum and difference,
-# qtf_direct = 1, qtf_terms = full, IRSP = 1), one task per line of sharp.txt (route, case). Expected 3.2 h each: stage 5 (job 29405797, 47d5911) took 11436 s fixed and 11394 s free with the same case.
-# Limit 6:00:00. Same modules, threads and stack as the stage-5 job run_qtfdirectsum/jobs/stage5_wlfit.sbatch.
+# qtf_direct = 1, qtf_terms = full, IRSP = 1), one task per line of sharp.txt (route, case). Expected 3.2 h each: in stage 5
+# (job 29405797, 47d5911) HAMS took 11436 s fixed and 11394 s free (the "code 0, ... s" lines of drift_convergence.py in
+# snellius-qtf-directsum/logs/29405797_1.log and _2.log). Limit 6:00:00. Same modules, threads and stack as
+# run_qtfdirectsum/jobs/stage5_wlfit.sbatch.
 module load 2024
 module load intel/2024a
 ulimit -s unlimited

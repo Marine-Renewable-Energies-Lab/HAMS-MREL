@@ -16,11 +16,14 @@ For every file present in both folders:
   difference of the numbers on them (relative to the largest number of the file).
 Rows of one file that the other lacks are counted and reported. Measure as qtf_compare.py (normalise by the largest value of
 the set so that rows passing through zero do not dominate).
+Exit code 1 when anything did not compare: a folder missing, a file in one folder only, a compared file with no rows in
+common or with rows in one file only. They are listed under PROBLEMS.
 """
 import argparse
 import os
 import re
 import statistics
+import sys
 
 QTF_FILE = re.compile(r"^QTF_.*\.1[012][ds]$")
 TERMS_FILE = re.compile(r"^QTF_(Potential|Direct)Terms.*\.txt$")
@@ -161,7 +164,14 @@ def compare_other(new, ref):
 
 
 def compare_folders(new, ref, label=""):
-    lines = []
+    """(text, summary, problems): the report, {file: (max, median) of its worst mode} of the compared QTF files, and the
+    list of problems (see the module docstring); the caller decides how to fail, main exits 1 on any."""
+    lines, problems = [], []
+    for folder in (new, ref):
+        if not os.path.isdir(folder):
+            problems.append("no folder %s" % folder)
+    if problems:
+        return "\n".join(problems), {}, problems
     names = sorted(set(os.listdir(new)) & set(os.listdir(ref)))
     only = sorted(set(os.listdir(new)) ^ set(os.listdir(ref)))
     head = "%s: %s against %s" % (label, new, ref) if label else "%s against %s" % (new, ref)
@@ -180,12 +190,17 @@ def compare_folders(new, ref, label=""):
             lines.append("  %-28s %s" % (name, compare_other(p, q)))
             continue
         summary[name] = res.get("all")
+        if n == 0:
+            problems.append("%s: no rows in common" % name)
+        if extra or missing:
+            problems.append("%s: %d rows only in new, %d only in ref" % (name, extra, missing))
         lines.append("  %-28s %d rows in common, %d only in new, %d only in ref" % (name, n, extra, missing))
         for key, (mx, md) in res.items():
             lines.append("      %-10s max %.3e  median %.3e" % (key, mx, md))
     if only:
         lines.append("  in one folder only: %s" % ", ".join(only))
-    return "\n".join(lines), summary
+        problems.append("in one folder only: %s" % ", ".join(only))
+    return "\n".join(lines), summary, problems
 
 
 def main():
@@ -194,8 +209,12 @@ def main():
     parser.add_argument("ref")
     parser.add_argument("--label", default="")
     args = parser.parse_args()
-    text, _ = compare_folders(args.new, args.ref, args.label)
+    text, _, problems = compare_folders(args.new, args.ref, args.label)
     print(text)
+    print("PROBLEMS: %d" % len(problems))
+    for p in problems:
+        print("  " + p)
+    sys.exit(1 if problems else 0)
 
 
 if __name__ == "__main__":

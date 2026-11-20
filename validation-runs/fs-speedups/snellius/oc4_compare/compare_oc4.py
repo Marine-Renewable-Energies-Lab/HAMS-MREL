@@ -9,6 +9,8 @@ the new case folder) compare_oc4.txt and, with matplotlib, compare_oc4.png:
    |new - ref| / max |ref| over the rows of the force or moment group), and the other output files (byte-identical or not);
 2. wall time and core-hours of both runs (result.json wall_s; 24 CPUs billed on fat_genoa), and the speed-up;
 3. the time of each logged pass (the "QTF ...: omega ..., <t> s for ..." lines of log.txt), summed per kind, both runs.
+Problems (an output file in one folder only or without rows in common, a missing result.json, a nonzero code in it) are
+listed under PROBLEMS at the end, and the exit code is then 1.
 """
 import argparse
 import json
@@ -24,11 +26,15 @@ CPUS = 24
 PASS = re.compile(r"^\s*(QTF [^:]+?):\s+omega\s+[-\d.E+]+,\s+([\d.]+) s for")
 
 
-def wall(case):
+def wall(case, problems):
     path = os.path.join(case, "result.json")
     if not os.path.exists(path):
+        problems.append("no result.json in %s: no time for this run" % case)
         return None
-    return float(json.load(open(path))["wall_s"])
+    r = json.load(open(path))
+    if r.get("code", 1) != 0:
+        problems.append("%s: result.json code %s" % (case, r.get("code")))
+    return float(r["wall_s"])
 
 
 def passes(case):
@@ -51,10 +57,10 @@ def main():
     parser.add_argument("--out")
     args = parser.parse_args()
     out = args.out or args.new
-    text, summary = qfc.compare_folders(os.path.join(args.new, "output", "Wamit_format"),
+    text, summary, problems = qfc.compare_folders(os.path.join(args.new, "output", "Wamit_format"),
                                         os.path.join(args.ref, "output", "Wamit_format"), "OC4 fs-speedups against 29453291")
     lines = [text, "", "Time (%d CPUs billed)" % CPUS]
-    wn, wr = wall(args.new), wall(args.ref)
+    wn, wr = wall(args.new, problems), wall(args.ref, problems)
     for name, w in (("new", wn), ("29453291", wr)):
         if w is not None:
             lines.append("  %-9s wall %8.0f s = %6.2f h, %7.1f core-h" % (name, w, w / 3600.0, w * CPUS / 3600.0))
@@ -66,10 +72,16 @@ def main():
     for kind in sorted(set(pn) | set(pr)):
         a, b = pn.get(kind, (0, 0.0)), pr.get(kind, (0, 0.0))
         lines.append("  %-76s %4d %10.0f s %4d %10.0f s" % (kind, a[0], a[1], b[0], b[1]))
+    lines += ["", "PROBLEMS: %d" % len(problems)] + ["  " + p for p in problems]
     os.makedirs(out, exist_ok=True)
     with open(os.path.join(out, "compare_oc4.txt"), "w") as f:
         f.write("\n".join(lines) + "\n")
     print("\n".join(lines))
+    figure(out, summary, wn, wr)
+    sys.exit(1 if problems else 0)
+
+
+def figure(out, summary, wn, wr):
     try:
         import matplotlib
         matplotlib.use("Agg")

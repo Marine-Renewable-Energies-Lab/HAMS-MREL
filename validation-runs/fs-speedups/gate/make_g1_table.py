@@ -79,7 +79,7 @@ def table():
         "is within 4.7e-4 pp of the samples error (triangle inequality): far inside the 0.5 pp margin |",
         "| non-FS files, qtf_fs_main | panels against samples | line for line | unchanged |",
         "| FS_inner + FS_outer, qtf_fs_main (integration) | source against stencil, of max abs FS | 0.559 (free), 0.067-0.268 "
-        "per mode (fixed) | not an error against an exact value, but 25-55 times the G1 margin |",
+        "per mode (fixed) | not an error against an exact value, but 13-112 times the 0.5 pp G1 margin |",
         "| hull refinement 220 -> 960 panels, fixed body (Task 6 review) | change of FS_inner + FS_outer, of max abs FS | "
         "stencil 0.2-1.1 % (heave 4.9 %), source 1.5-24.9 % | the source route is not hull-converged; the stencil route is |",
         "| .11s/.12s FS part and totals, sharp m2 fixed and free, round m2 | against the 7c-2 exact references | Snellius | "

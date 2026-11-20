@@ -9,9 +9,11 @@
 #SBATCH -o /home/vraghavan/HAMS_drift_study/run_fsspeed/logs/g1_round_%A_%a.log
 #SBATCH --array=1-2%2
 #SBATCH -A tdsei3290
-# G1 item 3 (qtf_fs_circle = panels against samples), round m2 cases of Phase 7c-2 (qtf = 3: sum and difference,
-# qtf_direct = 1, qtf_terms = full, IRSP = 1), one task per line of round.txt (route, case). Expected 0.25 h each: stage 2 (job 29336170_2, ed27bd3) took 768 s for this case, before the near-waterline fit.
-# Limit 1:00:00. Same modules, threads and stack as the stage-5 job run_qtfdirectsum/jobs/stage5_wlfit.sbatch.
+# G1 item 3 (qtf_fs_circle = panels against samples), round m2 case of Phase 7c-2 (qtf = 3: sum and difference,
+# qtf_direct = 1, qtf_terms = full, IRSP = 1), one task per line of round.txt (route, case). Expected about 0.27 h each:
+# stage 2 (job 29336170_2, ed27bd3) took 768 s, before the near-waterline fit, which made the sharp m2 run 28 % slower
+# (8897 -> 11394 s). Limit 1:00:00. Same modules, threads and stack as the stage-5 job
+# run_qtfdirectsum/jobs/stage5_wlfit.sbatch.
 module load 2024
 module load intel/2024a
 ulimit -s unlimited

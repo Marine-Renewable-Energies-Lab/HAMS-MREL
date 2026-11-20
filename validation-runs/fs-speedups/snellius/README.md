@@ -1,6 +1,6 @@
 # fs-speedups on Snellius: G1 item 3 and the OC4 comparison (cluster-side steps)
 
-Nothing here has been submitted. Submit only after the cost is approved (COST.md: about 363 core-hours expected, 852 at
+Nothing here has been submitted. Submit only after the cost is approved (COST.md: about 366 core-hours expected, 852 at
 most). Login by key only; in Git Bash every ssh/scp line needs the `MSYS_NO_PATHCONV=1` prefix (paths start with /).
 
 - Run root: `/home/vraghavan/HAMS_drift_study/run_fsspeed` (new).
@@ -20,7 +20,10 @@ most). Login by key only; in Git Bash every ssh/scp line needs the `MSYS_NO_PATH
 The G1 cases are the 7c-2 cases of drift_convergence.py (qtf = 3, so sum and difference; qtf_direct = 1; qtf_terms = full;
 IRSP = 1), written by g1_item3/make_case.py with 24 threads and `qtf_fs_circle = samples` or `= panels` appended; every
 other key at the branch default (field_deep_kh = 10, qtf_fs_inner = stencil). Both routes run on the same build, so the
-difference between them is item 3 alone. The OC4 run adds only `qtf_fs_circle = panels` to the inputs of 29453291; the
+difference between them is the circle route: the panels route itself, plus the deep-water rows that the samples route uses
+for its circle samples where k0 h >= 10 (about 1 rad/s and up in depth 100 m), while the panels route is always finite
+depth (pw_from_panels). Against the exact references that is the comparison G1 wants: each route as it would run by
+default. The OC4 run adds only `qtf_fs_circle = panels` to the inputs of 29453291; the
 other items of the branch are on by default (field_deep_kh = 10, psi reuse, the threaded mode check).
 
 ## 1. Bundle (laptop, Git Bash)
@@ -85,12 +88,34 @@ python -I $S/oc4_compare/compare_oc4.py $V/fs-speedups/results/q_oc4wfull_sym_in
     $V/oc4wfull-sum/results/q_oc4wfull_sym_indsum_free_L0
 ```
 
-g1_compare.py writes `g1_compare.txt` and `g1_compare.png` in the results folder: the sum QTF (.12s, .12s - .10s, P, D_FS)
-and the difference QTF (.12d, .11d) of both routes against the exact sharp cylinder (qtf_compare.py --direct-sum and
---direct), the in-run direct-indirect check (round hull included), every output file of panels against samples, and the
-core-hours. compare_oc4.py writes `compare_oc4.txt` and `compare_oc4.png` beside the OC4 run: every QTF file against
-29453291 (max and median), the wall time and core-hours of both, and the logged passes. The stage-5 numbers of today's
-route at 47d5911 are in `validation-runs/snellius-qtf-directsum/compare_stage5*.txt`.
+What the exact references hold (checked 2026-11-20 on the CSV headers and read_potential_reference of qtf_compare.py):
+both `qtfdirectsum_reference.csv` (stages 1-2 and 5; kernel sum, fixed and free, 0.40-1.40 by 0.05, every pair
+omega_i <= omega_j) and `qtffs_reference.csv` (the 6a reference; kernel diff, fixed and free, 0.40-1.40 by 0.01,
+omega_j - omega_i <= 0.3) have the quadratic part, the five body-forcing terms and the free-surface part FS. So each FS part
+of HAMS is compared with FS, each total without its FS part with the total without FS, and each total with FS with the
+total with FS: like with like. There is no exact reference for the round hull (in-run check only).
+
+g1_compare.py writes `g1_compare.txt` and `g1_compare.png` in the results folder (qtf_compare.py is imported for its
+readers, not run: its --direct mode compares the .12d/.11d of these qtf_terms = full cases, FS included, with the
+reference without FS):
+1. sharp m2, both kernels, both routes against the exact cylinder: the FS parts (difference: FS_inner + FS_outer of
+   QTF_PotentialTerms.txt and D_FS of QTF_DirectTerms.txt; sum: P_FS and D_FS of QTF_DirectTermsSum.txt), the totals minus
+   their FS part, the body parts, and the totals with FS; free body also with 0.75-0.80 rad/s left out. Then the
+   panels-minus-samples change and the G1 verdict per quantity on the max and the median;
+2. the in-run direct-indirect check of both kernels (round hull included);
+3. every output file of panels against samples; 4. the core-hours.
+It exits 1 and lists PROBLEMS when a case, route, output file, row set or result.json is missing (cases from sharp.txt
+and round.txt). compare_oc4.py writes `compare_oc4.txt` and `compare_oc4.png` beside the OC4 run: every QTF file against
+29453291 (max and median), the wall time and core-hours of both, and the logged passes; it too exits 1 on any problem.
+
+Today's route at 47d5911 (stage 5 outputs, results_wl), through g1_compare.py with the stage-5 run as both routes:
+FS parts against the exact FS, max / median %, difference kernel FS_inner + FS_outer: fixed 1.82 / 0.03 (F_x), 1.91 / 0.01
+(F_z), 1.41 / 0.01 (M_y); free, 0.75-0.80 left out, 2.34 / 0.00, 1.21 / 0.00, 1.97 / 0.00. Sum kernel D_FS: fixed 1.74 /
+0.28, 1.05 / 0.31, 1.50 / 0.36; free, 0.75-0.80 left out, 2.03 / 0.52, 0.99 / 0.21, 1.83 / 0.46 (as compare_stage5*.txt).
+The difference totals stay far off (fixed F_z 15.8 / 11.4 %) because of the quadratic part .10d (20.8 / 15.0 % on its own),
+which is the same in both routes.
 
 G1 rule (spec G1): item 3 becomes the default only if no quantity of the panels runs is worse than the samples runs by
-more than the larger of 0.5 percentage points and 10 % of the samples error, against the exact reference.
+more than the larger of 0.5 percentage points and 10 % of the samples error, against the exact reference. Read the FS rows
+and the change column first: the totals carry the route-independent quadratic error, whose large values widen the 10 %
+margin.
