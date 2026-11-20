@@ -1,0 +1,14 @@
+! Mean drift options of this integration test: qtf_indsum_b2_q3 at h = 100 m and 0.9, 1.05 rad/s
+mean_drift = 1
+drift_methods = far near
+motion_state = free
+write_terms = 1
+qtf_terms = full
+qtf = 3
+qtf_max_dw = 0.3
+qtf_edge_weights = off
+qtf_direct = 0
+qtf_fs_panel = 5.0
+qtf_fs_modes = 8
+qtf_fs_evanescent = 8
+cs_panel_size = 5.0

@@ -6,11 +6,17 @@ module test_qtf_free_surface
   use SecondOrderIncident, only : incident2, incident2_pair, incident2_phi, incident2_grad, free_surface_forcing
   use NearFieldDrift, only : KERNEL_DIFF, KERNEL_SUM
   use QTFFreeSurface, only : fs_point_field, fs_forcing_diff, fs_inner_fields, fs_inner_steps, fs_circle_modes, &
-                             fs_mode_warning, fs_auto_modes, FS_MODE_TOL, fs_sample_phi, fs_mode_scales, fs_auto_evanescent, &
+                             circle_from_panels, &
+                             fs_mode_warning, fs_auto_modes, FS_MODE_TOL, fs_mode_miss, fs_sample_phi, fs_mode_scales, &
+                             fs_auto_evanescent, &
                              fs_inner_pair, fs_outer_pair, fs_outer_annulus, fs_outer_tail, fs_outer_ring, fs_outer_rfar, &
                              fs_outer_sliver, fs_radius_message, FS_SIGN, fs_pair_order_message, fs_pair_terms, &
                              fs_coverage_check, fs_outer_moments, fs_forcing_points, fs_local_rankine, &
-                             fs_wl_fit, fs_waterline_fit_setup, fs_waterline_fit_apply
+                             fs_wl_fit, fs_waterline_fit_setup, fs_waterline_fit_apply, &
+                             fs_wl_state, fs_inner_fields_source, fs_wl_normal_derivative, fs_waterline_state, &
+                             fs_edge_state, fs_inner_pair_ibp, fs_line_pair, fs_waterline_fit_source, &
+                             fs_waterline_closure, FS_CLOSE_TOL
+  use SurfaceVelocity, only : source_operator, build_source_operator, velocity_source
   use HAMS_mod, only : NTHREAD, ISOL, IRSP
   use WaveDyn_mod, only : AMP, BETA, H, NK, TP, V, W1, WK, WVN
   use Body_mod, only : XW
@@ -18,15 +24,17 @@ module test_qtf_free_surface
   use FieldVelocity, only : fields_green, incident_at
   use QTFField, only : body_winding
   use PartialWaves, only : pw_set, pw_sample_points, pw_evanescent_from_wvn, pw_eval_surface, pw_radial, pw_radial_at, &
-                           pw_bessel_k, pw_green_modes, pw_green_mmax
-  use FirstOrderState, only : incident_phi, incident_grad, wave_gravity
+                           pw_bessel_k, pw_green_modes, pw_green_mmax, pw_decompose, pw_eval_point
+  use FirstOrderState, only : incident_phi, incident_grad, wave_gravity, image_signs
+  use direct_sum_green_mod, only : direct_sum_green
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use ControlSurfaceMesh, only : build_fs_inner
   use second_order_fixtures, only : make_cylinder, maccamy_fuchs_state, read_pnl_hull
   use test_waterline_field, only : set_wave, load_panels
   use Const_mod, only : g_const => G
-  use, intrinsic :: ieee_arithmetic, only : ieee_is_finite
-  use PanelMesh_mod, only : pm_xyz => XYZ, pm_ncn => NCN, pm_ncon => NCON
+  use, intrinsic :: ieee_arithmetic, only : ieee_is_finite, ieee_value, ieee_quiet_nan
+  use omp_lib, only : omp_get_wtime
+  use PanelMesh_mod, only : pm_xyz => XYZ, pm_ncn => NCN, pm_ncon => NCON, ISX, ISY
   use SingularIntgr, only : SGLINTBD_TRI2, SGLINTBD_QUAD2
   implicit none
   private
@@ -54,6 +62,9 @@ module test_qtf_free_surface
   real(8), parameter :: rho = 1025d0
   real(8), parameter :: sy_h = 20d0, sy_radius = 12d0, sy_centre(2) = [1.5d0, -0.7d0]
   integer, parameter :: sy_mmax = 3, sy_nev = 1
+  complex(8), parameter :: ci_ = (0d0, 1d0)
+  ! fs_inner_source_matches_exact (input of the accuracy gate): gates on the source route, 1.3x measured, rounded up
+  real(8), parameter :: SRC_FIELD_GATE = 7.6d-2, SRC_INT_GATE = 4.7d-2
 
 contains
 
@@ -103,7 +114,18 @@ subroutine collect_qtf_free_surface(testsuite)
     new_unittest("fs_fields_exact_inner", test_fields_exact_inner), &
     new_unittest("fs_fields_exact_circle", test_fields_exact_circle), &
     new_unittest("fs_fields_exact_integral", test_fields_exact_integral), &
-    new_unittest("fs_fields_exact_integral_diff", test_fields_exact_integral_diff) &
+    new_unittest("fs_fields_exact_integral_diff", test_fields_exact_integral_diff), &
+    new_unittest("fs_inner_centre_is_sample_phi", test_inner_centre_is_sample_phi), &
+    new_unittest("fs_circle_modes_split", test_circle_modes_split), &
+    new_unittest("fs_mode_miss_threads", test_mode_miss_threads), &
+    new_unittest("pw_from_panels_matches_samples", test_from_panels_samples), &
+    new_unittest("fs_circle_panels_mode_check", test_circle_panels_check), &
+    new_unittest("fs_circle_panels_cut_reported", test_circle_panels_cut), &
+    new_unittest("inner_ibp_identity", test_inner_ibp_identity), &
+    new_unittest("waterline_normal_derivative", test_waterline_normal_derivative), &
+    new_unittest("fs_pair_terms_ibp_order", test_pair_terms_ibp_order), &
+    new_unittest("fs_inner_source_matches_exact", test_inner_source_matches_exact), &
+    new_unittest("fs_inner_mesh_closure", test_inner_mesh_closure) &
     ]
 end subroutine collect_qtf_free_surface
 
@@ -304,6 +326,408 @@ subroutine test_laplace_residual(error)
   write (info, '(a,2es10.3)') "lap_h phi + phi_zz relative to |lap_h phi| at delta = 0.1, 0.05 m ", worst
   call check(error, worst(1) <= 1d-3, trim(info))
 end subroutine test_laplace_residual
+
+!> The centre value of fs_inner_fields (its optional centre) is fs_sample_phi at the point, to the bit, for every state,
+!> with and without the deep-water rows: the driver takes psi_k on the inner free surface from the centre of the stencil of
+!> the headings' pass (item 4 of the field-pass speed-ups), in place of a pass of fs_sample_phi. Three points at z = 0
+!> and one at z = -2 m (7-point stencil); state 1 is the fixture's scattered wave without incident part, as psi_k, state 2
+!> the same with the incident wave (amp 1), which changes phi but not the centre.
+subroutine test_inner_centre_is_sample_phi(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: rp(4) = [12d0, 14.5d0, 19d0, 13d0], thp(4) = [0.3d0, 2.0d0, -1.9d0, 1.0d0], &
+                        zp(4) = [0d0, 0d0, 0d0, -2d0]
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: one(1), states(2)
+  type(cs_points) :: pts
+  type(fs_point_field) :: f(4, 2)
+  complex(8) :: centre(4, 2), ph(4, 2)
+  real(8) :: x(3, 4)
+  integer :: i, id, nthread_saved
+  logical :: dw, same
+
+  call cylinder_fixture(mesh, one, error)
+  if (allocated(error)) return
+  states = one(1)
+  states(2)%amp = 1d0
+  do i = 1, 4
+    x(:, i) = [rp(i) * cos(thp(i)), rp(i) * sin(thp(i)), zp(i)]
+  end do
+  call free_points(x, 1d0, pts)
+  nthread_saved = NTHREAD
+  NTHREAD = 4
+  do id = 1, 2
+    dw = id == 2
+    call fs_inner_fields(mesh, pts, states, 0.1d0, .false., f, deep=dw, centre=centre)
+    call fs_sample_phi(mesh, pts, states, .false., ph, deep=dw)
+    same = all(transfer(centre, [0_8]) == transfer(ph, [0_8]))
+    print '(4x,a,l1,a,es10.2,a,l1)', "fs_inner centre, deep ", dw, ": max |centre - fs_sample_phi| ", &
+      maxval(abs(centre - ph)), ", the same bits ", same
+    call check(error, same, "the centre of fs_inner_fields is not fs_sample_phi to the bit")
+    if (allocated(error)) exit
+    call check(error, all(f(:, 1)%phi == centre(:, 1)), "phi of the state without incident wave is not its centre value")
+    if (allocated(error)) exit
+    call check(error, any(f(:, 2)%phi /= centre(:, 2)), "phi of the state with the incident wave is its centre value")
+    if (allocated(error)) exit
+  end do
+  NTHREAD = nthread_saved
+end subroutine test_inner_centre_is_sample_phi
+
+!> fs_circle_modes with nsplit gives each of the two groups of states the partial waves and the mode check of a call with
+!> that group alone, to the bit (the driver evaluates the headings and the psi modes of one frequency in one call, item 4
+!> of the field-pass speed-ups). The states of fs_mode_check_per_state, with state 1 as the first group: under the scale
+!> of all three states, states 2 and 3 would be held to state 1's samples.
+subroutine test_circle_modes_split(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: radius = 15d0
+  integer, parameter :: nev = 8, mmax = 6
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: states(3), one(1)
+  type(cs_points) :: circle
+  type(pw_set) :: pw(3), pw1(1), pw2(2)
+  real(8) :: kev(nev), miss(3), miss1(1), miss2(2)
+  integer :: j, k, nthread_saved
+  logical :: same
+
+  call cylinder_fixture(mesh, one, error)
+  if (allocated(error)) return
+  states = one(1)
+  j = minloc(norm2(mesh%xc - spread([10d0, 0d0, -0.5d0], 2, mesh%n), dim=1), dim=1)
+  states(2)%phi_p = (0d0, 0d0)
+  states(2)%dphi_p_dn = (0d0, 0d0)
+  states(2)%phi_p(j) = (1d-4, 0d0)
+  states(3) = states(2)
+  states(3)%phi_p(j) = (1d-16, 0d0)
+  call pw_evanescent_from_wvn(nev, kev)
+  call pw_sample_points([0d0, 0d0], radius, fx_depth, mmax, nev, circle)
+  nthread_saved = NTHREAD
+  NTHREAD = 4
+  call fs_circle_modes(mesh, circle, states, .false., [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pw, miss, nsplit=1)
+  call fs_circle_modes(mesh, circle, states(1:1), .false., [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pw1, miss1)
+  call fs_circle_modes(mesh, circle, states(2:3), .false., [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pw2, miss2)
+  NTHREAD = nthread_saved
+  same = all(transfer(miss, [0_8]) == transfer([miss1, miss2], [0_8])) .and. &
+         all(transfer(pw(1)%a, [0_8]) == transfer(pw1(1)%a, [0_8]))
+  do k = 1, 2
+    same = same .and. all(transfer(pw(k + 1)%a, [0_8]) == transfer(pw2(k)%a, [0_8]))
+  end do
+  print '(4x,a,3es10.2,a,3es10.2,a,l1)', "split mode check ", miss, "; separate ", miss1, miss2, "; the same bits ", same
+  call check(error, same, "fs_circle_modes with nsplit differs from the two separate calls")
+end subroutine test_circle_modes_split
+
+!> fs_mode_miss on 1 and on 4 threads gives the same bits (MAX over the points does not depend on the order), with and
+!> without a given scale, with one sample off (a nonzero miss), and with a non-finite sample (HUGE on both). The samples
+!> and partial waves are those of state 1 of fs_circle_modes_split. Prints the wall time of 20 calls on each count.
+subroutine test_mode_miss_threads(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: radius = 15d0
+  integer, parameter :: nev = 8, mmax = 6
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: one(1)
+  type(cs_points) :: circle
+  type(pw_set) :: pw(1)
+  complex(8), allocatable :: samples(:, :), off(:), nan(:)
+  real(8) :: kev(nev), miss(1), m1(5), m4(5), t1, t4
+  integer :: nthread_saved
+  logical :: same
+
+  call cylinder_fixture(mesh, one, error)
+  if (allocated(error)) return
+  call pw_evanescent_from_wvn(nev, kev)
+  call pw_sample_points([0d0, 0d0], radius, fx_depth, mmax, nev, circle)
+  allocate (samples(circle%n, 1))
+  nthread_saved = NTHREAD
+  NTHREAD = 1
+  call fs_sample_phi(mesh, circle, one, .false., samples, centroid_only=.true.)
+  call fs_circle_modes(mesh, circle, one, .false., [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pw, miss)
+  off = samples(:, 1)
+  off(circle%n/2) = off(circle%n/2)*1.05d0
+  nan = samples(:, 1)
+  nan(circle%n/3) = cmplx(ieee_value(1d0, ieee_quiet_nan), 0d0, 8)
+  call five_misses(1, m1, t1)
+  call five_misses(4, m4, t4)
+  NTHREAD = nthread_saved
+  same = all(transfer(m1, [0_8]) == transfer(m4, [0_8])) .and. m1(3) > 1d-3 .and. m1(3) > m1(1) .and. &
+         m1(5) == huge(1d0)
+  print '(4x,a,5es10.2,a,2f8.3)', "mode miss, 1 thread ", m1, "; wall s of 20 calls on 1 and 4 threads ", t1, t4
+  call check(error, same, "fs_mode_miss differs between 1 and 4 threads, or the checks are off")
+
+contains
+
+  subroutine five_misses(nt, m, wall)
+    integer, intent(in) :: nt
+    real(8), intent(out) :: m(5), wall
+    real(8) :: w0, dummy
+    integer :: i
+
+    NTHREAD = nt
+    m(1) = fs_mode_miss(pw(1), circle, samples(:, 1))
+    m(2) = fs_mode_miss(pw(1), circle, samples(:, 1), 2d0)
+    m(3) = fs_mode_miss(pw(1), circle, off)
+    m(4) = fs_mode_miss(pw(1), circle, off, 0d0)
+    m(5) = fs_mode_miss(pw(1), circle, nan)
+    w0 = omp_get_wtime()
+    dummy = 0d0
+    do i = 1, 20
+      dummy = dummy + fs_mode_miss(pw(1), circle, samples(:, 1))
+    end do
+    wall = omp_get_wtime() - w0 + 0d0*dummy
+  end subroutine five_misses
+end subroutine test_mode_miss_threads
+
+!> The circle partial waves from the hull integral (fs_circle_modes with graf, pw_from_panels; item 3 of the field-pass
+!> speed-ups) on the 448-panel cylinder, R = 15 m, h = 15 m, mmax = 40 and nev = 20 (enough: (10/15)^40 = 9e-8 for the
+!> hull's largest r, e^{-k_20 5 m} = 1e-9 for the nearest panel). Two states: the MacCamy-Fuchs scattered wave of the
+!> fixture and a made-up hull field (q = n_x, phi_P = 0.02 x + 0.01 i z), as the full mesh and as the half mesh with its
+!> y-image (load_panels(full, 0, 1)), so that the image sources enter. Errors relative to the largest sample of the state.
+!>   1. At every 8th circle sample, the panel partial waves equal the same centroid sum with G from the direct eigen-sum
+!>      (direct_sum_green plus 1/r and 1/r1, good to 3e-11; images as field_influence_row places them): pw_limit.
+!>   2. At every circle sample they equal the centroid route (fs_sample_phi, centroid_only) to within samples_limit; the
+!>      gap is the error of FINGREEN3D in field mode, which item 1 shows by the same samples against the direct sum.
+!>   3. The amplitudes at R (a H_m(k0 R), a K_m(kn R)) equal pw_decompose of the centroid samples to within the
+!>      decomposition's own mode-check miss (fs_mode_miss on all samples), relative to the largest amplitude at R.
+!>   4. The miss of fs_circle_modes on the graf route (every 8th sample) is at most the gap of item 2.
+!>   5. The half mesh gives the full mesh's amplitudes, to 1e-10 relative.
+!> Prints the wall time of fs_circle_modes on both routes (indicative).
+!> Measured (Task 5), full and half mesh alike: item 1 3.6e-9 (MF) and 2.7e-9; item 2 1.7e-6 and 2.4e-7, with the
+!> samples themselves 1.7e-6 and 2.4e-7 off the direct sum (FINGREEN3D in field mode); item 3 2.4e-7 and 1.7e-8 against
+!> a miss of 1.1e-6 and 1.5e-7; item 4 1.7e-6 and 1.7e-7; item 5 1.7e-15. With mmax 50, nev 30 (other depth nodes) the
+!> samples were 2.9e-5 off the panel waves, as they are off the direct sum. So the brief's 1e-6 is put on the direct sum
+!> (item 1, pw_limit), and samples_limit is the measured sample error rounded up. The direct sum takes nu = k0 tanh k0h
+!> of the wave numbers (g = 9.807 of DISPERSION), as the partial waves do; with the V of the globals (g = 9.80665) both
+!> routes were 2e-6 to 4e-6 off it.
+subroutine test_from_panels_samples(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: radius = 15d0, pw_limit = 1d-8, samples_limit = 3d-6
+  integer, parameter :: nev = 20, mmax = 40
+  type(panel_mesh) :: full, mesh
+  type(first_order_state) :: states(2)
+  type(cs_points) :: circle
+  type(pw_set) :: pw(2), pd, pfull(2), pd2(2)
+  complex(8), allocatable :: samples(:, :)
+  real(8), allocatable :: kv(:)
+  real(8) :: t0, t1, t2
+  complex(8) :: phi, hk, rad_f, ref
+  real(8) :: kev(nev), miss(2), e_s(2), e_d(2), e_sd(2), e_a(2), m_d(2), sc, worst, big, e_img, nu
+  integer :: isym, ist, i, m, n, nthread_saved
+  character(len=200) :: info
+
+  call set_wave(fx_depth)
+  ! The nu of the wave numbers (DISPERSION, g = 9.807): k0 tanh k0h. V of the globals has g = 9.80665, 3.4e-5 apart
+  nu = WK * tanh(WK * fx_depth)
+  call make_cylinder(10d0, 10d0, 32, 8, 6, full, .true.)
+  call pw_evanescent_from_wvn(nev, kev)
+  call pw_sample_points([0d0, 0d0], radius, fx_depth, mmax, nev, circle)
+  allocate (samples(circle%n, 2), kv(0:mmax))
+  nthread_saved = NTHREAD
+  NTHREAD = 4
+  do isym = 0, 1
+    call load_panels(full, 0, isym, mesh)
+    call maccamy_fuchs_state(mesh, 10d0, fx_depth, WK, W1, 1d0, BETA, wave_gravity(W1, WK, fx_depth), 1000d0, states(1))
+    states(1)%amp = 0d0
+    states(2) = states(1)
+    do i = 1, mesh%n
+      states(2)%dphi_p_dn(i) = cmplx(mesh%nrm(1, i), 0d0, 8)
+      states(2)%phi_p(i) = cmplx(0.02d0 * mesh%xc(1, i), 0.01d0 * mesh%xc(3, i), 8)
+    end do
+    t0 = omp_get_wtime()
+    call fs_circle_modes(mesh, circle, states, .false., [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pd2, miss)
+    t1 = omp_get_wtime()
+    call fs_circle_modes(mesh, circle, states, .false., [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pw, miss, &
+                         graf=.true.)
+    t2 = omp_get_wtime()
+    print '(4x,a,i0,a,i0,a,2f8.3)', "fs_circle_modes wall s on 4 threads, ", circle%n, " samples, ", mesh%n, &
+      " panels: samples route, panels route ", t1 - t0, t2 - t1
+    call fs_sample_phi(mesh, circle, states, .false., samples, centroid_only=.true.)
+    do ist = 1, 2
+      big = maxval(abs(samples(:, ist)))
+      ! 1. and 2.: against the direct sum at every 8th sample, against the samples at all
+      e_s(ist) = 0d0; e_d(ist) = 0d0; e_sd(ist) = 0d0
+      do i = 1, circle%n
+        call pw_eval_point(pw(ist), circle%x(:, i), phi)
+        e_s(ist) = max(e_s(ist), abs(phi - samples(i, ist)))
+        if (mod(i - 1, 8) /= 0) cycle
+        ref = direct_centroid_field(mesh, states(ist), circle%x(:, i), nu)
+        e_d(ist) = max(e_d(ist), abs(phi - ref))
+        e_sd(ist) = max(e_sd(ist), abs(samples(i, ist) - ref))
+      end do
+      e_s(ist) = e_s(ist) / big
+      e_d(ist) = e_d(ist) / big
+      e_sd(ist) = e_sd(ist) / big
+      ! 3. the amplitudes at R against pw_decompose of the samples, and its miss
+      call pw_decompose(samples(:, ist), [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pd)
+      m_d(ist) = fs_mode_miss(pd, circle, samples(:, ist))
+      worst = 0d0; sc = 0d0
+      do n = 0, nev
+        if (n > 0) call pw_bessel_k(mmax, kev(n) * radius, kv)
+        do m = -mmax, mmax
+          if (n == 0) then
+            hk = cmplx(bessel_jn(abs(m), WK * radius), bessel_yn(abs(m), WK * radius), 8)
+            if (m < 0 .and. mod(abs(m), 2) == 1) hk = -hk
+            rad_f = hk
+          else
+            rad_f = kv(abs(m))
+          end if
+          worst = max(worst, abs((pw(ist)%a(m, n) - pd%a(m, n)) * rad_f))
+          sc = max(sc, abs(pw(ist)%a(m, n) * rad_f))
+        end do
+      end do
+      e_a(ist) = worst / sc
+    end do
+    print '(4x,a,i0,a,2es10.2,a,2es10.2,a,2es10.2)', "panel partial waves, isy ", isym, &
+      ": against the direct sum ", e_d, "; against the samples ", e_s, "; samples against the direct sum ", e_sd
+    print '(4x,a,2es10.2,a,2es10.2,a,2es10.2)', "  amplitudes against pw_decompose ", e_a, "; its miss ", m_d, &
+      "; graf miss (1/8) ", miss
+    write (info, '(a,i0,a,2es10.3)') "panel partial waves miss the direct-sum centroid field (isy ", isym, ") ", e_d
+    call check(error, all(e_d <= pw_limit), trim(info))
+    if (allocated(error)) exit
+    write (info, '(a,i0,a,2es10.3)') "panel partial waves miss the centroid samples (isy ", isym, ") ", e_s
+    call check(error, all(e_s <= samples_limit), trim(info))
+    if (allocated(error)) exit
+    write (info, '(a,i0,a,2es10.3,a,2es10.3)') "panel amplitudes differ from pw_decompose (isy ", isym, ") ", e_a, &
+      " by more than its miss ", m_d
+    call check(error, all(e_a <= m_d), trim(info))
+    if (allocated(error)) exit
+    write (info, '(a,2es10.3,a,2es10.3)') "graf mode check ", miss, " above the miss at all samples ", e_s
+    call check(error, all(miss <= e_s * (1d0 + 1d-12)), trim(info))
+    if (allocated(error)) exit
+    if (isym == 0) then
+      pfull = pw
+    else
+      e_img = 0d0
+      do ist = 1, 2
+        e_img = max(e_img, maxval(abs(pw(ist)%a - pfull(ist)%a)) / maxval(abs(pfull(ist)%a)))
+      end do
+      print '(4x,a,es10.2)', "half mesh with its image against the full mesh, amplitudes ", e_img
+      write (info, '(a,es10.3)') "the half mesh with its image differs from the full mesh ", e_img
+      call check(error, e_img <= 1d-10, trim(info))
+    end if
+  end do
+  NTHREAD = nthread_saved
+end subroutine test_from_panels_samples
+
+!> The centroid-route field of state s at x (fs_sample_phi with centroid_only, field_potential), with the full
+!> finite-depth G of the direct eigen-sum (direct_sum_green plus 1/r and 1/r1) in place of FINGREEN3D: panel i is the
+!> base panel mesh%base(i), and for its image the field point is mirrored (field_influence_row), G(S x, xi).
+complex(8) function direct_centroid_field(mesh, s, x, nu) result(phi)
+  type(panel_mesh), intent(in) :: mesh
+  type(first_order_state), intent(in) :: s
+  real(8), intent(in) :: x(3), nu
+  complex(8) :: grn(3), g, dg
+  real(8) :: xf(3), xq(3), nq(3), rho, sr, sr1, dh(2)
+  integer :: i, jb
+
+  phi = (0d0, 0d0)
+  do i = 1, mesh%n
+    jb = mesh%base(i)
+    xf = image_signs(mesh%image(i), ISX, ISY) * x
+    xq = mesh%xc(:, jb)
+    nq = mesh%nrm(:, jb)
+    rho = norm2(xq(1:2) - xf(1:2))
+    dh = (xq(1:2) - xf(1:2)) / rho
+    ! The panel point as the first point (ZF) of direct_sum_green: its grn(2:3) are d/dR and d/dZF
+    call direct_sum_green(rho, xq(3), xf(3), nu, WK, fx_depth, grn)
+    sr = sqrt(rho**2 + (xq(3) - xf(3))**2)
+    sr1 = sqrt(rho**2 + (xq(3) + xf(3))**2)
+    g = grn(1) + 1d0 / sr + 1d0 / sr1
+    dg = (grn(2) - rho / sr**3 - rho / sr1**3) * sum(dh * nq(1:2)) &
+         + (grn(3) - (xq(3) - xf(3)) / sr**3 - (xq(3) + xf(3)) / sr1**3) * nq(3)
+    phi = phi + mesh%area(jb) * (g * s%dphi_p_dn(i) - dg * s%phi_p(i))
+  end do
+  phi = phi / (4d0 * pi)
+end function direct_centroid_field
+
+!> The mode check of the graf route (fs_circle_modes with graf, every 8th circle sample against the centroid route there)
+!> warns as the samples route does (fs_mode_check_warns): with qtf_fs_modes = 2 the warning of fs_mode_warning, with the
+!> automatic M none. And with nsplit each group has its own scales: the states of fs_mode_check_per_state, state 2 (the
+!> field of one panel, truncated by M = 6) warns, states 1 and 3 do not.
+subroutine test_circle_panels_check(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: radius = 15d0
+  integer, parameter :: nev = 8
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: states(3), one(1)
+  type(cs_points) :: circle
+  type(pw_set) :: pw(3), pw1(1)
+  real(8) :: kev(nev), miss(3), miss1(1), miss_auto
+  integer :: j, mmax, nthread_saved
+  character(len=:), allocatable :: msg
+  character(len=200) :: info
+
+  call cylinder_fixture(mesh, one, error)
+  if (allocated(error)) return
+  call pw_evanescent_from_wvn(nev, kev)
+  nthread_saved = NTHREAD
+  NTHREAD = 4
+  call pw_sample_points([0d0, 0d0], radius, fx_depth, 2, nev, circle)
+  call fs_circle_modes(mesh, circle, one, .false., [0d0, 0d0], radius, fx_depth, WK, kev, 2, nev, pw1, miss1, graf=.true.)
+  msg = fs_mode_warning(miss1(1))
+  print '(4x,a,es10.2,a,a)', "graf mode check with M = 2: miss ", miss1(1), ", log: ", msg
+  call check(error, index(msg, "QTF free surface: the partial waves miss the field on the circle by ") == 1, &
+             "no warning on the graf route with M = 2: '"//msg//"'")
+  if (allocated(error)) then
+    NTHREAD = nthread_saved
+    return
+  end if
+  mmax = fs_auto_modes(0, WK, radius)
+  call pw_sample_points([0d0, 0d0], radius, fx_depth, mmax, nev, circle)
+  call fs_circle_modes(mesh, circle, one, .false., [0d0, 0d0], radius, fx_depth, WK, kev, mmax, nev, pw1, miss1, &
+                       graf=.true.)
+  miss_auto = miss1(1)
+  print '(4x,a,i0,a,es10.2)', "graf mode check with the automatic M = ", mmax, ": miss ", miss_auto
+  write (info, '(a,es10.3)') "graf route with the automatic M misses the samples by ", miss_auto
+  call check(error, miss_auto <= FS_MODE_TOL .and. miss_auto > 0d0, trim(info))
+  if (allocated(error)) then
+    NTHREAD = nthread_saved
+    return
+  end if
+
+  states = one(1)
+  j = minloc(norm2(mesh%xc - spread([10d0, 0d0, -0.5d0], 2, mesh%n), dim=1), dim=1)
+  states(2)%phi_p = (0d0, 0d0)
+  states(2)%dphi_p_dn = (0d0, 0d0)
+  states(2)%phi_p(j) = (1d-4, 0d0)
+  states(3) = states(2)
+  states(3)%phi_p(j) = (1d-16, 0d0)
+  call pw_sample_points([0d0, 0d0], radius, fx_depth, 6, nev, circle)
+  call fs_circle_modes(mesh, circle, states, .false., [0d0, 0d0], radius, fx_depth, WK, kev, 6, nev, pw, miss, &
+                       nsplit=1, graf=.true.)
+  NTHREAD = nthread_saved
+  print '(4x,a,3es10.2)', "graf mode check per state, nsplit = 1: miss ", miss
+  write (info, '(a,3es10.3)') "graf mode check per state (1 resolved, 2 truncated, 3 rounding): ", miss
+  call check(error, miss(1) <= FS_MODE_TOL .and. miss(2) > FS_MODE_TOL .and. miss(3) <= FS_MODE_TOL, trim(info))
+end subroutine test_circle_panels_check
+
+!> circle_from_panels at a long wave and many orders: H_m(k0 R) overflows before m = mmax, so the orders above mcut are
+!> zero and mcut < mmax is returned (the log line of the cut, once per run, is written by the call; the line is in the
+!> unit log). The amplitudes are finite and the propagating orders above mcut are zero.
+subroutine test_circle_panels_cut(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: radius = 15d0, k0 = 0.01d0
+  integer, parameter :: nev = 4, mmax = 400
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: one(1)
+  type(pw_set) :: pw(1)
+  real(8) :: kev(nev)
+  integer :: mcut, nthread_saved
+  logical :: finite
+
+  call cylinder_fixture(mesh, one, error)
+  if (allocated(error)) return
+  call pw_evanescent_from_wvn(nev, kev)
+  nthread_saved = NTHREAD
+  NTHREAD = 4
+  call circle_from_panels(mesh, one, [0d0, 0d0], radius, fx_depth, k0, kev, mmax, nev, pw, mcut)
+  NTHREAD = nthread_saved
+  print '(4x,a,i0,a,i0)', "circle_from_panels at k0 R = 0.15: orders kept ", mcut, " of ", mmax
+  call check(error, mcut < mmax .and. mcut >= 0, "no cut of the orders at k0 R = 0.15 and 400 orders")
+  if (allocated(error)) return
+  finite = all(abs(pw(1)%a) <= huge(1d0))
+  call check(error, finite, "non-finite amplitudes on the cut route")
+  if (allocated(error)) return
+  ! mcut is the lowest cut of the modes; the propagating mode (n = 0) is the one that stops at 109 here
+  call check(error, all(pw(1)%a(mcut + 1:mmax, 0) == (0d0, 0d0)) .and. all(pw(1)%a(-mmax:-mcut - 1, 0) == (0d0, 0d0)), &
+             "propagating orders above mcut are not zero")
+end subroutine test_circle_panels_cut
 
 !> True if a point of the stencil of fs_inner_fields at x with offset d (x +- d e_x, x +- d e_y) lies in a waterplane.
 !> An independent copy, on purpose, of the private test of QTFFreeSurface: the test checks the module's offsets with its
@@ -2770,5 +3194,694 @@ subroutine run_fields_integral(file, kernel, gate, label, error)
   call check(error, err <= gate, trim(info))
 end subroutine run_fields_integral
 
+
+! ------------------------------------------------ inner fields by the source route, without phi_zz (item 2) ---
+
+!> Green's theorem in the plane on the inner integral (item 2 of the field-pass speed-ups): over an annulus a < r < b
+!> (a "waterline" circle r = a, normal -e_r into it, and the outer circle r = b, normal e_r), with analytic fields whose
+!> horizontal Laplacian is known (states: a plane wave plus H_0(k r), H_1(k r) e^{i theta} and the harmonic r^-2 e^{2 i theta};
+!> psi_k: H_1(kp r) e^{i theta} plus a plane wave, and H_0(kp r)), the area form of fs_inner_pair_ibp plus fs_line_pair on
+!> both circles equals the phi_zz form of fs_inner_pair, phi_zz = -lap_h phi exactly, to 1e-10 of the largest term, for
+!> both kernels. Quadrature: 48 Gauss-Legendre nodes in r, 160 trapezoidal angles, spectral in theta.
+subroutine test_inner_ibp_identity(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: ra = 6d0, rb = 14d0, w1 = 1.3d0, w2 = 0.9d0
+  real(8), parameter :: k1 = 0.8d0, k2 = 0.6d0, kp = 0.5d0, be1 = 0.4d0, be2 = -1.1d0
+  integer, parameter :: nr = 48, nt = 160
+  type(fs_point_field), allocatable :: f1(:), i1(:), f2(:), i2(:)
+  type(fs_wl_state) :: e1, e2
+  complex(8), allocatable :: psi(:, :), gpsi(:, :, :), psi_e(:, :)
+  real(8), allocatable :: wts(:), we(:)
+  real(8) :: xg(nr), wg(nr), r, th, err, worst
+  complex(8) :: t_zz(2), t_area(2), t_line(2)
+  integer :: ir, it, n, i, kn, edge
+  character(len=200) :: info
+
+  call gauss01(nr, xg, wg)
+  n = nr * nt
+  allocate (f1(n), i1(n), f2(n), i2(n), psi(n, 2), gpsi(n, 2, 2), wts(n))
+  i = 0
+  do ir = 1, nr
+    r = ra + (rb - ra) * xg(ir)
+    do it = 1, nt
+      th = 2d0 * pi * (it - 1) / nt
+      i = i + 1
+      wts(i) = (rb - ra) * wg(ir) * r * 2d0 * pi / nt
+      call analytic_state(1, r, th, k1, be1, f1(i), i1(i))
+      call analytic_state(2, r, th, k2, be2, f2(i), i2(i))
+      call analytic_psi(r, th, kp, psi(i, :), gpsi(i, :, :))
+    end do
+  end do
+  ! the two edges: r = a (normal -e_r, out of the annulus into the "waterplane") and r = b (normal e_r)
+  allocate (we(2 * nt), psi_e(2 * nt, 2))
+  allocate (e1%phi(2 * nt), e1%dn(2 * nt), e1%phi_i(2 * nt), e1%dn_i(2 * nt))
+  allocate (e2%phi(2 * nt), e2%dn(2 * nt), e2%phi_i(2 * nt), e2%dn_i(2 * nt))
+  do edge = 1, 2
+    r = merge(ra, rb, edge == 1)
+    do it = 1, nt
+      th = 2d0 * pi * (it - 1) / nt
+      i = (edge - 1) * nt + it
+      we(i) = r * 2d0 * pi / nt
+      call edge_values(1, r, th, k1, be1, merge(-1d0, 1d0, edge == 1), e1, i)
+      call edge_values(2, r, th, k2, be2, merge(-1d0, 1d0, edge == 1), e2, i)
+      block
+        complex(8) :: gp(2, 2)
+        call analytic_psi(r, th, kp, psi_e(i, :), gp)
+      end block
+    end do
+  end do
+  worst = 0d0
+  do kn = KERNEL_DIFF, KERNEL_SUM
+    call fs_inner_pair(w1, f1, i1, w2, f2, i2, psi, wts, g, rho, t_zz, kernel=kn)
+    call fs_inner_pair_ibp(w1, f1, i1, w2, f2, i2, psi, gpsi, wts, g, rho, t_area, kernel=kn)
+    call fs_line_pair(w1, e1, w2, e2, psi_e, we, g, rho, t_line, kernel=kn)
+    err = maxval(abs(t_area + t_line - t_zz)) / maxval(abs(t_zz))
+    print '(4x,a,i0,a,2es12.4,a,es9.2,a,es9.2)', "kernel ", kn, ": phi_zz form ", t_zz(1), ", off ", err, &
+      "; line part over total ", maxval(abs(t_line)) / maxval(abs(t_zz))
+    worst = max(worst, err)
+  end do
+  write (info, '(a,es9.2)') "Green's theorem in the plane: area + line form against the phi_zz form, worst ", worst
+  call check(error, worst <= 1d-10, trim(info))
+
+contains
+
+  !> State j at (r, theta): total = incident c e^{i k x.e_beta} + scattered c_0 H_0(k r) + c_1 H_1(k r) e^{i theta}
+  !> + c_2 r^-2 e^{2 i theta}; phi_zz = -lap_h phi = k^2 (incident + H parts) (the harmonic part has none); phi_z = nu phi
+  subroutine analytic_state(j, r, th, k, be, tot, inc)
+    integer, intent(in) :: j
+    real(8), intent(in) :: r, th, k, be
+    type(fs_point_field), intent(out) :: tot, inc
+    complex(8) :: c(4), h0, h1, dh0, dh1, e1, e2, s, sr, st, sh
+    c = [cmplx(0.7d0, 0.2d0 * j, 8), cmplx(0.3d0, -0.4d0, 8) * j, cmplx(-0.2d0, 0.5d0, 8), cmplx(1.5d0, 0.3d0 * j, 8)]
+    inc%phi = c(1) * exp(ci_ * k * r * cos(th - be))
+    inc%grad(1:2) = ci_ * k * [cos(be), sin(be)] * inc%phi
+    inc%grad(3) = k * inc%phi
+    inc%phizz = k**2 * inc%phi
+    h0 = cmplx(bessel_j0(k * r), bessel_y0(k * r), 8)
+    h1 = cmplx(bessel_j1(k * r), bessel_y1(k * r), 8)
+    dh0 = -k * h1
+    dh1 = k * (h0 - h1 / (k * r))
+    e1 = exp(ci_ * th)
+    e2 = exp(2d0 * ci_ * th)
+    sh = c(2) * h0 + c(3) * h1 * e1
+    s = sh + c(4) * e2 / r**2
+    sr = c(2) * dh0 + c(3) * dh1 * e1 - 2d0 * c(4) * e2 / r**3
+    st = (ci_ * c(3) * h1 * e1 + 2d0 * ci_ * c(4) * e2 / r**2) / r
+    tot%phi = inc%phi + s
+    tot%grad(1) = inc%grad(1) + cos(th) * sr - sin(th) * st
+    tot%grad(2) = inc%grad(2) + sin(th) * sr + cos(th) * st
+    tot%grad(3) = k * tot%phi
+    tot%phizz = inc%phizz + k**2 * sh
+  end subroutine analytic_state
+
+  !> psi_1 = H_1(kp r) e^{i theta} + 0.3 e^{i kp y}, psi_2 = H_0(kp r), and their horizontal gradients gp(m, k)
+  subroutine analytic_psi(r, th, kp, p, gp)
+    real(8), intent(in) :: r, th, kp
+    complex(8), intent(out) :: p(2), gp(2, 2)
+    complex(8) :: h0, h1, dh1, e1, pw, sr, st
+    h0 = cmplx(bessel_j0(kp * r), bessel_y0(kp * r), 8)
+    h1 = cmplx(bessel_j1(kp * r), bessel_y1(kp * r), 8)
+    dh1 = kp * (h0 - h1 / (kp * r))
+    e1 = exp(ci_ * th)
+    pw = 0.3d0 * exp(ci_ * kp * r * sin(th))
+    p(1) = h1 * e1 + pw
+    sr = dh1 * e1
+    st = ci_ * h1 * e1 / r
+    gp(1, 1) = cos(th) * sr - sin(th) * st
+    gp(2, 1) = sin(th) * sr + cos(th) * st + ci_ * kp * pw
+    p(2) = h0
+    gp(1, 2) = -kp * h1 * cos(th)
+    gp(2, 2) = -kp * h1 * sin(th)
+  end subroutine analytic_psi
+
+  !> The edge values of state j at (r, theta), normal sgn e_r
+  subroutine edge_values(j, r, th, k, be, sgn, e, i)
+    integer, intent(in) :: j, i
+    real(8), intent(in) :: r, th, k, be, sgn
+    type(fs_wl_state), intent(inout) :: e
+    type(fs_point_field) :: tot, inc
+    call analytic_state(j, r, th, k, be, tot, inc)
+    e%phi(i) = tot%phi
+    e%dn(i) = sgn * (cos(th) * tot%grad(1) + sin(th) * tot%grad(2))
+    e%phi_i(i) = inc%phi
+    e%dn_i(i) = sgn * (cos(th) * inc%grad(1) + sin(th) * inc%grad(2))
+  end subroutine edge_values
+
+end subroutine test_inner_ibp_identity
+
+!> Gauss-Legendre nodes and weights on [0, 1] (Newton on P_n)
+subroutine gauss01(n, x, w)
+  integer, intent(in) :: n
+  real(8), intent(out) :: x(n), w(n)
+  real(8) :: z, p0, p1, p2, dp
+  integer :: i, j, it
+
+  do i = 1, n
+    z = cos(pi * (i - 0.25d0) / (n + 0.5d0))
+    do it = 1, 100
+      p0 = 1d0
+      p1 = z
+      do j = 2, n
+        p2 = ((2 * j - 1) * z * p1 - (j - 1) * p0) / j
+        p0 = p1
+        p1 = p2
+      end do
+      dp = n * (z * p1 - p0) / (z * z - 1d0)
+      z = z - p1 / dp
+      if (abs(p1 / dp) < 1d-16) exit
+    end do
+    x(i) = 0.5d0 * (1d0 - z)
+    w(i) = 1d0 / ((1d0 - z * z) * dp * dp)
+  end do
+end subroutine gauss01
+
+!> The waterline normal derivative of the source route (item 2): (a) on a flared hull, fs_wl_normal_derivative with
+!> V_n = grad Y . n and d_z Y = nu Y gives grad_h Y . n_h / |n_h| of the deep-water field Y = e^{nu z} e^{i nu x.e_b}
+!> (it satisfies the linear free-surface condition), for n_z = -0.6, -0.2, 0.3 and 0.7, to 1e-14; (b) on the wall-sided
+!> 448-panel cylinder, fs_waterline_state of a moving state gives d_n Y = V_n = -i omega (xi + alpha x r) . n on every
+!> segment, whatever phi_wl is, to 1e-13 of max |V_n|, and the incident part grad_h phi_I . n_h.
+subroutine test_waterline_normal_derivative(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: nu = 0.35d0, be = 0.7d0, nzs(4) = [-0.6d0, -0.2d0, 0.3d0, 0.7d0], gam = 2.1d0
+  real(8) :: x(3), n3(3), nh, worst, vmax, err_i
+  complex(8) :: y, gy(3), dn, vn
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: st(1)
+  type(surface_geom) :: geom
+  type(fs_wl_state) :: wl
+  complex(8), allocatable :: phi_wl(:), vref(:)
+  complex(8) :: phi_i, grad_i(3), dd(3)
+  logical :: ok
+  character(len=:), allocatable :: msg
+  character(len=200) :: info
+  integer :: j, iw, b
+
+  worst = 0d0
+  x = [1.3d0, -0.4d0, 0d0]
+  y = exp(ci_ * nu * (x(1) * cos(be) + x(2) * sin(be)))
+  gy = [ci_ * nu * cos(be) * y, ci_ * nu * sin(be) * y, nu * y]
+  do j = 1, size(nzs)
+    nh = sqrt(1d0 - nzs(j)**2)
+    n3 = [nh * cos(gam), nh * sin(gam), nzs(j)]
+    vn = sum(gy * n3)
+    dn = fs_wl_normal_derivative(vn, nzs(j), nu * y)
+    worst = max(worst, abs(dn - (gy(1) * cos(gam) + gy(2) * sin(gam))) / abs(gy(1)))
+  end do
+  print '(4x,a,es9.2)', "flared panels: formula against grad_h Y . n_h, worst ", worst
+  write (info, '(a,es9.2)') "waterline normal derivative on flared panels off the analytic field: ", worst
+  call check(error, worst <= 1d-14, trim(info))
+  if (allocated(error)) return
+
+  call cylinder_fixture(mesh, st, error)
+  if (allocated(error)) return
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call check(error, ok .and. geom%nwl > 0, "geometry: "//msg)
+  if (allocated(error)) return
+  st(1)%amp = 1d0
+  st(1)%beta = 0.4d0
+  st(1)%xi(:, 1) = [cmplx(0.3d0, 0.1d0, 8), cmplx(-0.2d0, 0.05d0, 8), cmplx(0.1d0, -0.3d0, 8), &
+                    cmplx(0.02d0, 0.01d0, 8), cmplx(-0.03d0, 0.02d0, 8), cmplx(0.01d0, 0.04d0, 8)]
+  allocate (phi_wl(geom%nwl), vref(geom%nwl))
+  do iw = 1, geom%nwl
+    phi_wl(iw) = cmplx(cos(0.7d0 * iw), sin(1.3d0 * iw), 8)
+  end do
+  call fs_waterline_state(mesh, geom, st(1), phi_wl, wl)
+  worst = 0d0
+  err_i = 0d0
+  vmax = 0d0
+  do iw = 1, geom%nwl
+    b = geom%wl_body(iw)
+    x = [geom%wl_xm(1, iw), geom%wl_xm(2, iw), 0d0]
+    n3 = [geom%wl_nh(1, iw), geom%wl_nh(2, iw), 0d0]
+    dd(1) = st(1)%xi(1, b) + st(1)%xi(5, b) * (x(3) - mesh%xr(3, b)) - st(1)%xi(6, b) * (x(2) - mesh%xr(2, b))
+    dd(2) = st(1)%xi(2, b) + st(1)%xi(6, b) * (x(1) - mesh%xr(1, b)) - st(1)%xi(4, b) * (x(3) - mesh%xr(3, b))
+    dd(3) = st(1)%xi(3, b) + st(1)%xi(4, b) * (x(2) - mesh%xr(2, b)) - st(1)%xi(5, b) * (x(1) - mesh%xr(1, b))
+    vref(iw) = -ci_ * st(1)%omega * sum(dd * n3)
+    vmax = max(vmax, abs(vref(iw)))
+    call incident_at(st(1), x, phi_i, grad_i)
+    err_i = max(err_i, abs(wl%dn_i(iw) - sum(grad_i(1:2) * n3(1:2))) / abs(grad_i(1)) + abs(wl%phi_i(iw) - phi_i))
+  end do
+  do iw = 1, geom%nwl
+    worst = max(worst, abs(wl%dn(iw) - vref(iw)) / vmax)
+  end do
+  print '(4x,a,i0,a,es9.2,a,es9.2,a,es9.2)', "wall-sided cylinder, ", geom%nwl, " segments, max |n_z| ", &
+    maxval(abs(geom%wl_nz)), ": d_n Y against V_n ", worst, ", incident part ", err_i
+  write (info, '(a,2es9.2)') "wall-sided waterline: d_n Y off V_n, incident part off: ", worst, err_i
+  call check(error, worst <= 1d-13 .and. err_i <= 1d-13 .and. all(wl%phi == phi_wl), trim(info))
+end subroutine test_waterline_normal_derivative
+
+!> fs_pair_terms with the data of the source route (gpsi, boundary states, psi there and the line weights): the inner part
+!> of an ordered pair is fs_inner_pair_ibp + fs_line_pair to the bit, the outer part that of the stencil route; the pair
+!> given as (2, 1) is the conjugate for the difference kernel and the same for the sum kernel (the order rules of
+!> fs_pair_terms carry over: P is Hermitian for the difference and symmetric for the sum, in the line terms too).
+subroutine test_pair_terms_ibp_order(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: om1 = 1d0, om2 = 0.8d0, b1 = 0.3d0, b2 = -0.5d0
+  integer, parameter :: npoly = 12, nb = 5
+  type(fs_point_field) :: f1(4), i1(4), f2(4), i2(4)
+  type(fs_wl_state) :: e1, e2
+  complex(8) :: psi(4, 2), gpsi(4, 2, 2), psi_b(nb, 2), tin(2), tout(2), rin(2), rl(2), sin_(2), sout(2), ref_out(2)
+  real(8) :: wts(4), wb(nb)
+  type(pw_set) :: pw1, pw2, pwp(2)
+  integer :: i, k, kn
+
+  call pseudo_inner(4, f1, i1, f2, i2, psi, wts)
+  do i = 1, 4
+    do k = 1, 2
+      gpsi(i, :, k) = [cmplx(sin(0.4d0 * i * k), cos(0.9d0 * i), 8), cmplx(0.2d0 * k, -0.1d0 * i, 8)]
+    end do
+  end do
+  allocate (e1%phi(nb), e1%dn(nb), e1%phi_i(nb), e1%dn_i(nb), e2%phi(nb), e2%dn(nb), e2%phi_i(nb), e2%dn_i(nb))
+  do i = 1, nb
+    e1%phi(i) = cmplx(cos(1.1d0 * i), 0.3d0, 8)
+    e1%dn(i) = cmplx(0.2d0, sin(0.7d0 * i), 8)
+    e1%phi_i(i) = cmplx(0.5d0, -0.1d0 * i, 8)
+    e1%dn_i(i) = cmplx(-0.3d0 * i, 0.2d0, 8)
+    e2%phi(i) = cmplx(0.4d0, cos(0.5d0 * i), 8)
+    e2%dn(i) = cmplx(sin(0.3d0 * i), 0.1d0, 8)
+    e2%phi_i(i) = cmplx(-0.2d0, 0.6d0, 8)
+    e2%dn_i(i) = cmplx(0.1d0 * i, -0.4d0, 8)
+    wb(i) = 0.7d0 + 0.1d0 * i
+    psi_b(i, :) = [cmplx(0.3d0 * i, 1d0, 8), cmplx(-1d0, 0.2d0 * i, 8)]
+  end do
+  call synthetic_set(om1, om2, pw1, pw2, pwp)
+  do kn = KERNEL_DIFF, KERNEL_SUM
+    call fs_pair_terms(om1, f1, i1, pw1, b1, pw1%k0, om2, f2, i2, pw2, b2, pw2%k0, psi, pwp, wts, npoly, g, rho, tin, &
+                       tout, kernel=kn, gpsi=gpsi, b1=e1, b2=e2, psi_b=psi_b, wb=wb)
+    call fs_pair_terms(om1, f1, i1, pw1, b1, pw1%k0, om2, f2, i2, pw2, b2, pw2%k0, psi, pwp, wts, npoly, g, rho, rin, &
+                       ref_out, kernel=kn)
+    call fs_inner_pair_ibp(om1, f1, i1, om2, f2, i2, psi, gpsi, wts, g, rho, rin, kernel=kn)
+    call fs_line_pair(om1, e1, om2, e2, psi_b, wb, g, rho, rl, kernel=kn)
+    call check(error, all(tin == rin + rl) .and. all(tout == ref_out), &
+               "fs_pair_terms with the source-route data is not fs_inner_pair_ibp + fs_line_pair, outer unchanged")
+    if (allocated(error)) return
+    call fs_pair_terms(om2, f2, i2, pw2, b2, pw2%k0, om1, f1, i1, pw1, b1, pw1%k0, psi, pwp, wts, npoly, g, rho, sin_, &
+                       sout, kernel=kn, gpsi=gpsi, b1=e2, b2=e1, psi_b=psi_b, wb=wb)
+    if (kn == KERNEL_DIFF) then
+      call check(error, all(sin_ == conjg(tin)) .and. all(sout == conjg(tout)), &
+                 "source route: the difference pair given as (2, 1) is not the conjugate of (1, 2)")
+    else
+      call check(error, all(sin_ == tin) .and. all(sout == tout), &
+                 "source route: the sum pair given as (2, 1) is not that of (1, 2)")
+    end if
+    if (allocated(error)) return
+  end do
+end subroutine test_pair_terms_ibp_order
+
+!> Input of the accuracy gate (validation-runs/fs-speedups/gate/G1_table.md): the inner fields and the inner integral
+!> of the stencil route (today: fs_inner_fields, the driver's offsets, the near-waterline fit) and of the source route
+!> (fs_inner_fields_source from the source strengths of velocity_source, without phi_zz), both from the exact potential
+!> on the sharp m1 hull, side by side against the exact values: phi and grad phi at the rings 0.1 to 3.5 m from the
+!> waterline (as fs_fields_exact_inner;
+!> the source route with and without the gradient part of the near-waterline fit), and the inner integral of the sum
+!> pair (1.4, 1.0) and of the difference pair over a < r < a + 5 m (as fs_fields_exact_integral and _diff; the source
+!> route by fs_inner_pair_ibp + fs_line_pair, with the exact grad psi_k at the grid points and psi_k on both edges from
+!> fs_fields_exact_grid_psi*.txt, the states on the outer edge r = 15 m from the partial waves of fs_circle_modes, as the
+!> driver takes them, and on the waterline r = a d_n of the total field = V_n = 0, a fixed wall-sided body). The table is
+!> printed only (no file, no times in it); validation-runs/fs-speedups/gate/fs_inner_source_exact.txt is a copy of it.
+!> The times of the two routes are printed apart. Gates: each route within SRC_* (1.3x measured).
+subroutine test_inner_source_matches_exact(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: st(1), scratch
+  type(cs_points) :: pts
+  type(fs_point_field), allocatable :: fst(:, :), fsr(:, :), fsf(:, :), fsamp(:, :)
+  real(8), allocatable :: xp(:, :), xc(:, :), delta(:), scale(:), x3(:, :)
+  complex(8), allocatable :: fp(:, :), fc(:, :), sig(:, :)
+  real(8) :: w, k, h_ex, e(3, 2), lam, rr, wst(2), wsr(2), wsf(2), tst, tsr, t0
+  integer :: ib, i, n, nshrunk, nthread_saved, ir, j
+  type(surface_geom) :: geom
+  type(fs_wl_fit) :: fit
+  type(source_operator) :: op
+  logical :: ok
+  character(len=:), allocatable :: msg
+  character(len=300) :: info
+  real(8) :: int_err(3, 2)
+  character(len=10) :: lab(2)
+
+  nthread_saved = NTHREAD
+  NTHREAD = 8
+  print '(a)', '# Accuracy gate input, item 2: inner fields and inner integral, stencil route against the source route,'
+  print '(a)', '# exact potential on the sharp m1 hull (448 panels), fixed body, test fs_inner_source_matches_exact.'
+  print '(a)', '# Errors relative to the largest exact value of the ring (fields) or of the three psi_k (integral).'
+  print '(a)', '# Regenerate: run the unit test fs_inner_source_matches_exact and copy the lines that start with # or a'
+  print '(a)', '# capital tag (FIELDS, WORST_*, INTEGRAL) from its output.'
+  print '(a)', '# FIELDS omega r-a  stencil+fit: phi grad   source: phi grad   source+grad fit: grad'
+  wst = 0d0
+  wsr = 0d0
+  wsf = 0d0
+  tst = 0d0
+  tsr = 0d0
+  do ib = 1, 2
+    call exact_hull_state(ib, mesh, st, w, k, h_ex, xp, fp, xc, fc, error)
+    if (allocated(error)) exit
+    n = size(xp, 2)
+    allocate (x3(3, n), delta(n), scale(n), fst(n, 1), fsr(n, 1), fsf(n, 1), sig(mesh%n, 1))
+    x3(1:2, :) = xp
+    x3(3, :) = 0d0
+    call free_points(x3, 0.786d0, pts)
+    lam = 2d0*pi/0.19986437774367391d0      ! lambda at 1.4 rad/s, h = 100 m
+    scale = max(0.786d0, lam/10d0)
+    call fs_inner_steps(mesh, pts, 0.04d0, delta, nshrunk, scale=scale)
+    call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+    call check(error, ok, "fs_inner_source_matches_exact: geometry: "//msg)
+    if (allocated(error)) exit
+    call fs_waterline_fit_setup(mesh, geom, pts, 0.04d0, fit, scale)
+    t0 = omp_get_wtime()
+    call fs_inner_fields(mesh, pts, st, 0.04d0, .false., fst, delta)
+    call fs_waterline_fit_apply(mesh, fit, st, 0.04d0, .false., fst)
+    tst = tst + omp_get_wtime() - t0
+    t0 = omp_get_wtime()
+    call source_sigma(mesh, st(1), op, sig(:, 1))
+    call fs_inner_fields_source(mesh, pts, st, sig, .false., fsr)
+    tsr = tsr + omp_get_wtime() - t0
+    fsf = fsr
+    allocate (fsamp(fit%samp%n, 1))
+    call fs_inner_fields_source(mesh, fit%samp, st, sig, .false., fsamp)
+    call fs_waterline_fit_source(fit, fsamp, st, fsf)
+    do ir = 1, n/5
+      e = 0d0
+      call ring_errors(fst, e(1, 1), e(2, 1))
+      call ring_errors(fsr, e(1, 2), e(2, 2))
+      call ring_errors(fsf, e(3, 1), e(3, 2))
+      rr = norm2(xp(:, 5*ir - 4))
+      print '(a,f4.1,f6.2,5es11.3)', 'FIELDS ', w, rr - 10d0, e(1:2, 1), e(1:2, 2), e(3, 2)
+      wst = max(wst, e(1:2, 1))
+      wsr = max(wsr, e(1:2, 2))
+      wsf = max(wsf, [e(1, 2), e(3, 2)])
+    end do
+    deallocate (x3, delta, scale, fst, fsr, fsf, sig, fsamp)
+  end do
+  if (allocated(error)) then
+    NTHREAD = nthread_saved
+    return
+  end if
+  print '(4x,a,2f8.2,a)', "inner field times, stencil+fit and source (both frequencies, 30 points): ", tst, tsr, " s"
+  print '(a,2es11.3)', 'WORST_FIELDS_STENCIL_FIT phi grad ', wst
+  print '(a,2es11.3)', 'WORST_FIELDS_SOURCE phi grad ', wsr
+  print '(a,2es11.3)', 'WORST_FIELDS_SOURCE_GRADFIT phi grad ', wsf
+  print '(a)', '# INTEGRAL kernel  stencil+fit  source  source+grad fit  (max over psi_1, psi_3, psi_5)'
+  lab = [character(len=10) :: 'sum', 'difference']
+  call source_integral('test/data/fs_sum_exact/fs_fields_exact_grid.txt', &
+                       'test/data/fs_sum_exact/fs_fields_exact_grid_psi.txt', KERNEL_SUM, int_err(:, 1), error)
+  if (.not. allocated(error)) &
+    call source_integral('test/data/fs_sum_exact/fs_fields_exact_grid_diff.txt', &
+                         'test/data/fs_sum_exact/fs_fields_exact_grid_psi_diff.txt', KERNEL_DIFF, int_err(:, 2), error)
+  NTHREAD = nthread_saved
+  if (allocated(error)) return
+  do j = 1, 2
+    print '(a,a,3es11.3)', 'INTEGRAL ', lab(j), int_err(:, j)
+  end do
+  write (info, '(a,2es9.2,a,2es9.2)') "fields off the exact, source route phi, grad: ", wsr, "; stencil+fit: ", wst
+  call check(error, maxval(wsr) <= SRC_FIELD_GATE, trim(info))
+  if (allocated(error)) return
+  write (info, '(a,2es9.2)') "inner integral off the exact, source route, sum and difference: ", int_err(2, :)
+  call check(error, maxval(int_err(2, :)) <= SRC_INT_GATE, trim(info))
+
+contains
+
+  subroutine ring_errors(f, ephi, egrad)
+    type(fs_point_field), intent(in) :: f(:, :)
+    real(8), intent(out) :: ephi, egrad
+    integer :: jj, l
+    ephi = 0d0
+    egrad = 0d0
+    do jj = 5*(ir - 1) + 1, 5*ir
+      ephi = max(ephi, abs(f(jj, 1)%phi - fp(1, jj))/maxval(abs(fp(1, 5*(ir - 1) + 1:5*ir))))
+      egrad = max(egrad, norm2(abs(f(jj, 1)%grad - fp(2:4, jj)))/maxval([(norm2(abs(fp(2:4, l))), l = 5*(ir - 1) + 1, 5*ir)]))
+    end do
+  end subroutine ring_errors
+
+end subroutine test_inner_source_matches_exact
+
+!> sigma of the state s on every panel from the source solve of SurfaceVelocity at the current global frequency
+!> (build_source_operator, velocity_source on a copy of s, whose grad_p it overwrites)
+subroutine source_sigma(mesh, s, op, sig)
+  type(panel_mesh), intent(in) :: mesh
+  type(first_order_state), intent(in) :: s
+  type(source_operator), intent(inout) :: op
+  complex(8), intent(out) :: sig(:)
+  type(first_order_state) :: c
+
+  call build_source_operator(mesh, .false., .false., op)
+  c = s
+  if (.not. allocated(c%grad_p)) allocate (c%grad_p(3, mesh%n))
+  call velocity_source(mesh, op, c, sigma_full=sig)
+end subroutine source_sigma
+
+!> The inner integral of the grid file by three routes, relative errors err(3) against its EXPECT_GRID: the stencil with
+!> the near-waterline fit (as run_fields_integral), the source route, and the source route with the gradient part of the
+!> fit. psi_file holds grad psi_k at the grid points and psi_k on the edges r = a and r = a + 5 m (make_fs_fields_exact_
+!> fixture.py --grid-psi).
+subroutine source_integral(file, psi_file, kernel, err, error)
+  character(len=*), intent(in) :: file, psi_file
+  integer, intent(in) :: kernel
+  real(8), intent(out) :: err(3)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: st(1)
+  type(cs_points) :: pts
+  type(fs_point_field), allocatable :: f(:, :), fa(:, :), fb(:, :), ia(:), ib_(:), fsamp(:, :)
+  type(fs_wl_state) :: ea(3), eb(3)
+  real(8), allocatable :: xp(:, :), xc(:, :), delta(:), scale(:), x3(:, :), wts(:), xe(:, :, :), we(:, :), nhe(:, :, :)
+  complex(8), allocatable :: fp(:, :), fc(:, :), psi(:, :), gpsi(:, :, :), psi_e(:, :, :), sig(:, :), psib(:, :)
+  complex(8) :: expect(3), t(3), tl(3), phi, grad(3)
+  real(8) :: w, k, h_ex, wpair(2), kpair(2), g_ex, v(12), lam, gw, re(2), miss(1), k0max
+  character(len=64) :: tag
+  character(len=4096) :: buf
+  integer :: u, ios, n, i, j, nshrunk, iw, ie, ne, mmax, nev, route
+  type(surface_geom) :: geom
+  type(fs_wl_fit) :: fit
+  type(source_operator) :: op
+  type(cs_points) :: circle
+  type(pw_set) :: pw(1)
+  real(8), allocatable :: kev(:)
+  logical :: ok
+  character(len=:), allocatable :: msg
+
+  open (newunit=u, file=file, status='old', action='read', iostat=ios)
+  call check(error, ios == 0, "source_integral: cannot open "//file)
+  if (allocated(error)) return
+  do
+    read (u, '(a)', iostat=ios) buf
+    if (ios /= 0) exit
+    read (buf, *, iostat=ios) tag
+    if (ios /= 0) cycle
+    select case (trim(tag))
+    case ('GRIDPAIR')
+      read (buf, *) tag, wpair, kpair, g_ex, h_ex
+    case ('GRID')
+      read (buf, *) tag, n
+      allocate (x3(3, n), wts(n), psi(n, 3))
+      do i = 1, n
+        read (u, *) v(1:9)
+        x3(:, i) = [v(1), v(2), 0d0]
+        wts(i) = v(3)
+        psi(i, :) = [(cmplx(v(2 + 2*j), v(3 + 2*j), 8), j = 1, 3)]
+      end do
+    case ('EXPECT_GRID')
+      read (buf, *) tag, v(1:6)
+      expect = [(cmplx(v(2*j - 1), v(2*j), 8), j = 1, 3)]
+    end select
+  end do
+  close (u)
+  ! grad psi at the grid points and psi on the two edges
+  open (newunit=u, file=psi_file, status='old', action='read', iostat=ios)
+  call check(error, ios == 0, "source_integral: cannot open "//psi_file)
+  if (allocated(error)) return
+  allocate (gpsi(n, 2, 3))
+  ie = 0
+  do
+    read (u, '(a)', iostat=ios) buf
+    if (ios /= 0) exit
+    read (buf, *, iostat=ios) tag
+    if (ios /= 0) cycle
+    select case (trim(tag))
+    case ('GRIDPSI')
+      read (buf, *) tag, i
+      call check(error, i == n, "source_integral: GRIDPSI is not of the grid's size")
+      if (allocated(error)) return
+      do i = 1, n
+        read (u, *) v(1:12)
+        do j = 1, 3
+          gpsi(i, 1, j) = cmplx(v(4*j - 3), v(4*j - 2), 8)
+          gpsi(i, 2, j) = cmplx(v(4*j - 1), v(4*j), 8)
+        end do
+      end do
+    case ('EDGE')
+      ie = ie + 1
+      read (buf, *) tag, re(ie), ne
+      if (ie == 1) allocate (xe(2, ne, 2), we(ne, 2), nhe(2, ne, 2), psi_e(ne, 3, 2))
+      do i = 1, ne
+        read (u, *) v(1:8)
+        nhe(:, i, ie) = [cos(v(1)), sin(v(1))]
+        xe(:, i, ie) = re(ie)*nhe(:, i, ie)
+        we(i, ie) = v(2)
+        psi_e(i, :, ie) = [(cmplx(v(1 + 2*j), v(2 + 2*j), 8), j = 1, 3)]
+      end do
+    end select
+  end do
+  close (u)
+  call check(error, ie == 2, "source_integral: the psi file has not two edges")
+  if (allocated(error)) return
+  nhe(:, :, 1) = -nhe(:, :, 1)       ! on the waterline the normal points into the waterplane
+
+  allocate (fa(n, 3), fb(n, 3), ia(n), ib_(n), delta(n), scale(n), f(n, 1), sig(0, 1))
+  call free_points(x3, 0.786d0, pts)
+  lam = 2d0*pi/kpair(1)                  ! lambda at 1.4 rad/s
+  scale = max(0.786d0, lam/10d0)
+  ! block 2 of fs_fields_exact.txt is 1.4 rad/s (state a), block 1 is 1.0 rad/s (state b)
+  do iw = 2, 1, -1
+    call exact_hull_state(iw, mesh, st, w, k, h_ex, xp, fp, xc, fc, error)
+    if (allocated(error)) return
+    if (iw == 2) then
+      call fs_inner_steps(mesh, pts, 0.04d0, delta, nshrunk, scale=scale)
+      call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+      call check(error, ok, "source_integral: geometry: "//msg)
+      if (allocated(error)) return
+      call fs_waterline_fit_setup(mesh, geom, pts, 0.04d0, fit, scale)
+    end if
+    ! route 1: stencil + fit; route 2: source; route 3: source + gradient fit
+    call fs_inner_fields(mesh, pts, st, 0.04d0, .false., f, delta)
+    call fs_waterline_fit_apply(mesh, fit, st, 0.04d0, .false., f)
+    if (iw == 2) then
+      fa(:, 1) = f(:, 1)
+    else
+      fb(:, 1) = f(:, 1)
+    end if
+    deallocate (sig)
+    allocate (sig(mesh%n, 1))
+    call source_sigma(mesh, st(1), op, sig(:, 1))
+    call fs_inner_fields_source(mesh, pts, st, sig, .false., f)
+    if (iw == 2) then
+      fa(:, 2) = f(:, 1)
+    else
+      fb(:, 2) = f(:, 1)
+    end if
+    if (allocated(fsamp)) deallocate (fsamp)
+    allocate (fsamp(fit%samp%n, 1))
+    call fs_inner_fields_source(mesh, fit%samp, st, sig, .false., fsamp)
+    call fs_waterline_fit_source(fit, fsamp, st, f)
+    if (iw == 2) then
+      fa(:, 3) = f(:, 1)
+    else
+      fb(:, 3) = f(:, 1)
+    end if
+    gw = wave_gravity(w, k, h_ex)
+    do i = 1, n
+      phi = incident_phi(x3(:, i), w, k, h_ex, 1d0, 0d0, gw)
+      call incident_grad(x3(:, i), w, k, h_ex, 1d0, 0d0, gw, grad)
+      if (iw == 2) then
+        ia(i)%phi = phi; ia(i)%grad = grad; ia(i)%phizz = k**2*phi
+      else
+        ib_(i)%phi = phi; ib_(i)%grad = grad; ib_(i)%phizz = k**2*phi
+      end if
+    end do
+    ! the edges: the waterline r = a (V_n = 0: d_n of the total field is 0, fs_wl_normal_derivative with n_z = 0) and
+    ! r = a + 5 = 15 m, the states from the partial waves of fs_circle_modes at R = 15 m (as the driver)
+    call set_frequency(2.8d0, 0d0, h_ex)
+    k0max = WK
+    call set_frequency(w, 0d0, h_ex)
+    mmax = fs_auto_modes(0, k0max, re(2))
+    nev = fs_auto_evanescent(0, h_ex, re(2), 10d0)
+    if (allocated(kev)) deallocate (kev)
+    allocate (kev(nev))
+    call pw_sample_points([0d0, 0d0], re(2), h_ex, mmax, nev, circle)
+    call pw_evanescent_from_wvn(nev, kev)
+    call fs_circle_modes(mesh, circle, st, .false., [0d0, 0d0], re(2), h_ex, WK, kev, mmax, nev, pw, miss)
+    call edge_states(iw)
+  end do
+  if (allocated(error)) return
+  allocate (psib(2*ne, 3))
+  psib(1:ne, :) = psi_e(:, :, 1)
+  psib(ne + 1:, :) = psi_e(:, :, 2)
+  call fs_inner_pair(wpair(1), fa(:, 1), ia, wpair(2), fb(:, 1), ib_, psi, wts, g_ex, rho, t, kernel)
+  err(1) = maxval(abs(t/(rho*g_ex) - expect))/maxval(abs(expect))
+  do route = 2, 3
+    call fs_inner_pair_ibp(wpair(1), fa(:, route), ia, wpair(2), fb(:, route), ib_, psi, gpsi, wts, g_ex, rho, t, kernel)
+    call fs_line_pair(wpair(1), ea(route), wpair(2), eb(route), psib, [we(:, 1), we(:, 2)], g_ex, rho, tl, kernel)
+    t = (t + tl)/(rho*g_ex)
+    err(route) = maxval(abs(t - expect))/maxval(abs(expect))
+    if (route == 2) then
+      print '(4x,a,i0,a,3es11.3)', "kernel ", kernel, ": source route |T - exact| / max|exact| per psi_k ", &
+        abs(t - expect)/maxval(abs(expect))
+      print '(4x,a,3es11.3)', "      line part over max |exact| per psi_k ", abs(tl/(rho*g_ex))/maxval(abs(expect))
+    end if
+  end do
+
+contains
+
+  !> ea or eb (state iw) on the two edges, the same for routes 2 and 3 (they differ only at the inner points)
+  subroutine edge_states(iwh)
+    integer, intent(in) :: iwh
+    type(fs_wl_state) :: s_out, s_all
+    complex(8) :: pi_, gi(3)
+    integer :: l
+    call fs_edge_state(pw(1), w, k, 0d0, xe(:, :, 2), nhe(:, :, 2), s_out)
+    allocate (s_all%phi(2*ne), s_all%dn(2*ne), s_all%phi_i(2*ne), s_all%dn_i(2*ne))
+    do l = 1, ne
+      pi_ = incident_phi([xe(1, l, 1), xe(2, l, 1), 0d0], w, k, h_ex, 1d0, 0d0, gw)
+      call incident_grad([xe(1, l, 1), xe(2, l, 1), 0d0], w, k, h_ex, 1d0, 0d0, gw, gi)
+      s_all%phi_i(l) = pi_
+      s_all%dn_i(l) = gi(1)*nhe(1, l, 1) + gi(2)*nhe(2, l, 1)
+      ! the total potential on the waterline multiplies d_n of the other state's total field, 0 here
+      s_all%phi(l) = pi_
+      s_all%dn(l) = fs_wl_normal_derivative((0d0, 0d0), 0d0, gi(3))
+    end do
+    s_all%phi(ne + 1:) = s_out%phi
+    s_all%dn(ne + 1:) = s_out%dn
+    s_all%phi_i(ne + 1:) = s_out%phi_i
+    s_all%dn_i(ne + 1:) = s_out%dn_i
+    if (iwh == 2) then
+      ea(2) = s_all
+      ea(3) = s_all
+    else
+      eb(2) = s_all
+      eb(3) = s_all
+    end if
+  end subroutine edge_states
+
+end subroutine source_integral
+
+
+!> The guard of the source route on the inner mesh (fs_waterline_closure): the line integral runs over the hull waterline,
+!> so the inner mesh must end on it. On the generated mesh of the 448-panel cylinder every waterline segment (its ends
+!> and midpoint) lies on an edge of the inner mesh, to rounding (printed, measured value in FS_CLOSE_TOL's comment); with
+!> the mesh nodes on the waterline moved 2 % of the radius outwards (a gap between mesh and hull) the miss is far above
+!> FS_CLOSE_TOL.
+subroutine test_inner_mesh_closure(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh, fsp
+  type(surface_geom) :: geom
+  type(so_options) :: opts
+  type(first_order_state) :: st(1)
+  type(cs_points) :: pts
+  real(8) :: centre(2), radius, miss, r
+  integer :: npc, i
+  logical :: ok
+  character(len=:), allocatable :: msg
+
+  call cylinder_fixture(mesh, st, error)
+  if (allocated(error)) return
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call check(error, ok, "geometry: "//msg)
+  if (allocated(error)) return
+  opts%qtf_fs_radius = 20d0
+  call build_fs_inner(mesh, geom, opts, fx_depth, 'fs_task8_no_input_dir', pts, centre, radius, ok, msg, &
+                      omega_max=2.2d0, np_circle=npc, fs_panels=fsp)
+  call check(error, ok, "inner mesh: "//msg)
+  if (allocated(error)) return
+  miss = fs_waterline_closure(fsp, geom)
+  print '(4x,a,i0,a,es10.2,a,es10.2)', "generated mesh (", fsp%n, " panels): closure miss ", miss, ", tolerance ", FS_CLOSE_TOL
+  call check(error, miss <= FS_CLOSE_TOL, "the generated inner mesh does not close on the waterline")
+  if (allocated(error)) return
+  do i = 1, fsp%nnode
+    r = norm2(fsp%xnode(1:2, i) - centre)
+    if (abs(r - 10d0) < 1d-6) fsp%xnode(1:2, i) = centre + (fsp%xnode(1:2, i) - centre) * (1d0 + 0.02d0 * 10d0 / r)
+  end do
+  miss = fs_waterline_closure(fsp, geom)
+  print '(4x,a,es10.2)', "nodes on the waterline moved 0.2 m out: closure miss ", miss
+  call check(error, miss > 1d2 * FS_CLOSE_TOL, "a gap between the inner mesh and the waterline is not found")
+end subroutine test_inner_mesh_closure
 
 end module test_qtf_free_surface

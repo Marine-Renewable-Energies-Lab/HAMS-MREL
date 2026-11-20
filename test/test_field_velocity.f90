@@ -5,14 +5,18 @@
 module test_field_velocity
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use HAMS_mod, only : NTHREAD
-  use WaveDyn_mod, only : BETA, H, V, W1, WK
+  use WaveDyn_mod, only : BETA, H, NK, TP, V, W1, WK, WVN
+  use Const_mod, only : grav => G
   use PanelMesh_mod, only : ISX, ISY
   use SecondOrderTypes, only : panel_mesh, first_order_state, cs_points, cs_fields, CS_WALL, CS_LINE
   use FirstOrderState, only : image_signs, incident_phi, incident_grad, wave_gravity
   use WaterlineField, only : field_influence_row
   use FinGreen3D_Open, only : FINGREEN3D
+  use INFG3D_Open, only : INFGREEN3D
+  use direct_sum_green_mod, only : direct_sum_green
   use SurfaceVelocity, only : source_panel_integrals, source_operator, build_source_operator, velocity_source
   use FieldVelocity, only : fields_green, fields_source
+  use QTFFreeSurface, only : fs_point_field, fs_sample_phi, fs_inner_fields
   use second_order_fixtures, only : make_cylinder, maccamy_fuchs_state, maccamy_fuchs_phi, maccamy_fuchs_field
   use test_waterline_field, only : set_wave, load_single, load_panels
   implicit none
@@ -56,7 +60,11 @@ contains
       new_unittest("green_field_perturbation_only", test_green_perturbation_only), &
       new_unittest("source_field_matches_exact", test_source_field), &
       new_unittest("source_field_half_matches_full", test_source_field_half), &
-      new_unittest("green_field_thread_invariant", test_green_threads) &
+      new_unittest("green_field_thread_invariant", test_green_threads), &
+      new_unittest("field_row_deep_matches_inf", test_row_deep_matches_inf), &
+      new_unittest("field_row_deep_within_tol", test_row_deep_within_tol), &
+      new_unittest("field_row_deep_seabed", test_row_deep_seabed), &
+      new_unittest("field_deep_beats_limes", test_deep_beats_limes) &
       ]
   end subroutine collect_field_velocity
 
@@ -743,5 +751,351 @@ contains
       if (allocated(error)) return
     end do
   end subroutine threads_case
+
+  ! ---------------------------------------------------------------------------------------------- deep-water rows
+
+  !> Sets the wave of k0 h = k0h at depth: omega from k0 tanh(k0 h) = omega^2/g with the g of DISPERSION, then V, WVN and
+  !> WK as the solver sets them (set_wave).
+  subroutine set_k0h(k0h, depth)
+    real(8), intent(in) :: k0h, depth
+    real(8), parameter :: g_disp = 9.807d0   ! as DISPERSION (WavDynSubs.f90)
+    external :: DISPERSION
+
+    call set_wave(depth)
+    W1 = sqrt(g_disp*k0h/depth*tanh(k0h))
+    TP = 2d0*pi/W1
+    V = W1**2/grav
+    call DISPERSION(WVN, NK, W1, H)
+    WK = WVN(1)
+  end subroutine set_k0h
+
+  !> deep = .true. at finite depth gives the row of the deep-water Green function: entry by entry the row of the same mesh
+  !> and point with H < 0 (the same V), for the stock route and the centroid route. The same holds for the routines that
+  !> pass deep on: fields_green, fs_sample_phi and fs_inner_fields (phi, grad phi and phi_zz).
+  subroutine test_row_deep_matches_inf(error)
+    type(error_type), allocatable, intent(out) :: error
+    real(8), parameter :: depth = 200d0
+    type(panel_mesh) :: mesh
+    type(cs_points) :: pts
+    type(first_order_state) :: states(1)
+    type(cs_fields) :: fd(1), fi(1)
+    type(fs_point_field), allocatable :: sd(:, :), si(:, :)
+    complex(8), allocatable :: dg(:, :), ddg(:, :), ig(:, :), idg(:, :), pd(:, :), pi_(:, :)
+    integer :: i, inear
+    logical :: near
+
+    call set_k0h(20d0, depth)
+    call load_single(0, 1, mesh)
+    call ring_points(6, 6, [5.6d0, 9d0, 15d0], [0d0, -0.3d0, -2d0], pts)
+    call zero_state(mesh, 0.6d0, states(1))
+    do i = 1, mesh%n
+      states(1)%phi_p(i) = cmplx(cos(0.7d0*i), sin(0.3d0*i), 8)
+      states(1)%dphi_p_dn(i) = cmplx(sin(0.5d0*i), cos(0.2d0*i), 8)
+    end do
+    allocate (dg(mesh%nbase, mesh%nsys), ddg(mesh%nbase, mesh%nsys), ig(mesh%nbase, mesh%nsys), idg(mesh%nbase, mesh%nsys))
+    allocate (pd(pts%n, 1), pi_(pts%n, 1), sd(pts%n, 1), si(pts%n, 1))
+    do inear = 1, 2
+      near = inear == 1
+      do i = 1, pts%n
+        H = depth
+        call field_influence_row(mesh, pts%x(:, i), .false., dg, ddg, pts%x(:, i), field_mode=.true., near_panel=near, &
+                                 deep=.true.)
+        H = -1d0
+        call field_influence_row(mesh, pts%x(:, i), .false., ig, idg, pts%x(:, i), field_mode=.true., near_panel=near)
+        call check(error, all(dg == ig) .and. all(ddg == idg), "deep = .true. is not the row of H < 0")
+        if (allocated(error)) then
+          H = depth
+          return
+        end if
+      end do
+    end do
+    ! The states keep their own depth (the incident wave), only the Green function changes with the module H
+    H = depth
+    call fields_green(mesh, pts, states, step, .false., fd, deep=.true.)
+    call fs_sample_phi(mesh, pts, states, .false., pd, deep=.true.)
+    call fs_inner_fields(mesh, pts, states, 0.04d0, .false., sd, deep=.true.)
+    H = -1d0
+    call fields_green(mesh, pts, states, step, .false., fi)
+    call fs_sample_phi(mesh, pts, states, .false., pi_)
+    call fs_inner_fields(mesh, pts, states, 0.04d0, .false., si)
+    H = depth
+    call check(error, all(fd(1)%phi == fi(1)%phi) .and. all(fd(1)%grad == fi(1)%grad), &
+               "fields_green with deep is not that of H < 0")
+    if (allocated(error)) return
+    call check(error, all(pd == pi_), "fs_sample_phi with deep is not that of H < 0")
+    if (allocated(error)) return
+    do i = 1, pts%n
+      call check(error, sd(i, 1)%phi == si(i, 1)%phi .and. all(sd(i, 1)%grad == si(i, 1)%grad) .and. &
+                 sd(i, 1)%phizz == si(i, 1)%phizz, "fs_inner_fields with deep is not that of H < 0")
+      if (allocated(error)) return
+    end do
+  end subroutine test_row_deep_matches_inf
+
+  !> The deep-water row against the finite-depth row (field mode, as the field passes) at k0 h = 10, 20 and 40, h = 200 m,
+  !> points at z = 0 from 0.6 m off the hull to 40 m, stock and centroid routes: max |deep - finite| / max |finite| over
+  !> each row, G and dG/dn. The near-panel Rankine and image integrals are the same in both rows, so an entry of the
+  !> difference is the panel area times the difference of the wave parts of the two Green functions.
+  !> Checks:
+  !> (a) at k0 h = 10 and 20, max |deep - finite| / row max <= 1.3e-3, the tolerance of item 1 of the field-pass
+  !>     speed-ups (gbench measured 1.25e-3 at k0 h = 10 on the OC4 rows). Measured here 5.7e-4 and 8.8e-4.
+  !> (b) at k0 h = 40, the same gap below 4.5e-3, 1.3 x the 3.416e-3 measured. The gap is the error of the finite-depth
+  !>     field mode, not of the deep-water row: at the worst entry (point 3 m off the hull, waterline panel, R/h = 0.016,
+  !>     nu h = 40) FINGREEN3D in field mode misses the direct eigenfunction sum (direct_sum_green) by 3.3e-3 in G (1/m),
+  !>     INFGREEN3D by 8e-5.
+  !> (c) at every entry with |deep - finite| > 1.3e-3 of the row max, the deep-water entry within 1.3e-3 of the row max of
+  !>     the entry of the direct sum, and closer to it than the finite-depth entry.
+  subroutine test_row_deep_within_tol(error)
+    type(error_type), allocatable, intent(out) :: error
+    real(8), parameter :: depth = 200d0, k0h(3) = [10d0, 20d0, 40d0], deep_row_limit = 1.3d-3
+    ! (b): 1.3 x 3.416e-3 measured at k0 h = 40, rounded up to two digits
+    real(8), parameter :: gap_limit(3) = [deep_row_limit, deep_row_limit, 4.5d-3]
+    type(panel_mesh) :: mesh
+    type(cs_points) :: pts
+    complex(8), allocatable :: fg(:, :), fdg(:, :), dg(:, :), ddg(:, :)
+    complex(8) :: wf(3), wi(3), wd(3), d_fin, d_inf
+    real(8) :: worst, worst_direct, gmax, dmax, q(3), x(3), nrm(3), rh(2), rr
+    integer :: i, j, ik, inear, kind, nchecked
+    character(len=200) :: info
+
+    call set_wave(depth)
+    call load_single(0, 0, mesh)
+    call ring_points(6, 18, [5.6d0, 8d0, 15d0, 40d0], [0d0, 0d0, 0d0, 0d0], pts)
+    allocate (fg(mesh%nbase, mesh%nsys), fdg(mesh%nbase, mesh%nsys), dg(mesh%nbase, mesh%nsys), ddg(mesh%nbase, mesh%nsys))
+    do ik = 1, size(k0h)
+      call set_k0h(k0h(ik), depth)
+      worst = 0d0
+      worst_direct = 0d0
+      nchecked = 0
+      do inear = 1, 2
+        do i = 1, pts%n
+          call field_influence_row(mesh, pts%x(:, i), .false., fg, fdg, pts%x(:, i), field_mode=.true., &
+                                   near_panel=inear == 1)
+          call field_influence_row(mesh, pts%x(:, i), .false., dg, ddg, pts%x(:, i), field_mode=.true., &
+                                   near_panel=inear == 1, deep=.true.)
+          gmax = maxval(abs(fg))
+          dmax = maxval(abs(fdg))
+          worst = max(worst, maxval(abs(dg - fg))/gmax, maxval(abs(ddg - fdg))/dmax)
+          ! (c) The whole mesh (nsys = 1): the source of entry j is the centroid of panel j, the point unmirrored
+          x = pts%x(:, i)
+          do j = 1, mesh%nbase
+            do kind = 1, 2
+              if (kind == 1 .and. abs(dg(j, 1) - fg(j, 1)) <= deep_row_limit*gmax) cycle
+              if (kind == 2 .and. abs(ddg(j, 1) - fdg(j, 1)) <= deep_row_limit*dmax) cycle
+              q = mesh%xc(:, j)
+              nrm = mesh%nrm(:, j)
+              call pair_waves(q, x, V, WVN, NK, H, wf, wi, wd)
+              if (kind == 1) then
+                d_fin = mesh%area(j)*(wf(1) - wd(1))/gmax
+                d_inf = mesh%area(j)*(wi(1) - wd(1))/gmax
+              else
+                ! dG/dn with the gradient with respect to the source point: dG/dR along the horizontal of q - x
+                rr = sqrt((q(1) - x(1))**2 + (q(2) - x(2))**2)
+                rh = (q(1:2) - x(1:2))/rr
+                d_fin = mesh%area(j)*((wf(2) - wd(2))*dot_product(rh, nrm(1:2)) + (wf(3) - wd(3))*nrm(3))/dmax
+                d_inf = mesh%area(j)*((wi(2) - wd(2))*dot_product(rh, nrm(1:2)) + (wi(3) - wd(3))*nrm(3))/dmax
+              end if
+              nchecked = nchecked + 1
+              worst_direct = max(worst_direct, abs(d_inf))
+              write (info, '(a,f6.2,a,i3,a,i4,a,i2,a,2es10.3)') "k0 h = ", WK*H, ", point ", i, ", panel ", j, &
+                ", kind ", kind, ": deep and finite against the direct sum ", abs(d_inf), abs(d_fin)
+              call check(error, abs(d_inf) <= deep_row_limit .and. abs(d_inf) < abs(d_fin), trim(info))
+              if (allocated(error)) return
+            end do
+          end do
+        end do
+      end do
+      print '(4x,a,f6.2,a,es10.3,a,i0,a,es10.3)', "deep against finite rows at k0 h = ", WK*H, &
+        ": max |deep - finite| / row max ", worst, "; entries above 1.3e-3 checked against the direct sum: ", nchecked, &
+        ", worst |deep - direct| / row max ", worst_direct
+      write (info, '(a,f6.2,a,es10.3,a,es10.3)') "k0 h = ", WK*H, ": deep against finite row ", worst, " above ", &
+        gap_limit(ik)
+      call check(error, worst <= gap_limit(ik), trim(info))
+      if (allocated(error)) return
+    end do
+  end subroutine test_row_deep_within_tol
+
+  !> Why the control-surface passes keep the finite-depth rows: below z = 0 the deep-water row misses the seabed images.
+  !> At high frequency the deep-water G tends to 1/r - 1/r1, the finite-depth G to that plus the images of a seabed with
+  !> dG/dz = 0 (image_d). They cancel at z = 0 (field_row_deep_within_tol) but not at the bottom of C under a hull.
+  !> Points on the plane z_C under a truncated cylinder (radius R, a draft), field-mode rows as the passes take them, at
+  !> k0 h = 10, 20 and 40, for (a) a barge-like case, h = 2 drafts, C bottom 1 m under the hull, and (b) OC4-like cases,
+  !> h = 10 drafts, C bottom 5 m and 8 m under the hull (OC4: hull to z = -20 m, C to -28 m, h = 200 m).
+  !> At every entry with |deep - finite| > 1.3e-3 of the row maximum, both rows against the direct eigenfunction sum.
+  !> Checks: the finite-depth row within 1e-4 of the row maximum of the direct sum there (measured at most 7.2e-5), and
+  !> the deep row more than the 1.3e-3 tolerance of item 1 of the field-pass speed-ups off it in every case (measured
+  !> 0.15 to 0.19 for (a), 2.3e-3 to 9.3e-3 for (b)). The image model (max A_j |image_d| / row max) is printed: it gives
+  !> 0.17 to 0.18 for (a), the measured size, but only 0.8e-3 to 2.0e-3 for (b), where the rest grows with k0 h.
+  subroutine test_row_deep_seabed(error)
+    type(error_type), allocatable, intent(out) :: error
+    real(8), parameter :: k0h(3) = [10d0, 20d0, 40d0], deep_row_limit = 1.3d-3, finite_limit = 1d-4
+    real(8), parameter :: rad(4) = [20d0, 20d0, 20d0, 12d0], dr(4) = [10d0, 20d0, 20d0, 20d0]
+    real(8), parameter :: dep(4) = [20d0, 200d0, 200d0, 200d0], zc(4) = [-11d0, -25d0, -28d0, -28d0]
+    real(8) :: gg, gd, model, e_inf, e_fin
+    integer :: ik, ic
+    character(len=200) :: info
+
+    do ic = 1, size(rad)
+      do ik = 1, size(k0h)
+        call seabed_gap(rad(ic), dr(ic), dep(ic), zc(ic), k0h(ik), gg, gd, model, e_inf, e_fin)
+        print '(4x,a,4f8.2,a,f6.1,a,5es11.3)', "seabed: R, draft, h, z_C ", rad(ic), dr(ic), dep(ic), zc(ic), &
+          ", k0 h ", k0h(ik), ": gap G, gap dG/dn, image model, deep-direct, finite-direct ", gg, gd, model, e_inf, e_fin
+        write (info, '(a,f7.2,a,f6.1,a,es10.3,a,es10.3)') "z_C = ", zc(ic), ", k0 h = ", k0h(ik), &
+          ": finite-depth row against the direct sum ", e_fin, " above ", finite_limit
+        call check(error, e_fin <= finite_limit, trim(info))
+        if (allocated(error)) return
+        write (info, '(a,f7.2,a,f6.1,a,es10.3,a)') "z_C = ", zc(ic), ", k0 h = ", k0h(ik), &
+          ": the deep row is within the tolerance of the direct sum (", e_inf, "); the seabed term is gone"
+        call check(error, e_inf > deep_row_limit, trim(info))
+        if (allocated(error)) return
+      end do
+    end do
+  end subroutine test_row_deep_seabed
+
+  !> The gaps of seabed_gap for one case: max |deep - finite| / row max for G (gap_g) and dG/dn (gap_dg), the image
+  !> model, and the worst |deep - direct| (e_inf) and |finite - direct| (e_fin) over the row max at the entries whose gap
+  !> is above 1.3e-3. 24 points at z = zc, r = 1 m, 0.5 R, 0.9 R and 1.3 R; cylinder of 24 x 4 side and 4 x 24 bottom panels.
+  subroutine seabed_gap(radius, draft, depth, zc, k0h, gap_g, gap_dg, model, e_inf, e_fin)
+    real(8), intent(in) :: radius, draft, depth, zc, k0h
+    real(8), intent(out) :: gap_g, gap_dg, model, e_inf, e_fin
+    type(panel_mesh) :: full, mesh
+    type(cs_points) :: pts
+    complex(8), allocatable :: fg(:, :), fdg(:, :), dg(:, :), ddg(:, :)
+    complex(8) :: wf(3), wi(3), wd(3), d_fin, d_inf
+    real(8) :: gmax, dmax, m, q(3), x(3), nrm(3), rh(2), rr
+    integer :: i, j, kind
+
+    call set_wave(depth)
+    call make_cylinder(radius, draft, 24, 4, 4, full, .true.)
+    call load_panels(full, 0, 0, mesh)
+    call ring_points(6, 18, [1d0, 0.5d0*radius, 0.9d0*radius, 1.3d0*radius], [zc, zc, zc, zc], pts)
+    call set_k0h(k0h, depth)
+    allocate (fg(mesh%nbase, mesh%nsys), fdg(mesh%nbase, mesh%nsys), dg(mesh%nbase, mesh%nsys), ddg(mesh%nbase, mesh%nsys))
+    gap_g = 0d0
+    gap_dg = 0d0
+    model = 0d0
+    e_inf = 0d0
+    e_fin = 0d0
+    do i = 1, pts%n
+      call field_influence_row(mesh, pts%x(:, i), .false., fg, fdg, pts%x(:, i), field_mode=.true.)
+      call field_influence_row(mesh, pts%x(:, i), .false., dg, ddg, pts%x(:, i), field_mode=.true., deep=.true.)
+      gmax = maxval(abs(fg))
+      dmax = maxval(abs(fdg))
+      gap_g = max(gap_g, maxval(abs(dg - fg))/gmax)
+      gap_dg = max(gap_dg, maxval(abs(ddg - fdg))/dmax)
+      m = 0d0
+      x = pts%x(:, i)
+      do j = 1, mesh%nbase
+        m = max(m, mesh%area(j)*abs(image_d(x(3), mesh%xc(3, j), depth, norm2(x(1:2) - mesh%xc(1:2, j)))))
+        do kind = 1, 2
+          if (kind == 1 .and. abs(dg(j, 1) - fg(j, 1)) <= 1.3d-3*gmax) cycle
+          if (kind == 2 .and. abs(ddg(j, 1) - fdg(j, 1)) <= 1.3d-3*dmax) cycle
+          q = mesh%xc(:, j)
+          nrm = mesh%nrm(:, j)
+          call pair_waves(q, x, V, WVN, NK, H, wf, wi, wd)
+          if (kind == 1) then
+            d_fin = mesh%area(j)*(wf(1) - wd(1))/gmax
+            d_inf = mesh%area(j)*(wi(1) - wd(1))/gmax
+          else
+            rr = sqrt((q(1) - x(1))**2 + (q(2) - x(2))**2)
+            rh = (q(1:2) - x(1:2))/rr
+            d_fin = mesh%area(j)*((wf(2) - wd(2))*dot_product(rh, nrm(1:2)) + (wf(3) - wd(3))*nrm(3))/dmax
+            d_inf = mesh%area(j)*((wi(2) - wd(2))*dot_product(rh, nrm(1:2)) + (wi(3) - wd(3))*nrm(3))/dmax
+          end if
+          e_inf = max(e_inf, abs(d_inf))
+          e_fin = max(e_fin, abs(d_fin))
+        end do
+      end do
+      model = max(model, m/gmax)
+    end do
+  end subroutine seabed_gap
+
+  !> The images of a seabed with dG/dz = 0 under a free surface with G = 0, less the n = 0 pair 1/r - 1/r1 that the
+  !> deep-water G keeps: sum over n /= 0 of (-1)^n (1/|x - x_n| - 1/|x - x_n'|), sources at zeta + 2nh and -zeta + 2nh,
+  !> at horizontal distance rr [derived: reflections in z = 0 (sign -) and z = -h (sign +)].
+  real(8) function image_d(z, zeta, h, rr)
+    real(8), intent(in) :: z, zeta, h, rr
+    integer :: n
+    image_d = 0d0
+    do n = -400, 400
+      if (n == 0) cycle
+      image_d = image_d + (-1d0)**n*(1d0/hypot(rr, z - zeta - 2d0*n*h) - 1d0/hypot(rr, z + zeta - 2d0*n*h))
+    end do
+  end function image_d
+
+  !> An outlier-type pair of the field passes above nu h = 50 (gbench/results/outlier_check.txt, point 286 at 1.6 rad/s:
+  !> h = 200 m, field point on z = 0, source 0.98 m down, R/h = 0.00147, nu h = 52.2). There FINGREEN3D in field mode keeps
+  !> the Limes of PIDCOCK and misses the direct eigenfunction sum (direct_sum_green) by 1.5e-1 of the row maximum in
+  !> dG/dR; INFGREEN3D, by 4.4e-6. Here the wave part of each against the direct sum (pair_errors): the deep-water error
+  !> must be the smaller, by 10 at least.
+  subroutine test_deep_beats_limes(error)
+    type(error_type), allocatable, intent(out) :: error
+    integer, parameter :: nk_local = 200
+    real(8), parameter :: depth = 200d0, om = 1.6d0, g_disp = 9.807d0
+    real(8), parameter :: xq(3) = [6.6751964129d0, 12.9243372398d0, -0.9820344548d0]
+    real(8), parameter :: xf(3) = [6.4684960951d0, 13.1331966846d0, 0d0]
+    real(8) :: wvn_local(nk_local), nu, e_fin, e_inf
+    character(len=160) :: info
+    external :: DISPERSION
+
+    nu = om**2/g_disp
+    call DISPERSION(wvn_local, nk_local, om, depth)
+    call pair_errors(xq, xf, nu, wvn_local, nk_local, depth, e_fin, e_inf)
+    print '(4x,a,f7.5,a,f6.2,a,es10.3,a,es10.3)', "against the direct sum at R/h = ", &
+      sqrt((xq(1) - xf(1))**2 + (xq(2) - xf(2))**2)/depth, ", nu h = ", nu*depth, ": field mode ", e_fin, &
+      ", deep water ", e_inf
+    write (info, '(a,es10.3,a,es10.3)') "deep water is not closer to the direct sum than field mode: ", e_inf, " against ", &
+      e_fin
+    call check(error, e_fin > 10d0*e_inf, trim(info))
+  end subroutine test_deep_beats_limes
+
+  !> The errors of FINGREEN3D in field mode (e_fin) and of INFGREEN3D (e_inf) against the direct eigenfunction sum
+  !> (direct_sum_green) for the source xq and the field point xf: the largest of the wave parts G, dG/dR and dG/dz
+  !> (pair_waves), in units of h (G h, dG/dR h^2, dG/dz h^2).
+  subroutine pair_errors(xq, xf, nu, wvn, nk_in, depth, e_fin, e_inf)
+    real(8), intent(in) :: xq(3), xf(3), nu, wvn(:), depth
+    integer, intent(in) :: nk_in
+    real(8), intent(out) :: e_fin, e_inf
+    real(8) :: scale(3)
+    complex(8) :: wf(3), wi(3), wd(3)
+
+    call pair_waves(xq, xf, nu, wvn, nk_in, depth, wf, wi, wd)
+    scale = [depth, depth**2, depth**2]
+    e_fin = maxval(abs(wf - wd)*scale)
+    e_inf = maxval(abs(wi - wd)*scale)
+
+  end subroutine pair_errors
+
+  !> The wave parts (G, dG/dR, dG/dz) of FINGREEN3D in field mode (wf), of INFGREEN3D (wi) and of the direct eigenfunction
+  !> sum (wd, direct_sum_green) for the source xq and the field point xf. The wave part of a FLAG = 0 result is
+  !> G - 1/r - 1/r1 with its gradient, taken with respect to the source point, as direct_sum_green has it (radial of
+  !> gbench/outlier_check.f90).
+  subroutine pair_waves(xq, xf, nu, wvn, nk_in, depth, wf, wi, wd)
+    real(8), intent(in) :: xq(3), xf(3), nu, wvn(:), depth
+    integer, intent(in) :: nk_in
+    complex(8), intent(out) :: wf(3), wi(3), wd(3)
+    real(8) :: rr
+    complex(8) :: gf(4), gi(4)
+
+    rr = sqrt((xq(1) - xf(1))**2 + (xq(2) - xf(2))**2)
+    call FINGREEN3D(xq(1), xf(1), xq(2), xf(2), xq(3), xf(3), nu, wvn, nk_in, depth, gf, 0, FIELD=.true.)
+    call INFGREEN3D(xq(1), xf(1), xq(2), xf(2), xq(3), xf(3), nu, gi, 0)
+    call direct_sum_green(rr, xq(3), xf(3), nu, wvn(1), depth, wd)
+    wf = wave_part(gf)
+    wi = wave_part(gi)
+
+  contains
+
+    function wave_part(gr) result(w)
+      complex(8), intent(in) :: gr(4)
+      complex(8) :: w(3)
+      real(8) :: sr, sr1
+
+      sr = sqrt(rr**2 + (xf(3) - xq(3))**2)
+      sr1 = sqrt(rr**2 + (xf(3) + xq(3))**2)
+      w(1) = gr(1) - 1d0/sr - 1d0/sr1
+      w(2) = (gr(2)*(xq(1) - xf(1)) + gr(3)*(xq(2) - xf(2)))/rr + (rr/sr**3 + rr/sr1**3)
+      w(3) = gr(4) + ((xq(3) - xf(3))/sr**3 + (xf(3) + xq(3))/sr1**3)
+    end function wave_part
+  end subroutine pair_waves
 
 end module test_field_velocity

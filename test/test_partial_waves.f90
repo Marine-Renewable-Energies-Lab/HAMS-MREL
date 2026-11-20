@@ -10,7 +10,7 @@ module test_partial_waves
   use FieldVelocity, only : fields_green
   use PartialWaves, only : pw_set, pw_radial, pw_sample_points, pw_decompose, pw_eval_surface, pw_eval_point, pw_radial_at, &
                            pw_bessel_k, pw_evanescent_from_wvn, pw_bessel_k_scaled, pw_bessel_k_scaled_c, pw_hankel_scaled, &
-                           pw_green_modes, pw_green_mmax
+                           pw_green_modes, pw_green_mmax, pw_source_modes
   use FinGreen3D_Open, only : FINGREEN3D
   use direct_sum_green_mod, only : direct_sum_green
   use second_order_fixtures, only : make_cylinder, maccamy_fuchs_state
@@ -254,7 +254,8 @@ subroutine collect_partial_waves(testsuite)
     new_unittest("green_modes_match_fingreen", test_green_modes_fingreen), &
     new_unittest("green_modes_near_circle", test_green_modes_near_circle), &
     new_unittest("green_modes_match_decompose", test_green_modes_decompose), &
-    new_unittest("green_modes_cut_reported", test_green_modes_cut) &
+    new_unittest("green_modes_cut_reported", test_green_modes_cut), &
+    new_unittest("graf_matches_direct_sum", test_graf_direct_sum) &
     ]
 end subroutine collect_partial_waves
 
@@ -889,6 +890,135 @@ subroutine test_green_modes_cut(error)
   write (info, '(a,i0,a,i0)') "mcut ", mc, " below mmax ", mneed
   call check(error, mc == mneed, trim(info))
 end subroutine test_green_modes_cut
+
+! ---------------------------------------------------------------------------------------------- source modes (Graf)
+!> pw_source_modes (item 3 of the field-pass speed-ups): the partial waves of G(x_s, .) and of n . grad_{x_s} G(x_s, .)
+!> for a source x_s inside the circle, evaluated by pw_eval_point at 12 angles on r = 1.2 R, z = 0 and -10 m (the circle and
+!> depth of green_modes_match_fingreen, h = 50 m, omega = 0.3 rad/s, nev = 80, mmax = pw_green_mmax(r_s, 1.2 R, 1e-12)), for
+!> two sources off the axis. Each Graf form is pinned on its own, relative to the largest |G| (|n . grad G|) there:
+!>   propagating (H_m J_m): the n = 0 sum against i c0 Z_0(z_s) Z_0(z) H_0(k0 rho) and its source gradient, analytic;
+!>   evanescent (K_m I_m): the n >= 1 sum against the direct eigen-sum (direct_sum_green plus 1/r and 1/r1) less that
+!>   propagating term, and the same for the gradient.
+!> Gates: 1e-8 for G (the direct sum is good to 3e-11), 1e-7 for the gradient (dG/dR of the direct sum is good to 1.5e-8).
+!> And the signs: the same sums with the angle of the source reversed (e^{+i m theta_s}) or with a factor (-1)^m in the
+!> evanescent terms miss by more than 1e-2, so the test tells the signs apart. Measured (Task 5), worst of the two sources:
+!> 7.0e-15, 1.0e-9, 2.2e-12, 1.0e-9; wrong signs 0.12 and 0.17 (source 1), 0.51 and 0.50 (source 2).
+subroutine test_graf_direct_sum(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: nrm(3) = [0.48d0, -0.6d0, 0.64d0], depths(2) = [0d0, -10d0]
+  ! 80 evanescent modes: source 2 is 6.6 m from the nearest field point, where e^{-k_n rho} with k_80 = 5.0 /m is 4e-15;
+  ! with 40 modes its gradient was 4.8e-7 off (the n-th term of the gradient carries k_n)
+  integer, parameter :: g_nev = 80
+  real(8), parameter :: srcs(3, 2) = reshape([3d0, -2d0, -4d0, -7d0, 9d0, -31d0], [3, 2])
+  real(8) :: wvn_local(gm_nk), nu, k0, rf, xs(3), xi(3), th, rho, e_p, e_e, e_dp, e_de, w_p, w_e, s_g, s_d
+  real(8) :: dh(2), z0s, z0f, dz0s, c0, sr, sr1, err(4), wrong(2)
+  complex(8), allocatable :: b(:, :), db(:, :)
+  complex(8) :: grn(3), h0, h1, gp, dgp, gfull, dgfull, vp, ve, dvp, dve, wp, we
+  type(pw_set) :: pw, pd, pwr, pwe
+  integer :: mmax, is, iz, j, m
+  character(len=200) :: info
+  external :: DISPERSION
+
+  call DISPERSION(wvn_local, gm_nk, gm_omega, gm_depth)
+  nu = gm_omega**2 / g_dispersion
+  k0 = wvn_local(1)
+  rf = 1.2d0 * gm_radius
+  err = 0d0
+  wrong = 0d0
+  do is = 1, 2
+    xs = srcs(:, is)
+    mmax = pw_green_mmax(norm2(xs(1:2)), rf, 1d-12)
+    allocate (b(-mmax:mmax, 0:g_nev), db(-mmax:mmax, 0:g_nev))
+    call pw_source_modes(xs, nrm, [0d0, 0d0], gm_depth, k0, wvn_local(2:), mmax, g_nev, b, db)
+    ! Propagating part alone (pw), evanescent part alone (pd), and the same with b(m) <- b(-m) (the angle of the source
+    ! reversed, pwr) and with b(m) <- (-1)^m b(m) in the evanescent terms (pwe)
+    call source_set(b, mmax, pw, 0)
+    call source_set(b, mmax, pd, 1)
+    call source_set(b(mmax:-mmax:-1, :), mmax, pwr, 0)
+    call source_set(b, mmax, pwe, 1)
+    do m = -mmax, mmax
+      if (mod(abs(m), 2) == 1) pwe%a(m, :) = -pwe%a(m, :)
+    end do
+    s_g = 0d0; s_d = 0d0; e_p = 0d0; e_e = 0d0; e_dp = 0d0; e_de = 0d0; w_p = 0d0; w_e = 0d0
+    ! c0 Z_0(z_s) Z_0(z) H_0 is the propagating term of G (pw_green_modes); c0 as there
+    c0 = 2d0 * pi * k0 / (k0 * gm_depth / cosh(k0 * gm_depth)**2 + tanh(k0 * gm_depth))
+    z0s = cosh(k0 * (xs(3) + gm_depth)) / cosh(k0 * gm_depth)
+    dz0s = k0 * sinh(k0 * (xs(3) + gm_depth)) / cosh(k0 * gm_depth)
+    do iz = 1, 2
+      do j = 0, 11
+        th = 2d0 * pi * j / 12d0
+        xi = [rf * cos(th), rf * sin(th), depths(iz)]
+        rho = norm2(xi(1:2) - xs(1:2))
+        dh = (xs(1:2) - xi(1:2)) / rho
+        z0f = cosh(k0 * (xi(3) + gm_depth)) / cosh(k0 * gm_depth)
+        h0 = cmplx(bessel_j0(k0 * rho), bessel_y0(k0 * rho), 8)
+        h1 = cmplx(bessel_j1(k0 * rho), bessel_y1(k0 * rho), 8)
+        gp = ci * c0 * z0s * z0f * h0
+        dgp = ci * c0 * z0f * (dz0s * h0 * nrm(3) - k0 * z0s * h1 * sum(dh * nrm(1:2)))
+        ! The full G and n . grad_{x_s} G by the direct sum, x_s as its first point (ZF), the Rankine parts added back
+        call direct_sum_green(rho, xs(3), xi(3), nu, k0, gm_depth, grn)
+        sr = sqrt(rho**2 + (xs(3) - xi(3))**2)
+        sr1 = sqrt(rho**2 + (xs(3) + xi(3))**2)
+        gfull = grn(1) + 1d0 / sr + 1d0 / sr1
+        dgfull = (grn(2) - rho / sr**3 - rho / sr1**3) * sum(dh * nrm(1:2)) &
+                 + (grn(3) - (xs(3) - xi(3)) / sr**3 - (xs(3) + xi(3)) / sr1**3) * nrm(3)
+        call pw_eval_point(pw, xi, vp)
+        call pw_eval_point(pd, xi, ve)
+        call pw_eval_point(pwr, xi, wp)
+        call pw_eval_point(pwe, xi, we)
+        call source_set(db, mmax, pw, 0)
+        call source_set(db, mmax, pd, 1)
+        call pw_eval_point(pw, xi, dvp)
+        call pw_eval_point(pd, xi, dve)
+        call source_set(b, mmax, pw, 0)
+        call source_set(b, mmax, pd, 1)
+        s_g = max(s_g, abs(gfull))
+        s_d = max(s_d, abs(dgfull))
+        e_p = max(e_p, abs(vp - gp))
+        e_e = max(e_e, abs(ve - (gfull - gp)))
+        e_dp = max(e_dp, abs(dvp - dgp))
+        e_de = max(e_de, abs(dve - (dgfull - dgp)))
+        w_p = max(w_p, abs(wp - gp))
+        w_e = max(w_e, abs(we - (gfull - gp)))
+      end do
+    end do
+    err = max(err, [e_p / s_g, e_e / s_g, e_dp / s_d, e_de / s_d])
+    wrong = max(wrong, [w_p / s_g, w_e / s_g])
+    print '(4x,a,i0,a,i0,a,4es10.2,a,2es10.2)', "Graf source ", is, " (mmax ", mmax, &
+      "): G propagating, evanescent; n.grad G propagating, evanescent ", e_p / s_g, e_e / s_g, e_dp / s_d, e_de / s_d, &
+      "; wrong signs ", w_p / s_g, w_e / s_g
+    deallocate (b, db)
+  end do
+  write (info, '(a,4es10.3)') "the Graf sums miss G or its source gradient (prop., evan., grad prop., grad evan.) ", err
+  call check(error, err(1) <= 1d-8 .and. err(2) <= 1d-8 .and. err(3) <= 1d-7 .and. err(4) <= 1d-7, trim(info))
+  if (allocated(error)) return
+  write (info, '(a,2es10.3)') "the sums with the wrong signs agree too: the test does not tell the signs apart ", wrong
+  call check(error, minval(wrong) > 1d-2, trim(info))
+
+contains
+
+  !> A pw_set about the origin with the n = 0 (part 0) or the n >= 1 (part 1) modes of c, the others zero
+  subroutine source_set(c, mm, p, part)
+    complex(8), intent(in) :: c(-mm:, 0:)
+    integer, intent(in) :: mm, part
+    type(pw_set), intent(out) :: p
+
+    p%mmax = mm
+    p%nev = g_nev
+    p%k0 = k0
+    p%h = gm_depth
+    p%radius = gm_radius
+    p%centre = 0d0
+    allocate (p%kev(g_nev), p%a(-mm:mm, 0:g_nev))
+    p%kev = wvn_local(2:g_nev + 1)
+    p%a = (0d0, 0d0)
+    if (part == 0) then
+      p%a(:, 0) = c(:, 0)
+    else
+      p%a(:, 1:) = c(:, 1:)
+    end if
+  end subroutine source_set
+end subroutine test_graf_direct_sum
 
 !> The worst errors of pw_green_modes(x) against the full G of FINGREEN3D (err_fg) and of the direct eigen-sum (err_ds) at
 !> 12 angles on r = R, 18 m, 30 m and z = 0, -10 m, relative to the largest |G| there.

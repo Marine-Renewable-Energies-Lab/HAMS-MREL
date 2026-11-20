@@ -153,7 +153,7 @@ CONTAINS
       g2 = (a11*b2 - a12*b1)/det
    END SUBROUTINE tangential_fit
 
-   SUBROUTINE source_panel_integrals(mesh, xf, jel, flag, is_multi, g_int, grad_int)
+   SUBROUTINE source_panel_integrals(mesh, xf, jel, flag, is_multi, g_int, grad_int, deep, field)
       ! G and its gradient with respect to the field point, integrated over base panel jel, at xf, which is already reflected for
       ! the symmetry image. Written as the terms 1/r, its image 1/r1 and the rest, with q on the panel:
       !   1/r    a function of xf - q, so the gradient is minus the panel integral of the gradient with respect to q
@@ -161,18 +161,28 @@ CONTAINS
       !   rest   from the Green function, one point on the panel. With the field point first, GRN(2:4) is its gradient there
       ! flag = 1 takes 1/r and 1/r1 as panel integrals, like IMAGE_TERM_EXACT, and flag = 0 all at one point. The Green function
       ! holds 1/r1 at flag = 1, so it is taken out at the centroid.
+      ! deep, if present and true, takes the deep-water Green function (INFGREEN3D) at finite depth too, as deep of
+      ! field_influence_row (the free-surface passes of SecondOrderDriver where k0 h >= field_deep_kh). field, if present, goes to
+      ! FINGREEN3D as FIELD (its series without the Limes outliers, as the field rows of field_influence_row). Both absent:
+      ! as before.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       REAL(8), INTENT(IN) :: xf(3)
       INTEGER, INTENT(IN) :: jel, flag
       LOGICAL, INTENT(IN) :: is_multi
       COMPLEX(8), INTENT(OUT) :: g_int, grad_int(3)
+      LOGICAL, INTENT(IN), OPTIONAL :: deep, field
       REAL(8) :: xq(3), d(3), r1, area, rk(4), rk_image(4)
       COMPLEX(8) :: grn(4)
+      LOGICAL :: infinite
 
       xq = mesh%xc(:, jel)
       area = mesh%area(jel)
-      IF (H < 0D0) THEN
+      infinite = H < 0D0
+      IF (PRESENT(deep)) infinite = infinite .OR. deep
+      IF (infinite) THEN
          CALL INFGREEN3D(xf(1), xq(1), xf(2), xq(2), xf(3), xq(3), V, grn, flag)
+      ELSE IF (PRESENT(field)) THEN
+         CALL FINGREEN3D(xf(1), xq(1), xf(2), xq(2), xf(3), xq(3), V, WVN, NK, H, grn, flag, FIELD=field)
       ELSE
          CALL FINGREEN3D(xf(1), xq(1), xf(2), xq(2), xf(3), xq(3), V, WVN, NK, H, grn, flag)
       END IF

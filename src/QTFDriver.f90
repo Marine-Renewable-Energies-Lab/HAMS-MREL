@@ -29,7 +29,8 @@ MODULE QTFDriver
    ! Only what the near-field terms read is kept: phi_i, phi_p, grad_i, grad_p, xi. After the frequency loop, qtf_finish
    ! evaluates every pair and writes QTF_Quadratic.10d and .10s.
    !
-   ! With components a_i of amplitude and the time factor e^{-i omega t}, the second-order load is (spec 5.4)
+   ! With components a_i of amplitude and the time factor e^{-i omega t}, the second-order load is
+   ! (docs/output_files.md, there conjugated)
    !    F(t) = sum_i sum_j Re[ T-_ij a_i a_j* e^{-i(w_i - w_j)t} + T+_ij a_i a_j e^{-i(w_i + w_j)t} ],
    ! over all i and j. T-_ij is near_field_pair(state i, state j, KERNEL_DIFF) and T+_ij the same with KERNEL_SUM. The files
    ! hold their conjugates, scaled as MeanDriftPressure.9 (SecondOrderOutput), on the full square of frequency pairs.
@@ -118,7 +119,8 @@ MODULE QTFDriver
 
    USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom, cs_points, QTF_TERMS_BODY, &
                                QTF_TERMS_FULL
-   USE QTFFreeSurface, ONLY: fs_point_field, fs_pair_terms
+   USE QTFFreeSurface, ONLY: fs_point_field, fs_pair_terms, fs_wl_state, fs_waterline_state, fs_edge_points, fs_edge_state, &
+                             fs_edge_psi
    USE FieldVelocity, ONLY: incident_at
    USE PartialWaves, ONLY: pw_set
    USE NearFieldDrift, ONLY: near_field_pair, KERNEL_DIFF, KERNEL_SUM
@@ -143,7 +145,7 @@ MODULE QTFDriver
    PUBLIC :: qtf_direct_at_omega, qtf_direct_pairs, qtf_direct_missing, qtf_diff_omega, qtf_direct_sum_pairs, qtf_sum_omega
    PUBLIC :: qtf_direct_sum_load, qtf_direct_diff_load, qtf_indirect_sum_load, potential_part_sum, psi_bad_files
    PUBLIC :: qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, qtf_set_edge_weights
-   PUBLIC :: qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active
+   PUBLIC :: qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active, qtf_set_fs_inner
    PUBLIC :: potential_part, qtf_motion_part, qtf_motion_load, psi_at_points
 
    LOGICAL :: active = .FALSE.
@@ -230,6 +232,12 @@ MODULE QTFDriver
    ! psi_j at the field points of QTFField per Omega of the list (qtf_field = 1 with qtf_direct = 1), for the radiated wave
    COMPLEX(8), ALLOCATABLE :: mot_psi_pts(:, :, :)       ! (npt, 6*nbody, nneed), e^{-i Omega t} at Omega > 0
    LOGICAL, ALLOCATABLE :: mot_psi_kept(:)               ! (nneed)
+   ! qtf_fs_inner = source (item 2 of the field-pass speed-ups): the inner integral without phi_zz, which needs grad_h psi_k
+   ! at the inner points too, (n_fs, 2, 6*nbody, nneed), kept by qtf_keep_fs_psi
+   LOGICAL :: fs_source = .FALSE.
+   COMPLEX(8), ALLOCATABLE :: fs_gpsi(:, :, :, :)
+   ! qtf_stored_mb counts fs_gpsi: set by qtf_set_fs_inner before the estimate (the store is allocated later, by qtf_init)
+   LOGICAL :: estimate_gpsi = .FALSE.
    ! Non-finite results of the potential part, over the run (reset by qtf_init, kept after qtf_finish for the exit code)
    INTEGER :: n_bad_psi = 0                              ! difference frequencies whose psi has NaN or Inf
    INTEGER :: n_bad_pairs = 0                            ! frequency and heading pairs whose T_pot has NaN or Inf
@@ -491,6 +499,12 @@ CONTAINS
          END DO
          fs_kept = .FALSE.
          fs_psi_kept = .FALSE.
+         fs_source = opts%qtf_fs_inner == 2
+         IF (fs_source) THEN
+            ALLOCATE (fs_gpsi(fs_pts%n, 2, 6*nbody, SIZE(psi_need)), STAT=st)
+            IF (st /= 0) CALL out_of_memory(body=.TRUE., fs=.TRUE.)
+            fs_gpsi = (0D0, 0D0)
+         END IF
          fs_active = .TRUE.
       END SUBROUTINE init_free_surface
 
@@ -560,7 +574,7 @@ CONTAINS
       END SUBROUTINE check_pairs
 
       SUBROUTINE sum_warnings(w)
-         ! The log of what the sum leaves out (spec 4.1, rulings R2 and R5 of the Phase 7c-2 plan)
+         ! The log of what the sum leaves out (rulings R2 and R5, docs/developer_documentation.md, Phase 7c-2)
          REAL(8), INTENT(IN) :: w(:)
          INTEGER :: i, j, nleft, ntot
          CHARACTER(LEN=40) :: left_out, also   ! the files of the sum this run writes: the first, and the one after it
@@ -787,6 +801,8 @@ CONTAINS
       IF (ALLOCATED(fs_psi)) DEALLOCATE (fs_psi)
       IF (ALLOCATED(fs_pw_psi)) DEALLOCATE (fs_pw_psi)
       IF (ALLOCATED(fs_psi_kept)) DEALLOCATE (fs_psi_kept)
+      IF (ALLOCATED(fs_gpsi)) DEALLOCATE (fs_gpsi)
+      fs_source = .FALSE.
       IF (ALLOCATED(fs_store_pts%x)) DEALLOCATE (fs_store_pts%x)
       IF (ALLOCATED(fs_store_pts%nrm)) DEALLOCATE (fs_store_pts%nrm)
       IF (ALLOCATED(fs_store_pts%w)) DEALLOCATE (fs_store_pts%w)
@@ -834,14 +850,17 @@ CONTAINS
       fs_kept(nkept, ib) = .TRUE.
    END SUBROUTINE qtf_keep_fs_state
 
-   SUBROUTINE qtf_keep_fs_psi(omega, psi_pts, pw_psi, ok)
+   SUBROUTINE qtf_keep_fs_psi(omega, psi_pts, pw_psi, ok, gpsi)
       ! qtf_terms = full: keeps psi_pts(n_fs, 6*nbody), psi_k at the inner free-surface points, and pw_psi(6*nbody), the
       ! partial waves of each psi_k, of the difference frequency omega. An omega that is not a difference frequency, or
       ! values of another size, stop the run; with ok present they are not kept and ok is false instead.
+      ! gpsi(n_fs, 2, 6*nbody), grad_h psi_k at the points: needed with qtf_fs_inner = source (missing counts as another
+      ! size), not kept otherwise.
       REAL(8), INTENT(IN) :: omega
       COMPLEX(8), INTENT(IN) :: psi_pts(:, :)
       TYPE(pw_set), INTENT(IN) :: pw_psi(:)
       LOGICAL, INTENT(OUT), OPTIONAL :: ok
+      COMPLEX(8), INTENT(IN), OPTIONAL :: gpsi(:, :, :)
       INTEGER :: m, k
       LOGICAL :: fits
 
@@ -855,6 +874,10 @@ CONTAINS
             fits = fits .AND. pw_fits(pw_psi(k))
          END DO
       END IF
+      IF (fits .AND. fs_source) THEN
+         fits = PRESENT(gpsi)
+         IF (fits) fits = SIZE(gpsi, 1) == SIZE(fs_gpsi, 1) .AND. SIZE(gpsi, 2) == 2 .AND. SIZE(gpsi, 3) == SIZE(fs_gpsi, 3)
+      END IF
       IF (.NOT. fits) THEN
          IF (PRESENT(ok)) RETURN
          WRITE (*, '(a,ES14.6,a)') ' QTF: psi on the inner free surface at omega =', omega, &
@@ -863,6 +886,7 @@ CONTAINS
       END IF
       fs_psi(:, :, m) = psi_pts
       fs_pw_psi(:, m) = pw_psi
+      IF (fs_source) fs_gpsi(:, :, :, m) = gpsi
       fs_psi_kept(m) = .TRUE.
       IF (PRESENT(ok)) ok = .TRUE.
    END SUBROUTINE qtf_keep_fs_psi
@@ -1661,6 +1685,49 @@ CONTAINS
       END DO
    END SUBROUTINE fs_incident_all
 
+   SUBROUTINE fs_boundary_all(mesh, geom, bnd, xe, wb)
+      ! qtf_fs_inner = source (item 2 of the field-pass speed-ups): every kept state on the boundary of the inner free
+      ! surface for the line integral (fs_wl_state), bnd(nkept, nbeta): first the waterline segments of geom
+      ! (fs_waterline_state, with the waterline potential of the store, as the near-field drift takes it), then the points
+      ! xe(2, ne) of the outer edge (fs_edge_points of the store's circle, M and polygon; fs_edge_state from the state's
+      ! partial waves and incident wave). wb(nwl + ne): the segment lengths, then the edge weights.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(surface_geom), INTENT(IN) :: geom
+      TYPE(fs_wl_state), ALLOCATABLE, INTENT(OUT) :: bnd(:, :)
+      REAL(8), ALLOCATABLE, INTENT(OUT) :: xe(:, :), wb(:)
+      TYPE(fs_wl_state) :: wl, ed
+      REAL(8), ALLOCATABLE :: nhe(:, :), we(:)
+      INTEGER :: is, ib, nw
+
+      CALL fs_edge_points(fs_store_np, fs_store_centre, fs_store_radius, fs_store_mmax, xe, nhe, we)
+      nw = geom%nwl
+      wb = [geom%wl_len(1:nw), we]
+      ALLOCATE (bnd(nkept, nbeta))
+      DO ib = 1, nbeta
+         DO is = 1, nkept
+            CALL fs_waterline_state(mesh, geom, store(is, ib), store_wl(:, is, ib), wl)
+            CALL fs_edge_state(fs_pw(is, ib), store(is, ib)%omega, store(is, ib)%k, store(is, ib)%beta, xe, nhe, ed)
+            bnd(is, ib)%phi = [wl%phi, ed%phi]
+            bnd(is, ib)%dn = [wl%dn, ed%dn]
+            bnd(is, ib)%phi_i = [wl%phi_i, ed%phi_i]
+            bnd(is, ib)%dn_i = [wl%dn_i, ed%dn_i]
+         END DO
+      END DO
+   END SUBROUTINE fs_boundary_all
+
+   SUBROUTINE fs_boundary_psi(nwl, pwl, pw_psi, xe, psi_b)
+      ! psi_k on the boundary of fs_boundary_all: pwl(nwl, 6*nbody) at the waterline segments (psi_waterline, as the body
+      ! terms take it), then on the outer edge points xe from the partial waves pw_psi (fs_edge_psi)
+      INTEGER, INTENT(IN) :: nwl
+      COMPLEX(8), INTENT(IN) :: pwl(:, :)
+      TYPE(pw_set), INTENT(IN) :: pw_psi(:)
+      REAL(8), INTENT(IN) :: xe(:, :)
+      COMPLEX(8), INTENT(OUT) :: psi_b(:, :)
+
+      psi_b(1:nwl, :) = pwl
+      CALL fs_edge_psi(pw_psi, xe, psi_b(nwl + 1:, :))
+   END SUBROUTINE fs_boundary_psi
+
    REAL(8) FUNCTION qtf_direct_missing()
       ! The smallest difference frequency of the grid (rad/s) at which the direct solve has not run, or 0 if there is none
       ! or qtf_direct is off (or qtf_init has not set up its store). qtf_finish stops on a non-zero value before it writes
@@ -1725,6 +1792,13 @@ CONTAINS
       qtf_kept = nkept
    END FUNCTION qtf_kept
 
+   SUBROUTINE qtf_set_fs_inner(mode)
+      ! The route of the inner free-surface fields for qtf_stored_mb: qtf_fs_inner, 1 stencil, 2 source (grad psi counted)
+      INTEGER, INTENT(IN) :: mode
+
+      estimate_gpsi = mode == 2
+   END SUBROUTINE qtf_set_fs_inner
+
    REAL(8) FUNCTION qtf_stored_mb(n_panels, nwl, nbody, nfreq, nb, npsi, npairs, ncs, nfs, npw, nsum_pairs, nmotion)
       ! Size of the store in MB for nfreq frequencies and nb headings: 8 complex values per panel, 6 per body, 1 per segment.
       ! With npsi, also psi at npsi difference frequencies: 6*nbody complex values per panel. With npairs heading pairs, also
@@ -1754,6 +1828,9 @@ CONTAINS
       IF (PRESENT(nfs) .AND. PRESENT(npw)) THEN
          qtf_stored_mb = qtf_stored_mb + 16D0*REAL(5*nfs + npw, 8)*REAL(nfreq, 8)*REAL(nb, 8)/1D6
          IF (PRESENT(npsi)) qtf_stored_mb = qtf_stored_mb + 16D0*REAL(6*nbody, 8)*REAL(nfs + npw, 8)*REAL(npsi, 8)/1D6
+         ! qtf_fs_inner = source (qtf_set_fs_inner): grad_h psi_k too, 2 per point, mode and psi frequency
+         IF (PRESENT(npsi) .AND. estimate_gpsi) qtf_stored_mb = qtf_stored_mb + &
+                                                                16D0*REAL(6*nbody, 8)*2D0*REAL(nfs, 8)*REAL(npsi, 8)/1D6
       END IF
    END FUNCTION qtf_stored_mb
 
@@ -2028,6 +2105,10 @@ CONTAINS
       INTEGER, ALLOCATABLE :: pair_m(:, :)                 ! (nkept, nkept), index of |omega_i - omega_j| in psi_need, or 0
       COMPLEX(8), ALLOCATABLE :: grad(:, :, :), pwl(:, :), terms(:, :)
       TYPE(fs_point_field), ALLOCATABLE :: fs_inc(:, :, :)   ! (n_fs, nkept, nbeta), incident fields at the inner points
+      ! qtf_fs_inner = source: the states on the boundary of the inner free surface, psi_k there, the line weights
+      TYPE(fs_wl_state), ALLOCATABLE :: fs_bnd(:, :)
+      COMPLEX(8), ALLOCATABLE :: psi_b(:, :)
+      REAL(8), ALLOCATABLE :: xe(:, :), wbnd(:)
       REAL(8) :: dw, g_wave, rf, rf_max, fs_seconds
       INTEGER(8) :: t0, t1, rate
       INTEGER :: unit, i, j, m, b1, b2, b, c, k, nmode, nbad, nterms, npairs_fs
@@ -2083,6 +2164,10 @@ CONTAINS
       IF (fs_active) THEN
          nterms = NPOT_TERMS + 2
          CALL fs_incident_all(fs_inc)
+         IF (fs_source) THEN
+            CALL fs_boundary_all(mesh, geom, fs_bnd, xe, wbnd)
+            ALLOCATE (psi_b(SIZE(wbnd), nmode))
+         END IF
       END IF
       ALLOCATE (grad(3, mesh%n, nmode), pwl(geom%nwl, nmode), terms(nmode, nterms))
       fs_seconds = 0D0
@@ -2090,6 +2175,7 @@ CONTAINS
          IF (.NOT. ANY(pair_m == m)) CYCLE
          CALL psi_surface_gradient(mesh, geom, psi_store(:, :, m), grad)
          CALL psi_waterline(mesh, geom, psi_store(:, :, m), grad, pwl)
+         IF (fs_active .AND. fs_source) CALL fs_boundary_psi(geom%nwl, pwl, fs_pw_psi(:, m), xe, psi_b)
          nbad = 0
          npairs_fs = 0
          rf_max = 0D0
@@ -2167,10 +2253,18 @@ CONTAINS
          REAL(8), INTENT(OUT) :: r_far
 
          ASSOCIATE (s1 => store(ia, ba), s2 => store(ja, bb))
-            CALL fs_pair_terms(s1%omega, fs_f(:, ia, ba), fs_inc(:, ia, ba), fs_pw(ia, ba), s1%beta, s1%k, &
-                               s2%omega, fs_f(:, ja, bb), fs_inc(:, ja, bb), fs_pw(ja, bb), s2%beta, s2%k, &
-                               fs_psi(:, :, mm), fs_pw_psi(:, mm), fs_store_pts%w, fs_store_np, s1%g, s1%rho, t_in, t_out, &
-                               r_far)
+            IF (fs_source) THEN
+               CALL fs_pair_terms(s1%omega, fs_f(:, ia, ba), fs_inc(:, ia, ba), fs_pw(ia, ba), s1%beta, s1%k, &
+                                  s2%omega, fs_f(:, ja, bb), fs_inc(:, ja, bb), fs_pw(ja, bb), s2%beta, s2%k, &
+                                  fs_psi(:, :, mm), fs_pw_psi(:, mm), fs_store_pts%w, fs_store_np, s1%g, s1%rho, t_in, &
+                                  t_out, r_far, gpsi=fs_gpsi(:, :, :, mm), b1=fs_bnd(ia, ba), b2=fs_bnd(ja, bb), &
+                                  psi_b=psi_b, wb=wbnd)
+            ELSE
+               CALL fs_pair_terms(s1%omega, fs_f(:, ia, ba), fs_inc(:, ia, ba), fs_pw(ia, ba), s1%beta, s1%k, &
+                                  s2%omega, fs_f(:, ja, bb), fs_inc(:, ja, bb), fs_pw(ja, bb), s2%beta, s2%k, &
+                                  fs_psi(:, :, mm), fs_pw_psi(:, mm), fs_store_pts%w, fs_store_np, s1%g, s1%rho, t_in, &
+                                  t_out, r_far)
+            END IF
          END ASSOCIATE
       END SUBROUTINE fs_pair
 
@@ -2195,6 +2289,10 @@ CONTAINS
       INTEGER, ALLOCATABLE :: pairs(:, :)
       COMPLEX(8), ALLOCATABLE :: grad(:, :, :), pwl(:, :), terms(:, :), tfs_in(:), tfs_out(:)
       TYPE(fs_point_field), ALLOCATABLE :: fs_inc(:, :, :)   ! (n_fs, nkept, nbeta), incident fields at the inner points
+      ! qtf_fs_inner = source: as potential_part
+      TYPE(fs_wl_state), ALLOCATABLE :: fs_bnd(:, :)
+      COMPLEX(8), ALLOCATABLE :: psi_b(:, :)
+      REAL(8), ALLOCATABLE :: xe(:, :), wbnd(:)
       REAL(8) :: g_wave, rf, rf_max, fs_seconds
       INTEGER(8) :: t0, t1, rate
       INTEGER :: unit, unit_ps, m, p, i, j, b1, b2, h, hm, nmode, nbad
@@ -2215,6 +2313,10 @@ CONTAINS
          CALL write_direct_sum_terms_header(unit, fs_active)
       END IF
       IF (fs_active) CALL fs_incident_all(fs_inc)
+      IF (fs_active .AND. fs_source) THEN
+         CALL fs_boundary_all(mesh, geom, fs_bnd, xe, wbnd)
+         ALLOCATE (psi_b(SIZE(wbnd), nmode))
+      END IF
       ALLOCATE (grad(3, mesh%n, nmode), pwl(geom%nwl, nmode), terms(nmode, NPOT_TERMS), tfs_in(nmode), tfs_out(nmode))
       tfs_in = (0D0, 0D0)
       tfs_out = (0D0, 0D0)
@@ -2226,6 +2328,7 @@ CONTAINS
          CALL check_stored(m)
          CALL psi_surface_gradient(mesh, geom, psi_store(:, :, m), grad)
          CALL psi_waterline(mesh, geom, psi_store(:, :, m), grad, pwl)
+         IF (fs_active .AND. fs_source) CALL fs_boundary_psi(geom%nwl, pwl, fs_pw_psi(:, m), xe, psi_b)
          nbad = 0
          rf_max = 0D0
          IF (fs_active) CALL SYSTEM_CLOCK(t0, rate)
@@ -2250,7 +2353,14 @@ CONTAINS
                   CALL potential_pair(mesh, geom, s1, s2, store_wl(:, i, b1), store_wl(:, j, b2), psi_store(:, :, m), grad, &
                                       pwl, psi_need(m), s1%rho, g_wave, terms, omega_tol=psi_tol, kernel=KERNEL_SUM)
                END IF
-               IF (fs_active) THEN
+               IF (fs_active .AND. fs_source) THEN
+                  CALL fs_pair_terms(s1%omega, fs_f(:, i, b1), fs_inc(:, i, b1), fs_pw(i, b1), s1%beta, s1%k, &
+                                     s2%omega, fs_f(:, j, b2), fs_inc(:, j, b2), fs_pw(j, b2), s2%beta, s2%k, &
+                                     fs_psi(:, :, m), fs_pw_psi(:, m), fs_store_pts%w, fs_store_np, s1%g, s1%rho, tfs_in, &
+                                     tfs_out, rf, kernel=KERNEL_SUM, gpsi=fs_gpsi(:, :, :, m), b1=fs_bnd(i, b1), &
+                                     b2=fs_bnd(j, b2), psi_b=psi_b, wb=wbnd)
+                  rf_max = MAX(rf_max, rf)
+               ELSE IF (fs_active) THEN
                   CALL fs_pair_terms(s1%omega, fs_f(:, i, b1), fs_inc(:, i, b1), fs_pw(i, b1), s1%beta, s1%k, &
                                      s2%omega, fs_f(:, j, b2), fs_inc(:, j, b2), fs_pw(j, b2), s2%beta, s2%k, &
                                      fs_psi(:, :, m), fs_pw_psi(:, m), fs_store_pts%w, fs_store_np, s1%g, s1%rho, tfs_in, &

@@ -44,6 +44,13 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("qtf_sum_indirect_accepted", test_qtf_sum_indirect_accepted), &
     new_unittest("qtf_sum_body_warns", test_qtf_sum_body_warns), &
     new_unittest("qtf_max_sw_negative", test_qtf_max_sw_negative), &
+    new_unittest("field_deep_kh_default", test_field_deep_kh_default), &
+    new_unittest("field_deep_kh_read", test_field_deep_kh_read), &
+    new_unittest("field_deep_kh_negative_stops", test_field_deep_kh_negative_stops), &
+    new_unittest("qtf_fs_circle_key", test_qtf_fs_circle_key), &
+    new_unittest("qtf_fs_inner_key", test_qtf_fs_inner_key), &
+    new_unittest("qtf_fs_defaults", test_qtf_fs_defaults), &
+    new_unittest("qtf_fs_inner_source_rejections", test_qtf_fs_inner_source_rejections), &
     new_unittest("qtf_sum_full_deep_stops", test_qtf_sum_full_deep_stops), &
     new_unittest("qtf_edge_keys", test_qtf_edge_keys), &
     new_unittest("qtf_field_key", test_qtf_field_key), &
@@ -948,6 +955,191 @@ subroutine test_qtf_max_sw_negative(error)
                            "qtf_max_sw must not be negative in SecondOrder.in.")
   call remove_directory(root)
 end subroutine test_qtf_max_sw_negative
+
+!> field_deep_kh: absent key gives 10 (deep-water field rows from k0 h = 10)
+subroutine test_field_deep_kh_default(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_field_deep_default"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%field_deep_kh == 10d0, "field_deep_kh default")
+  call remove_directory(root)
+end subroutine test_field_deep_kh_default
+
+!> field_deep_kh is read with its value, 0 included (0 = off)
+subroutine test_field_deep_kh_read(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_field_deep_read"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "field_deep_kh = 0"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "0 rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%field_deep_kh == 0d0, "field_deep_kh = 0")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "field_deep_kh = 12.5"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "12.5 rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%field_deep_kh == 12.5d0, "field_deep_kh = 12.5")
+  call remove_directory(root)
+end subroutine test_field_deep_kh_read
+
+!> A negative field_deep_kh stops with the message of the plan
+subroutine test_field_deep_kh_negative_stops(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_field_deep_neg"
+
+  call remove_directory(root)
+  call make_directory(root)
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "field_deep_kh = -1"], &
+                           "field_deep_kh must not be negative in SecondOrder.in.")
+  call remove_directory(root)
+end subroutine test_field_deep_kh_negative_stops
+
+!> qtf_fs_circle (item 3 of the field-pass speed-ups): absent gives panels (2, the partial waves from the hull
+!> integral; the default since the accuracy gate), samples gives 1 (the circle samples and their fit),
+!> any other word stops with the invalid-value message
+subroutine test_qtf_fs_circle_key(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_fs_circle"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_fs_circle, 2, "qtf_fs_circle default")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_fs_circle = panels"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "panels rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_fs_circle, 2, "qtf_fs_circle = panels")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_fs_circle = samples"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "samples rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_fs_circle, 1, "qtf_fs_circle = samples")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_fs_circle = graf"], &
+                           'Invalid value "graf" for key "qtf_fs_circle" in SecondOrder.in.')
+  call remove_directory(root)
+end subroutine test_qtf_fs_circle_key
+
+!> The defaults after the accuracy gate (validation-runs/fs-speedups/gate/G1_table.md), read from an input without either
+!> key: qtf_fs_circle = panels (2, passed) and qtf_fs_inner = stencil (1, failed on the hull mesh and stays off)
+subroutine test_qtf_fs_defaults(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_fs_defaults"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_fs_circle, 2, "default qtf_fs_circle is not panels")
+  if (allocated(error)) return
+  call check(error, opts%qtf_fs_inner, 1, "default qtf_fs_inner is not stencil")
+  call remove_directory(root)
+end subroutine test_qtf_fs_defaults
+
+!> qtf_fs_inner (item 2 of the field-pass speed-ups): absent gives stencil (1, the 5-point stencil with phi_zz), source
+!> gives 2 (the source route without phi_zz), any other word stops with the invalid-value message
+subroutine test_qtf_fs_inner_key(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_fs_inner"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_fs_inner, 1, "qtf_fs_inner default")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_fs_inner = source"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "source rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_fs_inner, 2, "qtf_fs_inner = source")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_fs_inner = stencil"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "stencil rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_fs_inner, 1, "qtf_fs_inner = stencil")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_fs_inner = green"], &
+                           'Invalid value "green" for key "qtf_fs_inner" in SecondOrder.in.')
+  call remove_directory(root)
+end subroutine test_qtf_fs_inner_key
+
+!> qtf_fs_inner = source (with qtf_terms = full and qtf >= 1) stops as velocity_method and cs_velocity = source do: on the
+!> iterative solver (ISOLV = 2) and on irregular frequency removal (IRSP = 1), whose lid the hull-only source operator does
+!> not have; and with qtf_direct = 1, whose free-surface source needs phi_zz at the inner points. The stencil route takes
+!> all three; the source route without the full terms is not checked (the key is ignored there).
+subroutine test_qtf_fs_inner_source_rejections(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(so_options) :: fs, src
+  logical :: ok
+  character(len=200) :: msg
+
+  fs%active = .true.; fs%mean_drift = 1; fs%do_near = .true.; fs%qtf = 1; fs%qtf_terms = QTF_TERMS_FULL
+  src = fs; src%qtf_fs_inner = 2
+
+  call validate_second_order(src, 1, 20d0, 2, 0, .false., ok, msg)
+  call check(error, .not. ok, "qtf_fs_inner source with GMRES accepted")
+  if (allocated(error)) return
+  call check(error, trim(msg) == "qtf_fs_inner = source needs the direct solver (ISOLV=1) in ControlFile.in.", &
+    "isolv message: "//trim(msg))
+  if (allocated(error)) return
+
+  call validate_second_order(src, 1, 20d0, 1, 1, .false., ok, msg)
+  call check(error, .not. ok, "qtf_fs_inner source with IRSP accepted")
+  if (allocated(error)) return
+  call check(error, trim(msg) == "qtf_fs_inner = source cannot be used with irregular frequency removal (IRSP=1) in "// &
+    "ControlFile.in.", "irsp message: "//trim(msg))
+  if (allocated(error)) return
+
+  src%qtf_direct = 1
+  call validate_second_order(src, 1, 20d0, 1, 0, .false., ok, msg)
+  call check(error, .not. ok, "qtf_fs_inner source with qtf_direct = 1 accepted")
+  if (allocated(error)) return
+  call check(error, trim(msg) == "qtf_fs_inner = source cannot be used with qtf_direct = 1 (the direct solve needs phi_zz "// &
+    "at the inner points); use qtf_fs_inner = stencil.", "direct message: "//trim(msg))
+  if (allocated(error)) return
+
+  ! The stencil route takes all three
+  fs%qtf_direct = 1
+  call validate_second_order(fs, 1, 20d0, 2, 1, .false., ok, msg)
+  call check(error, ok, "the stencil route is refused: "//trim(msg))
+end subroutine test_qtf_fs_inner_source_rejections
 
 subroutine expect_read_message(error, root, lines, expected)
   type(error_type), allocatable, intent(out) :: error

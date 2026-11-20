@@ -1,0 +1,17 @@
+! Mean drift options of this integration test
+! qtf_fs_main with B2 on C and F (qtf_b2 = control, cs_velocity = green) and the deep-water field rows from
+! k0 h = 0.25, so at every frequency: psi of 0.2 rad/s (main grid) joins the fields passes (psi_reuse_* tests)
+mean_drift = 1
+drift_methods = far near
+motion_state = free
+write_terms = 1
+qtf_terms = full
+qtf = 1
+qtf_b2 = control
+qtf_edge_weights = off
+qtf_fs_radius = 10.0
+qtf_max_dw = 0.2
+field_deep_kh = 0.25
+! The deep-water field rows (field_deep_kh above) apply on the samples route only: the panels route, the default
+! since the accuracy gate (validation-runs/fs-speedups/gate/G1_table.md), uses the finite-depth field, so this fixture pins the route it was stored with.
+qtf_fs_circle = samples

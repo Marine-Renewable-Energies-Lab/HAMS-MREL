@@ -1,0 +1,14 @@
+! qtf_fs_main with the inner free-surface fields by the source route, without phi_zz (qtf_fs_inner = source)
+! Mean drift options of this integration test
+mean_drift = 1
+drift_methods = far near
+motion_state = free
+write_terms = 1
+qtf_terms = full
+qtf = 1
+qtf_b2 = body
+qtf_edge_weights = off
+qtf_fs_radius = 10.0
+qtf_max_dw = 0.2
+field_deep_kh = 0
+qtf_fs_inner = source

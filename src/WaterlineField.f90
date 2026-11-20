@@ -52,7 +52,7 @@ MODULE WaterlineField
 
 CONTAINS
 
-   SUBROUTINE field_influence_row(mesh, xp, is_multi, row_g, row_dg, x_decide, field_mode, near_panel)
+   SUBROUTINE field_influence_row(mesh, xp, is_multi, row_g, row_dg, x_decide, field_mode, near_panel, deep)
       ! G and dG/dn at xp, integrated over each base panel for each image. The panels stay in place and xp is mirrored, as in
       ! CalPotential. is_multi selects the panel integrals that read the combined multi-body arrays.
       ! A panel within 50 panel sizes of the point gets panel integrals of 1/r and of its image, and one further away the
@@ -67,22 +67,33 @@ CONTAINS
       ! Green functions at the centroids, so a field made from it is a sum of the free-surface modes outside the hull. The
       ! panel integrals of 1/r and of its image near the point satisfy phi_z = 0 on z = 0, not the free-surface condition,
       ! so they are not (PartialWaves; the circle samples of the QTF free-surface integral, QTFFreeSurface).
+      ! deep, if present and true, takes the deep-water Green function (INFGREEN3D, as for H < 0) at finite depth too: the
+      ! second-order free-surface passes (points at z = 0) pass it where k0 h >= field_deep_kh (field_deep of
+      ! SecondOrderDriver); below z = 0 it misses the seabed images (field_row_deep_seabed). Measured gap at z = 0 to
+      ! the finite-depth row in field mode, over the row maximum: 1.25e-3 at k0 h = 10 on the OC4 rows (gbench), and
+      ! 5.7e-4, 8.8e-4 and 3.4e-3 at k0 h = 10, 20 and 40 on the test cylinder (field_row_deep_within_tol). At k0 h = 40
+      ! the gap is the error of field mode: it misses the direct eigenfunction sum by 3.3e-3 in G at R/h = 0.016,
+      ! nu h = 40, while the deep-water value is within 8e-5. Above nu h = 50 field mode keeps the Limes of PIDCOCK, and
+      ! the deep-water value is again the closer one to the direct sum (field_deep_beats_limes). The panel integrals of 1/r
+      ! and of its image (flag = 1) do not depend on the depth and stay as they are. Absent or false: H decides, as before.
       !   row_g, row_dg   (nbase, nsys)
       TYPE(panel_mesh), INTENT(IN) :: mesh
       REAL(8), INTENT(IN) :: xp(3)
       LOGICAL, INTENT(IN) :: is_multi
       COMPLEX(8), INTENT(OUT) :: row_g(:, :), row_dg(:, :)
       REAL(8), INTENT(IN), OPTIONAL :: x_decide(3)
-      LOGICAL, INTENT(IN), OPTIONAL :: field_mode, near_panel
+      LOGICAL, INTENT(IN), OPTIONAL :: field_mode, near_panel, deep
       REAL(8) :: xq(3), xf(3), xd(3), xdi(3), nrm(3), area, rkn(4), rr_decide, near_sizes
       COMPLEX(8) :: grn(4)
       INTEGER :: jel, is, flag
-      LOGICAL :: field
+      LOGICAL :: field, infinite
 
       xd = xp
       IF (PRESENT(x_decide)) xd = x_decide
       field = .FALSE.
       IF (PRESENT(field_mode)) field = field_mode
+      infinite = H < 0D0
+      IF (PRESENT(deep)) infinite = infinite .OR. deep
       ! A panel within near_sizes of its size from the point takes the panel integrals; -1 for none
       near_sizes = 50D0
       IF (PRESENT(near_panel)) THEN
@@ -100,7 +111,7 @@ CONTAINS
             xdi = image_signs(is, ISX, ISY)*xd
             flag = MERGE(1, 0, NORM2(xdi - xq) <= near_sizes*mesh%psize(jel))
 
-            IF (H < 0D0) THEN
+            IF (infinite) THEN
                CALL INFGREEN3D(xq(1), xf(1), xq(2), xf(2), xq(3), xf(3), V, grn, flag)
             ELSE IF (PRESENT(x_decide)) THEN
                rr_decide = SQRT((xq(1) - xdi(1))**2 + (xq(2) - xdi(2))**2)   ! as RR of FINGREEN3D for xf

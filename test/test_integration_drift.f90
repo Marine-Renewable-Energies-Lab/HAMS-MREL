@@ -315,6 +315,37 @@ module test_integration_drift
     integer, parameter :: directsum_half_rows = 108
     ! The sums of qtf_directsum_round that are kept are below the estimate of the lowest irregular frequency, 1.538 rad/s
     real(8), parameter :: sum_cutoff_bound = 1.54d0
+    ! Deep-water field rows (field_deep_kh, default 10) against finite-depth rows (field_deep_kh = 0): qtf_deep_kh and
+    ! qtf_deep_kh_off, the input of qtf_indsum_b2_q3 at h = 100 m and 0.90, 1.05 rad/s (k0 h = 8.3 and 11.2; the sum
+    ! frequencies 1.80 to 2.10 rad/s at k0 h = 33 to 45; the difference 0.15 rad/s at k0 h = 1.6), coarser for run time
+    ! (qtf_fs_panel = 5, qtf_fs_modes = 8, qtf_fs_evanescent = 8, cs_panel_size = 5: 68 s and 123 s on the laptop).
+    ! max |on - off| / max |off| of each file (Re and Im of .11d and .11s, every term of the terms files), measured
+    ! 1.196e-6 (.11d: only the fields at 1.05 rad/s switch), 7.719e-4 (.11s), 7.060e-5 (QTF_PotentialTerms.txt) and
+    ! 1.070e-3 (QTF_PotentialTermsSum.txt), with the deep-water rows on the free surface only (C and F keep the
+    ! finite-depth rows); the limits are 1.3x measured, rounded up to two digits. The rows themselves
+    ! differ by 5.7e-4, 8.8e-4 and 3.4e-3 of the row maximum at k0 h = 10, 20 and 40 on the test cylinder (gbench: 1.25e-3
+    ! at k0 h = 10 on OC4); at 40 that is the error of the finite-depth field mode, 3.3e-3 from the direct sum, with the
+    ! deep-water row within 8e-5 (field_row_deep_within_tol of test_field_velocity).
+    character(len=*), parameter :: deep_kh_files(4) = [character(len=40) :: qtf_indirect_file, qtf_indirect_sum_file, &
+                                                       pot_terms_file, pot_sum_terms_file]
+    real(8), parameter :: deep_kh_limits(4) = [1.6d-6, 1.1d-3, 9.2d-5, 1.4d-3]
+    ! psi and grad psi of a main-grid frequency in the fields passes (item 4 of the field-pass speed-ups): the fixtures of
+    ! run_psi_reuse_cases, and all the cases of psi_reuse_byte_identical (two with psi on the grid among the 88e19bd fixtures)
+    character(len=20), parameter :: psi_reuse_new(4) = [character(len=20) :: "qtf_psi_reuse", "qtf_psi_reuse_src", &
+                                                        "qtf_psi_reuse_two", "qtf_psi_reuse_half"]
+    ! qtf_fs_circle = panels (default) against the samples route on qtf_fs_main (fs_circle_panels_close): FS terms over max |FS|,
+    ! measured 4.7e-6 (Task 5; the centroid samples are about 1e-6 off the exact series, pw_from_panels_matches_samples),
+    ! limit 2x rounded up
+    real(8), parameter :: fs_panels_limit = 1d-5
+    ! qtf_fs_inner = source against the stencil route (fs_inner_source_close, Task 6): FS_inner + FS_outer of qtf_fs_main
+    ! (difference, Omega = 0.2 rad/s only) over max |FS|, measured 0.559, and T+_pot of qtf_indsum_half (sum) over
+    ! max |T+_pot|, measured 6.03e-2; limits 1.3x measured. The two routes do not agree on qtf_fs_main: both converge with
+    ! the inner mesh (qtf_fs_panel 1.0 and 0.5 m: 0.3 % apart on the source route) to values 26 % apart (45 % with the
+    ! body fixed). At k a of about 0.5 the area and line parts of the source route are each about 13 times the inner term
+    ! and cancel, so the error of the waterline data is amplified (task 6 report). A record of the gap, not a pass mark.
+    real(8), parameter :: fs_source_limit = 0.73d0, fs_source_sum_limit = 7.9d-2
+    character(len=20), parameter :: psi_reuse_cases(6) = [character(len=20) :: "qtf_fs_main", "qtf_b2c_main", &
+                                                          psi_reuse_new]
 
 contains
 
@@ -375,6 +406,10 @@ contains
             new_unittest("run_qtf_directfs_cases", run_qtf_directfs_cases), &
             new_unittest("run_qtf_directsum_cases", run_qtf_directsum_cases), &
             new_unittest("run_qtf_indsum_cases", run_qtf_indsum_cases), &
+            new_unittest("run_qtf_deep_kh_cases", run_qtf_deep_kh_cases), &
+            new_unittest("run_psi_reuse_cases", run_psi_reuse_cases), &
+            new_unittest("run_qtf_fs_samples", run_qtf_fs_samples), &
+            new_unittest("run_qtf_fs_source", run_qtf_fs_source), &
             new_unittest("run_control_cyl", run_control_cyl), &
             new_unittest("run_control_cyl_sybo", run_control_cyl_sybo), &
             new_unittest("run_control_cases", run_control_cases) &
@@ -526,7 +561,14 @@ contains
             new_unittest("indirect_sum_off_unchanged", indirect_sum_off_unchanged), &
             new_unittest("indirect_sum_b2_qtf2_matches_qtf3", indirect_sum_b2_qtf2_matches_qtf3), &
             new_unittest("direct_sum_qtf2_default_b2", direct_sum_qtf2_default_b2), &
-            new_unittest("indirect_sum_log_lines", indirect_sum_log_lines) &
+            new_unittest("indirect_sum_log_lines", indirect_sum_log_lines), &
+            new_unittest("qtf_deep_kh_log", qtf_deep_kh_log), &
+            new_unittest("qtf_deep_kh_finite_pass_unchanged", qtf_deep_kh_finite_pass_unchanged), &
+            new_unittest("qtf_deep_kh_within_limits", qtf_deep_kh_within_limits), &
+            new_unittest("psi_reuse_byte_identical", psi_reuse_byte_identical), &
+            new_unittest("psi_reuse_log_counts", psi_reuse_log_counts), &
+            new_unittest("fs_circle_panels_close", fs_circle_panels_close), &
+            new_unittest("fs_inner_source_close", fs_inner_source_close) &
         ]
     end subroutine collect_tests_drift
 
@@ -4835,6 +4877,8 @@ contains
     !> finite, the other four terms are the same to rounding, and B2 differs, by no more than the measured gap between C
     !> and the hull. A wiring error of the multi-body or IRSP route (the body of a point of C, its reference point, the
     !> per-body dpsi/dn) would show as a B2 far outside the gap.
+    !> qtf_irsp_control (qtf_terms = body) has no free-surface pass, so field_deep_kh does not apply to it: the fields on C
+    !> and F keep the finite-depth rows (field_row_deep_seabed).
     subroutine qtf_b2_default_twins(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=21), parameter :: control(2) = [character(len=21) :: "qtf_two_round_control", "qtf_irsp_control"]
@@ -6062,7 +6106,8 @@ contains
     !> Without qtf_terms = full the direct solve is that of Phase 7a, bit for bit: QTF_Direct.12d and QTF_DirectTerms.txt
     !> of qtf_direct_round, qtf_direct_irsp and qtf_direct_two are the files of the binary before the free-surface forcing
     !> (commit 17dfbff, which leaves the direct path as merged in Phase 7a), stored in expected_output of each case, and
-    !> the log has no free-surface line of the direct solve
+    !> the log has no free-surface line of the direct solve. These three do not run the free-surface passes, so the default
+    !> qtf_fs_circle = panels (ab8dae1) left their files as stored
     subroutine direct_fs_off_unchanged(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=16), parameter :: cases(3) = [character(len=16) :: "qtf_direct_round", "qtf_direct_irsp", &
@@ -6502,13 +6547,15 @@ contains
         end do
     end subroutine split_names
 
-    !> Without the sum frequency the direct solve is that of Phases 7a and 7b, bit for bit: QTF_Direct.12d and
-    !> QTF_DirectTerms.txt of the qtf = 1 fixtures of both phases are the files of the binary before the sum frequency
-    !> (the merge c716ed7), stored in expected_output of each case; the 7b files (qtf_directfs_*) were stored again with
-    !> the near-waterline fit of the 7c-2 fix wave, which changes their free-surface forcing next to the waterline (at
-    !> most 4.9e-3 of the largest value; most rows to the bit). 7a: qtf_direct_irsp and qtf_direct_two (qtf_direct_round
-    !> has qtf = 3 and is a sum case: its .12d is the same file, direct_fs_off_unchanged); 7b: qtf_directfs_round,
-    !> qtf_directfs_irsp and qtf_directfs_two. The logs have no line of a sum solve
+    !> The 7b files (qtf_directfs_*) were stored again with the default panels route (ab8dae1, qtf_fs_circle): QTF_Direct.12d
+    !> moved by at most 4.4e-6 and QTF_DirectTerms.txt by 8.8e-7 of the largest value in the file, so they are no longer the
+    !> bits of the binary before. Without the sum frequency the direct solve is otherwise that of Phases 7a and 7b:
+    !> QTF_Direct.12d and QTF_DirectTerms.txt of the qtf = 1 fixtures of both phases are the files of the binary before the
+    !> sum frequency (the merge c716ed7), stored in expected_output of each case; the 7b files were stored again with the
+    !> near-waterline fit of the 7c-2 fix wave, which changes their free-surface forcing next to the waterline (at most
+    !> 4.9e-3 of the largest value; most rows to the bit). The 7a files are unchanged. 7a: qtf_direct_irsp and
+    !> qtf_direct_two (qtf_direct_round has qtf = 3 and is a sum case: its .12d is the same file, direct_fs_off_unchanged);
+    !> 7b: qtf_directfs_round, qtf_directfs_irsp and qtf_directfs_two. The logs have no line of a sum solve
     subroutine direct_sum_off_unchanged(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=18), parameter :: cases(5) = [character(len=18) :: "qtf_direct_irsp", "qtf_direct_two", &
@@ -6826,6 +6873,352 @@ contains
                    name//": the log does not have the store line of C and F (qtf_b2 = control)")
     end subroutine direct_sum_qtf2_default_b2
 
+    ! ---------------------------------------------------------------------------------------------- deep-water field rows
+
+    !> qtf_deep_kh (the default field_deep_kh = 10) and qtf_deep_kh_off (field_deep_kh = 0), with the run time of each
+    subroutine run_qtf_deep_kh_cases(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=15), parameter :: cases(2) = [character(len=15) :: "qtf_deep_kh", "qtf_deep_kh_off"]
+        type(error_type), allocatable :: one
+        integer(8) :: t0, t1, rate
+        integer :: c
+
+        do c = 1, size(cases)
+            call system_clock(t0, rate)
+            call run_case(trim(cases(c)), deep_kh_files, one)
+            call system_clock(t1)
+            print '(4x,a,": run time ",F8.1," s")', trim(cases(c)), real(t1 - t0, 8)/real(rate, 8)
+            if (allocated(one)) then
+                print '(4x,a)', trim(cases(c))//": "//one%message
+                if (.not. allocated(error)) call move_alloc(one, error)
+            end if
+        end do
+    end subroutine run_qtf_deep_kh_cases
+
+    !> The log of qtf_deep_kh names the switch to the deep-water field rows once, at the first pass with k0 h >= 10: the
+    !> main-grid 1.05 rad/s, k0 h = 11.24 (it comes before the sum frequencies); that of qtf_deep_kh_off (field_deep_kh = 0)
+    !> does not
+    subroutine qtf_deep_kh_log(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: line = "QTF field rows: the deep-water Green function from k0 h ="
+
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_deep_kh.log", line) == 1, &
+                   "qtf_deep_kh: the log does not name the deep-water field rows once")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_deep_kh.log", line//"   11.24 (field_deep_kh =") == 1, &
+                   "qtf_deep_kh: the deep-water field rows do not start at k0 h = 11.24")
+        if (allocated(error)) return
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_deep_kh_off.log", line) == 0, &
+                   "qtf_deep_kh_off: the log names the deep-water field rows with field_deep_kh = 0")
+    end subroutine qtf_deep_kh_log
+
+    !> The .11d rows of w1 = w2 = 0.90 rad/s (k0 h = 8.3, below field_deep_kh, psi at the difference 0) take only
+    !> finite-depth passes, so they are the same text in qtf_deep_kh and qtf_deep_kh_off
+    subroutine qtf_deep_kh_finite_pass_unchanged(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: key = "  9.000000E-01  9.000000E-01"
+        character(len=:), allocatable :: a(:), b(:)
+        integer :: r, n
+
+        call read_lines(output_dir("qtf_deep_kh")//qtf_indirect_file, a, error)
+        if (allocated(error)) return
+        call read_lines(output_dir("qtf_deep_kh_off")//qtf_indirect_file, b, error)
+        if (allocated(error)) return
+        call check(error, size(a) == size(b), "qtf_deep_kh .11d: other rows than qtf_deep_kh_off")
+        if (allocated(error)) return
+        n = 0
+        do r = 1, size(a)
+            if (a(r)(1:len(key)) /= key) cycle
+            n = n + 1
+            call check(error, a(r) == b(r), "qtf_deep_kh .11d: a row at 0.90, 0.90 rad/s differs: "//trim(a(r)))
+            if (allocated(error)) return
+        end do
+        print '(4x,a,i0,a)', "qtf_deep_kh .11d: ", n, " rows at 0.90, 0.90 rad/s the same as with field_deep_kh = 0"
+        call check(error, n > 0, "qtf_deep_kh .11d: no rows at 0.90, 0.90 rad/s")
+    end subroutine qtf_deep_kh_finite_pass_unchanged
+
+    !> Each output of qtf_deep_kh against that of qtf_deep_kh_off, row by row (the same rows in both): max |on - off| over
+    !> max |off| of the values, below deep_kh_limits, and above 0, or the runs did not switch
+    subroutine qtf_deep_kh_within_limits(error)
+        type(error_type), allocatable, intent(out) :: error
+        real(8), allocatable :: a(:,:), b(:,:)
+        real(8) :: gap
+        integer :: f, first
+
+        do f = 1, size(deep_kh_files)
+            if (index(deep_kh_files(f), "QTF_Indirect") > 0) then
+                call read_qtf(output_dir("qtf_deep_kh")//trim(deep_kh_files(f)), a, error)
+                if (allocated(error)) return
+                call read_qtf(output_dir("qtf_deep_kh_off")//trim(deep_kh_files(f)), b, error)
+                first = 8
+            else
+                call read_pot_terms(output_dir("qtf_deep_kh")//trim(deep_kh_files(f)), a, error)
+                if (allocated(error)) return
+                call read_pot_terms(output_dir("qtf_deep_kh_off")//trim(deep_kh_files(f)), b, error)
+                first = 6
+            end if
+            if (allocated(error)) return
+            call check(error, size(a, 1) == size(b, 1) .and. size(a, 2) == size(b, 2) .and. size(a, 1) > 0, &
+                       trim(deep_kh_files(f))//": other rows in qtf_deep_kh and qtf_deep_kh_off")
+            if (allocated(error)) return
+            call check(error, all(a(:,1:5) == b(:,1:5)), trim(deep_kh_files(f))//": the keys of the rows differ")
+            if (allocated(error)) return
+            gap = maxval(abs(a(:,first:) - b(:,first:)))/maxval(abs(b(:,first:)))
+            call report("qtf_deep_kh against qtf_deep_kh_off "//trim(deep_kh_files(f)), gap)
+            call check_below(error, "qtf_deep_kh "//trim(deep_kh_files(f)), gap, deep_kh_limits(f))
+            if (allocated(error)) return
+            call check(error, gap > 0d0, trim(deep_kh_files(f))//": the same with and without the deep-water rows")
+            if (allocated(error)) return
+        end do
+    end subroutine qtf_deep_kh_within_limits
+
+    ! ---------------------------------------------------------------------------------------------- psi reuse on the grid
+
+    !> The fixtures of the psi reuse on the main grid (item 4 of the field-pass speed-ups), with the run time of each.
+    !> Each has psi at 0.2 rad/s, a main-grid frequency, and no psi off the grid (qtf_max_dw = 0.2):
+    !>   qtf_psi_reuse       qtf_fs_main with qtf_b2 = control (cs_velocity = green) and field_deep_kh = 0.25, so that the
+    !>                       merged passes take the deep-water rows at every frequency, 0.2 rad/s (k0 h = 0.29) first;
+    !>   qtf_psi_reuse_src   the same with cs_velocity = source and the default field_deep_kh (k0 h <= 2.2: off);
+    !>   qtf_psi_reuse_two   qtf_fs_two (two bodies, 12 modes) with 0.2 rad/s on the grid and qtf_b2 = control;
+    !>   qtf_psi_reuse_half  qtf_fs_half (half mesh, images) with 0.2 rad/s on the grid and qtf_b2 = control.
+    subroutine run_psi_reuse_cases(error)
+        type(error_type), allocatable, intent(out) :: error
+        type(error_type), allocatable :: one
+        integer(8) :: t0, t1, rate
+        integer :: c
+
+        do c = 1, size(psi_reuse_new)
+            call system_clock(t0, rate)
+            call run_case(trim(psi_reuse_new(c)), [character(len=40) :: qtf_indirect_file, pot_terms_file], one)
+            call system_clock(t1)
+            print '(4x,a,": run time ",F8.1," s")', trim(psi_reuse_new(c)), real(t1 - t0, 8)/real(rate, 8)
+            if (allocated(one)) then
+                print '(4x,a)', trim(psi_reuse_new(c))//": "//one%message
+                if (.not. allocated(error)) call move_alloc(one, error)
+            end if
+        end do
+    end subroutine run_psi_reuse_cases
+
+    !> psi and grad psi of a main-grid frequency taken in the fields passes of that frequency give every output file
+    !> unchanged, line for line, against expected_output of each case:
+    !>   qtf_fs_main (free surface only, qtf_b2 = body) and qtf_b2c_main (C and F only, qtf_terms = body): the outputs at
+    !>   88e19bd (validation-runs/fs-speedups/base_88e19bd), with field_deep_kh = 0 in SecondOrder.in (their largest
+    !>   k0 h, 2.2 and 5.1, is below the default 10 too, so the default gives the same);
+    !>   the four psi_reuse fixtures (run_psi_reuse_cases): the outputs at 85d867e, before the reuse.
+    !> Stored again with qtf_fs_circle = panels as the default (the accuracy gate, 2026-11-20): qtf_fs_main and qtf_psi_reuse_half,
+    !> _src and _two moved by 1.3e-6 to 4.4e-6 of the largest value of QTF_Indirect.11d (laptop, per file, see the commit), the
+    !> samples route's partial waves being about 1e-6 off the exact series. qtf_psi_reuse keeps qtf_fs_circle = samples (its
+    !> deep-water field rows, k0 h >= 0.25, apply on that route only: panels moves it by 1.2e-2). It was stored again when
+    !> the C/F passes went back to finite-depth rows (the deep-water rows miss the seabed images below z = 0,
+    !> field_row_deep_seabed): QTF_Indirect.11d moved by 8.6e-3 and QTF_PotentialTerms.txt by 3.2e-4 of the largest value.
+    subroutine psi_reuse_byte_identical(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: files(11) = [character(len=22) :: "AmssDamp.1", "ExcForce.3", "Hydrostat.hst", &
+            "MeanDriftMomentum.8", "MeanDriftPressure.9", "MeanDriftTerms.txt", "Motion.4", "QTF_Indirect.11d", &
+            "QTF_PotentialTerms.txt", "QTF_PsiCheck.txt", "QTF_Quadratic.10d"]
+        character(len=:), allocatable :: name
+        integer :: c, f
+
+        do c = 1, size(psi_reuse_cases)
+            name = trim(psi_reuse_cases(c))
+            do f = 1, size(files)
+                call check_same_file(get_repo_root_path()//"test/data/"//name//"/expected_output/"//trim(files(f)), &
+                                     output_dir(name)//"Wamit_format/"//trim(files(f)), error)
+                if (allocated(error)) return
+            end do
+        end do
+        print '(4x,i0,a,i0,a)', size(psi_reuse_cases), " cases, ", size(files), " files each: the same lines as before the reuse"
+    end subroutine psi_reuse_byte_identical
+
+    !> The log of each psi_reuse case has no separate pass of psi on the inner free surface ("QTF free surface psi:") nor of
+    !> grad psi on C and F ("control surface grad psi:") at the main-grid psi frequency: the fields passes of that frequency
+    !> name the psi modes they took. With cs_velocity = source (qtf_psi_reuse_src) grad psi keeps its own pass
+    !> (fields_source gives no grad psi). qtf_deep_kh has psi off the grid only (0.15 rad/s and the sum frequencies): its
+    !> four passes of each stay. The deep-water line of qtf_psi_reuse is there once, at 0.2 rad/s, the first frequency.
+    subroutine psi_reuse_log_counts(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: fs_psi = "QTF free surface psi:", cs_psi = "control surface grad psi:"
+        character(len=*), parameter :: deep = "QTF field rows: the deep-water Green function from k0 h ="
+        ! Per case: the separate psi passes, the separate grad psi passes, and the fields passes on the inner free surface
+        ! and on C and F at the psi frequency that name psi modes
+        integer, parameter :: want(4, 7) = reshape([0, 0, 1, 0, &   ! qtf_fs_main
+                                                    0, 0, 0, 1, &   ! qtf_b2c_main (psi at 0.23 rad/s)
+                                                    0, 0, 1, 1, &   ! qtf_psi_reuse
+                                                    0, 1, 1, 0, &   ! qtf_psi_reuse_src
+                                                    0, 0, 1, 1, &   ! qtf_psi_reuse_two
+                                                    0, 0, 1, 1, &   ! qtf_psi_reuse_half
+                                                    4, 4, 0, 0], [4, 7])   ! qtf_deep_kh
+        character(len=20) :: cases(7)
+        character(len=:), allocatable :: log, at
+        character(len=12) :: got
+        integer :: c, n(4)
+
+        cases(1:6) = psi_reuse_cases
+        cases(7) = "qtf_deep_kh"
+        do c = 1, size(cases)
+            log = get_running_exe_path()//trim(cases(c))//".log"
+            at = "omega   0.20000,"
+            if (trim(cases(c)) == "qtf_b2c_main") at = "omega   0.23000,"
+            n(1) = count_log_lines(log, fs_psi)
+            n(2) = count_log_lines(log, cs_psi)
+            n(3) = count_lines_with(log, "QTF free surface fields: "//at, "psi modes")
+            n(4) = count_lines_with(log, "QTF B2 control surface fields: "//at, "psi modes")
+            write (got, '(4i3)') n
+            print '(4x,a,": separate psi, grad psi passes; merged free surface, C and F:",a)', trim(cases(c)), got
+            call check(error, all(n == want(:, c)), trim(cases(c))//": the psi pass lines (separate psi, grad psi; "// &
+                       "merged free surface, C and F) are "//got)
+            if (allocated(error)) return
+        end do
+        log = get_running_exe_path()//"qtf_psi_reuse.log"
+        call check(error, count_log_lines(log, deep), 1, "qtf_psi_reuse: the deep-water line is not there once")
+        if (allocated(error)) return
+        call check(error, count_lines_with(log, deep, "omega =   0.20000 rad/s"), 1, &
+                   "qtf_psi_reuse: the deep-water line is not at 0.2 rad/s")
+    end subroutine psi_reuse_log_counts
+
+    ! ---------------------------------------------------------------------------------------------- circle from the panels
+
+    !> qtf_fs_samples: qtf_fs_main with qtf_fs_circle = samples (the partial waves outside R from the circle samples and their
+    !> fit, the route before the accuracy gate, validation-runs/fs-speedups/gate/G1_table.md, made panels the
+    !> default; item 3 of the field-pass speed-ups), with its run time
+    subroutine run_qtf_fs_samples(error)
+        type(error_type), allocatable, intent(out) :: error
+        integer(8) :: t0, t1, rate
+
+        call system_clock(t0, rate)
+        call run_case("qtf_fs_samples", [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file], error)
+        call system_clock(t1)
+        print '(4x,a,F8.1,a)', "qtf_fs_samples: run time ", real(t1 - t0, 8)/real(rate, 8), " s"
+    end subroutine run_qtf_fs_samples
+
+    !> qtf_fs_circle = samples against the default, panels: only the free-surface terms differ, the files without them are those
+    !> of qtf_fs_main (expected_output, the panels route) line for line, and FS_inner + FS_outer of every row are within
+    !> fs_panels_limit of qtf_fs_main's, over max |FS| of the forces or moments (fs_against). The log has no mode-check warning, as
+    !> qtf_fs_main's has none. Prints the free-surface pass times of both logs (indicative).
+    subroutine fs_circle_panels_close(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: files(7) = [character(len=22) :: "AmssDamp.1", "ExcForce.3", "Hydrostat.hst", &
+            "MeanDriftMomentum.8", "MeanDriftPressure.9", "Motion.4", "QTF_Quadratic.10d"]
+        character(len=14), parameter :: logs(2) = [character(len=14) :: "qtf_fs_main", "qtf_fs_samples"]
+        character(len=:), allocatable :: lines(:)
+        real(8) :: worst
+        integer :: f, matched, c, r
+
+        do f = 1, size(files)
+            call check_same_file(get_repo_root_path()//"test/data/qtf_fs_main/expected_output/"//trim(files(f)), &
+                                 output_dir("qtf_fs_samples")//"Wamit_format/"//trim(files(f)), error)
+            if (allocated(error)) return
+        end do
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_fs_samples.log", &
+                   "QTF free surface: the partial waves miss the field"), 0, "qtf_fs_samples: a mode-check warning")
+        if (allocated(error)) return
+        do c = 1, size(logs)
+            call read_lines(get_running_exe_path()//trim(logs(c))//".log", lines, error)
+            if (allocated(error)) return
+            do r = 1, size(lines)
+                if (index(lines(r), "QTF free surface fields: omega") > 0 .or. &
+                    index(lines(r), "QTF free surface psi: omega") > 0) print '(4x,a,": ",a)', trim(logs(c)), trim(lines(r))
+            end do
+        end do
+        call fs_against("qtf_fs_main", "qtf_fs_samples", worst, matched, error)
+        if (allocated(error)) return
+        call report("fs_circle_panels_close", worst)
+        call check(error, matched > 0, "qtf_fs_samples: no rows matched to qtf_fs_main")
+        if (allocated(error)) return
+        call check_below(error, "fs_circle_panels_close", worst, fs_panels_limit)
+    end subroutine fs_circle_panels_close
+
+    ! ------------------------------------------------------------------------------------- inner fields by the source route
+
+    !> qtf_fs_source: qtf_fs_main with qtf_fs_inner = source (the inner fields from the source strengths, phi_zz removed
+    !> by Green's theorem in the plane, item 2 of the field-pass speed-ups); qtf_fs_source_sum: qtf_indsum_half (sum
+    !> frequency, half mesh) with it. With their run times.
+    subroutine run_qtf_fs_source(error)
+        type(error_type), allocatable, intent(out) :: error
+        integer(8) :: t0, t1, rate
+
+        call system_clock(t0, rate)
+        call run_case("qtf_fs_source", [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file], error)
+        call system_clock(t1)
+        print '(4x,a,F8.1,a)', "qtf_fs_source: run time ", real(t1 - t0, 8)/real(rate, 8), " s"
+        if (allocated(error)) return
+        call system_clock(t0, rate)
+        call run_case("qtf_fs_source_sum", [character(len=40) :: qtf_sum_file, qtf_indirect_sum_file, pot_sum_terms_file], &
+                      error)
+        call system_clock(t1)
+        print '(4x,a,F8.1,a)', "qtf_fs_source_sum: run time ", real(t1 - t0, 8)/real(rate, 8), " s"
+    end subroutine run_qtf_fs_source
+
+    !> qtf_fs_inner = source changes the inner free-surface term only: the files without it are those of the stencil route
+    !> line for line (qtf_fs_main expected_output; QTF_Quadratic.10s of qtf_indsum_half); FS_inner + FS_outer of every row
+    !> are within fs_source_limit of qtf_fs_main's over max |FS| (fs_against), and T+_pot of the sum within
+    !> fs_source_sum_limit of qtf_indsum_half's over max |T+_pot|. Prints the free-surface pass and source-solve lines of
+    !> the logs (indicative times).
+    subroutine fs_inner_source_close(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: files(7) = [character(len=22) :: "AmssDamp.1", "ExcForce.3", "Hydrostat.hst", &
+            "MeanDriftMomentum.8", "MeanDriftPressure.9", "Motion.4", "QTF_Quadratic.10d"]
+        character(len=17), parameter :: logs(4) = [character(len=17) :: "qtf_fs_main", "qtf_fs_source", "qtf_indsum_half", &
+                                                   "qtf_fs_source_sum"]
+        character(len=:), allocatable :: lines(:)
+        real(8), allocatable :: ph(:,:), ps(:,:)
+        real(8) :: worst
+        integer :: f, matched, c, r
+
+        do f = 1, size(files)
+            call check_same_file(get_repo_root_path()//"test/data/qtf_fs_main/expected_output/"//trim(files(f)), &
+                                 output_dir("qtf_fs_source")//"Wamit_format/"//trim(files(f)), error)
+            if (allocated(error)) return
+        end do
+        call check_same_file(output_dir("qtf_indsum_half")//qtf_sum_file, output_dir("qtf_fs_source_sum")//qtf_sum_file, error)
+        if (allocated(error)) return
+        do c = 1, size(logs)
+            call read_lines(get_running_exe_path()//trim(logs(c))//".log", lines, error)
+            if (allocated(error)) return
+            do r = 1, size(lines)
+                if (index(lines(r), "QTF free surface fields: omega") > 0 .or. &
+                    index(lines(r), "QTF free surface psi: omega") > 0 .or. &
+                    index(lines(r), "QTF free surface source") > 0) print '(4x,a,": ",a)', trim(logs(c)), trim(lines(r))
+            end do
+        end do
+        call fs_against("qtf_fs_main", "qtf_fs_source", worst, matched, error)
+        if (allocated(error)) return
+        call report("fs_inner_source_close difference FS", worst)
+        call check(error, matched > 0, "qtf_fs_source: no rows matched to qtf_fs_main")
+        if (allocated(error)) return
+        call check_below(error, "fs_inner_source_close difference FS", worst, fs_source_limit)
+        if (allocated(error)) return
+        call read_pot_sum_total(output_dir("qtf_indsum_half")//pot_sum_terms_file, ph, error)
+        if (allocated(error)) return
+        call read_pot_sum_total(output_dir("qtf_fs_source_sum")//pot_sum_terms_file, ps, error)
+        if (allocated(error)) return
+        call check(error, size(ph, 1) == size(ps, 1) .and. size(ph, 1) > 0, &
+                   "qtf_fs_source_sum: not the rows of qtf_indsum_half in QTF_PotentialTermsSum.txt")
+        if (allocated(error)) return
+        call largest_difference(ps, ph, "fs_inner_source_close sum T+_pot", worst, error)
+        if (allocated(error)) return
+        call report("fs_inner_source_close sum T+_pot", worst)
+        call check_below(error, "fs_inner_source_close sum T+_pot", worst, fs_source_sum_limit)
+    end subroutine fs_inner_source_close
+
+    !> The number of lines of the file at path that contain both text and also
+    integer function count_lines_with(path, text, also)
+        character(len=*), intent(in) :: path, text, also
+        character(len=512) :: line
+        integer :: unit, ios
+
+        count_lines_with = -1
+        open (newunit=unit, file=path, status='old', action='read', iostat=ios)
+        if (ios /= 0) return
+        count_lines_with = 0
+        do
+            read (unit, '(A)', iostat=ios) line
+            if (ios /= 0) exit
+            if (index(line, text) > 0 .and. index(line, also) > 0) count_lines_with = count_lines_with + 1
+        end do
+        close (unit)
+    end function count_lines_with
+
     !> The 15 numbers of every row of QTF_DirectTermsSum.txt of a qtf_terms = full run (the five keys, D_I2, D_D, D_FS, P_BODY,
     !> P_FS, each Re and Im)
     subroutine read_sum_terms_raw(path, t, error)
@@ -6887,9 +7280,12 @@ contains
         call check_below(error, "indirect_sum_isolv_factored T+_pot", worst, indsum_gmres_limit)
     end subroutine indirect_sum_isolv_factored
 
-    !> The qtf_direct = 1 sum fixtures are unchanged by the indirect route: QTF_Direct.12s and QTF_DirectTermsSum.txt of
-    !> qtf_directsum_round and qtf_directsum_irsp are those of the base without the indirect route (stored in expected_output),
-    !> byte for byte: round from the 7c-2 merge 4ba2ddb, irsp from the v2.3.4 merge 5792fb9 (its lid fixes move irsp)
+    !> The qtf_direct = 1 sum fixtures were stored again with the default panels route for qtf_directsum_irsp (ab8dae1,
+    !> qtf_fs_circle): QTF_Direct.12s moved by 3.5e-5 and QTF_DirectTermsSum.txt by 1.6e-5 of the largest value in the file;
+    !> qtf_directsum_round is unchanged. They are unchanged by the indirect route: QTF_Direct.12s and QTF_DirectTermsSum.txt
+    !> of both cases are those of the base without the indirect route (stored in expected_output), byte for byte for
+    !> round (from the 7c-2 merge 4ba2ddb) and, apart from the stored-again change above, for irsp (from the v2.3.4 merge
+    !> 5792fb9, whose lid fixes move irsp)
     subroutine indirect_sum_off_unchanged(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=21), parameter :: cases(2) = [character(len=21) :: "qtf_directsum_round", "qtf_directsum_irsp"]

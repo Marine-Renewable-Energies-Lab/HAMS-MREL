@@ -44,7 +44,7 @@ MODULE PartialWaves
 
    PUBLIC :: pw_set, pw_radial, pw_sample_points, pw_decompose, pw_eval_surface, pw_eval_point, pw_radial_at, pw_bessel_k
    PUBLIC :: pw_evanescent_from_wvn, PW_KR_MAX, pw_bessel_k_scaled, pw_bessel_k_scaled_c, pw_hankel_scaled
-   PUBLIC :: pw_green_modes, pw_green_mmax
+   PUBLIC :: pw_green_modes, pw_green_mmax, pw_source_modes, pw_from_panels
 
    REAL(8), PARAMETER :: PI = 3.14159265358979323846D0
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
@@ -730,6 +730,227 @@ CONTAINS
       END DO
       IF (PRESENT(mcut)) mcut = mrep
    END SUBROUTINE pw_green_modes
+
+   ! ------------------------------------------------------------------ the circle modes from the hull integral (item 3)
+   !
+   ! Derivation (own, from the textbook formulas cited). The centroid-route field of a state outside the hull is the sum
+   ! over the hull panels j (images included) of (1 / 4 pi) A_j [G(x, xi_j) q_j - n_j . grad_xi G(x, xi_j) phi_j]
+   ! (field_influence_row with near_panel = .FALSE., field_potential of WaterlineField). At finite depth G is the series
+   ! of pw_green_modes, G = i c0 Z_0(z) Z_0(zeta) H_0(k0 d) + sum_n cn Z_n(z) Z_n(zeta) K_0(kn d), d the horizontal
+   ! distance of x and xi (John 1950). Let the source xi be at (rho', theta') about the circle centre, the field point at
+   ! (r, theta), with rho' < r.
+   !   Propagating terms: Graf's addition theorem (Abramowitz and Stegun 9.1.79 with nu = 0; Watson 1944, section 11.3)
+   !     H_0(k d) = sum_m H_m(k r) J_m(k rho') e^{i m (theta - theta')},   rho' < r.
+   !   Evanescent terms: put k = i kappa into the same sum (it holds for complex k by analytic continuation, the
+   !   condition being |rho'| < |r|). With I_m(x) = i^-m J_m(i x) (A&S 9.6.3) and K_m(x) = (pi i / 2) i^m H_m(i x)
+   !   (A&S 9.6.4), each term H_m(i kappa r) J_m(i kappa rho') = (2 / (pi i)) i^-m K_m(kappa r) i^m I_m(kappa rho')
+   !   = (2 / (pi i)) K_m(kappa r) I_m(kappa rho'), and the left side is (2 / (pi i)) K_0(kappa d). The powers of i
+   !   cancel, so there is no (-1)^m:
+   !     K_0(kappa d) = sum_m K_m(kappa r) I_m(kappa rho') e^{i m (theta - theta')},   rho' < r.
+   !   (Check at theta = theta': d = r - rho', and every term is positive, so the sum exceeds K_0(kappa r) I_0, as
+   !   K_0(r - rho') does; at theta - theta' = pi the terms alternate, d = r + rho'. graf_matches_direct_sum pins both
+   !   forms and shows that the opposite signs miss.)
+   ! So G(x, xi) = sum_m e^{i m theta} [b(m, 0) H_m(k0 r) Z_0(z) + sum_n b(m, n) K_m(kn r) Z_n(z)], the pw_set form, with
+   !   b(m, 0) = i c0 Z_0(zeta) J_m(k0 rho') e^{-i m theta'},   b(m, n) = cn Z_n(zeta) I_m(kn rho') e^{-i m theta'}.
+   ! The panel sum makes a(m, n) = (1 / 4 pi) sum_j A_j [q_j b_j(m, n) - phi_j n_j . grad_xi b_j(m, n)].
+   ! The gradient in the source point: with f_m = J_m(k rho') e^{-i m theta'} (the conjugate of the regular wave
+   ! J_m e^{i m theta'}, J real) and (d_x + i d_y) [J_m e^{i m theta}] = -k J_{m+1} e^{i (m+1) theta},
+   ! (d_x - i d_y) [J_m e^{i m theta}] = k J_{m-1} e^{i (m-1) theta} (from A&S 9.1.27),
+   !   d_x f_m = (k / 2) (f_{m-1} - f_{m+1}),   d_y f_m = -(i k / 2) (f_{m-1} + f_{m+1}),
+   ! and with g_m = I_m(kappa rho') e^{-i m theta'} and the same rules for I with +kappa I_{m+1}, +kappa I_{m-1}
+   ! (A&S 9.6.26),
+   !   d_x g_m = (kappa / 2) (g_{m-1} + g_{m+1}),   d_y g_m = (i kappa / 2) (g_{m+1} - g_{m-1}),
+   ! for every integer m (J_{-m} = (-1)^m J_m, I_{-m} = I_m), so nothing is singular at rho' = 0. The vertical derivative
+   ! is that of the depth factor: Z_0' = k0 sinh k0(z+h) / cosh k0h, d/dz cos kn(z+h) = -kn sin kn(z+h).
+
+   PURE SUBROUTINE pw_source_modes(xs, nrm, centre, h, k0, kev, mmax, nev, b, db)
+      ! The partial waves about centre of the finite-depth Green function G(xs, .) of a source xs inside the circle (b), and
+      ! of n . grad_xs G(xs, .) (db), in the pw_set form (derivation above): pw_eval_point of a pw_set with a = b gives G
+      ! at r > |xs - centre|, Rankine parts included, as pw_green_modes does. kev(1:nev) the evanescent wave numbers.
+      ! No cut here: pw_from_panels zeroes the orders whose radial functions at R overflow.
+      REAL(8), INTENT(IN) :: xs(3), nrm(3), centre(2), h, k0, kev(:)
+      INTEGER, INTENT(IN) :: mmax, nev
+      COMPLEX(8), INTENT(OUT) :: b(-mmax:mmax, 0:nev), db(-mmax:mmax, 0:nev)
+      INTEGER :: n
+
+      CALL source_mode(0, xs, nrm, centre, h, k0, kev, mmax, b(:, 0), db(:, 0))
+      DO n = 1, nev
+         CALL source_mode(n, xs, nrm, centre, h, k0, kev, mmax, b(:, n), db(:, n))
+      END DO
+   END SUBROUTINE pw_source_modes
+
+   PURE SUBROUTINE source_mode(n, xs, nrm, centre, h, k0, kev, mmax, b, db)
+      ! Mode n of pw_source_modes: n = 0 the propagating mode (k0), n >= 1 the evanescent mode of kev(n). b(-mmax:mmax), db.
+      ! I_m(kn rho') is e^{-x} I_m(x) times e^x (bessel_i_scaled), x = kn rho' < kn R <= PW_KR_MAX: no overflow.
+      INTEGER, INTENT(IN) :: n, mmax
+      REAL(8), INTENT(IN) :: xs(3), nrm(3), centre(2), h, k0, kev(:)
+      COMPLEX(8), INTENT(OUT) :: b(-mmax:mmax), db(-mmax:mmax)
+      COMPLEX(8) :: e(-mmax - 1:mmax + 1), f(-mmax - 1:mmax + 1), c
+      REAL(8) :: dxy(2), rs, ths, e1, e2, zf, dzf, x, kn, cn, v(0:mmax + 1)
+      INTEGER :: m
+
+      dxy = xs(1:2) - centre
+      rs = NORM2(dxy)
+      ths = 0D0
+      IF (rs > 0D0) ths = ATAN2(dxy(2), dxy(1))
+      DO m = 0, mmax + 1
+         e(m) = EXP(-CI*(m*ths))
+         e(-m) = CONJG(e(m))
+      END DO
+
+      IF (n == 0) THEN
+         ! i c0 Z_0(zeta) J_m(k0 rho') e^{-i m theta'}: c0 as in pw_green_modes (sech and tanh from e^{-k0h}); Z_0 and
+         ! Z_0' without overflow at large k0 h
+         e1 = EXP(-k0*h)
+         e2 = e1*e1
+         c = CI*2D0*PI*k0/(k0*h*(2D0*e1/(1D0 + e2))**2 + (1D0 - e2)/(1D0 + e2))
+         zf = z0_mode(k0, h, xs(3))
+         dzf = k0*(EXP(k0*xs(3)) - EXP(-k0*(xs(3) + 2D0*h)))/(1D0 + e2)
+         x = k0*rs
+         IF (x > 0D0) THEN
+            v = BESSEL_JN(0, mmax + 1, x)
+         ELSE
+            v = 0D0
+            v(0) = 1D0
+         END IF
+         ! f_m = J_m e^{-i m theta'}, J_{-m} = (-1)^m J_m
+         DO m = 0, mmax + 1
+            f(m) = v(m)*e(m)
+            f(-m) = MERGE(-1D0, 1D0, MODULO(m, 2) == 1)*v(m)*e(-m)
+         END DO
+         DO m = -mmax, mmax
+            b(m) = c*zf*f(m)
+            db(m) = c*(zf*0.5D0*k0*(nrm(1)*(f(m - 1) - f(m + 1)) - CI*nrm(2)*(f(m - 1) + f(m + 1))) + dzf*nrm(3)*f(m))
+         END DO
+      ELSE
+         ! cn Z_n(zeta) I_m(kn rho') e^{-i m theta'}, cn Z_n(zeta) = 4 cos knh cos kn(zeta+h) / (h + sin 2knh / (2kn)), as
+         ! in pw_green_modes
+         kn = kev(n)
+         cn = 4D0*COS(kn*h)/(h + SIN(2D0*kn*h)/(2D0*kn))
+         zf = cn*COS(kn*(xs(3) + h))
+         dzf = -cn*kn*SIN(kn*(xs(3) + h))
+         x = kn*rs
+         CALL bessel_i_scaled(mmax + 1, x, v)
+         v = v*EXP(x)
+         ! g_m = I_m e^{-i m theta'}, I_{-m} = I_m
+         DO m = 0, mmax + 1
+            f(m) = v(m)*e(m)
+            f(-m) = v(m)*e(-m)
+         END DO
+         DO m = -mmax, mmax
+            b(m) = zf*f(m)
+            db(m) = zf*0.5D0*kn*(nrm(1)*(f(m - 1) + f(m + 1)) + CI*nrm(2)*(f(m + 1) - f(m - 1))) + dzf*nrm(3)*f(m)
+         END DO
+      END IF
+   END SUBROUTINE source_mode
+
+   SUBROUTINE pw_from_panels(xs, nrm, area, q, phi, centre, radius, h, k0, kev, mmax, nev, pw, mcut)
+      ! The partial waves outside the circle r = radius about centre of the fields of the panel sources xs(3, np) (images
+      ! already placed: the caller mirrors the base panels, positions and normals), normals nrm(3, np) and areas area(np),
+      ! one field per column of q(np, ns) = d phi_P / dn and phi(np, ns) = phi_P at the panels:
+      !   phi_P(x) = (1 / 4 pi) sum_j A_j [G(x, xs_j) q_j - n_j . grad_xs G(x, xs_j) phi_j],
+      ! the centroid route of fs_sample_phi (centroid_only) at finite depth, so that the result is the pw_set its samples
+      ! fit, without the samples (item 3 of the field-pass speed-ups; derivation above pw_source_modes). k0 and
+      ! kev(1:nev) the wave numbers of the frequency (pw_evanescent_from_wvn). Every source must lie inside the circle
+      ! (horizontally), else the run stops. Orders whose radial function at R overflows (H_{m+1}(k0 R) or K_{m+1}(kn R)
+      ! above 1e300, as in pw_green_modes) are set to zero; mcut, if present, is the highest order kept in every mode.
+      ! Each vertical mode n is summed by one thread over the panels in their order: the result does not depend on the
+      ! number of threads.
+      USE HAMS_mod, ONLY: NTHREAD
+      REAL(8), INTENT(IN) :: xs(:, :), nrm(:, :), area(:), centre(2), radius, h, k0, kev(:)
+      COMPLEX(8), INTENT(IN) :: q(:, :), phi(:, :)
+      INTEGER, INTENT(IN) :: mmax, nev
+      TYPE(pw_set), INTENT(OUT) :: pw(:)
+      INTEGER, INTENT(OUT), OPTIONAL :: mcut
+      REAL(8), PARAMETER :: BIG = 1D300
+      COMPLEX(8), ALLOCATABLE :: acc(:, :, :), b(:), db(:)
+      REAL(8) :: kv(0:mmax + 1), ym, ym1, yp, rmax
+      INTEGER :: np, ns, j, n, m, ist, jmax, mtop(0:nev), mrep
+      CHARACTER(LEN=200) :: msg
+
+      np = SIZE(xs, 2)
+      ns = SIZE(q, 2)
+      IF (SIZE(nrm, 2) /= np .OR. SIZE(area) /= np .OR. SIZE(q, 1) /= np .OR. SIZE(phi, 1) /= np .OR. &
+          SIZE(phi, 2) /= ns .OR. SIZE(pw) /= ns) ERROR STOP "pw_from_panels: the panel and state arrays do not match"
+      IF (.NOT. h > 0D0) ERROR STOP "pw_from_panels: finite depth only"
+      IF (SIZE(kev) < nev) ERROR STOP "pw_from_panels: fewer evanescent wave numbers than nev"
+      IF (nev > 0) THEN
+         IF (kev(nev)*radius > KR_MAX) ERROR STOP "pw_from_panels: kn R too large for K_m(kn R) (lower nev or the radius)"
+      END IF
+      ! Graf's sums hold for a source inside the circle only; the mirror images of a half or quarter mesh included
+      rmax = -1D0
+      jmax = 0
+      DO j = 1, np
+         IF (NORM2(xs(1:2, j) - centre) > rmax) THEN
+            rmax = NORM2(xs(1:2, j) - centre)
+            jmax = j
+         END IF
+      END DO
+      IF (.NOT. rmax < radius) THEN
+         WRITE (msg, '(a,i0,a,3f12.4,a,f0.4,a,f0.4,a)') ' pw_from_panels: panel source ', jmax, ' (images included) at', &
+            xs(:, jmax), ' lies ', rmax, ' m from the centre, not inside the circle of radius ', radius, ' m.'
+         WRITE (*, '(a)') TRIM(msg)
+         ERROR STOP 1
+      END IF
+
+      ! The cut of pw_green_modes: the highest m per mode with its radial functions at R up to m + 1 below BIG
+      ym = BESSEL_Y0(k0*radius)
+      ym1 = BESSEL_Y1(k0*radius)
+      mtop(0) = -1
+      DO m = 0, mmax
+         IF (ABS(ym) > BIG .OR. ABS(ym1) > BIG) EXIT
+         mtop(0) = m
+         yp = (2D0*(m + 1)/(k0*radius))*ym1 - ym
+         ym = ym1
+         ym1 = yp
+      END DO
+      DO n = 1, nev
+         CALL pw_bessel_k(mmax + 1, kev(n)*radius, kv)
+         mtop(n) = mmax
+         DO m = 0, mmax
+            IF (.NOT. (kv(m + 1) <= BIG)) THEN
+               mtop(n) = m - 1
+               EXIT
+            END IF
+         END DO
+      END DO
+      mrep = MINVAL(mtop)
+
+      ALLOCATE (acc(-mmax:mmax, ns, 0:nev))
+      !$OMP PARALLEL NUM_THREADS(NTHREAD) PRIVATE(b, db, j, ist, m)
+      ALLOCATE (b(-mmax:mmax), db(-mmax:mmax))
+      !$OMP DO SCHEDULE(DYNAMIC, 1)
+      DO n = 0, nev
+         acc(:, :, n) = (0D0, 0D0)
+         DO j = 1, np
+            CALL source_mode(n, xs(:, j), nrm(:, j), centre, h, k0, kev, mmax, b, db)
+            DO ist = 1, ns
+               acc(:, ist, n) = acc(:, ist, n) + area(j)*(q(j, ist)*b - phi(j, ist)*db)
+            END DO
+         END DO
+         DO m = -mmax, mmax
+            IF (ABS(m) > mtop(n)) acc(m, :, n) = (0D0, 0D0)
+         END DO
+      END DO
+      !$OMP END DO
+      DEALLOCATE (b, db)
+      !$OMP END PARALLEL
+
+      DO ist = 1, ns
+         pw(ist)%mmax = mmax
+         pw(ist)%nev = nev
+         pw(ist)%k0 = k0
+         pw(ist)%h = h
+         pw(ist)%radius = radius
+         pw(ist)%centre = centre
+         ALLOCATE (pw(ist)%kev(nev), pw(ist)%a(-mmax:mmax, 0:nev))
+         pw(ist)%kev = kev(1:nev)
+         DO n = 0, nev
+            pw(ist)%a(:, n) = acc(:, ist, n)/(4D0*PI)
+         END DO
+      END DO
+      IF (PRESENT(mcut)) mcut = mrep
+   END SUBROUTINE pw_from_panels
 
    PURE INTEGER FUNCTION pw_green_mmax(r_x, radius, tol)
       ! The angular order for pw_green_modes: the smallest m with (r_x / radius)^m <= tol, at least 4. The m-th terms of

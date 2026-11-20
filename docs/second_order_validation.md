@@ -300,7 +300,7 @@ The quadratic part of the QTFs (`qtf` in `SecondOrder.in`) uses the near-field t
 - In the tests, the diagonal of `QTF_Quadratic.10d` equals `MeanDriftPressure.9` row for row, `.10d` is Hermitian and `.10s` symmetric over frequencies, headings and two bodies, and the kernel reproduces the product of two bichromatic signals at any time (`test/test_near_field.f90`, `test/test_qtf.f90`, `test/test_integration_drift.f90`).
 - The off-diagonal values are compared with the [semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder) (`truncated_cylinder_reference.py qtf`, the same near-field terms of the eigenfunction solution, for every pair of the 101 frequencies 0.40 to 1.40 rad/s, step 0.01), and with Nemoh v3.0.3's quadratic part (`DUOK`) on the same meshes and grid, by `qtf_compare.py`. `qtf_plots.py` draws the curves and the mesh convergence.
 
-The reference's first-order solutions take HAMS's stored incident potential `VINP` as the physical one, so their wave has elevation −iA at the origin instead of A (spec convention: the physical potential is i·`VINP`). That factor cancels in the mean drift and in the difference QTF, and gives −1 in the sum QTF, so the sum rows of the reference are negated. Before that was found, HAMS and Nemoh agreed with each other and both had the opposite sign of the reference on every sum value.
+The reference's first-order solutions take HAMS's stored incident potential `VINP` as the physical one, so their wave has elevation −iA at the origin instead of A (the convention of this work: the physical potential is i·`VINP`). That factor cancels in the mean drift and in the difference QTF, and gives −1 in the sum QTF, so the sum rows of the reference are negated. Before that was found, HAMS and Nemoh agreed with each other and both had the opposite sign of the reference on every sum value.
 
 Sharp cylinder, `velocity_method = source`, heading 0, meshes m1 to m4 (448, 1792, 4032, 7168 panels). Error per pair |value − exact| / max |exact| over the pairs, median / largest, in percent; difference pairs with ω_j − ω_i ≤ 0.3 rad/s (2666 pairs), sum pairs all (5151). Nemoh ran at m1 and m2:
 
@@ -928,10 +928,10 @@ The Snellius runs (fat_genoa, 24 CPUs billed per job, the code at ed27bd3) are i
 | sharp m1 / m2 / m3 | 54 min / 2 h 28 min / 6 h 9 min | 21.5 / 59.4 / 147.4 |
 | rounded m1 / m2 / m3 | 3.6 / 13 / 35 min | 1.4 / 5.2 / 14.0 |
 | **Total, stages 1 and 2** | | **252.5** (planned about 210) |
-| finer inner mesh, sharp m2 (stage 3, job 29354362) | 3 h 16 min | 78.5 |
+| finer inner mesh, sharp m2 (stage 3) | 3 h 16 min | 78.5 |
 | **Total, stages 1 to 3** | | **331.0** |
-| fixed body, sharp m2 (stage 4, job 29362813) | 2 h 28 min | 59.3 |
-| near-waterline fit, sharp m2 fixed and free (stage 5, job 29405797, code at 47d5911) | 3 h 12 min each | 153.4 |
+| fixed body, sharp m2 (stage 4) | 2 h 28 min | 59.3 |
+| near-waterline fit, sharp m2 fixed and free (stage 5, code at 47d5911) | 3 h 12 min each | 153.4 |
 | **Total, stages 1 to 5** | | **543.7** |
 
 Peak memory 3.7 GB (sharp m3). `qtf_compare.py results --direct-sum qtfdirectsum_reference.csv` gives the tables below [measured, 2026-11-17].
@@ -958,11 +958,11 @@ With every pair, the `.12s` maxima are 33 → 28 → 24% (F_x), 61 → 37 → 27
 
 **The free-surface part.** The direct D_FS equals the indirect P_FS to 2.5 / 1.8 / 1.2% max and ≤ 0.3% median (F_x, m1 to m3), so the sum kernel of the direct free-surface solve agrees with the indirect integral. Both are off the exact free-surface part by the same amount, and that error does not fall with the hull mesh: F_x median 4.4 → 9.1 → 5.7%, max 12.5 → 27.2 → 16.7%. It sets in with the first-order frequency (see below) and, once on, grows with Ω⁺ along the top rows of the map (m2: median 0.4% at Ω⁺ = 0.8–1.2 rad/s, 15% at 2.4–2.8 rad/s).
 
-A check with a finer inner mesh (job 29354362, 78.5 core-h) rules out the inner mesh. The run is sharp m2 with `qtf_fs_panel` = 0.55 m: 5168 inner points against 2496 at the default 0.786 m. The φ_zz offsets are also 5.7 times smaller (step × 0.55 m against step × 3.14 m). The F_x median stays at 9.2 → 8.8% and the M_y median at 8.7 → 8.8%, so neither the inner mesh nor the offsets cause the error. The error is set by the first-order frequency, not by Ω⁺ alone: pairs with both ω below 0.75 rad/s are within 2%, and once one ω is above the surge-pitch resonance the error appears and grows with it (and then with Ω⁺ as above), with a phase error whose sign changes with the hull mesh. At Ω⁺ = 2.8 rad/s the median is 11, 17 and 11% at m1, m2 and m3, and the largest error over all pairs is 27% (m2, F_x). The free-body complex motions match the exact ones to 2% (surge, heave, pitch, all three meshes; the complex ratio, not only the modulus). So the shared input in question is the first-order field of the free body on z = 0 above about 0.8 rad/s (kh > 6.5 at h = 100 m). Which part of it is at fault is open. A fixed-body m2 run against the fixed reference (job 29362813, 59.3 core-h) rules out the radiated waves: the fixed body is off by a median of 8.0% in F_x (24.5% max), against 9.2% for the free body, while direct and indirect again agree to 0.09%. By Ω⁺ the fixed error is 1–5% up to 1.7 rad/s, then rises steeply to 24% at 2.4 rad/s and falls to 16% at 2.8 rad/s; on the (ω_i, ω_j) map it grows smoothly with both frequencies, with no resonance stripe. The rise starts at Ω⁺ ≈ 1.8 rad/s, below νh = 50 (2.21 rad/s at h = 100 m), so the regime of the finite-depth Green function there does not explain the onset [inferred]. What is left is shared by the fixed and free bodies: the scattered first-order field on z = 0, ψ at Ω⁺, or the reference's sum free-surface term.
+A check with a finer inner mesh (stage 3, 78.5 core-h) rules out the inner mesh. The run is sharp m2 with `qtf_fs_panel` = 0.55 m: 5168 inner points against 2496 at the default 0.786 m. The φ_zz offsets are also 5.7 times smaller (step × 0.55 m against step × 3.14 m). The F_x median stays at 9.2 → 8.8% and the M_y median at 8.7 → 8.8%, so neither the inner mesh nor the offsets cause the error. The error is set by the first-order frequency, not by Ω⁺ alone: pairs with both ω below 0.75 rad/s are within 2%, and once one ω is above the surge-pitch resonance the error appears and grows with it (and then with Ω⁺ as above), with a phase error whose sign changes with the hull mesh. At Ω⁺ = 2.8 rad/s the median is 11, 17 and 11% at m1, m2 and m3, and the largest error over all pairs is 27% (m2, F_x). The free-body complex motions match the exact ones to 2% (surge, heave, pitch, all three meshes; the complex ratio, not only the modulus). So the shared input in question is the first-order field of the free body on z = 0 above about 0.8 rad/s (kh > 6.5 at h = 100 m). Which part of it is at fault is open. A fixed-body m2 run against the fixed reference (stage 4, 59.3 core-h) rules out the radiated waves: the fixed body is off by a median of 8.0% in F_x (24.5% max), against 9.2% for the free body, while direct and indirect again agree to 0.09%. By Ω⁺ the fixed error is 1–5% up to 1.7 rad/s, then rises steeply to 24% at 2.4 rad/s and falls to 16% at 2.8 rad/s; on the (ω_i, ω_j) map it grows smoothly with both frequencies, with no resonance stripe. The rise starts at Ω⁺ ≈ 1.8 rad/s, below νh = 50 (2.21 rad/s at h = 100 m), so the regime of the finite-depth Green function there does not explain the onset [inferred]. What is left is shared by the fixed and free bodies: the scattered first-order field on z = 0, ψ at Ω⁺, or the reference's sum free-surface term.
 
 **The cause and the fix.** Laptop checks then cleared the reference, ψ and the assembly. The sum assembly with exact fields matches the reference formula to 1e-15 (inner) and 4e-8 (outer) (`fs_sum_exact_inner`, `fs_sum_exact_outer`). HAMS's φ on z = 0 and ψ at Ω⁺ match the exact series away from the hull (a Snellius field check, 0.6 core-h), and the partial waves on the circle are within 2.6% (`fs_fields_exact_circle`). The error was in the inner fields next to the waterline. `fs_inner_steps` shrinks the stencil offsets to millimetres there, so that the stencil stays out of the waterplane, and on that scale the field of constant panels is not smooth. With exact panel data on the sharp m1 hull, ∇φ is 3–105% and φ_zz 20–450% off within 1 m of the waterline, while φ is within 2.5% [measured, `fs_fields_exact_inner` without the fit]. At Ω⁺ = 2.4 rad/s that metre carries 37% of the exact F_x free-surface term [reference quadrature], which is why the error grew with Ω⁺. The fix (commit 47d5911) takes the horizontal gradient and φ_zz of the points within one waterline segment of a waterline from a fit to samples further out ([Developer Documentation](developer_documentation.md#the-near-waterline-fit-of-the-inner-fields)). With exact panel data the inner integral over a < r < a + 5 m goes from 42.7% to 2.05% off the exact one at the sum pair (1.4, 1.0), and from 24.0% to 2.28% at the difference pair (`fs_fields_exact_integral`, `fs_fields_exact_integral_diff`).
 
-The full solve with the fit (job 29405797, sharp m2, fixed and free, 153.4 core-h; 832 inner points fitted from 4992 samples, none left on the stencil) gives the max / median below. D_FS is in % of max |exact FS|, `.12s` in % of max |exact sum QTF|. The free body leaves out 0.75–0.80 rad/s in both; the fixed body has all 231 pairs for D_FS and the same cut for `.12s`.
+The full solve with the fit (stage 5, sharp m2, fixed and free, 153.4 core-h; 832 inner points fitted from 4992 samples, none left on the stencil) gives the max / median below. D_FS is in % of max |exact FS|, `.12s` in % of max |exact sum QTF|. The free body leaves out 0.75–0.80 rad/s in both; the fixed body has all 231 pairs for D_FS and the same cut for `.12s`.
 
 | Case | D_FS F_x | F_z | M_y | `.12s` F_x | F_z | M_y |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -1349,6 +1349,102 @@ The estimate was 96.3 core-h. It came from runs made before the near-waterline f
 - **The radiated wave in the field** is checked through ψ at the points (near-panel and Kochin far field) and through the driver chain (`field_radiated_pipeline`), not against an independent second-order field, and not on Snellius.
 - **Not checked:** `BQDR` in the second-order motion (by design: it has no second-order form, see [usage](input_files.md#second-order-motion)); WAMIT's names and scaling of the second-order motion files (option 16 of WAMIT; not compared with its manual); the end message of `ReportCompletion` does not name the `QTF_Motion` files when a force has NaN or Inf.
 
+## Field-pass speed-ups
+
+Five changes make the field passes of `qtf_terms = full` and `qtf_b2 = control` cheaper: deep-water rows on the free surface (`field_deep_kh`), reuse of ψ in the fields passes, a threaded mode check, the partial waves on the circle from the hull integral (`qtf_fs_circle`) and the inner fields from the source strengths (`qtf_fs_inner`). **Two are on by default** (`field_deep_kh = 10` and `qtf_fs_circle = panels`); two have no key and give the same bits as before. The source route (`qtf_fs_inner = source`) is **off by default** because it failed the gate below. What each change does is in the [Developer Documentation](developer_documentation.md#field-pass-speed-ups); the keys are in the [input files](input_files.md).
+
+**Accuracy gate** (rule and table: `validation-runs/fs-speedups/gate/G1_table.md`). A change that is not byte-identical may become the default only if no checked quantity is worse than today's error by more than max(0.5 percentage points, 10 % of today's error). Errors are against exact data: the exact potential on the panels of the sharp m1 hull (448 panels, fixed body; test `fs_inner_source_matches_exact`), the 448-panel cylinder for the circle (test `pw_from_panels_matches_samples`), and on Snellius the exact references of the sharp cylinder at m2.
+
+### Deep-water rows against the finite-depth rows
+
+- The two Green functions were compared at the points of the OC4 WAMIT hull and circle, and against a direct series sum (`validation-runs/fs-speedups/results/gbench/gbench_summary.txt`, `outlier_check.txt`). From k0 h = 10 up to ν h = 50 the deep-water row is within 1.3e-3 of the finite-depth row, in the largest value of G and of the gradient on the hull points (1.25e-3 at k0 h = 10, 0.93e-3 to 1.05e-3 from k0 h = 20 to 40). At k0 h = 3.3 it is 1.5e-2 to 1.6e-2, which is why the key defaults to 10.
+- Above ν h = 50 the finite-depth field mode switches to a series that fails at some points (the warning "the finite-depth field values may scatter"). At ν h = 52.21 the worst point (R/h = 0.00147) differs by 1.06e-1 between the two rows; against the direct sum the finite-depth row is off by 1.49e-1 in dG/dR where the deep-water row is off by 4.4e-6 (units of the file, `outlier_check.txt`). The test `field_deep_beats_limes` gives 2.6e4 for the finite-depth row against 1.7 for the deep row, in units of h, at the same point.
+- The limit of 1.3e-3 does not hold at k0 h = 40 on the cylinder of `field_row_deep_within_tol`: the two rows differ by 3.4e-3 of the row maximum. There the finite-depth mode is off (3.3e-3 from the direct sum at R/h = 0.016, ν h = 40; the deep row 8e-5). The test therefore requires the deep row to be within 1.3e-3 of the direct sum wherever the two differ by more than 1.3e-3; the worst deep-against-direct value over the 300 entries checked is 6.95e-4.
+- In whole runs (key on against `field_deep_kh = 0`; `qtf_deep_kh`, h = 100 m, k0 h up to 45, deep-water rows on the free surface only): `QTF_Indirect.11d` 1.2e-6, `QTF_PotentialTerms.txt` 7.1e-5, `QTF_Indirect.11s` 7.7e-4 and `QTF_PotentialTermsSum.txt` 1.07e-3 of the largest value in the file. With the earlier version that also took deep-water rows on C and F, the same pair moved by 1.6e-6, 1.4e-4, 1.66e-3 and 1.73e-3.
+
+### Deep-water rows below z = 0
+
+The deep-water rows hold at z = 0 only. At high frequency the deep-water G tends to 1/r − 1/r1, the finite-depth G to that plus the images of a seabed with ∂G/∂z = 0, which `INFGREEN3D` drops [derived]. The images cancel at z = 0, so the free-surface rows above are not affected; below the surface they do not cancel. The unit test `field_row_deep_seabed` measures this at points on the bottom plane z_C of a control surface under a truncated cylinder (24 points from r = 1 m to 1.3 R, field-mode rows as the passes take them). For the entries where the two rows differ by more than 1.3e-3, both are compared with the direct eigenfunction sum. All values are over the row maximum.
+
+| Case | R, draft, h, z_C (m) | k0 h | Deep against finite, G / ∂G/∂n | Deep against direct sum | Finite against direct sum |
+| :--- | :--- | ---: | ---: | ---: | ---: |
+| barge-like, 1 m clearance | 20, 10, 20, −11 | 10 / 20 / 40 | 0.149 / 0.162, 0.152 / 0.183, 0.156 / 0.185 | 0.162, 0.183, 0.185 | 3.9e-5, 4.6e-5, 5.2e-5 |
+| OC4-like, C bottom 5 m under | 20, 20, 200, −25 | 10 / 20 / 40 | 2.37e-3 / 0.87e-3, 3.33e-3 / 1.90e-3, 3.00e-3 / 6.99e-3 | 2.37e-3, 3.31e-3, 6.99e-3 | 0.9e-5, 5.0e-5, 7.2e-5 |
+| OC4-like, C bottom 8 m under (as OC4) | 20, 20, 200, −28 | 10 / 20 / 40 | 2.65e-3 / 1.10e-3, 3.92e-3 / 2.25e-3, 3.36e-3 / 8.83e-3 | 2.65e-3, 3.90e-3, 8.84e-3 | 1.3e-5, 2.6e-5, 3.8e-5 |
+| OC4 column radius | 12, 20, 200, −28 | 10 / 20 / 40 | 2.34e-3 / 0.90e-3, 3.52e-3 / 2.90e-3, 4.30e-3 / 9.27e-3 | 2.34e-3, 3.49e-3, 9.28e-3 | 1.5e-5, 5.6e-5, 3.6e-5 |
+
+- The finite-depth row is the accurate one below the surface (within 7.2e-5 of the direct sum); the deep row is off by 2.3e-3 to 9.3e-3 in the OC4-like cases and by 0.15 to 0.19 with 1 m of clearance, at every k0 h. The gap does not fall with k0 h.
+- The image series alone (max over the panels of the panel area times the images, over the row maximum) gives 0.17 to 0.18 for the barge-like case, the measured size, and 0.8e-3 to 2.0e-3 for the OC4-like cases. There the rest of the gap grows with k0 h (∂G/∂n 0.9e-3 at k0 h = 10, 9e-3 at 40), and its cause was not found [measured, not explained].
+- OC4 (`cs_shape = file`): the hull reaches z = −20 m and C z = −28 m in h = 200 m, the third row of the table. With `qtf_b2 = control` (the default) the C/F passes took deep-water rows from k0 h = 10 (0.70 rad/s) in the OC4 run below.
+- So the C/F passes (`keep_cs_psi`, `control_fields`) keep the finite-depth rows, and `field_deep_kh` applies to the free-surface passes only.
+
+### Byte-identity with `field_deep_kh = 0`
+
+With `field_deep_kh = 0` and `qtf_fs_circle = samples` the run is the one before this work, to the byte: at the commit of item 1, 73 of the 74 fixtures of the base build (commit 88e19bd) were byte-identical with the default as well; the one that moved then, `qtf_irsp_control` (k0 h = 12.3 at 1.10 rad/s; `qtf_terms = body`, so only its C/F fields switched), had 12 of 12 files byte-identical with `field_deep_kh = 0`. With the deep-water rows on the free surface only it has no pass that takes them. Of the stored references only `qtf_psi_reuse` (`field_deep_kh = 0.25`) moved when C and F went back to the finite-depth rows: `QTF_Indirect.11d` by 8.6e-3 and `QTF_PotentialTerms.txt` by 3.2e-4 of the largest value; it was stored again. The reuse of ψ (item 4) is byte-identical on six cases by `psi_reuse_byte_identical`, and the threaded check (item 6) gives the same bits for 1 and 4 threads (`fs_mode_miss_threads`).
+
+### Laptop gate: exact data at unit-test scale
+
+Errors in % of the largest exact value. Gate margin: 0.5 percentage points (pp). Source: `validation-runs/fs-speedups/gate/G1_table.md`, `G1_errors.png`, `fs_inner_source_exact.txt`.
+
+| Quantity | Stencil + samples (today) | Panels circle (item 3) | Source route (item 2) | Verdict |
+| :--- | ---: | ---: | ---: | :--- |
+| φ, inner points 0.1 to 3.5 m from the waterline (worst ring) | 2.5 | 2.5 (no circle) | 1.55 | both pass |
+| ∇φ, same rings (worst: 0.1 m) | 4.92 | 4.92 (no circle) | 5.84 | source **fails** (+0.92 pp) |
+| inner integral, sum pair (1.4, 1.0) rad/s, max over ψ_1, ψ_3, ψ_5 | 2.05 | 2.05 (no circle) | 3.58 | source **fails** (+1.53 pp) |
+| inner integral, difference pair, max over ψ_1, ψ_3, ψ_5 | 2.28 | 2.28 (no circle) | 1.78 | both pass |
+| field on the circle against the exact direct sum | 1.68e-4 | 3.59e-7 | not changed | panels pass |
+
+![Accuracy gate errors](../validation-runs/fs-speedups/gate/G1_errors.png)
+
+The panels circle changes only the partial waves. It puts them on the exact series (3.6e-9 against 1.7e-6 for the samples, the samples' own error) and moves `FS_inner + FS_outer` of `qtf_fs_main` by 4.7e-6 of the largest value (test `fs_circle_panels_close`). The source route also moves with the hull mesh: between the 220- and 960-panel hulls (fixed body, review of Task 6) `FS_inner + FS_outer` changes by 1.5 to 24.9 % of its largest value on the source route (16 to 25 % in the main terms) and by 0.2 to 1.1 % (0.3 to 1 % in the main terms; heave 4.9 %) on the stencil route. On `qtf_fs_main` the two inner routes differ by 0.559 of the largest `FS` value, and the gap does not move with the inner mesh (26 to 45 % at 1.0 and 0.5 m panels); the parts of the pair integral are about 13 times the result and cancel, so a hull-mesh error is amplified. No missing or wrong term was found [inferred, confidence medium to high]. **Decision: `qtf_fs_inner = source` stays off.** With `qtf_fs_circle = panels` the inner integral of the source route is the same (3.581e-2 and 1.782e-2 with either circle), so both together fail where the source route fails.
+
+### Snellius gate: sharp and round cylinder at m2
+
+The panels route (item 3) against the samples route, sharp cylinder m2, fixed and free, sum and difference kernels, and the rounded hull m2 (free), against the exact references (`validation-runs/fs-speedups/results/g1_compare.txt`; like with like: the free-surface part against the exact free-surface part, the total without it against the exact total). Rule: panels no worse than samples + max(0.5 pp, 10 % of the samples error), on the maximum and on the median. **126 rows, 0 fail.**
+
+- The largest change is in the sum kernel P_FS F_z of the fixed body: 3.38 % (samples) to 2.36 % (panels). The difference-kernel free-surface parts move by at most 0.17 pp (fixed F_x 2.02 to 2.19 %).
+- Every output file, panels against samples: at most 1.3e-2 of its largest value (`QTF_Indirect.11s`, sharp fixed). The quadratic, ψ and first-order files are byte-identical. The in-run direct-indirect check is the same for both routes, round hull included.
+- Speed on these cases: 3 % (6855 s to 6667 s); the circle step is a small part of these runs.
+- Item 1 on the same cases: today's free-surface errors with item 1 stay within the gate of the run before it (code at 47d5911): sum D_FS fixed 1.74 / 1.05 / 1.50 % to 1.20 / 1.01 / 1.10 %, difference FS fixed 1.82 / 1.91 / 1.41 % to 2.02 / 1.21 / 1.61 % (Snellius run of the sharp cylinder at m2, fixed and free, with and without item 1; the files are not stored in the repository).
+
+These runs used `qtf_b2 = control` with a control surface whose bottom is 7.84 m under the hull (h = 100 m), so with the build of these runs the C/F passes took deep-water rows from k0 h = 10 as well (both routes; the comparison of the two routes is not affected). Those rows are now known to be off below z = 0 (see [Deep-water rows below z = 0](#deep-water-rows-below-z--0)), so the absolute errors of these runs carry that part too. They test the z = 0 rows and item 3; the C/F part was not re-run.
+
+This made `qtf_fs_circle = panels` the default (the accuracy gate).
+
+### OC4 with the new defaults
+
+The OC4 WAMIT model (5022 hull panels), sum QTF with the indirect method, free body, run on 24 CPUs of one node. "Old" is the same case at commit 22086da (stencil inner route, samples circle, no deep rows, no ψ reuse); "new" is the same case with the defaults of this work at the time of the run, which also took deep-water rows on C and F (no longer done, see [Deep-water rows below z = 0](#deep-water-rows-below-z--0)). Nemoh v3.0.3 ran on the same mesh. Sources: `validation-runs/fs-speedups/results/` (`timing_oc4.txt`, `oc4_by_omega.txt`, `compare_wamit_old.txt`, `compare_wamit_new.txt`).
+
+| Run | Wall | Core-h | First order and rest | Second order, body part | Second order, free-surface part |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| HAMS, old | 7.25 h | 174.1 | 0.48 h | 2.94 h | 3.83 h |
+| HAMS, new defaults | 2.08 h | 49.8 | 0.48 h | 0.76 h | 0.83 h |
+| Nemoh v3.0.3 | 5.46 h | 130.9 | 2.33 h | 3.12 h (body and free surface, not split in its logs) | |
+
+- New HAMS takes 0.286 of the old wall time and core-hours (3.5 times faster) and 0.380 of Nemoh's (2.6 times faster). Nemoh ran its stages on one thread; its job was billed for 24 CPUs, the fat_genoa minimum.
+- The saving comes from fewer ψ passes (24 to 11, item 4: 13 merged into the fields passes) and cheaper fields passes: C/F fields 4538 s to 1613 s and free-surface fields 9424 s to 2850 s (items 1, 3 and 6 together; the three were not timed one by one on OC4). The C/F time of the new run was made with deep-water rows on C and F; with the finite-depth rows used there now it will rise (not measured).
+- First-order files are byte-identical, except `ExcForce.3`, whose phase column is now in degrees (commit fdf4f8f, a fix merged after 22086da); its magnitudes and real and imaginary parts are identical. `QTF_Quadratic.10s` and `QTF_PsiCheck.txt` are identical. `FS_outer` moves by at most 2e-4 of its largest value (item 3).
+- `QTF_Indirect.11s` changes, |new − old| / max |old| of the force or moment group (`oc4_by_omega.txt`, `oc4_by_omega.png`):
+
+| | Ω ≤ 1.55 rad/s | Ω ≥ 1.60 rad/s |
+| :--- | ---: | ---: |
+| mode 1 | 6.6 % | 9.8 % |
+| mode 2 | 2.2 % | 8.6 % |
+| mode 3 | 1.6 % | 4.1 % |
+| mode 4 | 0.5 % | 3.5 % |
+| mode 5 | 1.4 % | 6.1 % |
+| mode 6 | 2.1 % | 35.1 % |
+| term B2 | 1.0 % | 62.5 % |
+| term FS_inner | 1.7 % | 5.5 % |
+
+- **Why it changed: open.** The only change since 22086da that alters the field values of this run is item 1: the field rows use the deep-water Green function from k0 h = 11.47 (0.75 rad/s; the log says so), on the free surface and, in this run, on C and F too. The Limes and lid fixes all predate 22086da, and this run has no lid; item 4 is byte-identical and item 3 moves `FS_outer` only. The deep-water rows on C and F are now known to be 2e-3 to 9e-3 of the row maximum off per row at OC4's C bottom ([Deep-water rows below z = 0](#deep-water-rows-below-z--0)). So the changes of the table, the jump of B2 above 1.6 rad/s (where the old run warned "ν h = 52.21 > 50: the finite-depth field values may scatter") and the change from 1.35 rad/s (mode 1 at 0.25 % up to 1.30 rad/s, then 1.07 to 6.63 % from 1.35 to 1.55 rad/s; `FS_inner` 0.14 to 1.34 % at 1.35) cannot be put down to Limes or to the finite-depth rows. A re-run with the control-surface passes on finite-depth rows is pending; until then the cause of the OC4 change is open.
+- **Against WAMIT, both ways.** Against WAMIT `marin_semi.12s` (`compare_wamit_old.txt`, `compare_wamit_new.txt`) the quadratic and body part (where B2 sits) gets closer: maximum F_x 13.7 to 10.0 %, F_z 27.7 to 23.6 %, M_y 47.8 to 47.8 %, median (M_y) 14.1 to 14.8 %. The HAMS total gets slightly worse: maximum F_x 103.0 to 104.4 %, F_z 174.8 to 178.3 %, M_y 328.1 to 344.1 %; medians 28.3 to 28.0, 92.5 to 93.3 and 67.4 to 68.1 %. The total is dominated by the free-surface part, which has the known HAMS, Nemoh and WAMIT gap on OC4, so it does not decide the question. The WAMIT file has no separate free-surface part.
+- **What is not proven.** No part of the OC4 change is proven right: its cause is open (above), there is no exact reference, and WAMIT's file has no separate free-surface part to check it against. The comparison with WAMIT above is that of the run with deep-water rows on C and F.
+
+### Cost of the suites
+
+The new fixtures add about 4 minutes to the integration suite (the ψ-reuse cases, `qtf_psi_reuse_two` alone about 135 s) and the deep-rows pair about 3 minutes more. After the last commit of this work: the unit suite passed 456 tests, 0 failed, with 1 expected failure (`invalid2`); the integration suite passed 251 tests, 0 failed (laptop, ifort with OpenMP).
+
 ## Open items
 
 - A free sharp body at low frequency has no good near-field result from HAMS. Far-field is the number to use for F_x, and the control-surface method for F_z. For the sharp cylinder, the [semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder) gives near-field F_x, F_z and M_y, with stated uncertainties.
@@ -1368,6 +1464,10 @@ The estimate was 96.3 core-h. It came from runs made before the near-waterline f
 - Indirect method at the sum frequency (`QTF_Indirect.11s`): the sharp cylinder is checked against the exact sum QTF at two meshes (7.8 / 6.0 / 3.0% at m1 and 6.1 / 4.1 / 2.1% at m2, max, F_x / F_z / M_y). For the OC4 semisubmersible HAMS and Nemoh differ by 82 / 33 / 27% (max) and the cause is open; the WAMIT sum file appears to hold no free-surface part ([indirect method at the sum frequency](#indirect-method-at-the-sum-frequency)).
 - Second-order motion (`QTF_Motion.*`): checked against the exact motion of one hull, the sharp cylinder with springs in surge, sway and yaw, at two meshes, with the slow-drift peak at m1 only. The motion error there is the force error of the sharp hull (`.12d` surge 39.5% at m1 and 27.5% at m2, max, out of band), so the motion converges as the difference force does. The radiated wave in `QTF_Field.txt` has no independent reference ([second-order motion](#second-order-motion)).
 - WAMIT: the OC4 comparison with the public WAMIT run of OpenFAST now exists ([OC4 against WAMIT](#oc4-against-wamit)). A WAMIT licence would still be needed to settle the conjugation and axes of the WAMIT-format output on a hull with a known answer, since the diagonal of that comparison is real. The semi-analytical reference covers the signs of the mean drift values (210 values agree at 7168 panels), not the phases of the complex outputs.
+- Field-pass speed-ups, OC4: the run with the new defaults took deep-water rows on C and F, which are 2e-3 to 9e-3 off per row below z = 0. A re-run with the control-surface passes on finite-depth rows is pending; until then the cause of the OC4 change (from 1.35 rad/s, and the B2 jump above 1.6 rad/s) is open, and it has no exact reference ([OC4 with the new defaults](#oc4-with-the-new-defaults)).
+- Deep-water rows below z = 0: on the OC4-like cases of `field_row_deep_seabed` the seabed images explain only part of the gap above k0 h = 10; the rest, which grows with k0 h, is not explained.
+- `qtf_fs_inner = source` (off by default): it failed the gate on exact data (sum integral 3.58 % against 2.05 %, ∇φ at 0.1 m 5.84 % against 4.92 %) and moves with the hull mesh (16 to 25 % between 220 and 960 panels, against 0.3 to 1 % for the stencil). Whether a better treatment of the hull error would pass was not tried.
+- `qtf_fs_circle = panels` ignores `field_deep_kh` for the partial waves (finite-depth field); at a small `field_deep_kh` this moves a result by 1.2e-2 of the largest value (`qtf_psi_reuse`). At the default 10 the OC4 `FS_outer` moves by at most 2e-4. The panels route was gated on the sharp and round cylinder at m2 only (126 rows), not on OC4 against an exact reference.
 
 ## Sources
 
@@ -1382,3 +1482,5 @@ Garrett (1971), Yeung (1981), MacCamy and Fuchs (1954), Maruo (1960), Newman (19
 - Roland, S. et al. (2026). A benchmark of boundary element method solvers for predicting second-order hydrodynamic loads on floating offshore wind turbines. J. Phys.: Conf. Ser. 3346, 012006.
 - Zhang, Y., Tosdevin, T., Tang, T., Stansby, P. (2026). Second-order difference-frequency effects on floating wind turbine responses: full-QTF modelling and experimental comparison. arXiv:2610.27940.
 - Kurnia, R., Ducrozet, G. (2023). NEMOH: open-source boundary element solver for first- and second-order hydrodynamic loads. Computer Physics Communications 292, 108885.
+- Abramowitz, M., Stegun, I. A. (1964). Handbook of Mathematical Functions. National Bureau of Standards, Applied Mathematics Series 55 (9.1.79, 9.6.3, 9.6.4: the addition theorem used for the circle from the hull integral).
+- Field-pass speed-ups: `validation-runs/fs-speedups/gate/G1_table.md`, `validation-runs/fs-speedups/results/` and `validation-runs/fs-speedups/results/gbench/gbench_summary.txt`.

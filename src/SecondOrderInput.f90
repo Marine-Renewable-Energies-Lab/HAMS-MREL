@@ -118,6 +118,9 @@ CONTAINS
       ELSE IF (opts%qtf_field == 1 .AND. opts%qtf == 0) THEN
          ok = .FALSE.
          msg = 'qtf_field needs qtf = 1, 2 or 3 in SecondOrder.in.'
+      ELSE IF (opts%field_deep_kh < 0D0) THEN
+         ok = .FALSE.
+         msg = 'field_deep_kh must not be negative in SecondOrder.in.'
       ELSE IF (opts%qtf_fs_radius < 0D0) THEN
          ok = .FALSE.
          msg = 'qtf_fs_radius must not be negative in SecondOrder.in.'
@@ -242,6 +245,8 @@ CONTAINS
          ELSE
             ios = 1
          END IF
+      CASE ('field_deep_kh')
+         READ(value, *, IOSTAT=ios) opts%field_deep_kh
       CASE ('qtf_fs_radius')
          ! The four qtf_fs_* keys are read always, used with qtf_terms = full only
          READ(value, *, IOSTAT=ios) opts%qtf_fs_radius
@@ -257,6 +262,12 @@ CONTAINS
          opts%qtf_fs_given = .TRUE.
       CASE ('qtf_fs_evanescent')
          READ(value, *, IOSTAT=ios) opts%qtf_fs_evanescent
+         opts%qtf_fs_given = .TRUE.
+      CASE ('qtf_fs_circle')
+         CALL choose(value, 'samples', 'panels', opts%qtf_fs_circle, ios)
+         opts%qtf_fs_given = .TRUE.
+      CASE ('qtf_fs_inner')
+         CALL choose(value, 'stencil', 'source', opts%qtf_fs_inner, ios)
          opts%qtf_fs_given = .TRUE.
       CASE ('qtf_b2')
          ! Read always, used with qtf_terms = body or full only
@@ -352,9 +363,12 @@ CONTAINS
       LOGICAL,          INTENT(IN)  :: has_gen_modes
       LOGICAL,          INTENT(OUT) :: ok
       CHARACTER(LEN=*), INTENT(OUT) :: msg
+      LOGICAL :: fs_source
 
       ok = .FALSE.
       msg = ''
+      ! the source route of the inner free-surface fields, where the key applies (qtf_terms = full, qtf >= 1)
+      fs_source = opts%qtf_fs_inner == 2 .AND. opts%qtf_terms == QTF_TERMS_FULL .AND. opts%qtf > 0
       IF (isol == 2) THEN
          msg = 'Mean drift needs ISOL=1 (incident and scattering potentials combined) in ControlFile.in.'
       ELSE IF (h > 500.0D0) THEN
@@ -371,6 +385,16 @@ CONTAINS
          msg = 'cs_velocity = source needs the direct solver (ISOLV=1) in ControlFile.in.'
       ELSE IF (opts%cs_velocity == 2 .AND. irsp == 1) THEN
          msg = 'cs_velocity = source cannot be used with irregular frequency removal (IRSP=1) in ControlFile.in.'
+      ! qtf_fs_inner = source takes the strengths of the hull-only source operator (SurfaceVelocity), as the two keys above:
+      ! no lid, so its irregular frequencies stay; and the direct solve needs phi_zz at the inner points, which this route
+      ! does not form
+      ELSE IF (fs_source .AND. isolv == 2) THEN
+         msg = 'qtf_fs_inner = source needs the direct solver (ISOLV=1) in ControlFile.in.'
+      ELSE IF (fs_source .AND. irsp == 1) THEN
+         msg = 'qtf_fs_inner = source cannot be used with irregular frequency removal (IRSP=1) in ControlFile.in.'
+      ELSE IF (fs_source .AND. opts%qtf_direct == 1) THEN
+         msg = 'qtf_fs_inner = source cannot be used with qtf_direct = 1 (the direct solve needs phi_zz at the inner'// &
+               ' points); use qtf_fs_inner = stencil.'
       ELSE IF (opts%cs_margin < 0D0) THEN
          msg = 'cs_margin must not be negative in SecondOrder.in.'
       ELSE IF (opts%cs_bottom_margin < 0D0) THEN

@@ -67,6 +67,19 @@ MODULE SecondOrderTypes
       REAL(8) :: qtf_fs_panel = 0D0      ! m, panel size of the generated inner mesh; 0: lambda/10 at the largest frequency
       INTEGER :: qtf_fs_modes = 0        ! angular modes M of the outer region
       INTEGER :: qtf_fs_evanescent = 0   ! evanescent vertical modes N_ev of the outer region
+      ! The partial waves outside R: 1 samples (the centroid route at the circle samples, fitted), 2 panels (straight from the
+      ! hull integral by Graf's addition theorem, mode check on every 8th sample; item 3 of the field-pass speed-ups).
+      ! Default panels: the accuracy gate passed on the sharp cylinder m2 (126 rows, none failed; 2026-11-20;
+      ! validation-runs/fs-speedups/gate/G1_table.md).
+      INTEGER :: qtf_fs_circle = 2
+      ! The inner free-surface fields: 1 stencil (the 5-point stencil of the Green route, with phi_zz), 2 source (phi and grad
+      ! phi from the source strengths, phi_zz removed from the inner integral by Green's theorem in the plane; item 2 of the
+      ! field-pass speed-ups). Default stencil: source stays off because it failed the accuracy gate (the result depends on the hull
+      ! mesh, see validation-runs/fs-speedups/gate/G1_table.md).
+      INTEGER :: qtf_fs_inner = 1
+      ! Field-pass rows (psi, grad psi at the hull, free-surface and field points): the deep-water Green function is used
+      ! where k0 h >= field_deep_kh (k0 the wave number of the frequency, h the depth); 0 switches it off
+      REAL(8) :: field_deep_kh = 10D0
       ! Panel weights of the B2 hull term at sharp edges (SharpEdge), with qtf_b2 = control; edges where the normals differ
       ! by more than qtf_edge_angle degrees. Off by default: on the sharp-cylinder fixture they moved B2 F_x and F_z away
       ! from the exact reference (15.1% to 17.2%, 30.0% to 37.4%) for an M_y gain of 11.9% to 11.1%
