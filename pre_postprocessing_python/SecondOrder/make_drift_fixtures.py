@@ -1048,7 +1048,7 @@ def write_qtf_indsum_fixtures(data):
 # difference, and for the sum 1.40 rad/s only (the cutoff of the sum, the estimate of the lowest irregular frequency, 1.536
 # rad/s, leaves out 1.65 and 1.90).
 QTF_MOTION_MESH = dict(ROUND_MESH, ntheta=16, nz=4, narc=2, nr=2)
-QTF_MOTION_FREQUENCIES = (0.70, 0.95)
+QTF_MOTION_FIXTURE_FREQUENCIES = (0.70, 0.95)
 # The surge spring and damping of R8 of the Phase 6c plan, for this hull: K_11 for a natural period of 100 s and B_11 = 5 %
 # of critical. omega_n = 2 pi / 100 = 0.0628319 rad/s; M = 2.95113e6 kg (Hydrostatic.in of this mesh: rho times the volume
 # of the 16-gon with the rounded bilge); A_11(omega_n) = 1.82474e6 kg, that of the sharp cylinder of the same radius and
@@ -1072,7 +1072,7 @@ def write_qtf_motion_fixtures(data):
         target = case_dir(data, name)
         make_mesh.write_rounded_cylinder(os.path.join(target, "HullMesh.pnl"), os.path.join(target, "Hydrostatic.in"),
                                          external_restoring=spring, external_damping=damping, **QTF_MOTION_MESH)
-        write_control(os.path.join(target, "ControlFile.in"), frequencies=QTF_MOTION_FREQUENCIES, headings=(0.0,))
+        write_control(os.path.join(target, "ControlFile.in"), frequencies=QTF_MOTION_FIXTURE_FREQUENCIES, headings=(0.0,))
         write_second_order(os.path.join(target, "SecondOrder.in"), **options)
 
 
