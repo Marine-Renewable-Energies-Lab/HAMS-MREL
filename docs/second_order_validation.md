@@ -1241,7 +1241,7 @@ The second-order motion (Phase 6c, `qtf_motion = 1`) solves [−Ω²(M + A(Ω)) 
 | `field_radiated_pipeline` | Driver end to end, moored cylinder, 2 points: the change of `Re_dir` against `field_direct(Ω, φ_R)` | 1.7e-7 | 1e-5 |
 | `qtf_motion_default_off`, `_needs_body`, `_needs_qtf`, `_bad_value`, `_fixed_skips` | The input key and its stops | exact | exact |
 
-The errors are relative to the largest value of the compared quantity. Source: the task reports of the Phase 6c work and the test files `test/test_qtf_motion.f90`, `test/test_qtf.f90`, `test/test_qtf_field.f90` and `test/test_second_order_input.f90`.
+The errors are relative to the largest value of the compared quantity. Source: the test files `test/test_qtf_motion.f90`, `test/test_qtf.f90`, `test/test_qtf_field.f90` and `test/test_second_order_input.f90`.
 
 - **A and B are those of the first-order code.** At main-grid frequencies they match `RFORCE` and `RFORCE_MULTI` to rounding. The separate whole-mesh solve of the half-mesh test differs by 3.8e-7, which is the single-precision storage of the Green function (about 6e-8 per value), not an error of the sum.
 - **Reciprocity holds only to the mesh error.** `RFORCE`'s own A and B, which these equal to rounding, are asymmetric by the same amounts. So this test cannot catch a transposition; the `RFORCE` comparisons do.
@@ -1254,7 +1254,7 @@ Two runs of 128 panels, about 3.4 s each: `qtf_motion_round`, the free rounded h
 
 | Test | What it checks | Measured | Limit |
 | :--- | :--- | :--- | :--- |
-| `motion_integration_rows` (moored) | `.11d`, `.12d`, `.11s` and `.12s` have the rows of their force files in order, less Ω = 0 for the difference, and are finite; the header has `Left out` naming modes 2 6 (difference) and `Left out: none` (sum); the log has the set-up lines once, the R6 line for Ω = 0 once, and one `QTF motion: Omega =` line per Ω | exact | exact |
+| `motion_integration_rows` (moored) | `.11d`, `.12d`, `.11s` and `.12s` have the rows of their force files in order, less Ω = 0 for the difference, and are finite; the header has `Left out` naming modes 2 6 (difference) and `Left out: none` (sum); the log has the set-up lines once, the line that leaves out Ω = 0 (rcond < 1e-12, modes 2 6) once, and one `QTF motion: Omega =` line per Ω | exact | exact |
 | `motion_routes_agree` (moored) | The gap \|.11d − .12d\| / max \|.12d\| of the motion against the same gap of the force on the same rows | 4.93e-2 (force 7.39e-2) | 9.61e-2 (1.3 × force) |
 | `motion_unmoored_diagonal_absent` | Without the spring the header and log name modes 1 2 6; the surge rows differ from those of the moored run | 5.48e-2 | above 1e-3 |
 
@@ -1264,7 +1264,7 @@ The motion gap between the routes is smaller than the force gap, so the solve do
 
 ### Sharp cylinder on Snellius
 
-The free sharp truncated cylinder (radius 10 m, draft 10 m), depth 100 m, heading 0, `qtf = 3`, `qtf_terms = full`, `qtf_direct = 1`, `qtf_motion = 1`, IRSP = 1, meshes m1 (448 panels) and m2 (1792 panels). Springs for a natural period of 100 s and dampers of 5% of critical in surge, sway and yaw (K_11 = K_22 = 1.96063e4 N/m, B_11 = B_22 = 3.12044e4 N s/m, K_66 = 6.20126e5 N m, B_66 = 9.86960e5 N m s; [usage](input_files.md#second-order-motion)). m1 has 22 frequencies, the grid 0.40–1.40 rad/s plus 1.013 rad/s, so that the pair (0.95, 1.013) has Ω = 0.063 rad/s, the slow-drift peak. m2 has the 21-point grid, to keep the cost down. The reference is `truncated_cylinder_reference.py qtf-motion` (difference and sum, `--free-surface`, 22 frequencies, default resolution): surge, heave and pitch from its own T, A and B with the same springs. The error is |HAMS − exact| / max |exact| over the reference pairs ω_i ≤ ω_j, max / median in percent. Source: `findings.md`, `compare_motion.txt`, `compare_motion_excl.txt`, `force_baseline.txt` and `motion_summary.json` (from `scripts/analyse_motion.py`) [measured, 2026-11-20].
+The free sharp truncated cylinder (radius 10 m, draft 10 m), depth 100 m, heading 0, `qtf = 3`, `qtf_terms = full`, `qtf_direct = 1`, `qtf_motion = 1`, IRSP = 1, meshes m1 (448 panels) and m2 (1792 panels). Springs for a natural period of 100 s and dampers of 5% of critical in surge, sway and yaw (K_11 = K_22 = 1.96063e4 N/m, B_11 = B_22 = 3.12044e4 N s/m, K_66 = 6.20126e5 N m, B_66 = 9.86960e5 N m s; [usage](input_files.md#second-order-motion)). m1 has 22 frequencies, the grid 0.40–1.40 rad/s plus 1.013 rad/s, so that the pair (0.95, 1.013) has Ω = 0.063 rad/s, the slow-drift peak. m2 has the 21-point grid, to keep the cost down. The reference is `truncated_cylinder_reference.py qtf-motion` (difference and sum, `--free-surface`, 22 frequencies, default resolution): surge, heave and pitch from its own T, A and B with the same springs. The error is |HAMS − exact| / max |exact| over the reference pairs ω_i ≤ ω_j, max / median in percent. Jobs 29503226_1 (m1), 29503228_1 (m2) and 29503232 (reference). Source: `findings.md`, `compare_motion.txt`, `compare_motion_excl.txt`, `force_baseline.txt` and `motion_summary.json` (from `scripts/analyse_motion.py`) [measured, 2026-11-20].
 
 Without the pairs with a frequency in 0.75–0.80 rad/s:
 
@@ -1318,7 +1318,7 @@ The transfer at Ω = 0.063 rad/s matches to 0.6% in modulus and under 1° in pha
 | 1.20 | 1.08 | 1.05 | 1.44 | 1.29 | 1.00 | 0.99 |
 | 1.40 | 1.04 | 1.02 | 1.30 | 1.20 | 1.01 | 1.00 |
 
-All four files of both cases have `Left out: none`, and the logs have no R6 line; the smallest rcond is 2.6e-5 (m1) and 9.6e-5 (m2). At Ω = 0 the equation is (C + K_ext) ξ = ρg F, so these ratios are the ratios of the mean drift force, apart from the polygon's C. In percent of the ξ scale the static errors are small for ω ≥ 0.95 rad/s (m1: surge ≤ 4.2%, heave ≤ 7.0%, pitch ≤ 0.2%). The large heave ratios are of small values: the mean vertical drift next to the heave resonance at 0.80 rad/s, and heave below 4% of its scale for ω ≥ 0.95.
+All four files of both cases have `Left out: none`, and the logs have no line that leaves an Ω out; the smallest rcond is 2.6e-5 (m1) and 9.6e-5 (m2). At Ω = 0 the equation is (C + K_ext) ξ = ρg F, so these ratios are the ratios of the mean drift force, apart from the polygon's C. In percent of the ξ scale the static errors are small for ω ≥ 0.95 rad/s (m1: surge ≤ 4.2%, heave ≤ 7.0%, pitch ≤ 0.2%). The large heave ratios are of small values: the mean vertical drift next to the heave resonance at 0.80 rad/s, and heave within 7.0% of its scale for ω ≥ 0.95 (m1).
 
 **Other results.**
 - **The routes agree in the difference:** `.11d` and `.12d` differ by 0.4 / 1.8 / 0.5% (surge / heave / pitch, max). In the sum the gap (5–11%) is the known direct-indirect gap of the sum force ([direct method at the sum frequency](#direct-method-at-the-sum-frequency)).
@@ -1345,9 +1345,9 @@ The estimate was 96.3 core-h. It came from runs made before the near-waterline f
 - **One hull.** The absolute check is the sharp cylinder at two meshes, heading 0, depth 100 m, with springs in surge, sway and yaw. Several bodies, half meshes and an unmoored body are tested on the laptop only.
 - **The slow-drift peak is checked at m1 only.** m2 has no 1.013 rad/s pair. The error scale includes those pairs, so m2's difference-surge percentages read about 8% lower than on its own grid (`findings.md`, caveat 1).
 - **The reference has no first-order springs.** Its T uses the first-order motion of the free body without them, while HAMS's first-order solve has them. By the impedance ratio they move the first-order surge by under 1% for ω ≥ 0.85 rad/s and 2.5% at 0.40 rad/s, so they do not explain the 30–40% excess of the drift force; they add to the error near the undamped band.
-- **The reference keeps the exact circle's M and C**, about 0.6% above those of the m1 polygon. This shifts the response near the 100 s resonance by about 0.3%.
+- **The reference keeps the exact circle's M and C**, about 0.6% above those of the m1 polygon. This shifts the response near the 100 s resonance by about 0.3% [derived: ω_n = √(K/(M + A)), so a 0.6% change of M moves ω_n by about half of it].
 - **The radiated wave in the field** is checked through ψ at the points (near-panel and Kochin far field) and through the driver chain (`field_radiated_pipeline`), not against an independent second-order field, and not on Snellius.
-- **Not checked:** `BQDR` in the second-order motion (by design, R5); WAMIT's names and scaling of the second-order motion files (option 16 of WAMIT; open question 1 of the plan); the end message of `ReportCompletion` does not name the `QTF_Motion` files when a force has NaN or Inf.
+- **Not checked:** `BQDR` in the second-order motion (by design: it has no second-order form, see [usage](input_files.md#second-order-motion)); WAMIT's names and scaling of the second-order motion files (option 16 of WAMIT; not compared with its manual); the end message of `ReportCompletion` does not name the `QTF_Motion` files when a force has NaN or Inf.
 
 ## Open items
 
