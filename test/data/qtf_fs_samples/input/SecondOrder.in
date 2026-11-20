@@ -10,4 +10,4 @@ qtf_edge_weights = off
 qtf_fs_radius = 10.0
 qtf_max_dw = 0.2
 field_deep_kh = 0
-qtf_fs_circle = panels
+qtf_fs_circle = samples

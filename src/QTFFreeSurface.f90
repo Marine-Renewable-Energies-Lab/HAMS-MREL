@@ -897,7 +897,9 @@ CONTAINS
       ! point x for an image and keeps the panel, G(S x, xi) = G(x, S xi) for the reflection S of image_signs (G depends on
       ! the horizontal distance and the two depths only), and n . grad_xi G(S x, xi) = (S n) . grad G(x, .) at S xi: so the
       ! image source is at S xi with normal S n and the same area. pw_from_panels stops if a source (an image included)
-      ! is not inside the circle.
+      ! is not inside the circle. Orders above mcut (H_m(k0 R) or K_m(kn R) beyond 1e300, as in pw_green_modes) are zero:
+      ! one line per run says so, with the order kept and the bound of the dropped tail (r_x / R)^(mcut+1) / (mcut+1) of
+      ! pw_green_modes, r_x the largest horizontal distance of a source from the centre (as the direct route in QTFDirectFS).
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(first_order_state), INTENT(IN) :: states(:)
       REAL(8), INTENT(IN) :: centre(2), radius, h, k0, kev(:)
@@ -905,8 +907,9 @@ CONTAINS
       TYPE(pw_set), INTENT(OUT) :: pw(SIZE(states))
       REAL(8), ALLOCATABLE :: xs(:, :), ns(:, :), area(:)
       COMPLEX(8), ALLOCATABLE :: q(:, :), ph(:, :)
-      REAL(8) :: s(3)
-      INTEGER :: i, jb, ist
+      REAL(8) :: s(3), rx, bound
+      INTEGER :: i, jb, ist, mcut
+      LOGICAL, SAVE :: cut_reported = .FALSE.
 
       ALLOCATE (xs(3, mesh%n), ns(3, mesh%n), area(mesh%n), q(mesh%n, SIZE(states)), ph(mesh%n, SIZE(states)))
       DO i = 1, mesh%n
@@ -920,7 +923,19 @@ CONTAINS
          q(:, ist) = states(ist)%dphi_p_dn(1:mesh%n)
          ph(:, ist) = states(ist)%phi_p(1:mesh%n)
       END DO
-      CALL pw_from_panels(xs, ns, area, q, ph, centre, radius, h, k0, kev, mmax, nev, pw)
+      CALL pw_from_panels(xs, ns, area, q, ph, centre, radius, h, k0, kev, mmax, nev, pw, mcut)
+      IF (mcut < mmax .AND. .NOT. cut_reported) THEN
+         cut_reported = .TRUE.
+         rx = 0D0
+         DO i = 1, mesh%n
+            rx = MAX(rx, NORM2(xs(1:2, i) - centre))
+         END DO
+         bound = (rx/radius)**(mcut + 1)/(REAL(mcut + 1, 8)*(1D0 - rx/radius))
+         WRITE (*, '(a,ES12.4,a,i0,a,i0,a,ES9.2,a)') ' QTF free surface: warning: at k0 =', k0, &
+            ' 1/m the partial waves from the hull integral keep the orders up to ', mcut, ' (H_m(k0 R) or K_m(kn R) overflow '// &
+            'beyond), fewer than the ', mmax, ' asked for; the outer part is good to about ', bound, &
+            ' (this line is written once per run). A larger qtf_fs_radius lowers it.'
+      END IF
    END SUBROUTINE circle_from_panels
 
    SUBROUTINE circle_check_subset(circle, mmax, sub)

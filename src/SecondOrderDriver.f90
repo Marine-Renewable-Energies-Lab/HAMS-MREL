@@ -587,9 +587,17 @@ CONTAINS
          ' kept on the stencil: another waterline within one segment of their samples)'
       WRITE (*, '(a,I0,a,F10.3,a,F10.3,a,F10.3,a)') ' QTF free surface: ', fs_pts%n, ' inner points, circle R =', fs_radius, &
          ' m about (', fs_centre(1), ',', fs_centre(2), ')'
-      WRITE (*, '(a,I0,a,I0,a,a,I0,a,F8.4,a,F8.3,a)') ' QTF free surface: partial waves outside R with M = ', fs_mmax, &
-         ' and N_ev = ', fs_nev, TRIM(MERGE(' (automatic)', ' (given)    ', opts%qtf_fs_evanescent == 0)), &
-         ' evanescent modes, from ', fs_circle%n, ' samples on the circle (k0_max R =', k0_max*fs_radius, ', r_wl =', r_wl, ' m)'
+      IF (opts%qtf_fs_circle == 2) THEN
+         WRITE (*, '(a,I0,a,I0,a,a,I0,a,F8.4,a,F8.3,a)') ' QTF free surface: partial waves outside R with M = ', fs_mmax, &
+            ' and N_ev = ', fs_nev, TRIM(MERGE(' (automatic)', ' (given)    ', opts%qtf_fs_evanescent == 0)), &
+            ' evanescent modes, from the hull integral (qtf_fs_circle = panels); the mode check uses every 8th of the ', &
+            fs_circle%n, ' samples on the circle (k0_max R =', k0_max*fs_radius, ', r_wl =', r_wl, ' m)'
+      ELSE
+         WRITE (*, '(a,I0,a,I0,a,a,I0,a,F8.4,a,F8.3,a)') ' QTF free surface: partial waves outside R with M = ', fs_mmax, &
+            ' and N_ev = ', fs_nev, TRIM(MERGE(' (automatic)', ' (given)    ', opts%qtf_fs_evanescent == 0)), &
+            ' evanescent modes, from ', fs_circle%n, ' samples on the circle (k0_max R =', k0_max*fs_radius, ', r_wl =', r_wl, &
+            ' m)'
+      END IF
       IF (nshrunk > 0) THEN
          WRITE (*, '(a,I0,a)') ' QTF free surface: ', nshrunk, ' inner points next to a waterline take a smaller offset for'// &
             ' the horizontal Laplacian (the stencil must stay outside the waterplanes, about 16 offsets from the waterline).'

@@ -331,7 +331,7 @@ module test_integration_drift
     ! run_psi_reuse_cases, and all the cases of psi_reuse_byte_identical (two with psi on the grid among the 88e19bd fixtures)
     character(len=20), parameter :: psi_reuse_new(4) = [character(len=20) :: "qtf_psi_reuse", "qtf_psi_reuse_src", &
                                                         "qtf_psi_reuse_two", "qtf_psi_reuse_half"]
-    ! qtf_fs_circle = panels against the samples route on qtf_fs_main (fs_circle_panels_close): FS terms over max |FS|,
+    ! qtf_fs_circle = panels (default) against the samples route on qtf_fs_main (fs_circle_panels_close): FS terms over max |FS|,
     ! measured 4.7e-6 (Task 5; the centroid samples are about 1e-6 off the exact series, pw_from_panels_matches_samples),
     ! limit 2x rounded up
     real(8), parameter :: fs_panels_limit = 1d-5
@@ -406,7 +406,7 @@ contains
             new_unittest("run_qtf_indsum_cases", run_qtf_indsum_cases), &
             new_unittest("run_qtf_deep_kh_cases", run_qtf_deep_kh_cases), &
             new_unittest("run_psi_reuse_cases", run_psi_reuse_cases), &
-            new_unittest("run_qtf_fs_panels", run_qtf_fs_panels), &
+            new_unittest("run_qtf_fs_samples", run_qtf_fs_samples), &
             new_unittest("run_qtf_fs_source", run_qtf_fs_source), &
             new_unittest("run_control_cyl", run_control_cyl), &
             new_unittest("run_control_cyl_sybo", run_control_cyl_sybo), &
@@ -7001,6 +7001,10 @@ contains
     !>   88e19bd (validation-runs/fs-speedups/base_88e19bd), with field_deep_kh = 0 in SecondOrder.in (their largest
     !>   k0 h, 2.2 and 5.1, is below the default 10 too, so the default gives the same);
     !>   the four psi_reuse fixtures (run_psi_reuse_cases): the outputs at 85d867e, before the reuse.
+    !> Stored again with qtf_fs_circle = panels as the default (accuracy gate G1, 2026-11-20): qtf_fs_main and qtf_psi_reuse_half,
+    !> _src and _two moved by 1.3e-6 to 4.4e-6 of the largest value of QTF_Indirect.11d (laptop, per file, see the commit), the
+    !> samples route's partial waves being about 1e-6 off the exact series. qtf_psi_reuse keeps qtf_fs_circle = samples (its
+    !> deep-water field rows, k0 h >= 0.25, apply on that route only: panels moves it by 1.2e-2) and is as stored at 85d867e.
     subroutine psi_reuse_byte_identical(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=*), parameter :: files(11) = [character(len=22) :: "AmssDamp.1", "ExcForce.3", "Hydrostat.hst", &
@@ -7068,38 +7072,39 @@ contains
 
     ! ---------------------------------------------------------------------------------------------- circle from the panels
 
-    !> qtf_fs_panels: qtf_fs_main with qtf_fs_circle = panels (the partial waves outside R from the hull integral, spec D3
+    !> qtf_fs_samples: qtf_fs_main with qtf_fs_circle = samples (the partial waves outside R from the circle samples and their
+    !> fit, the route before the accuracy gate G1 made panels the default, spec D3
     !> of the free-surface speed-ups), with its run time
-    subroutine run_qtf_fs_panels(error)
+    subroutine run_qtf_fs_samples(error)
         type(error_type), allocatable, intent(out) :: error
         integer(8) :: t0, t1, rate
 
         call system_clock(t0, rate)
-        call run_case("qtf_fs_panels", [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file], error)
+        call run_case("qtf_fs_samples", [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file], error)
         call system_clock(t1)
-        print '(4x,a,F8.1,a)', "qtf_fs_panels: run time ", real(t1 - t0, 8)/real(rate, 8), " s"
-    end subroutine run_qtf_fs_panels
+        print '(4x,a,F8.1,a)', "qtf_fs_samples: run time ", real(t1 - t0, 8)/real(rate, 8), " s"
+    end subroutine run_qtf_fs_samples
 
-    !> qtf_fs_circle = panels changes the free-surface terms only: the files without them are those of qtf_fs_main
-    !> (expected_output, the samples route) line for line, and FS_inner + FS_outer of every row are within fs_panels_limit
-    !> of qtf_fs_main's, over max |FS| of the forces or moments (fs_against). The log has no mode-check warning, as
+    !> qtf_fs_circle = samples against the default, panels: only the free-surface terms differ, the files without them are those
+    !> of qtf_fs_main (expected_output, the panels route) line for line, and FS_inner + FS_outer of every row are within
+    !> fs_panels_limit of qtf_fs_main's, over max |FS| of the forces or moments (fs_against). The log has no mode-check warning, as
     !> qtf_fs_main's has none. Prints the free-surface pass times of both logs (indicative).
     subroutine fs_circle_panels_close(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=*), parameter :: files(7) = [character(len=22) :: "AmssDamp.1", "ExcForce.3", "Hydrostat.hst", &
             "MeanDriftMomentum.8", "MeanDriftPressure.9", "Motion.4", "QTF_Quadratic.10d"]
-        character(len=13), parameter :: logs(2) = [character(len=13) :: "qtf_fs_main", "qtf_fs_panels"]
+        character(len=14), parameter :: logs(2) = [character(len=14) :: "qtf_fs_main", "qtf_fs_samples"]
         character(len=:), allocatable :: lines(:)
         real(8) :: worst
         integer :: f, matched, c, r
 
         do f = 1, size(files)
             call check_same_file(get_repo_root_path()//"test/data/qtf_fs_main/expected_output/"//trim(files(f)), &
-                                 output_dir("qtf_fs_panels")//"Wamit_format/"//trim(files(f)), error)
+                                 output_dir("qtf_fs_samples")//"Wamit_format/"//trim(files(f)), error)
             if (allocated(error)) return
         end do
-        call check(error, count_log_lines(get_running_exe_path()//"qtf_fs_panels.log", &
-                   "QTF free surface: the partial waves miss the field"), 0, "qtf_fs_panels: a mode-check warning")
+        call check(error, count_log_lines(get_running_exe_path()//"qtf_fs_samples.log", &
+                   "QTF free surface: the partial waves miss the field"), 0, "qtf_fs_samples: a mode-check warning")
         if (allocated(error)) return
         do c = 1, size(logs)
             call read_lines(get_running_exe_path()//trim(logs(c))//".log", lines, error)
@@ -7109,10 +7114,10 @@ contains
                     index(lines(r), "QTF free surface psi: omega") > 0) print '(4x,a,": ",a)', trim(logs(c)), trim(lines(r))
             end do
         end do
-        call fs_against("qtf_fs_main", "qtf_fs_panels", worst, matched, error)
+        call fs_against("qtf_fs_main", "qtf_fs_samples", worst, matched, error)
         if (allocated(error)) return
         call report("fs_circle_panels_close", worst)
-        call check(error, matched > 0, "qtf_fs_panels: no rows matched to qtf_fs_main")
+        call check(error, matched > 0, "qtf_fs_samples: no rows matched to qtf_fs_main")
         if (allocated(error)) return
         call check_below(error, "fs_circle_panels_close", worst, fs_panels_limit)
     end subroutine fs_circle_panels_close
