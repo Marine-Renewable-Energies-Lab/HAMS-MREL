@@ -224,10 +224,10 @@ python -I linton_evans_reference.py compare RESULTS [--out le_compare.csv] [--re
 python -I linton_evans_reference.py plot [RESULTS] --out FOLDER [--reference le_reference.csv]
 ```
 
-- `check` runs the 11 self-checks, or the named ones, and exits with 1 if one fails (about 10 min on a laptop).
+- `check` runs the 13 self-checks, or the named ones, and exits with 1 if one fails (3 min 46 s on a laptop, measured once).
 - `reference` writes the rows of the HAMS case (`drift_convergence.py --linton-evans`: four cylinders of radius 5 m, depth 10 m, centres (±10, ±10) m, headings 0 and 45 deg, 17 frequencies, 16 field points) in the conventions of the HAMS files: kind `body` (X_1, X_2, X_4, X_5 as `ExcForce.3` writes them, and the near-field drift per body, moments about the body centre), `array` (far-field F_x, F_y and M_z about the origin) and `field` (the total elevation of `PressureElevation.6p`).
 - `compare` reads the `l_square_*` case folders under `RESULTS` (`output/Wamit_format/`) and prints the largest error of each quantity per case: X forces and moments (complex, over the largest of each kind for that body), near-field F and M (over the largest load of the array at that frequency and heading), far-field F, far-field M_z and the elevation. `--out` writes the rows per frequency, heading and body.
-- `plot` writes PNGs of the reference (the wave field, the loads per cylinder against one cylinder alone, and Kim (1993), Fig. 3); with `RESULTS`, also |X_1|, |X_2| and the near-field and far-field drift of HAMS against the reference, per heading, and the largest errors against the panel count.
+- `plot` writes PNGs of the reference (the wave field, the loads per cylinder against one cylinder alone, Kim (1993), Fig. 3, and the digitised total drift of Linton & Evans (1990), Fig. 3, with HAMS when `RESULTS` is given); with `RESULTS`, also |X_1|, |X_2| and the near-field and far-field drift of HAMS against the reference, per heading, and the largest errors against the panel count.
 
 **`SecondOrder/qtf_compare.py`** compares the QTFs of the `q_*` cases of `drift_convergence.py` with the exact reference of `truncated_cylinder_reference.py` and with Nemoh. The measure is |value − reference| / max |reference| per pair, and the table gives its largest and median over the pairs, per case. Run it from its folder:
 

@@ -92,14 +92,18 @@ Layouts (LAYOUTS). `square`: the HAMS validation case, four cylinders of radius 
 (+-10, +-10) m (centre spacing 20 m = 4a), depth 10 m, headings 0 and 45 deg, the frequencies of FREQUENCIES (k a from about
 0.19 to 1.9, below the first irregular frequency of a bottom-mounted circle, k a = j_0,1 = 2.405, the first zero of J_0).
 
-Published values. Linton & Evans (1990) was not available while this was written, so its figures are not compared. Kim
-(1993), Fig. 3, gives |F_x| and |F_y| on each of 19 bottom-mounted cylinders in a row (spacing 4a, h = 12a, k a = 0.5,
-heading 45 deg) from the same exact method, agreeing there with the hybrid finite elements of Kagemoto & Yue (1986). Check
-kim_fig3 compares the reference with values digitised from that figure (KIM_FIG3_X, KIM_FIG3_Y).
+Published values (docs/second_order_validation.md, "Linton & Evans array"). Linton & Evans (1990), Table 1: two cylinders in
+the long-wave limit, eight values (check linton_evans_table1, LE_TABLE1). Linton & Evans (1990), Fig. 3: the total drift of the
+square of their Fig. 2, the HAMS case scaled by 1/5, digitised (check linton_evans_fig3, LE_FIG3_TOTAL), compared outside the
+near-trapping band 1.38 < k a < 2.07, where the published curves are smoother and lower than this reference (its boundary
+condition holds to 2e-15 there, the paper's truncation M = 6 gives the same values, and HAMS converges to this reference).
+Their Fig. 2 plots, for the cylinder off the diagonal, (|X_x| cos beta + |X_y| sin beta)/|F|, not |X . e_beta|/|F| (compared
+by overlay only). Kim (1993), Fig. 3: |F_x| and |F_y| on each of 19 bottom-mounted cylinders in a row from the same exact
+method, agreeing there with the hybrid finite elements of Kagemoto & Yue (1986) (check kim_fig3, KIM_FIG3_X, KIM_FIG3_Y).
 
-Checks (CHECKS; `check` runs all, about 10 min on a laptop, and exits with 1 if one fails): maccamy_fuchs_force,
+Checks (CHECKS; `check` runs all, 3 min 46 s on a laptop (measured once), and exits with 1 if one fails): maccamy_fuchs_force,
 maccamy_fuchs_drift, depth_integrals, bc_direct, surface_direct, truncation, optical_theorem, near_far, control_surface,
-invariance, kim_fig3. Each docstring states what it compares and its limit.
+invariance, kim_fig3, linton_evans_table1, linton_evans_fig3. Each docstring states what it compares and its limit.
 
 Units SI. G and RHO are make_mesh.G and make_mesh.RHO, the values of src/WavDynMods.f90.
 
@@ -192,6 +196,12 @@ def _case_constants():
 LAYOUTS = _layouts()
 # rad/s; at h = 10 m, a = 5 m these are k a = 0.19 ... 1.84. HEADINGS in degrees. FIELD_POINTS (x, y, 0) in m
 FREQUENCIES, HEADINGS, FIELD_POINTS = _case_constants()
+
+
+# Truncation order of the load curves of `plot`: the loads converge far faster than the field between the cylinders. For the
+# square, X and the near-field drift at order 16 are within 7e-15 of the default order (0.40, 1.10, 1.78, 1.90 rad/s, both
+# headings; measured), and the default order makes the curves take an hour
+LOAD_ORDER = 16
 
 
 def layout(name):
@@ -959,7 +969,7 @@ def plot(results, out, ref_rows):
     omegas = np.linspace(0.36, 1.95, 160)
     written = []
     for heading in HEADINGS:
-        sols = [Solution(arr, w, math.radians(heading)) for w in omegas]
+        sols = [Solution(arr, w, math.radians(heading), order=LOAD_ORDER) for w in omegas]
         ka = np.array([s.k * a for s in sols])
         X = np.array([[to_hams(exciting_loads(s, j)) for j in range(len(arr))] for s in sols])
         D = np.array([[near_field_drift(s, j) for j in range(len(arr))] for s in sols])
@@ -1015,29 +1025,44 @@ def plot(results, out, ref_rows):
         fig.savefig(path, dpi=130)
         plt.close(fig)
         written.append(path)
+    return written + plot_convergence(results, out, ref_rows)
+
+
+def plot_convergence(results, out, ref_rows):
+    """PNG of the largest error of each quantity of `compare` against the panel count. Far-field M_z is left out: it is
+    zero by symmetry at both headings, so its value is round-off (under 3e-6 of |F| times 10 m), not a mesh error."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import drift_convergence as dc
+    folders = case_folders(results)
     rows = []
     for name, folder in folders:
         rows += compare_case(folder, ref_rows, name)
     cases = {c.name: c for c in dc.linton_evans_cases()}
     named = [name for name, _ in folders if name in cases]
-    if rows and named:
-        fig, ax = plt.subplots(figsize=(6.5, 4.5))
-        for label, key in ERRORS:
-            xs = [dc.panels_of(cases[name]) for name in named if worst(rows, name, key) is not None]
-            ys = [worst(rows, name, key) for name in named if worst(rows, name, key) is not None]
-            if xs:
-                ax.loglog(xs, ys, "o-", label=label)
-        ax.set_xlabel("panels in all (four cylinders)")
-        ax.set_ylabel("largest error over frequencies, headings, cylinders")
-        ax.grid(alpha=0.3, which="both")
-        ax.legend(fontsize=8)
-        ax.set_title("HAMS against the exact array solution")
-        fig.tight_layout()
-        path = os.path.join(out, "le_convergence.png")
-        fig.savefig(path, dpi=130)
-        plt.close(fig)
-        written.append(path)
-    return written
+    if not (rows and named):
+        return []
+    fig, ax = plt.subplots(figsize=(6.5, 4.5))
+    for label, key in ERRORS:
+        if key == "Mz_err":
+            continue
+        xs = [dc.panels_of(cases[name]) for name in named if worst(rows, name, key) is not None]
+        ys = [worst(rows, name, key) for name in named if worst(rows, name, key) is not None]
+        if xs:
+            ax.loglog(xs, ys, "o-", label=label)
+    x = np.array([dc.panels_of(cases[name]) for name in named], dtype=float)
+    ax.loglog(x, 0.1 * (x / x[0]) ** -1.0, "k:", lw=1, label="slope of second order (error ~ 1/panels)")
+    ax.set_xlabel("panels in all (four cylinders)")
+    ax.set_ylabel("largest error over frequencies, headings, cylinders")
+    ax.grid(alpha=0.3, which="both")
+    ax.legend(fontsize=8)
+    ax.set_title("HAMS against the exact array solution")
+    fig.tight_layout()
+    path = os.path.join(out, "le_convergence.png")
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+    return [path]
 
 
 def plot_reference(out):
@@ -1077,8 +1102,8 @@ def plot_reference(out):
     single = layout("single")
     fig, axes = plt.subplots(2, 2, figsize=(11, 7), sharex=True)
     for c, heading in enumerate(HEADINGS):
-        sols = [Solution(arr, w, math.radians(heading)) for w in omegas]
-        ones = [Solution(single, w, math.radians(heading)) for w in omegas]
+        sols = [Solution(arr, w, math.radians(heading), order=LOAD_ORDER) for w in omegas]
+        ones = [Solution(single, w, math.radians(heading), order=LOAD_ORDER) for w in omegas]
         ka = np.array([s.k * arr.radii[0] for s in sols])
         for j in range(len(arr)):
             axes[0, c].plot(ka, [abs(exciting_loads(s, j)[0]) for s in sols], label="cylinder %d" % (j + 1))
@@ -1119,6 +1144,83 @@ def plot_reference(out):
     return written
 
 
+
+def plot_linton_evans(results, out):
+    """PNG of Linton & Evans (1990), Fig. 3 against the reference and HAMS: the total mean drift along the wave over that on
+    one cylinder alone, f/f_1, for heading 45 deg (the HAMS case is their layout scaled by 5). The published values are the
+    digitised LE_FIG3_TOTAL; HAMS is MeanDriftMomentum.8 (far-field) of the l_square_* cases under RESULTS, if given, with
+    f_1 from the reference. A second panel gives |X . e_beta|/|F| of the two cylinders on the diagonal, reference and HAMS."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    os.makedirs(out, exist_ok=True)
+    arr = layout("square")
+    a, depth = arr.radii[0], arr.depth
+    beta = math.pi / 4.0
+    e = np.array([math.cos(beta), math.sin(beta)])
+    one = Array([(0.0, 0.0)], a, depth)
+    kas = np.linspace(0.15, 1.95, 241)
+    total, diag = [], []
+    for ka in kas:
+        k = ka / a
+        omega = math.sqrt(G * k * math.tanh(k * depth))
+        s1 = Solution(one, omega, beta, order=16)
+        f1 = float(np.dot(near_field_drift(s1, 0)[:2], e))
+        F = abs(np.dot(exciting_loads(s1, 0)[:2], e))
+        sol = Solution(arr, omega, beta, order=16)
+        total.append(sum(float(np.dot(near_field_drift(sol, j)[:2], e)) for j in range(len(arr))) / f1)
+        # this module's cylinders 1 and 3 lie on the diagonal along the wave: Linton & Evans's cylinders 2 and 4
+        diag.append([abs(np.dot(exciting_loads(sol, j)[:2], e)) / F for j in (0, 2)])
+    diag = np.array(diag)
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4.8))
+    ax = axes[0]
+    ax.plot(kas, total, "k-", lw=1.2, label="exact (this reference)")
+    ax.plot(LE_FIG3_KA, LE_FIG3_TOTAL, "o", ms=4, mfc="none", color="tab:red",
+            label="data from Linton & Evans (1990), Fig. 3, digitised")
+    ax.axvspan(*LE_FIG3_BAND, color="0.92", zorder=0)
+    ax2 = axes[1]
+    ax2.plot(kas, diag[:, 0], "k-", lw=1.2, label="exact, lee cylinder (L&E 2)")
+    ax2.plot(kas, diag[:, 1], "k--", lw=1.2, label="exact, weather cylinder (L&E 4)")
+    markers = ["s", "^", "D", "v"]
+    for mi, (name, folder) in enumerate(case_folders(results) if results else []):
+        X, _, far, _ = read_hams(folder)
+        xs, ys, xd, yd1, yd3 = [], [], [], [], []
+        for key in sorted(far):
+            if abs(key[1] - 45.0) > 1e-6:
+                continue
+            k = wave_number(key[0], depth)
+            s1 = Solution(one, key[0], beta, order=16)
+            f1 = float(np.dot(near_field_drift(s1, 0)[:2], e))
+            F = abs(np.dot(exciting_loads(s1, 0)[:2], e))
+            xs.append(k * a)
+            ys.append((far[key][1] * e[0] + far[key][2] * e[1]) / f1)
+            if key in X:
+                # ExcForce.3 holds conj(X): the modulus of the component along e is unchanged
+                xd.append(k * a)
+                yd1.append(abs(X[key][1] * e[0] + X[key][2] * e[1]) / F)
+                yd3.append(abs(X[key][13] * e[0] + X[key][14] * e[1]) / F)
+        label = name.replace("l_square_diff_", "HAMS ")
+        ax.plot(xs, ys, markers[mi % 4], ms=5, color="C%d" % mi, label=label + " (far-field)")
+        ax2.plot(xd, yd1, markers[mi % 4], ms=5, color="C%d" % mi, label=label)
+        ax2.plot(xd, yd3, markers[mi % 4], ms=5, mfc="none", color="C%d" % mi)
+    ax.set_xlabel("k a")
+    ax.set_ylabel("f / f_1, total mean drift along the wave")
+    ax.set_title("total drift (grey: near-trapping band)", fontsize=10)
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=7)
+    ax2.set_xlabel("k a")
+    ax2.set_ylabel("|X . e_beta| / |F|")
+    ax2.set_title("first-order force on the diagonal cylinders (HAMS: filled lee, open weather)", fontsize=10)
+    ax2.grid(alpha=0.3)
+    ax2.legend(fontsize=7)
+    fig.suptitle("Four cylinders, a/h = 1/2 (h half the side), heading 45 deg: data from Linton, C.M. & Evans, D.V. (1990), "
+                 "J. Fluid Mech. 215, 549-569, Fig. 3", fontsize=10)
+    fig.tight_layout()
+    path = os.path.join(out, "le_linton_evans_fig3_hams.png")
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+    return [path]
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command")
@@ -1154,6 +1256,7 @@ def main(argv=None):
         return 0
     if args.command == "plot":
         written = plot_reference(args.out)
+        written += plot_linton_evans(args.results, args.out)
         if args.results:
             ref = read_rows(args.reference) if args.reference else reference_rows()
             written += plot(args.results, args.out, ref)

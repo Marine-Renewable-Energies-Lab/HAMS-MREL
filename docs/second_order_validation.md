@@ -1361,7 +1361,7 @@ This case checks the multi-body solve, and the mean drift per body, against an e
 - the far-field mean F_x and F_y of the array, from the Kochin function (Maruo 1960; Newman 1967);
 - the mean drift on any vertical control circle, from the momentum balance (Chen 2007, eqs. 39 to 41, without the hull terms).
 
-**Checks.** `check` runs 11 checks in about 10 minutes and exits with 1 if one fails. The two four-cylinder cases are the square of the HAMS case and an irregular array of three unequal cylinders off the origin, so that no symmetry hides an error.
+**Checks.** `check` runs 13 checks in about 4 minutes and exits with 1 if one fails. The two four-cylinder cases are the square of the HAMS case and an irregular array of three unequal cylinders off the origin, so that no symmetry hides an error.
 
 | Check | Requirement | Measured |
 | :--- | :--- | ---: |
@@ -1375,11 +1375,26 @@ This case checks the multi-body solve, and the mean drift per body, against an e
 | Control circle around each cylinder against its near-field load; around the array against far-field F_x, F_y and the near-field M_z | 1e-9 | 3.8e-15 |
 | The square renumbered, and the square with the heading turned by 90 deg | 1e-11 | 6.0e-15 |
 | Depth integrals in closed form against Gauss-Legendre | 1e-13 | 1.8e-15 |
+| Published values: Linton & Evans (1990), Table 1 (below) | 1e-3 | 5.0e-4 |
+| Published values: Linton & Evans (1990), Fig. 3, total drift outside the near-trapping band (below) | 0.15 | 0.112 |
 | Published values: Kim (1993), Fig. 3 (below) | 1.5e-3 | 1.1e-3 |
 
 The invariance check found one error while the script was written: the sign of the sway force and roll moment. Every other check had passed with that error in place, since it only enters the sin part of the force integral. The MacCamy-Fuchs check now also runs at heading 90 deg, so that it covers that part.
 
-**Published values.** Linton & Evans (1990) was not available while this was written, so its figures are not compared. Kim (1993), Fig. 3, gives |F_x| and |F_y|/(π ρ g a h A) on each of 19 bottom-mounted cylinders in a row: centre spacing 4a, h = 12a, k a = 0.5, heading 45 deg. Kim computed them with the same exact method, and they agree in that figure with the full interaction method and hybrid finite elements of Kagemoto & Yue (1986). The 38 values were digitised from the scanned figure and are stored in the script (`KIM_FIG3_X`, `KIM_FIG3_Y`). The largest difference from the reference is 0.0011 (cylinder 19, |F_y|: reference 0.1333, figure 0.1344), below the height of a marker, about 0.0015. The differences grow from cylinder 1 to 19 on both panels, consistent with a slight tilt of the scan.
+**Published values.** Three published sources are compared. The values were read from the paper (Table 1) or digitised from the figures, and are stored in the script.
+
+- **Linton & Evans (1990), Table 1** (check `linton_evans_table1`). Two equal cylinders with spacing R = a/λ and heading π/6, in the long-wave limit k a → 0 (taken at k a = 10⁻³): |X_x|/|F| and |X_y|/|F| for λ = 0.1 to 0.4, eight values printed to three decimals. Seven round to the printed values. The eighth, λ = 0.3, |X_x|/|F| = 0.95350 against 0.953, sits on the rounding boundary. The largest difference is 5.0e-4.
+- **Linton & Evans (1990), Fig. 3** (check `linton_evans_fig3`). Four cylinders at the corners of a square with a/h = 1/2, h half the side, and heading π/4: the HAMS case scaled by 1/5. The quantity is the total mean drift along the wave over that on one cylinder alone, f/f_1, digitised at k a = 0.80 to 3.10 in steps of 0.05. Outside 1.38 < k a < 2.07 the reference is within 0.05 of the digitised curve (1.5%), except at 2.55 to 2.65, where another curve touches the total and the digitiser's column centre moves (0.112 at most).
+- **Linton & Evans (1990), Fig. 2.** The first-order force along the wave on the same four cylinders, compared by overlay (below). Cylinders 2 and 4 lie on the diagonal along the wave, and the reference lies on their curves. For cylinder 1, off the diagonal, the paper's curve is not the modulus of the force component along the wave, |X · e_β|/|F|. It is (|X_x| cos β + |X_y| sin β)/|F|, the combination of the two moduli that their eq. 3.4 gives. The reference with that definition lies on the curve over the whole range (orange in the overlay). On the diagonal the two definitions are equal.
+- **Kim (1993), Fig. 3** (check `kim_fig3`). |F_x| and |F_y|/(π ρ g a h A) on each of 19 bottom-mounted cylinders in a row: centre spacing 4a, h = 12a, k a = 0.5, heading 45 deg. Kim computed them with the same exact method, and they agree in that figure with the full interaction method and hybrid finite elements of Kagemoto & Yue (1986). The largest difference over the 38 digitised values is 0.0011 (cylinder 19, |F_y|: reference 0.1333, figure 0.1344), below the height of a marker, about 0.0015. The differences grow from cylinder 1 to 19 on both panels, consistent with a slight tilt of the scan.
+
+**The near-trapping band.** At 1.4 < k a < 2.0 the paper's curves in Figs. 2 and 3 are smoother and lower than the reference. The reference has narrow peaks near k a = 1.68 (|X/F| = 2.27 on cylinder 4, f/f_1 = 4.0 on cylinder 2), where four cylinders at this spacing have a near-trapped mode. Where a published curve has a peak in this band, the reference passes through it: the paper's f/f_1 of cylinder 2 peaks at 2.27 at k a = 1.80, and the reference gives 2.26 there. Truncation is not the cause: with the paper's M = 6 the reference gives the same values as with M = 34 (to three decimals at k a = 1.0 to 2.2). Its boundary-condition residual on this layout is 2e-15. HAMS settles it independently: on the finest mesh it gives the peak drift of the reference within 0.1% (below). A coarse k a step in the paper's computations would explain the smoothing, but the paper does not state its step, so this is not confirmed.
+
+The figures below reproduce Linton & Evans (1990), Figs. 2 and 3, in black, with the reference drawn over them in colour. Data from Linton, C.M. & Evans, D.V. (1990), The interaction of waves with arrays of vertical circular cylinders, J. Fluid Mech. 215, 549-569, Figs. 2 and 3. The overlays were made from the page images of the paper, which is not in the repository.
+
+![Linton & Evans (1990), Fig. 2, with the reference](figures/le_linton_evans_fig2_overlay.png)
+
+![Linton & Evans (1990), Fig. 3, with the reference](figures/le_linton_evans_fig3_overlay.png)
 
 ![Kim (1993), Fig. 3, against the reference](figures/le_reference_kim1993_fig3.png)
 
@@ -1399,9 +1414,38 @@ The invariance check found one error while the script was written: the sign of t
 
 At 0.95 rad/s, X agrees within 1.9% for every body, with the right phase, body order and moment centre. A sign, conjugation or body-order error would give errors of order 1.
 
-**HAMS against the reference on Snellius.** Not run yet.
+**HAMS against the reference on Snellius.** The three cases ran on Snellius (`fat_genoa`, 24 threads, ifx 2024a) in November 2026, built from the commit that added this case. Wall time: 11 s, 103 s and 463 s; peak memory: 0.14, 1.2 and 5.6 GB. The table gives the largest error of each quantity over the 17 frequencies, both headings and the four cylinders, with the error measures of `compare` (python_scripts.md):
 
-**Limits of this check.** It covers fixed bodies only: the reference solves the diffraction problem, not the radiation problem. It also covers vertical walls only, so it tests nothing of a bottom or a bilge, and a single layout at two headings. Linton & Evans (1990) itself is not compared (see above).
+| Mesh (panels in all) | X forces | X moments | near-field F | near-field M | far-field F | elevation |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| m1 (1024) | 9.8e-2 | 1.09e-1 | 1.15e-1 | 1.18e-1 | 5.5e-2 | 3.6e-1 |
+| m2 (4096) | 2.4e-2 | 2.6e-2 | 2.6e-2 | 3.2e-2 | 1.4e-2 | 9.1e-2 |
+| m3 (9216) | 1.0e-2 | 1.1e-2 | 1.1e-2 | 1.4e-2 | 6.0e-3 | 3.9e-2 |
+
+- **Convergence.** Every error falls by 3.7 to 4.4 times from m1 to m2 (twice the panels per side) and by 2.2 to 2.4 times from m2 to m3 (1.5 times), so HAMS converges to the exact solution at second order in the panel size. That covers the multi-body solve, the exciting loads per body, the elevation and the mean drift per body and of the array.
+- **Largest errors at m3:** X 1.0% (1.78 rad/s, heading 45 deg), near-field F 1.1% (1.60 rad/s), far-field F 0.6% (1.82 rad/s), elevation 0.039 per unit amplitude (1.80 rad/s). All are in or next to the near-trapping band, where the field between the cylinders is steepest. F_z and M_z near-field, zero for this hull, are under 1e-10 of the force, and far-field M_z of the array, zero by symmetry at both headings, is under 3e-6 of |F| times 10 m.
+- **Near-trapping peak.** Mean F_x on each cylinder at heading 45 deg, per ρ g A² (m1, m2, m3, exact):
+
+| rad/s | cylinder 1 | cylinder 3 | cylinder 4 |
+| ---: | :--- | :--- | :--- |
+| 1.75 | 2.332, 2.019, 1.957, 1.906 | -2.150, -1.998, -1.967, -1.943 | 8.218, 8.064, 8.022, 7.983 |
+| 1.78 | 5.602, 5.080, 4.961, 4.859 | -4.499, -4.422, -4.396, -4.373 | 10.284, 10.437, 10.435, 10.420 |
+| 1.80 | 7.995, 7.726, 7.633, 7.540 | -4.753, -5.039, -5.077, -5.099 | 9.259, 9.957, 10.059, 10.120 |
+| 1.82 | 8.575, 8.790, 8.788, 8.761 | -3.221, -3.719, -3.807, -3.868 | 6.122, 6.898, 7.035, 7.129 |
+
+  HAMS converges to the exact peak (10.42 at 1.78 rad/s on cylinder 4, five times the drift on one cylinder alone), not to the smoother published curves.
+
+![HAMS, the reference and Linton & Evans (1990), Fig. 3](figures/le_linton_evans_fig3_hams.png)
+
+![Exciting force per cylinder, heading 45 deg](figures/le_exciting_force_beta45.png)
+
+![Near-field mean drift per cylinder, heading 45 deg](figures/le_drift_per_cylinder_beta45.png)
+
+![Errors against panels](figures/le_convergence.png)
+
+**Cost.** The model of `drift_convergence.py` estimated 2.0 job hours at 32 threads for the three cases. They took 0.16 job hours at 24 threads (9.6 min in all, plus a 1.7 min build), 12 times less. The model was fitted to single hulls, and it overestimates these runs.
+
+**Limits of this check.** It covers fixed bodies only: the reference solves the diffraction problem, not the radiation problem. It also covers vertical walls only, so it tests nothing of a bottom or a bilge, and a single layout at two headings. The meshes go to 2304 panels per cylinder; a finer mesh was not run.
 
 ## Open items
 
@@ -1422,7 +1466,7 @@ At 0.95 rad/s, X agrees within 1.9% for every body, with the right phase, body o
 - Indirect method at the sum frequency (`QTF_Indirect.11s`): the sharp cylinder is checked against the exact sum QTF at two meshes (7.8 / 6.0 / 3.0% at m1 and 6.1 / 4.1 / 2.1% at m2, max, F_x / F_z / M_y). For the OC4 semisubmersible HAMS and Nemoh differ by 82 / 33 / 27% (max) and the cause is open; the WAMIT sum file appears to hold no free-surface part ([indirect method at the sum frequency](#indirect-method-at-the-sum-frequency)).
 - Second-order motion (`QTF_Motion.*`): checked against the exact motion of one hull, the sharp cylinder with springs in surge, sway and yaw, at two meshes, with the slow-drift peak at m1 only. The motion error there is the force error of the sharp hull (`.12d` surge 39.5% at m1 and 27.5% at m2, max, out of band), so the motion converges as the difference force does. The radiated wave in `QTF_Field.txt` has no independent reference ([second-order motion](#second-order-motion)).
 - WAMIT: the OC4 comparison with the public WAMIT run of OpenFAST now exists ([OC4 against WAMIT](#oc4-against-wamit)). A WAMIT licence would still be needed to settle the conjugation and axes of the WAMIT-format output on a hull with a known answer, since the diagonal of that comparison is real. The semi-analytical reference covers the signs of the mean drift values (210 values agree at 7168 panels), not the phases of the complex outputs.
-- Linton & Evans array: the HAMS runs on Snellius are not run yet, and the paper's own figures are not compared ([Linton & Evans array](#linton--evans-array-four-bottom-mounted-cylinders)).
+- Linton & Evans array: in the near-trapping band (k a 1.4 to 2.0) the paper's Figs. 2 and 3 are smoother and lower than the exact reference, which HAMS confirms; why the paper's curves differ there is not confirmed ([Linton & Evans array](#linton--evans-array-four-bottom-mounted-cylinders)).
 
 ## Sources
 
