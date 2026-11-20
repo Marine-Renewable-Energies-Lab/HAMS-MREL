@@ -110,9 +110,9 @@ def main(argv):
             lines.append("  %-32s %7.2f at %.2f / %5.2f" % (label, e.max(), x[np.argmax(e)], np.median(e)))
         lines.append("")
         name = r"$\omega_2 = \omega_1$ (mean drift $\bar F_1$)" if dw == "0.00" else r"$\omega_1 - \omega_2 = 0.05$ rad/s"
-        top.set_title(r"$QTF_{11}$, %s" % name, loc="left", color=INK)
-        top.set_ylabel(r"$|QTF_{11}|$ (N/m$^2$)")
-        bottom.set_ylabel(r"$(|QTF_{11}| - |QTF_{11}^{WAMIT}|)$ / max$|QTF_{11}^{WAMIT}|$ (%)", fontsize=8)
+        top.set_title(r"$QTF^{-}_{1}$, %s" % name, loc="left", color=INK)
+        top.set_ylabel(r"$|QTF^{-}_{1}|$ (N/m$^2$)")
+        bottom.set_ylabel(r"$(|QTF^{-}_{1}| - |QTF_1^{-,WAMIT}|)$ / max$|QTF_1^{-,WAMIT}|$ (%)", fontsize=8)
         bottom.set_xlabel(r"$\omega_1$ (rad/s)")
         bottom.axhline(0.0, color=INK2, lw=0.8)
         bottom.set_ylim(-60, 60)

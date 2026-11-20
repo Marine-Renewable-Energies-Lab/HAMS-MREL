@@ -103,16 +103,16 @@ def main(argv):
     for col, (name, M) in enumerate(((opts["hams_label"], H), (opts["ref_label"], W))):
         im = axes[0, col].imshow(np.abs(M), origin="lower", extent=ext, cmap="jet", vmin=0, vmax=6e5)
         axes[0, col].set_title(textwrap.fill(name, 36), loc="left", fontsize=8.5)
-        fig.colorbar(im, ax=axes[0, col], label=r"$|QTF_{11}|$ (N/m$^2$)", extend="max", shrink=0.85)
+        fig.colorbar(im, ax=axes[0, col], label=r"$|QTF^{-}_{1}|$ (N/m$^2$)", extend="max", shrink=0.85)
         ip = axes[1, col].imshow(np.angle(M), origin="lower", extent=ext, cmap="jet", vmin=-math.pi, vmax=math.pi)
         axes[1, col].set_title(textwrap.fill(name, 36), loc="left", fontsize=8.5)
-        fig.colorbar(ip, ax=axes[1, col], label=r"arg $QTF_{11}$ (rad)", shrink=0.85)
+        fig.colorbar(ip, ax=axes[1, col], label=r"arg $QTF^{-}_{1}$ (rad)", shrink=0.85)
     idiff = axes[0, 2].imshow(100 * D / scale, origin="lower", extent=ext, cmap="viridis", vmin=0, vmax=10)
     axes[0, 2].set_title("Difference of the two", loc="left", fontsize=8.5)
-    fig.colorbar(idiff, ax=axes[0, 2], label=r"$|QTF_{11} - QTF_{11}^{WAMIT}|$ / max$|QTF_{11}^{WAMIT}|$ (%)",
+    fig.colorbar(idiff, ax=axes[0, 2], label=r"$|QTF^{-}_{1} - QTF_1^{-,WAMIT}|$ / max$|QTF_1^{-,WAMIT}|$ (%)",
                  extend="max", shrink=0.85)
     axes[1, 2].axis("off")
-    table = ["|QTF_11 - QTF_11,WAMIT| / max|QTF_11,WAMIT|", "largest / median, %", "max|QTF_11,WAMIT| = %.3g N/m^2" % scale,
+    table = ["|QTF⁻_1 - QTF⁻_1,WAMIT| / max|QTF⁻_1,WAMIT|", "largest / median, %", "max|QTF⁻_1,WAMIT| = %.3g N/m^2" % scale,
              "omega in [%.2f, %.2f] rad/s" % (lo, hi), ""] + [l.strip() for l in lines[2:]]
     axes[1, 2].text(0.0, 1.0, "\n".join(table), va="top", ha="left", fontsize=7.5,
                     family="monospace", color=INK, transform=axes[1, 2].transAxes)
