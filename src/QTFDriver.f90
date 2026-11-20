@@ -2380,8 +2380,10 @@ CONTAINS
       REAL(8) :: om
 
       IF (.NOT. (mot_active .AND. qfield_radiated_active())) RETURN
-      IF (mot_nroute /= 2 .OR. .NOT. ALLOCATED(mot_psi_pts)) THEN
-         WRITE (*, '(a)') ' QTF motion: the radiated wave in QTF_Field.txt needs qtf_direct = 1 and psi at the field points.'
+      ! mot_psi_pts is allocated by the first direct solve; a list with no Omega (one frequency, or qtf_max_dw below the
+      ! step) has none and no row with a direct part, so the loop below does nothing and the files are still written
+      IF (mot_nroute /= 2) THEN
+         WRITE (*, '(a)') ' QTF motion: the radiated wave in QTF_Field.txt needs qtf_direct = 1.'
          ERROR STOP 1
       END IF
       DO b1 = 1, nbeta
@@ -2420,7 +2422,12 @@ CONTAINS
    CONTAINS
       SUBROUTINE check_psi(mm)
          INTEGER, INTENT(IN) :: mm
-         IF (.NOT. mot_psi_kept(mm)) THEN
+         LOGICAL :: kept
+
+         ! No store at all (no direct solve ran) counts as missing; the test is split so mot_psi_kept is not indexed then
+         kept = ALLOCATED(mot_psi_kept)
+         IF (kept) kept = mot_psi_kept(mm)
+         IF (.NOT. kept) THEN
             WRITE (*, '(a,ES14.6,a)') ' QTF motion: psi at the field points is missing at Omega =', psi_need(mm), ' rad/s.'
             ERROR STOP 1
          END IF
@@ -2486,6 +2493,11 @@ CONTAINS
       END IF
       DO m = 1, SIZE(psi_need)
          IF (.NOT. (ANY(diff_m == m) .OR. ANY(sum_m == m))) CYCLE
+         ! An unkept psi is zero in the store and would give A = B = 0 without a word
+         IF (.NOT. psi_kept(m)) THEN
+            WRITE (*, '(a,ES14.6,a)') ' QTF motion: psi at Omega =', psi_need(m), ' rad/s is not kept for A and B.'
+            ERROR STOP 1
+         END IF
          CALL radiation_coefficients(mesh, psi_store(:, :, m), psi_need(m), rho, a, b)
          CALL motion_matrix(psi_need(m), mot_mass, a, b, mot_b, mot_c, mot_k, lhs)
          IF (ANY(diff_m == m)) CALL solve_kernel(KERNEL_DIFF, m)

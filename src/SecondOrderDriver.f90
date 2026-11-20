@@ -423,20 +423,21 @@ CONTAINS
                   qtf_stored_mb(mesh%n, geom%nwl, mesh%nbody, nqtf, NBETA, npsi=nneed, npairs=npairs, nsum_pairs=nsum_pairs)
          WRITE (*, '(a,F10.1,a)') ' QTF motion: of which', mb_mot, ' MB for the second-order motions (qtf_motion = 1)'
       END IF
-      ! The body matrices of the motion, (6 nbody, 6 nbody), as the first-order equation of motion has them
-      IF (multi_arrays) THEN
-         mot_mass = block_diagonal(MATX_MULTI)
-         mot_c = block_diagonal(CRS_MULTI)
-         mot_k = block_diagonal(KSTF_MULTI)
-         mot_b = block_diagonal(BLNR_MULTI)
-      ELSE
-         mot_mass = MATX
-         mot_c = CRS
-         mot_k = KSTF
-         mot_b = BLNR
-      END IF
-      ! R5: B_quad is a linearisation on |xi1| with no second-order form, so the motion uses B(Omega) + BLNR only
       IF (motion) THEN
+         ! The body matrices of the motion, (6 nbody, 6 nbody), as the first-order equation of motion has them. Built only
+         ! with qtf_motion = 1: unallocated, they reach qtf_init as absent, so qtf_motion = 0 runs as before.
+         IF (multi_arrays) THEN
+            mot_mass = block_diagonal(MATX_MULTI)
+            mot_c = block_diagonal(CRS_MULTI)
+            mot_k = block_diagonal(KSTF_MULTI)
+            mot_b = block_diagonal(BLNR_MULTI)
+         ELSE
+            mot_mass = MATX
+            mot_c = CRS
+            mot_k = KSTF
+            mot_b = BLNR
+         END IF
+         ! R5: B_quad is a linearisation on |xi1| with no second-order form, so the motion uses B(Omega) + BLNR only
          IF (multi_arrays) THEN
             bqdr_on = ANY(BQDR_MULTI /= 0D0)
          ELSE

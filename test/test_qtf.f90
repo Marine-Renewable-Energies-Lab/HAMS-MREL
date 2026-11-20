@@ -100,6 +100,7 @@ subroutine collect_qtf(testsuite)
     new_unittest("motion_off_unchanged", test_motion_off_unchanged), &
     new_unittest("motion_fixed_no_file", test_motion_fixed_no_file), &
     new_unittest("field_radiated_pipeline", test_field_radiated_pipeline), &
+    new_unittest("field_motion_no_omega", test_field_motion_no_omega), &
     new_unittest("qtf_files", test_files) &
     ]
 end subroutine collect_qtf
@@ -1414,6 +1415,51 @@ subroutine test_field_radiated_pipeline(error)
   call check(error, nrad == 48 .and. rad_max > 1d-3*big .and. gap <= 1d-5*big, line)
   call remove_files()
 end subroutine test_field_radiated_pipeline
+
+!> qtf_field = 1, qtf_direct = 1 and qtf_motion = 1 with no Omega in the list: the moored cylinder of sum_pipeline at one
+!> frequency (0.4 rad/s) with qtf = 1, so only the difference diagonal remains and no direct solve runs. motion_field_part
+!> must not stop (psi at the field points is never allocated then): qtf_finish writes QTF_Quadratic.10d, QTF_Indirect.11d,
+!> QTF_Direct.12d and QTF_Motion.11d and .12d, and qfield_finish QTF_Field.txt, whose rows (1 frequency pair x 4 heading
+!> pairs x 2 points) all have has_direct = 0 and has_rad = 0.
+subroutine test_field_motion_no_omega(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: xf(3, 2) = reshape([12d0, 3d0, -2d0, -8d0, 9d0, 0d0], [3, 2])
+  character(len=*), parameter :: names(5) = [character(len=20) :: "QTF_Quadratic.10d", "QTF_Indirect.11d", &
+                                             "QTF_Direct.12d", "QTF_Motion.11d", "QTF_Motion.12d"]
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  character(len=600), allocatable :: rows(:)
+  real(8) :: v4(4), v8(8), dir(2)
+  integer :: f, n, r, iv3(3), hdir, hrad
+  logical :: exists
+
+  call sum_pipeline(error, 0d0, mesh, geom, kind_qtf=1, grid=[0.4d0], motion=2, field=xf)
+  if (allocated(error)) return
+  call qtf_finish(mesh, geom, 1d0)
+  call qfield_finish(1d0)
+  do f = 1, size(names)
+    inquire (file=root//"/Wamit_format/"//trim(names(f)), exist=exists)
+    call check(error, exists, "no "//trim(names(f))//" with no Omega in the list")
+    if (allocated(error)) then
+      call remove_files()
+      return
+    end if
+  end do
+  allocate (rows(16))
+  call field_rows(root//"/Wamit_format/QTF_Field.txt", rows, n)
+  call check(error, n == 8, "QTF_Field.txt does not have 4 heading pairs x 1 frequency pair x 2 points rows")
+  if (allocated(error)) then
+    call remove_files()
+    return
+  end if
+  do r = 1, n
+    ! PER1 PER2 BETA1 BETA2 K IPT TYPE, the 8 partial values, Re_dir Im_dir, has_direct, has_rad
+    read (rows(r), *) v4, iv3, v8, dir, hdir, hrad
+    call check(error, hdir == 0 .and. hrad == 0, "a diagonal row has a direct part or a radiated wave")
+    if (allocated(error)) exit
+  end do
+  call remove_files()
+end subroutine test_field_motion_no_omega
 
 !> The data rows of a QTF_Field.txt (the lines that do not start with #)
 subroutine field_rows(path, rows, n)
