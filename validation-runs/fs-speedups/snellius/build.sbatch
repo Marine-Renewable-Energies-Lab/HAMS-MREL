@@ -6,12 +6,12 @@
 #SBATCH --cpus-per-task 24
 #SBATCH --mem=32G
 #SBATCH -t 0:30:00
-#SBATCH -o <run root>/run_fsspeed/logs/build_%j.log
+#SBATCH -o <run root>/run_fsfix/logs/build_%j.log
 #SBATCH -A <account>
 # The HAMS binary of the fs-speedups branch (feature/qtf-fs-speedups) for the G1 item-3 runs and the OC4 comparison.
-# repo_fsspeed is a clone of the git bundle of the branch (README.md, section 2). The source must be that of 3af6cf8 (the
+# repo_fsfix is a clone of the git bundle of the branch (README.md, section 2). The source must be that of 9255d92 (the fix of the deep-water rows, re-run; the
 # commits after it change docs and validation-runs only): the job stops otherwise. Modules, flags and file list as
-# run_oc4wsum/jobs/build.sbatch (the build of the old OC4 run); the list is every src/*.f90 of 3af6cf8 in
+# run_oc4wsum/jobs/build.sbatch (the build of the old OC4 run); the list is every src/*.f90 of 9255d92 (the same files as 3af6cf8) in
 # dependency order (checked on the laptop: the same files as at 22086da, no module used before it is compiled). The job
 # checks that every file of the list is in src/ and that src/ has no .f90 file the list leaves out, naming the file.
 # GRN_KIND = 4 only: the cases of both job sets use the GRN_KIND = 4 binary (drift_convergence.py Case.grn = 4).
@@ -20,9 +20,9 @@ module load intel/2024a
 ulimit -s unlimited
 set -e
 R="<run root>"
-REPO=$R/repo_fsspeed
-RUN=$R/run_fsspeed
-C1=3af6cf85b743a1c7e8d15eacadc0f1f302ac6ca2
+REPO=$R/repo_fsfix
+RUN=$R/run_fsfix
+C1=9255d9248589e8123f8935cb7e026203c8eabcfc
 git -C $REPO merge-base --is-ancestor $C1 HEAD
 git -C $REPO diff --quiet $C1 HEAD -- src
 FLAGS="-qmkl -qopenmp"

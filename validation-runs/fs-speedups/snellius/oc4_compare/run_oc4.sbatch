@@ -5,8 +5,8 @@
 #SBATCH --ntasks 1
 #SBATCH --cpus-per-task 24
 #SBATCH --mem=32G
-#SBATCH -t 9:00:00
-#SBATCH -o <run root>/run_fsspeed/logs/oc4_%j.log
+#SBATCH -t 6:00:00
+#SBATCH -o <run root>/run_fsfix/logs/oc4_%j.log
 #SBATCH -A <account>
 # The OC4 WAMIT-model sum case of the old run (q_oc4wfull_sym_indsum_free_L0: qtf = 2, qtf_terms = full, 5022 hull panels,
 # FSInnerMesh.pnl with 4044 inner points, depth 200 m) with every item of the fs-speedups branch at its intended default:
@@ -14,7 +14,8 @@
 # (the one key added), qtf_fs_inner left at stencil. The inputs are those of the old run, copied from run_oc4wsum and checked
 # against md5sums_input.txt (the laptop copy, validation-runs/oc4wfull-sum/cases). Modules, threads, stack and the run
 # lines as run_oc4wsum/jobs/run_hams.sbatch. At the end compare_oc4.py compares every QTF file with the old run and writes
-# compare_oc4.txt beside the run (python3, standard library). Expected about 2 h (findings_speedups.md of oc4wfull-sum:
+# compare_oc4.txt beside the run (python3, standard library). Re-run with the fix (C/F on finite-depth rows): expected
+# 3.48 h (the C/F passes priced at their finite-depth times in the old run), limit 6 h. First run: expected about 2 h (findings_speedups.md of oc4wfull-sum:
 # 7.25 h -> 2.0 h with deep water from k0 h = 10, psi reuse and the threaded fit); limit 9 h (the old run took 7.25 h).
 module load 2024
 module load intel/2024a
@@ -22,8 +23,8 @@ ulimit -s unlimited
 export OMP_NUM_THREADS=24
 export OMP_STACKSIZE=1G
 R="<run root>"
-RUN=$R/run_fsspeed
-REPO=$R/repo_fsspeed
+RUN=$R/run_fsfix
+REPO=$R/repo_fsfix
 JOBS=$REPO/validation-runs/fs-speedups/snellius
 REF=$R/run_oc4wsum/q_oc4wfull_sym_indsum_free_L0
 CASE=q_oc4wfull_sym_indsum_free_L0_fsspeed
