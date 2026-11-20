@@ -6,6 +6,7 @@ module test_qtf_free_surface
   use SecondOrderIncident, only : incident2, incident2_pair, incident2_phi, incident2_grad, free_surface_forcing
   use NearFieldDrift, only : KERNEL_DIFF, KERNEL_SUM
   use QTFFreeSurface, only : fs_point_field, fs_forcing_diff, fs_inner_fields, fs_inner_steps, fs_circle_modes, &
+                             circle_from_panels, &
                              fs_mode_warning, fs_auto_modes, FS_MODE_TOL, fs_mode_miss, fs_sample_phi, fs_mode_scales, fs_auto_evanescent, &
                              fs_inner_pair, fs_outer_pair, fs_outer_annulus, fs_outer_tail, fs_outer_ring, fs_outer_rfar, &
                              fs_outer_sliver, fs_radius_message, FS_SIGN, fs_pair_order_message, fs_pair_terms, &
@@ -118,6 +119,7 @@ subroutine collect_qtf_free_surface(testsuite)
     new_unittest("fs_mode_miss_threads", test_mode_miss_threads), &
     new_unittest("pw_from_panels_matches_samples", test_from_panels_samples), &
     new_unittest("fs_circle_panels_mode_check", test_circle_panels_check), &
+    new_unittest("fs_circle_panels_cut_reported", test_circle_panels_cut), &
     new_unittest("inner_ibp_identity", test_inner_ibp_identity), &
     new_unittest("waterline_normal_derivative", test_waterline_normal_derivative), &
     new_unittest("fs_pair_terms_ibp_order", test_pair_terms_ibp_order), &
@@ -693,6 +695,38 @@ subroutine test_circle_panels_check(error)
   write (info, '(a,3es10.3)') "graf mode check per state (1 resolved, 2 truncated, 3 rounding): ", miss
   call check(error, miss(1) <= FS_MODE_TOL .and. miss(2) > FS_MODE_TOL .and. miss(3) <= FS_MODE_TOL, trim(info))
 end subroutine test_circle_panels_check
+
+!> circle_from_panels at a long wave and many orders: H_m(k0 R) overflows before m = mmax, so the orders above mcut are
+!> zero and mcut < mmax is returned (the log line of the cut, once per run, is written by the call; the line is in the
+!> unit log). The amplitudes are finite and the propagating orders above mcut are zero.
+subroutine test_circle_panels_cut(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: radius = 15d0, k0 = 0.01d0
+  integer, parameter :: nev = 4, mmax = 400
+  type(panel_mesh) :: mesh
+  type(first_order_state) :: one(1)
+  type(pw_set) :: pw(1)
+  real(8) :: kev(nev)
+  integer :: mcut, nthread_saved
+  logical :: finite
+
+  call cylinder_fixture(mesh, one, error)
+  if (allocated(error)) return
+  call pw_evanescent_from_wvn(nev, kev)
+  nthread_saved = NTHREAD
+  NTHREAD = 4
+  call circle_from_panels(mesh, one, [0d0, 0d0], radius, fx_depth, k0, kev, mmax, nev, pw, mcut)
+  NTHREAD = nthread_saved
+  print '(4x,a,i0,a,i0)', "circle_from_panels at k0 R = 0.15: orders kept ", mcut, " of ", mmax
+  call check(error, mcut < mmax .and. mcut >= 0, "no cut of the orders at k0 R = 0.15 and 400 orders")
+  if (allocated(error)) return
+  finite = all(abs(pw(1)%a) <= huge(1d0))
+  call check(error, finite, "non-finite amplitudes on the cut route")
+  if (allocated(error)) return
+  ! mcut is the lowest cut of the modes; the propagating mode (n = 0) is the one that stops at 109 here
+  call check(error, all(pw(1)%a(mcut + 1:mmax, 0) == (0d0, 0d0)) .and. all(pw(1)%a(-mmax:-mcut - 1, 0) == (0d0, 0d0)), &
+             "propagating orders above mcut are not zero")
+end subroutine test_circle_panels_cut
 
 !> True if a point of the stencil of fs_inner_fields at x with offset d (x +- d e_x, x +- d e_y) lies in a waterplane.
 !> An independent copy, on purpose, of the private test of QTFFreeSurface: the test checks the module's offsets with its

@@ -592,6 +592,14 @@ CONTAINS
             ' and N_ev = ', fs_nev, TRIM(MERGE(' (automatic)', ' (given)    ', opts%qtf_fs_evanescent == 0)), &
             ' evanescent modes, from the hull integral (qtf_fs_circle = panels); the mode check uses every 8th of the ', &
             fs_circle%n, ' samples on the circle (k0_max R =', k0_max*fs_radius, ', r_wl =', r_wl, ' m)'
+         ! The deep-water field rows (field_deep_kh) apply to the circle samples of the samples route only: the hull integral
+         ! of the panels route is the finite-depth field (fs_circle_modes, graf), so the partial waves differ from the
+         ! samples route there by up to the deep-water error of the rows (1.3e-3 of the row maximum at k0 h = 10, more below)
+         IF (H > 0D0 .AND. opts%field_deep_kh > 0D0 .AND. k0_max*H >= opts%field_deep_kh) THEN
+            WRITE (*, '(a,F8.3,a)') ' QTF free surface: the partial waves on the circle use the finite-depth field with'// &
+               ' qtf_fs_circle = panels, though k0 h of the largest frequency reaches field_deep_kh (k0_max h =', k0_max*H, &
+               '); the deep-water rows apply on qtf_fs_circle = samples only.'
+         END IF
       ELSE
          WRITE (*, '(a,I0,a,I0,a,a,I0,a,F8.4,a,F8.3,a)') ' QTF free surface: partial waves outside R with M = ', fs_mmax, &
             ' and N_ev = ', fs_nev, TRIM(MERGE(' (automatic)', ' (given)    ', opts%qtf_fs_evanescent == 0)), &

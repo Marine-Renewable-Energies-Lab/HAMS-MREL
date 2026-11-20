@@ -66,7 +66,7 @@ MODULE QTFFreeSurface
    PUBLIC :: fs_point_field, fs_forcing_diff
    PUBLIC :: fs_wl_fit, fs_waterline_fit_setup, fs_waterline_fit_apply, WLFIT_N
    PUBLIC :: fs_inner_fields, fs_inner_steps, fs_sample_phi, fs_circle_modes, fs_mode_miss, fs_mode_warning, fs_auto_modes
-   PUBLIC :: FS_MODE_TOL, fs_mode_scales, fs_auto_evanescent
+   PUBLIC :: FS_MODE_TOL, fs_mode_scales, fs_auto_evanescent, circle_from_panels
    PUBLIC :: FS_SIGN, fs_inner_pair, fs_outer_pair, fs_outer_annulus, fs_outer_tail, fs_outer_ring, fs_outer_rfar
    PUBLIC :: fs_outer_sliver, fs_radius_message, fs_pair_order_message
    PUBLIC :: fs_pair_terms, fs_coverage_check, fs_local_rankine
@@ -891,7 +891,7 @@ CONTAINS
       END DO
    END SUBROUTINE fs_circle_modes
 
-   SUBROUTINE circle_from_panels(mesh, states, centre, radius, h, k0, kev, mmax, nev, pw)
+   SUBROUTINE circle_from_panels(mesh, states, centre, radius, h, k0, kev, mmax, nev, pw, mcut_out)
       ! The partial waves of phi_P of every state from the hull integral (pw_from_panels): the sources are the panels of
       ! field_potential, panel i the base panel mesh%base(i) in image mesh%image(i). field_influence_row mirrors the field
       ! point x for an image and keeps the panel, G(S x, xi) = G(x, S xi) for the reflection S of image_signs (G depends on
@@ -905,6 +905,7 @@ CONTAINS
       REAL(8), INTENT(IN) :: centre(2), radius, h, k0, kev(:)
       INTEGER, INTENT(IN) :: mmax, nev
       TYPE(pw_set), INTENT(OUT) :: pw(SIZE(states))
+      INTEGER, INTENT(OUT), OPTIONAL :: mcut_out
       REAL(8), ALLOCATABLE :: xs(:, :), ns(:, :), area(:)
       COMPLEX(8), ALLOCATABLE :: q(:, :), ph(:, :)
       REAL(8) :: s(3), rx, bound
@@ -924,6 +925,7 @@ CONTAINS
          ph(:, ist) = states(ist)%phi_p(1:mesh%n)
       END DO
       CALL pw_from_panels(xs, ns, area, q, ph, centre, radius, h, k0, kev, mmax, nev, pw, mcut)
+      IF (PRESENT(mcut_out)) mcut_out = mcut
       IF (mcut < mmax .AND. .NOT. cut_reported) THEN
          cut_reported = .TRUE.
          rx = 0D0
