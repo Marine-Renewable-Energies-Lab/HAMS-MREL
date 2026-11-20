@@ -561,7 +561,7 @@ Roland et al. (2026) compare four boundary element solvers on the surge differen
 | HAMS, 5022 panels | 10.46 (1.80) / 1.49 | 15.77 (0.30) / 1.86 |
 | HAMS, 9208 panels | 7.92 (1.80) / 0.73 | 16.34 (0.30) / 1.07 |
 
-![Surge difference-frequency QTF of OC4 on the mean-drift diagonal and the diagonal of 0.05 rad/s: the six solver set-ups of Roland et al. (2026), Fig. 5, and HAMS at 5022 and 9208 panels; below, the difference from WAMIT over the largest WAMIT value; all curves over the HAMS range of 0.30 to 1.90 rad/s](figures/roland_oc4_diagonals.png)
+![Difference-frequency QTF_11 (surge) of OC4 on the mean-drift diagonal (F̄_1) and the diagonal of 0.05 rad/s: the six solver set-ups of Roland et al. (2026), Fig. 5, read from the vector paths of the PDF (WAMIT: OpenFAST r-test `marin_semi.12d`), and HAMS-MREL `QTF_Indirect.11d` at 5022 and 9208 panels; below, the difference from WAMIT over the largest WAMIT value; all curves over the HAMS range of 0.30 to 1.90 rad/s](figures/roland_oc4_diagonals.png)
 
 - HAMS integrates the pressure on the hull, a near-field method, yet its results fall in the group of the paper's middle-field solvers, not with the near-field ones. The paper's near-field results are 57% to 83% off WAMIT at the largest, with medians of 12.6% to 17.1%. Those of HAMS are 7.9% to 16.3%, with medians of 0.7% to 1.9%.
 - The median falls with the mesh, from 1.49% to 0.73% on the mean drift and from 1.86% to 1.07% at 0.05 rad/s. At 9208 panels it is the lowest of all the solvers.
@@ -575,7 +575,7 @@ The whole QTF, in the style of the paper's Fig. 4 (`compare_maps.py`, HAMS at 92
 | 0 < Δω ≤ 0.30 rad/s | 4.66 / 0.87 | 4.66 / 0.80 |
 | diagonal | 3.36 / 0.38 | 3.36 / 0.39 |
 
-![Surge difference-frequency QTF of OC4, magnitude and phase, HAMS at 9208 panels and the WAMIT file of Roland et al. (2026), with the modulus of the difference; jet colour scale from 0 to 6e5 N/m² as in the paper's Fig. 4](figures/roland_oc4_maps.png)
+![Difference-frequency QTF_11 (surge) of OC4, magnitude and phase: HAMS-MREL `QTF_Indirect.11d` at 9208 panels and WAMIT, OpenFAST r-test `marin_semi.12d` (the reference of Roland et al. 2026), with the modulus of the difference; jet colour scale from 0 to 6e5 N/m² as in the paper's Fig. 4](figures/roland_oc4_maps.png)
 
 - Over the slow-drift range, 0 < Δω ≤ 0.30 rad/s, HAMS is within 4.66% of the largest WAMIT value (median 0.87%). The magnitude and phase maps show the same pattern.
 - The largest differences are far from the diagonal, at pairs with a frequency in 0.25 to 0.35 rad/s (the heave and pitch natural frequencies) or close to 1.90 rad/s, as in [OC4 against WAMIT](#oc4-against-wamit).

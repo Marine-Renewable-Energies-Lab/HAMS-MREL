@@ -15,8 +15,10 @@ Measure: |HAMS - WAMIT| / max |WAMIT| over the pairs of the HAMS grid with both 
 0 < omega_2 - omega_1 <= 0.30 rad/s, and without the pairs that have a frequency in an optional band.
 
 Usage: python -I compare_maps.py HAMS_FILE WAMIT_12D OUT_PNG OUT_TXT TITLE [--range LO HI] [--band A B] [--mode I]
+       [--hams-label TEXT] [--ref-label TEXT]   (the panel titles: name each source)
 """
 import math
+import textwrap
 import sys
 
 import matplotlib
@@ -49,7 +51,12 @@ def read(path, mode, periods):
 
 
 def main(argv):
-    opts = dict(range=(0.30, 1.90), band=None, mode=1)
+    opts = dict(range=(0.30, 1.90), band=None, mode=1, hams_label="HAMS-MREL", ref_label="WAMIT")
+    for key in ("--hams-label", "--ref-label"):
+        if key in argv:
+            k = argv.index(key)
+            opts[key[2:].replace("-", "_")] = argv[k + 1]
+            del argv[k:k + 2]
     for key, n in (("--range", 2), ("--band", 2), ("--mode", 1)):
         if key in argv:
             k = argv.index(key)
@@ -93,18 +100,19 @@ def main(argv):
                          "ytick.color": INK2, "figure.facecolor": SURFACE})
     fig, axes = plt.subplots(2, 3, figsize=(13.0, 8.2), layout="constrained")
     ext = (lo - 0.025, hi + 0.025, lo - 0.025, hi + 0.025)
-    for col, (name, M) in enumerate((("HAMS", H), ("WAMIT file", W))):
+    for col, (name, M) in enumerate(((opts["hams_label"], H), (opts["ref_label"], W))):
         im = axes[0, col].imshow(np.abs(M), origin="lower", extent=ext, cmap="jet", vmin=0, vmax=6e5)
-        axes[0, col].set_title(name + ", magnitude", loc="left")
-        fig.colorbar(im, ax=axes[0, col], label="|QTF| (N/m$^2$)", extend="max", shrink=0.85)
+        axes[0, col].set_title(textwrap.fill(name, 36), loc="left", fontsize=8.5)
+        fig.colorbar(im, ax=axes[0, col], label=r"$|QTF_{11}|$ (N/m$^2$)", extend="max", shrink=0.85)
         ip = axes[1, col].imshow(np.angle(M), origin="lower", extent=ext, cmap="jet", vmin=-math.pi, vmax=math.pi)
-        axes[1, col].set_title(name + ", phase", loc="left")
-        fig.colorbar(ip, ax=axes[1, col], label="Phase (rad)", shrink=0.85)
+        axes[1, col].set_title(textwrap.fill(name, 36), loc="left", fontsize=8.5)
+        fig.colorbar(ip, ax=axes[1, col], label=r"arg $QTF_{11}$ (rad)", shrink=0.85)
     idiff = axes[0, 2].imshow(100 * D / scale, origin="lower", extent=ext, cmap="viridis", vmin=0, vmax=10)
-    axes[0, 2].set_title("Difference", loc="left")
-    fig.colorbar(idiff, ax=axes[0, 2], label="|HAMS $-$ WAMIT| / max|WAMIT| (%)", extend="max", shrink=0.85)
+    axes[0, 2].set_title("Difference of the two", loc="left", fontsize=8.5)
+    fig.colorbar(idiff, ax=axes[0, 2], label=r"$|QTF_{11} - QTF_{11}^{WAMIT}|$ / max$|QTF_{11}^{WAMIT}|$ (%)",
+                 extend="max", shrink=0.85)
     axes[1, 2].axis("off")
-    table = ["|HAMS - WAMIT| / max|WAMIT|", "largest / median, %", "max|WAMIT| = %.3g N/m^2" % scale,
+    table = ["|QTF_11 - QTF_11,WAMIT| / max|QTF_11,WAMIT|", "largest / median, %", "max|QTF_11,WAMIT| = %.3g N/m^2" % scale,
              "omega in [%.2f, %.2f] rad/s" % (lo, hi), ""] + [l.strip() for l in lines[2:]]
     axes[1, 2].text(0.0, 1.0, "\n".join(table), va="top", ha="left", fontsize=7.5,
                     family="monospace", color=INK, transform=axes[1, 2].transAxes)
