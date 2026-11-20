@@ -1,4 +1,4 @@
-"""OC4: the change of QTF_Indirect.11s and of its potential terms B2 and FS_inner against 29453291, per sum frequency.
+"""OC4: the change of QTF_Indirect.11s and of its potential terms B2 and FS_inner against the old run, per sum frequency.
 
 Usage: python -I oc4_by_omega.py NEW_RUN OLD_RUN OUT_DIR
 
@@ -64,6 +64,6 @@ for ax, t in zip(axs, ("QTF_Indirect.11s, per mode (force or moment group)", "po
     ax.spines[["top", "right"]].set_visible(False)
     ax.legend(fontsize=8, frameon=False, loc="upper left")
 axs[0].set_ylabel("max |new - old| / max |old|  (%)")
-fig.suptitle("OC4 WAMIT model: new HAMS (29503033) against old HAMS (29453291)", fontsize=11)
+fig.suptitle("OC4 WAMIT model: new HAMS against old HAMS", fontsize=11)
 fig.tight_layout()
 fig.savefig(out / "oc4_by_omega.png", dpi=150)

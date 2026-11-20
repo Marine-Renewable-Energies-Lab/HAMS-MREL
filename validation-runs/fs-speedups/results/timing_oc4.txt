@@ -1,0 +1,13 @@
+OC4 WAMIT model (5022 hull panels), fat_genoa, 24 CPUs billed per
+
+run                                                wall h  core-h  split (h)
+HAMS old (stencil + samples)                  7.25   174.1  first order (HAMS: and the rest) 0.48; second order, body part 2.94; second order, free-surface part 3.83
+                                                                        (passes QTF free surface fields x21, QTF B2 control surface fields x21, QTF B2 control surface grad psi x24, QTF free surface psi x24)
+HAMS new (all speed-ups, circle = panels)     2.08    49.8  first order (HAMS: and the rest) 0.48; second order, body part 0.76; second order, free-surface part 0.83
+                                                                        (passes QTF free surface fields x21, QTF B2 control surface fields x21, QTF B2 control surface grad psi x11, QTF free surface psi x11)
+Nemoh v3.0.3                                  5.46   130.9  first order (HAMS: and the rest) 2.33; second order (body + FS, not split in the logs) 3.12
+                                                                        (stages preProc 3 s, solver 8375 s, postProc 1 s, QTFpreProc 10983 s, QTFsolver 263 s, QTFpostProc 0 s)
+
+new / old HAMS: wall 0.286, core-h 0.286
+new HAMS / Nemoh: wall 0.380, core-h 0.380
+Nemoh ran its stages on 1 thread; the job was billed for 24 CPUs (fat_genoa minimum).

@@ -1,0 +1,42 @@
+Sum QTF against WAMIT C:/Users/vraghavan1/OneDrive - Delft University of Technology/Desktop/BEMRosetta/BEMRosetta/examples/fast/Semi/HydroData/marin_semi.12s, heading 0
+HAMS C:\Users\vraghavan1\Downloads\MREL_HAMS-MREL\validation-runs\fs-speedups\results\q_oc4wfull_sym_indsum_free_L0_fsspeed, Nemoh C:\Users\vraghavan1\Downloads\MREL_HAMS-MREL\validation-runs\oc4wfull-sum\results\nemoh_oc4wfull_sym_free_fs_L0
+HAMS grid 21 omegas (0.40-1.40), 21 found in WAMIT; |code - WAMIT| / max|WAMIT| over the pairs HAMS writes
+Fx: 150 pairs, max |WAMIT| = 24.97 (per rho g)
+  HAMS total (.11s)                      vs WAMIT              max  104.4  median   28.0 %  (150 pairs)
+  HAMS quadratic (.10s)                  vs WAMIT              max   57.9  median   13.7 %  (150 pairs)
+  HAMS quadratic + body                  vs WAMIT              max   10.0  median    3.5 %  (150 pairs)
+  HAMS FS part                           size |FS| / max|WAMIT|  max  106.5  median   27.0 %
+  Nemoh total (OUT_QTFP_N)               vs WAMIT              max  105.8  median   30.9 %  (150 pairs)
+  Nemoh quadratic (DUOK)                 vs WAMIT              max   56.6  median   13.5 %  (150 pairs)
+  Nemoh quadratic + body (DUOK+HASBO)    vs WAMIT              max   20.8  median    6.6 %  (150 pairs)
+  Nemoh FS part (HASFS+ASYMP)            size |FS| / max|WAMIT|  max  108.9  median   32.6 %
+  HAMS - Nemoh, total (.11s)             |HAMS - Nemoh| / max|WAMIT|  max   44.1  median   16.6 %
+  HAMS - Nemoh, quadratic (.10s)         |HAMS - Nemoh| / max|WAMIT|  max    1.4  median    0.5 %
+  HAMS - Nemoh, quadratic + body         |HAMS - Nemoh| / max|WAMIT|  max   25.2  median    9.1 %
+  HAMS - Nemoh, FS part                  |HAMS - Nemoh| / max|WAMIT|  max   40.9  median   16.1 %
+Fz: 150 pairs, max |WAMIT| = 5.217 (per rho g)
+  HAMS total (.11s)                      vs WAMIT              max  178.3  median   93.3 %  (150 pairs)
+  HAMS quadratic (.10s)                  vs WAMIT              max   76.1  median   25.5 %  (150 pairs)
+  HAMS quadratic + body                  vs WAMIT              max   23.6  median    9.6 %  (150 pairs)
+  HAMS FS part                           size |FS| / max|WAMIT|  max  165.4  median   92.8 %
+  Nemoh total (OUT_QTFP_N)               vs WAMIT              max  200.5  median   86.8 %  (150 pairs)
+  Nemoh quadratic (DUOK)                 vs WAMIT              max   80.0  median   25.9 %  (150 pairs)
+  Nemoh quadratic + body (DUOK+HASBO)    vs WAMIT              max   15.9  median    7.3 %  (150 pairs)
+  Nemoh FS part (HASFS+ASYMP)            size |FS| / max|WAMIT|  max  186.1  median   90.2 %
+  HAMS - Nemoh, total (.11s)             |HAMS - Nemoh| / max|WAMIT|  max  100.1  median   19.6 %
+  HAMS - Nemoh, quadratic (.10s)         |HAMS - Nemoh| / max|WAMIT|  max   13.1  median    2.8 %
+  HAMS - Nemoh, quadratic + body         |HAMS - Nemoh| / max|WAMIT|  max   25.0  median    7.6 %
+  HAMS - Nemoh, FS part                  |HAMS - Nemoh| / max|WAMIT|  max  103.1  median   14.7 %
+My: 150 pairs, max |WAMIT| = 99.32 (per rho g)
+  HAMS total (.11s)                      vs WAMIT              max  344.1  median   68.1 %  (150 pairs)
+  HAMS quadratic (.10s)                  vs WAMIT              max   94.2  median   37.7 %  (150 pairs)
+  HAMS quadratic + body                  vs WAMIT              max   47.8  median   14.8 %  (150 pairs)
+  HAMS FS part                           size |FS| / max|WAMIT|  max  353.6  median   70.0 %
+  Nemoh total (OUT_QTFP_N)               vs WAMIT              max  386.8  median   74.8 %  (150 pairs)
+  Nemoh quadratic (DUOK)                 vs WAMIT              max   96.6  median   37.4 %  (150 pairs)
+  Nemoh quadratic + body (DUOK+HASBO)    vs WAMIT              max   46.9  median   14.3 %  (150 pairs)
+  Nemoh FS part (HASFS+ASYMP)            size |FS| / max|WAMIT|  max  377.7  median   74.4 %
+  HAMS - Nemoh, total (.11s)             |HAMS - Nemoh| / max|WAMIT|  max   99.9  median   33.6 %
+  HAMS - Nemoh, quadratic (.10s)         |HAMS - Nemoh| / max|WAMIT|  max    6.8  median    2.3 %
+  HAMS - Nemoh, quadratic + body         |HAMS - Nemoh| / max|WAMIT|  max   45.4  median   18.8 %
+  HAMS - Nemoh, FS part                  |HAMS - Nemoh| / max|WAMIT|  max   92.2  median   25.8 %

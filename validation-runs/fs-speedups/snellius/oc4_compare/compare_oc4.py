@@ -1,11 +1,11 @@
-"""The OC4 WAMIT-model sum case with the fs-speedups items on, against job 29453291 (standard library; the figure needs
+"""The OC4 WAMIT-model sum case with the fs-speedups items on, against the old run (standard library; the figure needs
 matplotlib and is skipped without it).
 
-Usage: python3 compare_oc4.py <new case folder> <29453291 case folder> [--out <folder>]
+Usage: python3 compare_oc4.py <new case folder> <old case folder> [--out <folder>]
 
 A case folder holds log.txt, result.json, time.txt (if /usr/bin/time ran) and output/Wamit_format. Writes to --out (default:
 the new case folder) compare_oc4.txt and, with matplotlib, compare_oc4.png:
-1. every QTF file of the new run against 29453291 (qtf_files_compare.py: per mode, term or tag, max and median of
+1. every QTF file of the new run against the old run (qtf_files_compare.py: per mode, term or tag, max and median of
    |new - ref| / max |ref| over the rows of the force or moment group), and the other output files (byte-identical or not);
 2. wall time and core-hours of both runs (result.json wall_s; 24 CPUs billed on fat_genoa), and the speed-up;
 3. the time of each logged pass (the "QTF ...: omega ..., <t> s for ..." lines of log.txt), summed per kind, both runs.
@@ -58,17 +58,17 @@ def main():
     args = parser.parse_args()
     out = args.out or args.new
     text, summary, problems = qfc.compare_folders(os.path.join(args.new, "output", "Wamit_format"),
-                                        os.path.join(args.ref, "output", "Wamit_format"), "OC4 fs-speedups against 29453291")
+                                        os.path.join(args.ref, "output", "Wamit_format"), "OC4 fs-speedups against the old run")
     lines = [text, "", "Time (%d CPUs billed)" % CPUS]
     wn, wr = wall(args.new, problems), wall(args.ref, problems)
-    for name, w in (("new", wn), ("29453291", wr)):
+    for name, w in (("new", wn), ("old", wr)):
         if w is not None:
             lines.append("  %-9s wall %8.0f s = %6.2f h, %7.1f core-h" % (name, w, w / 3600.0, w * CPUS / 3600.0))
     if wn and wr:
         lines.append("  speed-up %.2f x, saved %.1f core-h" % (wr / wn, (wr - wn) * CPUS / 3600.0))
     pn, pr = passes(args.new), passes(args.ref)
     lines.append("")
-    lines.append("Logged passes, count and total s: %-44s %18s %18s" % ("", "new", "29453291"))
+    lines.append("Logged passes, count and total s: %-44s %18s %18s" % ("", "new", "old"))
     for kind in sorted(set(pn) | set(pr)):
         a, b = pn.get(kind, (0, 0.0)), pr.get(kind, (0, 0.0))
         lines.append("  %-76s %4d %10.0f s %4d %10.0f s" % (kind, a[0], a[1], b[0], b[1]))
@@ -98,8 +98,8 @@ def figure(out, summary, wn, wr):
     ax.set_yscale("log")
     ax.set_xticks(list(x))
     ax.set_xticklabels(files, rotation=30, ha="right", fontsize=8)
-    ax.set_ylabel("|new - 29453291| / max |29453291| (group of modes)")
-    title = "OC4 WAMIT model, sum QTF: fs-speedups defaults + qtf_fs_circle = panels against job 29453291"
+    ax.set_ylabel("|new - old| / max |old| (group of modes)")
+    title = "OC4 WAMIT model, sum QTF: fs-speedups defaults + qtf_fs_circle = panels against the old run"
     if wn and wr:
         title += "\nwall %.2f h against %.2f h (%.1f against %.1f core-h)" % (wn / 3600, wr / 3600, wn * CPUS / 3600,
                                                                           wr * CPUS / 3600)

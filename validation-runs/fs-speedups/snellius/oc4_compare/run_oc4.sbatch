@@ -8,14 +8,14 @@
 #SBATCH -t 9:00:00
 #SBATCH -o /home/vraghavan/HAMS_drift_study/run_fsspeed/logs/oc4_%j.log
 #SBATCH -A tdsei3290
-# The OC4 WAMIT-model sum case of job 29453291 (q_oc4wfull_sym_indsum_free_L0: qtf = 2, qtf_terms = full, 5022 hull panels,
+# The OC4 WAMIT-model sum case of the old run (q_oc4wfull_sym_indsum_free_L0: qtf = 2, qtf_terms = full, 5022 hull panels,
 # FSInnerMesh.pnl with 4044 inner points, depth 200 m) with every item of the fs-speedups branch at its intended default:
 # field_deep_kh at its default (10, no key), psi reuse and the threaded mode check (always on), qtf_fs_circle = panels
-# (the one key added), qtf_fs_inner left at stencil. The inputs are those of 29453291, copied from run_oc4wsum and checked
+# (the one key added), qtf_fs_inner left at stencil. The inputs are those of the old run, copied from run_oc4wsum and checked
 # against md5sums_input.txt (the laptop copy, validation-runs/oc4wfull-sum/cases). Modules, threads, stack and the run
-# lines as run_oc4wsum/jobs/run_hams.sbatch. At the end compare_oc4.py compares every QTF file with 29453291 and writes
+# lines as run_oc4wsum/jobs/run_hams.sbatch. At the end compare_oc4.py compares every QTF file with the old run and writes
 # compare_oc4.txt beside the run (python3, standard library). Expected about 2 h (findings_speedups.md of oc4wfull-sum:
-# 7.25 h -> 2.0 h with deep water from k0 h = 10, psi reuse and the threaded fit); limit 9 h (29453291 took 7.25 h).
+# 7.25 h -> 2.0 h with deep water from k0 h = 10, psi reuse and the threaded fit); limit 9 h (the old run took 7.25 h).
 module load 2024
 module load intel/2024a
 ulimit -s unlimited
@@ -31,8 +31,8 @@ BIN=$RUN/hamsmrel_grn4
 mkdir -p $RUN/$CASE/input
 cp $REF/input/* $RUN/$CASE/input/
 cd $RUN/$CASE/input
-md5sum -c $JOBS/oc4_compare/md5sums_input.txt --quiet || { echo "input checksums differ from 29453291"; exit 1; }
-grep -q "qtf_fs_" SecondOrder.in && { echo "SecondOrder.in of 29453291 already sets a qtf_fs_ key"; exit 1; }
+md5sum -c $JOBS/oc4_compare/md5sums_input.txt --quiet || { echo "input checksums differ from the old run"; exit 1; }
+grep -q "qtf_fs_" SecondOrder.in && { echo "SecondOrder.in of the old run already sets a qtf_fs_ key"; exit 1; }
 printf 'qtf_fs_circle = panels\n' >> SecondOrder.in
 cd $RUN/$CASE
 git -C $REPO log -1 --format="repository at %H %s"

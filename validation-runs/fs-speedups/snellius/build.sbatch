@@ -11,7 +11,7 @@
 # The HAMS binary of the fs-speedups branch (feature/qtf-fs-speedups) for the G1 item-3 runs and the OC4 comparison.
 # repo_fsspeed is a clone of the git bundle of the branch (README.md, section 2). The source must be that of 3af6cf8 (the
 # commits after it change docs and validation-runs only): the job stops otherwise. Modules, flags and file list as
-# run_oc4wsum/jobs/build.sbatch (job 29453290, the build of 29453291); the list is every src/*.f90 of 3af6cf8 in
+# run_oc4wsum/jobs/build.sbatch (the build of the old OC4 run); the list is every src/*.f90 of 3af6cf8 in
 # dependency order (checked on the laptop: the same files as at 22086da, no module used before it is compiled). The job
 # checks that every file of the list is in src/ and that src/ has no .f90 file the list leaves out, naming the file.
 # GRN_KIND = 4 only: the cases of both job sets use the GRN_KIND = 4 binary (drift_convergence.py Case.grn = 4).

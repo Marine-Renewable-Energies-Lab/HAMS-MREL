@@ -6546,15 +6546,15 @@ contains
         end do
     end subroutine split_names
 
-    !> Without the sum frequency the direct solve is that of Phases 7a and 7b, bit for bit: QTF_Direct.12d and
-    !> QTF_DirectTerms.txt of the qtf = 1 fixtures of both phases are the files of the binary before the sum frequency
-    !> (the merge c716ed7), stored in expected_output of each case; the 7b files (qtf_directfs_*) were stored again with
-    !> the near-waterline fit of the 7c-2 fix wave, which changes their free-surface forcing next to the waterline (at
-    !> most 4.9e-3 of the largest value; most rows to the bit). The 7b files were stored again with the default panels route
-    !> (ab8dae1, qtf_fs_circle): QTF_Direct.12d moved by at most 4.4e-6 and QTF_DirectTerms.txt by 8.8e-7 of the largest value
-    !> in the file, so they are no longer those bits; the 7a files are unchanged. 7a: qtf_direct_irsp and qtf_direct_two (qtf_direct_round
-    !> has qtf = 3 and is a sum case: its .12d is the same file, direct_fs_off_unchanged); 7b: qtf_directfs_round,
-    !> qtf_directfs_irsp and qtf_directfs_two. The logs have no line of a sum solve
+    !> The 7b files (qtf_directfs_*) were stored again with the default panels route (ab8dae1, qtf_fs_circle): QTF_Direct.12d
+    !> moved by at most 4.4e-6 and QTF_DirectTerms.txt by 8.8e-7 of the largest value in the file, so they are no longer the
+    !> bits of the binary before. Without the sum frequency the direct solve is otherwise that of Phases 7a and 7b:
+    !> QTF_Direct.12d and QTF_DirectTerms.txt of the qtf = 1 fixtures of both phases are the files of the binary before the
+    !> sum frequency (the merge c716ed7), stored in expected_output of each case; the 7b files were stored again with the
+    !> near-waterline fit of the 7c-2 fix wave, which changes their free-surface forcing next to the waterline (at most
+    !> 4.9e-3 of the largest value; most rows to the bit). The 7a files are unchanged. 7a: qtf_direct_irsp and
+    !> qtf_direct_two (qtf_direct_round has qtf = 3 and is a sum case: its .12d is the same file, direct_fs_off_unchanged);
+    !> 7b: qtf_directfs_round, qtf_directfs_irsp and qtf_directfs_two. The logs have no line of a sum solve
     subroutine direct_sum_off_unchanged(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=18), parameter :: cases(5) = [character(len=18) :: "qtf_direct_irsp", "qtf_direct_two", &
@@ -7277,11 +7277,12 @@ contains
         call check_below(error, "indirect_sum_isolv_factored T+_pot", worst, indsum_gmres_limit)
     end subroutine indirect_sum_isolv_factored
 
-    !> The qtf_direct = 1 sum fixtures are unchanged by the indirect route: QTF_Direct.12s and QTF_DirectTermsSum.txt of
-    !> qtf_directsum_round and qtf_directsum_irsp are those of the base without the indirect route (stored in expected_output),
-    !> byte for byte: round from the 7c-2 merge 4ba2ddb, irsp from the v2.3.4 merge 5792fb9 (its lid fixes move irsp)
-    !> qtf_directsum_irsp was stored again with the default panels route (ab8dae1, qtf_fs_circle): QTF_Direct.12s moved by
-    !> 3.5e-5 and QTF_DirectTermsSum.txt by 1.6e-5 of the largest value in the file; qtf_directsum_round is unchanged
+    !> The qtf_direct = 1 sum fixtures were stored again with the default panels route for qtf_directsum_irsp (ab8dae1,
+    !> qtf_fs_circle): QTF_Direct.12s moved by 3.5e-5 and QTF_DirectTermsSum.txt by 1.6e-5 of the largest value in the file;
+    !> qtf_directsum_round is unchanged. They are unchanged by the indirect route: QTF_Direct.12s and QTF_DirectTermsSum.txt
+    !> of both cases are those of the base without the indirect route (stored in expected_output), byte for byte for
+    !> round (from the 7c-2 merge 4ba2ddb) and, apart from the stored-again change above, for irsp (from the v2.3.4 merge
+    !> 5792fb9, whose lid fixes move irsp)
     subroutine indirect_sum_off_unchanged(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=21), parameter :: cases(2) = [character(len=21) :: "qtf_directsum_round", "qtf_directsum_irsp"]
