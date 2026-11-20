@@ -1381,6 +1381,8 @@ This case checks the multi-body solve, and the mean drift per body, against an e
 
 The invariance check found one error while the script was written: the sign of the sway force and roll moment. Every other check had passed with that error in place, since it only enters the sin part of the force integral. The MacCamy-Fuchs check now also runs at heading 90 deg, so that it covers that part.
 
+**What "exact" means in the figures.** In every figure of this section, "exact" is the multiple-scattering theory of Linton & Evans (1990) computed with `linton_evans_reference.py` (this repository), with truncation M = 16 for the loads and 35 to 36 for the wave field. It is independent of HAMS: it uses no panels and no HAMS code. It is checked against MacCamy & Fuchs (1954) for one cylinder (to 4.5e-16), the optical theorem (1.4e-15), near-field against far-field drift (1.7e-15) and Kim (1993), Fig. 3 (within 0.0011), as in the table above. Each figure says this in its legend and footnote.
+
 **Published values.** Three published sources are compared. The values were read from the paper (Table 1) or digitised from the figures, and are stored in the script.
 
 - **Linton & Evans (1990), Table 1** (check `linton_evans_table1`). Two equal cylinders with spacing R = a/λ and heading π/6, in the long-wave limit k a → 0 (taken at k a = 10⁻³): |X_x|/|F| and |X_y|/|F| for λ = 0.1 to 0.4, eight values printed to three decimals. Seven round to the printed values. The eighth, λ = 0.3, |X_x|/|F| = 0.95350 against 0.953, sits on the rounding boundary. The largest difference is 5.0e-4.
@@ -1398,7 +1400,7 @@ The figures below redraw Linton & Evans (1990), Figs. 2 and 3, with one panel pe
 
 ![Kim (1993), Fig. 3, against the reference](figures/le_reference_kim1993_fig3.png)
 
-**The HAMS case.** Four cylinders of the bottom-mounted hull of the convergence study: radius 5 m, depth 10 m, centres (±10, ±10) m, so the centre spacing is 4 radii. Each cylinder is a wall from the waterline to the sea bed with no bottom panel, uniform rows, as in group B of the convergence study, where one such cylinder agreed with MacCamy-Fuchs within 0.12% at 4096 panels. The bodies are fixed. The mean drift is computed with `drift_methods = far near` and `velocity_method = differencing` (the closer method on that cylinder), at headings 0 and 45 deg and 17 frequencies from 0.40 to 1.90 rad/s, so k a runs from 0.19 to 1.84. That is below the first irregular frequency of a bottom-mounted circle, k a = 2.405 (2.17 rad/s here). The grid is dense at 1.75 to 1.85 rad/s, where heading 45 deg has a near-trapped mode between the cylinders: the exact mean F_x of cylinder 4 peaks at 10.6 ρ g A² at 1.79 rad/s, against 2.2 for one cylinder alone. There are 16 field points at z = 0, in the gaps and around the array. The meshes have 256, 1024 and 2304 panels per cylinder (1024, 4096 and 9216 in all). `drift_convergence.py --linton-evans` writes and runs the cases (`l_square_diff_m1` to `_m3`), and `linton_evans_reference.py compare` and `plot` compare them.
+**The HAMS case.** Four cylinders of the bottom-mounted hull of the convergence study: radius 5 m, depth 10 m, centres (±10, ±10) m, so the centre spacing is 4 radii. Each cylinder is a wall from the waterline to the sea bed with no bottom panel, uniform rows, as in group B of the convergence study, where one such cylinder agreed with MacCamy-Fuchs within 0.12% at 4096 panels. The bodies are fixed. The mean drift is computed with `drift_methods = far near` and `velocity_method = differencing` (the closer method on that cylinder), at headings 0 and 45 deg and 17 frequencies from 0.40 to 1.90 rad/s, so k a runs from 0.19 to 1.84. That is below the first irregular frequency of a bottom-mounted circle, k a = 2.405 (2.17 rad/s here). The grid is dense at 1.75 to 1.85 rad/s, where heading 45 deg has a near-trapped mode between the cylinders: the exact mean F_x of cylinder 4 peaks at 10.6 ρ g A² at 1.79 rad/s, against 2.2 for one cylinder alone. There are 16 field points at z = 0, in the gaps and around the array. The meshes have 256, 1024, 2304 and 4096 panels per cylinder (1024, 4096, 9216 and 16384 in all). `drift_convergence.py --linton-evans` writes and runs the cases (`l_square_diff_m1` to `_m4`, and `l_square_field_m1` to `_m3` for the wave field on a grid, below), and `linton_evans_reference.py compare` and `plot` compare them.
 
 ![Exact loads per cylinder against one cylinder alone](figures/le_reference_loads.png)
 
@@ -1414,30 +1416,35 @@ The figures below redraw Linton & Evans (1990), Figs. 2 and 3, with one panel pe
 
 At 0.95 rad/s, X agrees within 1.9% for every body, with the right phase, body order and moment centre. A sign, conjugation or body-order error would give errors of order 1.
 
-**HAMS against the reference on Snellius.** The three cases ran on Snellius (`fat_genoa`, 24 threads, ifx 2024a) in November 2026, built from the commit that added this case. Wall time: 11 s, 103 s and 463 s; peak memory: 0.14, 1.2 and 5.6 GB. The table gives the largest error of each quantity over the 17 frequencies, both headings and the four cylinders, with the error measures of `compare` (python_scripts.md):
+**HAMS against the reference on Snellius.** The four cases ran on Snellius (`fat_genoa`, 24 threads, ifx 2024a) in November 2026, built from the commit that added this case (the Fortran code is the same in the later commits). Wall time: 11 s, 103 s, 463 s and 1623 s; peak memory: 0.14, 1.2, 5.6 and 17.4 GB. The table gives the largest error of each quantity over the 17 frequencies, both headings and the four cylinders, with the error measures of `compare` (python_scripts.md):
 
 | Mesh (panels in all) | X forces | X moments | near-field F | near-field M | far-field F | elevation |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
 | m1 (1024) | 9.8e-2 | 1.09e-1 | 1.15e-1 | 1.18e-1 | 5.5e-2 | 3.6e-1 |
 | m2 (4096) | 2.4e-2 | 2.6e-2 | 2.6e-2 | 3.2e-2 | 1.4e-2 | 9.1e-2 |
 | m3 (9216) | 1.0e-2 | 1.1e-2 | 1.1e-2 | 1.4e-2 | 6.0e-3 | 3.9e-2 |
+| m4 (16384) | 5.4e-3 | 6.1e-3 | 6.5e-3 | 8.0e-3 | 3.2e-3 | 2.1e-2 |
 
-- **Convergence.** Every error falls by 3.7 to 4.4 times from m1 to m2 (twice the panels per side) and by 2.2 to 2.4 times from m2 to m3 (1.5 times), so HAMS converges to the exact solution at second order in the panel size. That covers the multi-body solve, the exciting loads per body, the elevation and the mean drift per body and of the array.
-- **Largest errors at m3:** X 1.0% (1.78 rad/s, heading 45 deg), near-field F 1.1% (1.60 rad/s), far-field F 0.6% (1.82 rad/s), elevation 0.039 per unit amplitude (1.80 rad/s). All are in or next to the near-trapping band, where the field between the cylinders is steepest. F_z and M_z near-field, zero for this hull, are under 1e-10 of the force, and far-field M_z of the array, zero by symmetry at both headings, is under 3e-6 of |F| times 10 m.
-- **Near-trapping peak.** Mean F_x on each cylinder at heading 45 deg, per ρ g A² (m1, m2, m3, exact):
+- **Convergence.** Every error falls by 3.7 to 4.4 times from m1 to m2 (twice the panels per side) by 2.2 to 2.4 times from m2 to m3 (1.5 times) and by 1.73 to 1.87 times from m3 to m4 (4/3 times, where second order gives 1.78), so HAMS converges to the exact solution at second order in the panel size. That covers the multi-body solve, the exciting loads per body, the elevation and the mean drift per body and of the array.
+- **Largest errors at m4:** X 0.54% (1.78 rad/s, heading 45 deg), near-field F 0.65% (1.60 rad/s), far-field F 0.32% (1.82 rad/s), elevation 0.021 per unit amplitude (1.80 rad/s). All are in or next to the near-trapping band, where the field between the cylinders is steepest. F_z and M_z near-field, zero for this hull, are under 1e-10 of the force, and far-field M_z of the array, zero by symmetry at both headings, is under 3e-6 of |F| times 10 m.
+- **Near-trapping peak.** Mean F_x on each cylinder at heading 45 deg, per ρ g A² (m1, m2, m3, m4, exact):
 
 | rad/s | cylinder 1 | cylinder 3 | cylinder 4 |
 | ---: | :--- | :--- | :--- |
-| 1.75 | 2.332, 2.019, 1.957, 1.906 | -2.150, -1.998, -1.967, -1.943 | 8.218, 8.064, 8.022, 7.983 |
-| 1.78 | 5.602, 5.080, 4.961, 4.859 | -4.499, -4.422, -4.396, -4.373 | 10.284, 10.437, 10.435, 10.420 |
-| 1.80 | 7.995, 7.726, 7.633, 7.540 | -4.753, -5.039, -5.077, -5.099 | 9.259, 9.957, 10.059, 10.120 |
-| 1.82 | 8.575, 8.790, 8.788, 8.761 | -3.221, -3.719, -3.807, -3.868 | 6.122, 6.898, 7.035, 7.129 |
+| 1.75 | 2.332, 2.019, 1.957, 1.935, 1.906 | -2.150, -1.998, -1.967, -1.956, -1.943 | 8.218, 8.064, 8.022, 8.005, 7.983 |
+| 1.78 | 5.602, 5.080, 4.961, 4.917, 4.859 | -4.499, -4.422, -4.396, -4.386, -4.373 | 10.284, 10.437, 10.435, 10.431, 10.420 |
+| 1.80 | 7.995, 7.726, 7.633, 7.595, 7.540 | -4.753, -5.039, -5.077, -5.088, -5.099 | 9.259, 9.957, 10.059, 10.090, 10.120 |
+| 1.82 | 8.575, 8.790, 8.788, 8.781, 8.761 | -3.221, -3.719, -3.807, -3.836, -3.868 | 6.122, 6.898, 7.035, 7.081, 7.129 |
 
   HAMS converges to the exact peak (10.42 at 1.78 rad/s on cylinder 4, five times the drift on one cylinder alone), not to the smoother published curves.
 
-- **Wave elevation.** At the 16 field points, | |η_HAMS| − |η_exact| | / A is at most 0.276, 0.067 and 0.027% at 1.10 rad/s and 4.41, 1.09 and 0.49% at 1.70 rad/s (m1, m2, m3; medians 0.008 and 0.083% at m3). The error is given over the incident amplitude A because |η| is near zero in places, where a relative error has no meaning. The elevation error of the table above (0.039 at m3) is that of the complex elevation, phase included, and its largest value is at 1.80 rad/s.
+- **Wave elevation.** At the 16 field points, | |η_HAMS| − |η_exact| | / A is at most 0.276, 0.067, 0.027 and 0.017% at 1.10 rad/s and 4.41, 1.09, 0.49 and 0.28% at 1.70 rad/s (m1 to m4; medians 0.006 and 0.046% at m4). The error is given over the incident amplitude A because |η| is near zero in places, where a relative error has no meaning. The elevation error of the table above (0.021 at m4) is that of the complex elevation, phase included, and its largest value is at 1.80 rad/s.
 
 ![Elevation error at the field points](figures/le_field_error_points.png)
+
+- **Wave elevation on a grid.** The cases `l_square_field_m1` to `_m3` repeat m1 to m3 at 1.10 and 1.70 rad/s, heading 45 deg, with 2746 field points on a 1.5 m grid over the 80 m by 80 m box around the array (0.5 m clear of each wall). The largest and median | |η_HAMS| − |η_exact| | / A are 1.06 and 0.08%, 0.26 and 0.02%, 0.11 and 0.01% at 1.10 rad/s, and 6.8 and 0.91%, 1.7 and 0.22%, 0.73 and 0.09% at 1.70 rad/s (m1, m2, m3). The error is largest next to the walls and in the lee of the array along the wave, and it falls with the mesh everywhere.
+
+![Elevation error on a grid](figures/le_field_error_grid.png)
 
 ![Exciting force per cylinder, heading 45 deg](figures/le_exciting_force_beta45.png)
 
@@ -1445,9 +1452,9 @@ At 0.95 rad/s, X agrees within 1.9% for every body, with the right phase, body o
 
 ![Errors against panels](figures/le_convergence.png)
 
-**Cost.** The model of `drift_convergence.py` estimated 2.0 job hours at 32 threads for the three cases. They took 0.16 job hours at 24 threads (9.6 min in all, plus a 1.7 min build), 12 times less. The model was fitted to single hulls, and it overestimates these runs.
+**Cost.** The model of `drift_convergence.py` estimated 2.0 job hours at 32 threads for m1 to m3. They took 0.16 job hours at 24 threads (9.6 min in all, plus a 1.7 min build), 12 times less; m4 took 27 min (10.9 core-hours) against 9.3 h in the model. The model was fitted to single hulls, and it overestimates these runs. The grid runs took 6.1 min in all (2.4 core-hours); the field points are not in the model.
 
-**Limits of this check.** It covers fixed bodies only: the reference solves the diffraction problem, not the radiation problem. It also covers vertical walls only, so it tests nothing of a bottom or a bilge, and a single layout at two headings. The meshes go to 2304 panels per cylinder; a finer mesh was not run.
+**Limits of this check.** It covers fixed bodies only: the reference solves the diffraction problem, not the radiation problem. It also covers vertical walls only, so it tests nothing of a bottom or a bilge, and a single layout at two headings. The meshes go to 4096 panels per cylinder.
 
 ## Open items
 

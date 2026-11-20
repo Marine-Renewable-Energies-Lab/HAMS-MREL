@@ -204,6 +204,23 @@ FREQUENCIES, HEADINGS, FIELD_POINTS = _case_constants()
 LOAD_ORDER = 16
 
 
+# What "exact" is, in every figure: the legend names the method, the footnote (exact_note) its source and checks
+EXACT_LEG = "exact: Linton & Evans (1990) theory, linton_evans_reference.py"
+EXACT_NOTE = ("Exact: the multiple-scattering theory of Linton & Evans (1990), J. Fluid Mech. 215, 549-569, computed with "
+              "linton_evans_reference.py (this repository; truncation M = 16 for the loads, 35 to 36 for the wave field). It is "
+              "independent of HAMS and is verified against MacCamy & Fuchs (1954) for one cylinder (to 4.5e-16), the optical "
+              "theorem (1.4e-15), near-field against far-field drift (1.7e-15) and Kim (1993), Fig. 3 (within 0.0011).")
+
+
+def exact_note(fig):
+    """Add EXACT_NOTE under the figure, wrapped to its width (saved with bbox_inches = tight, so it is kept)."""
+    import textwrap
+    width = int(fig.get_size_inches()[0] * 13)
+    fig.text(0.01, -0.005, "\n".join(textwrap.wrap(EXACT_NOTE, width)), fontsize=7.5, va="top", ha="left",
+             color="0.25")
+
+
+
 def layout(name):
     spec = LAYOUTS[name]
     return Array(spec["centres"], spec["radii"], spec["depth"])
@@ -980,10 +997,10 @@ def plot(results, out, ref_rows):
                 for r, idx in enumerate((1, 2)):
                     ax = axes[r, j]
                     if kind == "X":
-                        ax.plot(ka, np.abs(X[:, j, idx - 1]), "k-", lw=1.2, label="exact")
+                        ax.plot(ka, np.abs(X[:, j, idx - 1]), "k-", lw=1.2, label=EXACT_LEG)
                         label = "|X_%d| / (rho g A) [m^2]" % idx
                     else:
-                        ax.plot(ka, D[:, j, idx - 1], "k-", lw=1.2, label="exact")
+                        ax.plot(ka, D[:, j, idx - 1], "k-", lw=1.2, label=EXACT_LEG)
                         ax.axhline(0.0, color="0.6", lw=0.6)
                         label = "mean F_%s / (rho g A^2) [m]" % "xy"[idx - 1]
                     for mi, (name, data) in enumerate(hams):
@@ -1004,14 +1021,15 @@ def plot(results, out, ref_rows):
             fig.tight_layout()
             path = os.path.join(out, "le_%s_beta%d.png" % ("exciting_force" if kind == "X" else "drift_per_cylinder",
                                                             heading))
-            fig.savefig(path, dpi=130)
+            exact_note(fig)
+            fig.savefig(path, dpi=130, bbox_inches="tight")
             plt.close(fig)
             written.append(path)
         fig, axes = plt.subplots(1, 2, figsize=(11, 4))
         for r in range(2):
             ax = axes[r]
-            ax.plot(ka, F[:, r], "k-", lw=1.2, label="exact far-field (Kochin)")
-            ax.plot(ka, D[:, :, r].sum(axis=1), "k:", lw=1.0, label="exact near-field, summed")
+            ax.plot(ka, F[:, r], "k-", lw=1.2, label=EXACT_LEG + ", far-field (Kochin)")
+            ax.plot(ka, D[:, :, r].sum(axis=1), "k:", lw=1.0, label="same theory, near-field summed over the cylinders")
             for mi, (name, data) in enumerate(hams):
                 xs, ys = _hams_points(data[2], r + 1, heading, h, a)
                 ax.plot(xs, ys, markers[mi % 4], ms=4, mfc="none", label=name + " far-field")
@@ -1022,7 +1040,8 @@ def plot(results, out, ref_rows):
         fig.suptitle("Four bottom-mounted cylinders, heading %g deg: mean drift of the array (MeanDriftMomentum.8)" % heading)
         fig.tight_layout()
         path = os.path.join(out, "le_drift_array_beta%d.png" % heading)
-        fig.savefig(path, dpi=130)
+        exact_note(fig)
+        fig.savefig(path, dpi=130, bbox_inches="tight")
         plt.close(fig)
         written.append(path)
     return written + plot_convergence(results, out, ref_rows)
@@ -1057,10 +1076,11 @@ def plot_convergence(results, out, ref_rows):
     ax.set_ylabel("largest error over frequencies, headings, cylinders")
     ax.grid(alpha=0.3, which="both")
     ax.legend(fontsize=8)
-    ax.set_title("HAMS against the exact array solution")
+    ax.set_title("HAMS against the exact solution (Linton & Evans 1990 theory)", fontsize=10)
     fig.tight_layout()
     path = os.path.join(out, "le_convergence.png")
-    fig.savefig(path, dpi=130)
+    exact_note(fig)
+    fig.savefig(path, dpi=130, bbox_inches="tight")
     plt.close(fig)
     return [path]
 
@@ -1092,10 +1112,11 @@ def plot_reference(out):
         ax.set_title("omega = %.2f rad/s, k a = %.2f, heading 45 deg" % (omega, sol.k * arr.radii[0]))
         ax.set_xlabel("x [m]")
         ax.set_ylabel("y [m]")
-    fig.suptitle("Exact wave field around the four cylinders (+: the HAMS field points)")
+    fig.suptitle("Exact wave field around the four cylinders (Linton & Evans 1990 theory; +: the HAMS field points)")
     fig.tight_layout()
     path = os.path.join(out, "le_reference_field.png")
-    fig.savefig(path, dpi=130)
+    exact_note(fig)
+    fig.savefig(path, dpi=130, bbox_inches="tight")
     plt.close(fig)
     written.append(path)
     omegas = np.linspace(0.36, 1.95, 160)
@@ -1120,7 +1141,8 @@ def plot_reference(out):
     fig.suptitle("Exact loads per cylinder in the square array, against one cylinder alone (MacCamy-Fuchs)")
     fig.tight_layout()
     path = os.path.join(out, "le_reference_loads.png")
-    fig.savefig(path, dpi=130)
+    exact_note(fig)
+    fig.savefig(path, dpi=130, bbox_inches="tight")
     plt.close(fig)
     written.append(path)
     fx, fy = kim_fig3()
@@ -1128,7 +1150,7 @@ def plot_reference(out):
     n = np.arange(1, 20)
     for ax, ref, pub, label in ((axes[0], fx, KIM_FIG3_X, "|F_x|"), (axes[1], fy, KIM_FIG3_Y, "|F_y|")):
         ax.plot(n, pub, "o", mfc="none", ms=9, label="Kim (1993), Fig. 3, digitised")
-        ax.plot(n, ref, "k+", ms=9, label="this reference")
+        ax.plot(n, ref, "k+", ms=9, label=EXACT_LEG)
         ax.set_ylabel(label + " / (pi rho g a h A)")
         ax.grid(alpha=0.3)
     axes[1].set_xlabel("cylinder number")
@@ -1138,7 +1160,8 @@ def plot_reference(out):
                  % max(np.max(np.abs(fx - KIM_FIG3_X)), np.max(np.abs(fy - KIM_FIG3_Y))), fontsize=10)
     fig.tight_layout()
     path = os.path.join(out, "le_reference_kim1993_fig3.png")
-    fig.savefig(path, dpi=130)
+    exact_note(fig)
+    fig.savefig(path, dpi=130, bbox_inches="tight")
     plt.close(fig)
     written.append(path)
     return written
@@ -1174,13 +1197,13 @@ def plot_linton_evans(results, out):
     diag = np.array(diag)
     fig, axes = plt.subplots(1, 2, figsize=(13, 4.8))
     ax = axes[0]
-    ax.plot(kas, total, "k-", lw=1.2, label="exact (this reference)")
+    ax.plot(kas, total, "k-", lw=1.2, label=EXACT_LEG)
     ax.plot(LE_FIG3_KA, LE_FIG3_TOTAL, "o", ms=4, mfc="none", color="tab:red",
             label="data from Linton & Evans (1990), Fig. 3, digitised")
     ax.axvspan(*LE_FIG3_BAND, color="0.92", zorder=0)
     ax2 = axes[1]
-    ax2.plot(kas, diag[:, 0], "k-", lw=1.2, label="exact, lee cylinder (L&E 2)")
-    ax2.plot(kas, diag[:, 1], "k--", lw=1.2, label="exact, weather cylinder (L&E 4)")
+    ax2.plot(kas, diag[:, 0], "k-", lw=1.2, label=EXACT_LEG + ", lee cylinder (L&E 2)")
+    ax2.plot(kas, diag[:, 1], "k--", lw=1.2, label="same theory, weather cylinder (L&E 4)")
     markers = ["s", "^", "D", "v"]
     for mi, (name, folder) in enumerate(case_folders(results) if results else []):
         X, _, far, _ = read_hams(folder)
@@ -1217,7 +1240,8 @@ def plot_linton_evans(results, out):
                  "J. Fluid Mech. 215, 549-569, Fig. 3", fontsize=10)
     fig.tight_layout()
     path = os.path.join(out, "le_linton_evans_fig3_hams.png")
-    fig.savefig(path, dpi=130)
+    exact_note(fig)
+    fig.savefig(path, dpi=130, bbox_inches="tight")
     plt.close(fig)
     return [path]
 
@@ -1297,8 +1321,8 @@ def plot_published(results, out):
     kas = np.unique(np.round(np.r_[np.arange(0.05, 3.20, 0.01), np.arange(1.40, 2.06, 0.002)], 4))
     X, Xm, D = _le_curves(kas)
     hams = _hams_le(results)
-    markers = ["s", "^", "D"]
-    hcol = ["tab:blue", "tab:orange", "tab:green"]
+    markers = ["s", "^", "D", "v"]
+    hcol = ["tab:blue", "tab:orange", "tab:green", "tab:purple"]
     written = []
 
     def published(ax, fig_name, curve):
@@ -1318,16 +1342,16 @@ def plot_published(results, out):
         fig, axes = plt.subplots(len(panels), 1, figsize=(10, 3.0 * len(panels)), sharex=True)
         for ax, curve in zip(axes, panels):
             if curve == "total":
-                ax.plot(kas, D.sum(axis=1), "k-", lw=1.2, label="exact (this reference)")
+                ax.plot(kas, D.sum(axis=1), "k-", lw=1.2, label=EXACT_LEG)
             else:
                 j = LE_TO_HERE[curve]
                 if fig_name == "Fig. 2":
-                    ax.plot(kas, X[:, j], "k-", lw=1.2, label="exact, |X . e_beta|/|F|")
+                    ax.plot(kas, X[:, j], "k-", lw=1.2, label=EXACT_LEG + ", |X . e_beta|/|F|")
                     if curve in ("cylinder 1", "cylinder 3"):
                         ax.plot(kas, Xm[:, j], "k--", lw=1.0,
-                                label="exact, (|X_x| cos b + |X_y| sin b)/|F|, the paper's form off the diagonal")
+                                label="same theory, (|X_x| cos b + |X_y| sin b)/|F|, the paper's form off the diagonal")
                 else:
-                    ax.plot(kas, D[:, j], "k-", lw=1.2, label="exact (this reference)")
+                    ax.plot(kas, D[:, j], "k-", lw=1.2, label=EXACT_LEG)
             published(ax, fig_name, curve)
             for mi, rec in enumerate(hams):
                 if curve == "total":
@@ -1336,7 +1360,7 @@ def plot_published(results, out):
                 else:
                     y = [row[LE_TO_HERE[curve]] for row in (rec["X"] if fig_name == "Fig. 2" else rec["D"])]
                     lab = rec["name"] + (" (near-field)" if fig_name == "Fig. 3" else "")
-                ax.plot(rec["ka"], y, markers[mi % 3], ms=5, color=hcol[mi % 3], label=lab)
+                ax.plot(rec["ka"], y, markers[mi % 4], ms=5, color=hcol[mi % 4], label=lab)
             ax.axvspan(1.38, 2.07, color="0.93", zorder=0)
             # the axes of the paper, extended to show the exact near-trapping extremes (2.27 in Fig. 2, -2.34 in Fig. 3);
             # f_1 goes to zero as k a goes to zero, so f/f_1 grows without bound there
@@ -1345,17 +1369,18 @@ def plot_published(results, out):
             ax.set_title(curve, fontsize=10, loc="left")
             ax.grid(alpha=0.3)
             ax.set_xlim(0.0, 3.25)
-        axes[0].legend(fontsize=7, ncol=2, loc="upper left")
+        axes[0].legend(fontsize=7, ncol=2, loc="upper left" if fig_name == "Fig. 2" else "lower right")
         axes[-1].set_xlabel("k a")
         what = "first-order force along the wave" if fig_name == "Fig. 2" else "mean drift force along the wave"
-        fig.suptitle("Four cylinders at the corners of a square, a/h = 1/2, R/h = 2, beta = pi/4: %s. Lines: exact; "
+        fig.suptitle("Four cylinders at the corners of a square, a/h = 1/2, R/h = 2, beta = pi/4: %s. Lines: exact (Linton & Evans 1990 theory, linton_evans_reference.py); "
                      "symbols: HAMS (the HAMS case, scaled by 5).\nRed circles: data from Linton, C.M. & Evans, D.V. "
                      "(1990), The interaction of waves with arrays of vertical circular cylinders,\nJ. Fluid Mech. 215, "
                      "549-569, %s, digitised (linton_evans_digitised.csv). Grey band: near-trapping."
                      % (what, fig_name), fontsize=8.5)
         fig.tight_layout(rect=(0, 0, 1, 0.94))
         path = os.path.join(out, "le_linton_evans_%s.png" % fig_name.replace(". ", "").lower())
-        fig.savefig(path, dpi=130)
+        exact_note(fig)
+        fig.savefig(path, dpi=130, bbox_inches="tight")
         plt.close(fig)
         written.append(path)
     return written
@@ -1420,8 +1445,8 @@ def plot_field_error(results, out, step=0.5):
             ex = np.abs(sol.field(pts[:, 0], pts[:, 1]))
             k = wave_number(omega, arr.depth)
             im = axes[r, 0].pcolormesh(gx, gy, exact[omega], shading="auto", cmap="viridis")
-            fig.colorbar(im, ax=axes[r, 0], label="|eta| / A, exact")
-            axes[r, 0].set_title("exact, %.2f rad/s, k a = %.2f" % (omega, k * arr.radii[0]), fontsize=9)
+            fig.colorbar(im, ax=axes[r, 0], label="|eta| / A, exact (L&E 1990 theory)")
+            axes[r, 0].set_title("exact (L&E 1990 theory), %.2f rad/s, k a = %.2f" % (omega, k * arr.radii[0]), fontsize=9)
             for c, (name, folder) in enumerate(grid_cases, start=1):
                 _, _, _, field = read_hams(folder)
                 vals = field.get(_key(omega, 45.0), {})
@@ -1432,8 +1457,9 @@ def plot_field_error(results, out, step=0.5):
                 iy = np.rint((pts[:, 1] + 40.0) / dc.LE_FIELD_STEP).astype(int)
                 emap[iy, ix] = err
                 axis = np.linspace(-40.0, 40.0, n)
-                im = axes[r, c].pcolormesh(axis, axis, emap, shading="auto", cmap="magma_r", vmin=0.0,
-                                           vmax=max(1.0, np.nanpercentile(err, 99.5)))
+                # one logarithmic scale for every mesh and frequency, so that the panels compare
+                im = axes[r, c].pcolormesh(axis, axis, np.clip(emap, 1e-3, None), shading="auto", cmap="magma_r",
+                                           norm=matplotlib.colors.LogNorm(vmin=1e-3, vmax=10.0))
                 fig.colorbar(im, ax=axes[r, c], label="| |eta_HAMS| - |eta_exact| | / A  [%]")
                 axes[r, c].set_title("%s: largest %.2f %%, median %.2f %%" % (
                     name.replace("l_square_field_", "HAMS "), np.nanmax(err), np.nanmedian(err)), fontsize=9)
@@ -1445,7 +1471,8 @@ def plot_field_error(results, out, step=0.5):
                      fontsize=10)
         fig.tight_layout()
         path = os.path.join(out, "le_field_error_grid.png")
-        fig.savefig(path, dpi=120)
+        exact_note(fig)
+        fig.savefig(path, dpi=120, bbox_inches="tight")
         plt.close(fig)
         written.append(path)
     folders = case_folders(results) if results else []
@@ -1463,7 +1490,7 @@ def plot_field_error(results, out, step=0.5):
                 errs[name] = np.array([abs(abs(vals.get(i + 1, complex("nan"))) - ex[i]) for i in range(len(pts))]) * 100
             ax = axes[r, 0]
             im = ax.pcolormesh(gx, gy, exact[omega], shading="auto", cmap="Greys", vmin=0.0)
-            fig.colorbar(im, ax=ax, label="|eta| / A, exact")
+            fig.colorbar(im, ax=ax, label="|eta| / A, exact (L&E 1990 theory)")
             finest = folders[-1][0]
             sc = ax.scatter(pts[:, 0], pts[:, 1], c=errs[finest], cmap="plasma", s=90, edgecolors="k", vmin=0.0)
             fig.colorbar(sc, ax=ax, label="| |eta_HAMS| - |eta_exact| | / A  [%%], %s" %
@@ -1488,7 +1515,8 @@ def plot_field_error(results, out, step=0.5):
                      fontsize=10)
         fig.tight_layout()
         path = os.path.join(out, "le_field_error_points.png")
-        fig.savefig(path, dpi=120)
+        exact_note(fig)
+        fig.savefig(path, dpi=120, bbox_inches="tight")
         plt.close(fig)
         written.append(path)
     return written
