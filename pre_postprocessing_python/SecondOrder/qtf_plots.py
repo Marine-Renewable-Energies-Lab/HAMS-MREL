@@ -33,6 +33,16 @@ import matplotlib.pyplot as plt  # noqa: E402
 import qtf_compare as qc  # noqa: E402
 
 PANELS = {"m1": 448, "m2": 1792, "m3": 4032, "m4": 7168}
+# Labels: the reference is named by its source, each quantity by its mode (1 surge, 3 heave, 5 pitch).
+SA = "semi-analytical (truncated_cylinder_reference.py)"
+NEMOH = "Nemoh v3.0.3"
+MODE = {1: "surge", 3: "heave", 5: "pitch"}
+SUB = {1: "\u2081", 3: "\u2083", 5: "\u2085"}
+
+
+def qlabel(index, kernel):
+    """QTF\u207b\u2081 (surge) and the like: the kernel sign and the mode index."""
+    return "QTF%s%s (%s)" % ("\u207b" if kernel == "diff" else "\u207a", SUB[index], MODE[index])
 
 
 def series(table, omegas, dw, index, kernel, source):
@@ -78,7 +88,7 @@ def main(argv=None):
                     v = ref[(motion, kern, wj, wi)][q]
                     return v.conjugate() if kern == "diff" else v
                 return None
-            lines.append(("exact", ref_source, dict(color="k", lw=2.2)))
+            lines.append((SA, ref_source, dict(color="k", lw=2.2)))
             for path in sorted(glob.glob(os.path.join(args.results, "q_sharp_%s_src_m*" % motion))):
                 tag = path.rsplit("_", 1)[-1]
                 table = qc.read_hams(os.path.join(path, "output", "Wamit_format", "QTF_Quadratic." + ext))
@@ -90,7 +100,7 @@ def main(argv=None):
                     tag = path.rsplit("_", 1)[-1]
                     table = qc.read_nemoh(os.path.join(path, "results", "QTF", nfile))
                     if table:
-                        lines.append(("Nemoh %d panels" % PANELS.get(tag, 0),
+                        lines.append((NEMOH + " DUOK, %d panels" % PANELS.get(tag, 0),
                                       lambda wi, wj, i, k, t=table: qc.lookup(t, wi, wj, i, k),
                                       dict(ls="--", marker="o", ms=3, lw=1.0)))
             for row, (quantity, index) in enumerate(qc.QUANTITIES):
@@ -98,9 +108,9 @@ def main(argv=None):
                     xs, vs = series(None, omegas, args.dw, index, kernel, source)
                     axes[row, 0].plot(xs, [v.real for v in vs], label=label, **style)
                     axes[row, 1].plot(xs, [v.imag for v in vs], label=label, **style)
-                axes[row, 0].set_ylabel("%s / (ρg)" % quantity)
+                axes[row, 0].set_ylabel("%s / (ρg)" % qlabel(index, kernel))
                 for col, part in enumerate(("Re", "Im")):
-                    axes[row, col].set_title("%s %s" % (part, quantity), fontsize=10)
+                    axes[row, col].set_title("%s %s" % (part, qlabel(index, kernel)), fontsize=10)
                     axes[row, col].grid(alpha=0.3)
             for col in range(2):
                 axes[2, col].set_xlabel("ω (rad/s)" if kernel == "sum" else "ω_i (rad/s), ω_j = ω_i + %.2f" % args.dw)
@@ -130,7 +140,7 @@ def convergence(args, ref, max_dw=0.3):
                 sources = [("HAMS", os.path.join(args.results, "q_sharp_%s_src_m*" % motion), qc.read_hams,
                             os.path.join("output", "Wamit_format", "QTF_Quadratic." + ext), "o")]
                 if args.nemoh:
-                    sources.append(("Nemoh", os.path.join(args.nemoh, "nemoh_sharp_%s_m*" % motion), qc.read_nemoh,
+                    sources.append((NEMOH, os.path.join(args.nemoh, "nemoh_sharp_%s_m*" % motion), qc.read_nemoh,
                                     os.path.join("results", "QTF", nfile), "s"))
                 for code, pattern, reader, fname, marker in sources:
                     pts = []
@@ -153,14 +163,15 @@ def convergence(args, ref, max_dw=0.3):
                               label="%s median" % code)
                     ax.loglog([q[0] for q in pts], [q[2] for q in pts], ":" + marker, color=color, mfc=face,
                               label="%s largest" % code)
-                ax.set_title("%s, %s" % (quantity, "difference" if kernel == "diff" else "sum"), fontsize=10)
+                ax.set_title(qlabel(index, kernel), fontsize=10)
                 ax.grid(alpha=0.3, which="both")
                 if col == 0:
-                    ax.set_ylabel("error / max |exact| (%)")
+                    ax.set_ylabel("error / max |semi-analytical| (%)")
                 if row == 1:
                     ax.set_xlabel("panels")
         axes[0, 0].legend(fontsize=8)
-        fig.suptitle("Sharp truncated cylinder, %s body: mesh convergence of the quadratic QTFs against the exact reference\n"
+        fig.suptitle("Sharp truncated cylinder, %s body: mesh convergence of the quadratic QTFs against the\n"
+                     "semi-analytical reference (truncated_cylinder_reference.py; Garrett 1971, Yeung 1981);\n"
                      "difference pairs with omega_j - omega_i <= %.1f rad/s, sum pairs all, 0.40 to 1.40 rad/s" % (motion, max_dw))
         fig.tight_layout()
         name = os.path.join(args.out, "qtf_%s_convergence.png" % motion)
@@ -188,8 +199,8 @@ def potential(args):
         cases = sorted(glob.glob(os.path.join(args.results, "q_sharp_%s_src_m*" % motion)))
         # the total: .11d against the exact quadratic + body forcing
         fig, axes = plt.subplots(3, 2, figsize=(11, 10), sharex=True)
-        lines = [("exact total", exact("total"), dict(color="k", lw=2.2)),
-                 ("exact quadratic", lambda wi, wj, i, k, s=exact("total"), p=exact("pot"):
+        lines = [(SA + ", total", exact("total"), dict(color="k", lw=2.2)),
+                 (SA + ", quadratic", lambda wi, wj, i, k, s=exact("total"), p=exact("pot"):
                   None if s(wi, wj, i, k) is None else s(wi, wj, i, k) - p(wi, wj, i, k), dict(color="0.6", ls=":", lw=1.6))]
         for path in cases:
             table = qc.read_hams(os.path.join(path, "output", "Wamit_format", "QTF_Indirect.11d"))
@@ -200,7 +211,7 @@ def potential(args):
             for path in sorted(glob.glob(os.path.join(args.nemoh, "nemoh_sharp_%s_m*" % motion))):
                 table = qc.read_nemoh(os.path.join(path, "results", "QTF", "OUT_QTFM_N.dat"))
                 if table:
-                    lines.append(("Nemoh DUOK+HASBO %d panels" % PANELS.get(path.rsplit("_", 1)[-1], 0),
+                    lines.append((NEMOH + " DUOK+HASBO, %d panels" % PANELS.get(path.rsplit("_", 1)[-1], 0),
                                   lambda wi, wj, i, k, t=table: qc.lookup(t, wi, wj, i, k),
                                   dict(ls="--", marker="o", ms=3, lw=1.0)))
         for row, (quantity, index) in enumerate(qc.QUANTITIES):
@@ -208,9 +219,9 @@ def potential(args):
                 xs, vs = series(None, omegas, args.dw, index, "diff", source)
                 axes[row, 0].plot(xs, [v.real for v in vs], label=label, **style)
                 axes[row, 1].plot(xs, [v.imag for v in vs], label=label, **style)
-            axes[row, 0].set_ylabel("%s / (ρg)" % quantity)
+            axes[row, 0].set_ylabel("%s / (ρg)" % qlabel(index, "diff"))
             for col, part in enumerate(("Re", "Im")):
-                axes[row, col].set_title("%s %s" % (part, quantity), fontsize=10)
+                axes[row, col].set_title("%s %s" % (part, qlabel(index, "diff")), fontsize=10)
                 axes[row, col].grid(alpha=0.3)
         for col in range(2):
             axes[2, col].set_xlabel("ω_i (rad/s), ω_j = ω_i + %.2f" % args.dw)
@@ -230,16 +241,16 @@ def potential(args):
         for row, term in enumerate(qc.POTENTIAL_TERMS):
             for col, (quantity, index) in enumerate(qc.QUANTITIES):
                 ax = axes[row, col]
-                styles = [("exact", exact(term), "k", 2.2)]
+                styles = [(SA, exact(term), "k", 2.2)]
                 styles += [("HAMS %d panels" % n, qc._term(t, row), "C%d" % (c % 10), 1.2)
                            for c, (n, t) in enumerate(tables) if t]
                 for label, source, color, width in styles:
                     xs, vs = series(None, omegas, args.dw, index, "diff",
-                                    (lambda wi, wj, i, k, s=source: s(wi, wj, i, k)) if label == "exact"
+                                    (lambda wi, wj, i, k, s=source: s(wi, wj, i, k)) if label == SA
                                     else (lambda wi, wj, i, k, s=source: s(wi, wj, i)))
                     ax.plot(xs, [v.real for v in vs], color=color, lw=width, label=label + " Re")
                     ax.plot(xs, [v.imag for v in vs], color=color, lw=width, ls="--", label=label + " Im")
-                ax.set_title("%s, %s" % (term, quantity), fontsize=10)
+                ax.set_title("%s, %s" % (term, qlabel(index, "diff")), fontsize=10)
                 ax.grid(alpha=0.3)
                 if row == len(qc.POTENTIAL_TERMS) - 1:
                     ax.set_xlabel("ω_i (rad/s), ω_j = ω_i + %.2f" % args.dw)
