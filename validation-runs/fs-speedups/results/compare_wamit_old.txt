@@ -1,5 +1,5 @@
-Sum QTF against WAMIT C:/Users/vraghavan1/OneDrive - Delft University of Technology/Desktop/BEMRosetta/BEMRosetta/examples/fast/Semi/HydroData/marin_semi.12s, heading 0
-HAMS C:\Users\vraghavan1\Downloads\MREL_HAMS-MREL\validation-runs\oc4wfull-sum\archive\run_oc4wsum\q_oc4wfull_sym_indsum_free_L0, Nemoh C:\Users\vraghavan1\Downloads\MREL_HAMS-MREL\validation-runs\oc4wfull-sum\results\nemoh_oc4wfull_sym_free_fs_L0
+Sum QTF against WAMIT marin_semi.12s (OpenFAST r-test OC4 WAMIT reproduction), heading 0
+HAMS case q_oc4wfull_sym_indsum_free_L0 (old run); Nemoh case nemoh_oc4wfull_sym_free_fs_L0
 HAMS grid 21 omegas (0.40-1.40), 21 found in WAMIT; |code - WAMIT| / max|WAMIT| over the pairs HAMS writes
 Fx: 150 pairs, max |WAMIT| = 24.97 (per rho g)
   HAMS total (.11s)                      vs WAMIT              max  103.0  median   28.3 %  (150 pairs)

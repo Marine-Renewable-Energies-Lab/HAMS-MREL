@@ -861,9 +861,9 @@ CONTAINS
       ! field_influence_row) where the depth is finite and k0 h >= field_deep_kh, WK being k0 there; field_deep_kh = 0
       ! switches it off (spec D1 of the free-surface speed-ups). Measured against the direct sum of the finite-depth row
       ! (the deep-vs-finite benchmark): the deep row is within 1.3e-3 of the direct sum wherever it differs from the
-      ! finite-depth row by more than that; at k0 h = 40 the finite-depth row and the deep row differ by 3.3e-3 / 4.5e-3
-      ! because the finite-depth mode itself is off there. The passes that ask: fs_frequency, keep_fs_psi, keep_cs_psi, and
-      ! control_fields when B2 takes its fields. One log line the first time it is true.
+      ! finite-depth row by more than that; at k0 h = 40 the finite-depth row and the deep row differ by 3.4e-3
+      ! (the test pins 4.5e-3), because the finite-depth mode itself is off there. The passes that ask: fs_frequency,
+      ! keep_fs_psi, keep_cs_psi, and control_fields when B2 takes its fields. One log line the first time it is true.
       TYPE(so_options), INTENT(IN) :: opts
 
       field_deep = H > 0D0 .AND. opts%field_deep_kh > 0D0 .AND. WK*H >= opts%field_deep_kh
