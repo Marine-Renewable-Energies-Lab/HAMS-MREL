@@ -49,6 +49,7 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("field_deep_kh_negative_stops", test_field_deep_kh_negative_stops), &
     new_unittest("qtf_fs_circle_key", test_qtf_fs_circle_key), &
     new_unittest("qtf_fs_inner_key", test_qtf_fs_inner_key), &
+    new_unittest("qtf_fs_inner_source_rejections", test_qtf_fs_inner_source_rejections), &
     new_unittest("qtf_sum_full_deep_stops", test_qtf_sum_full_deep_stops), &
     new_unittest("qtf_edge_keys", test_qtf_edge_keys), &
     new_unittest("qtf_field_key", test_qtf_field_key) &
@@ -1070,6 +1071,47 @@ subroutine test_qtf_fs_inner_key(error)
                            'Invalid value "green" for key "qtf_fs_inner" in SecondOrder.in.')
   call remove_directory(root)
 end subroutine test_qtf_fs_inner_key
+
+!> qtf_fs_inner = source (with qtf_terms = full and qtf >= 1) stops as velocity_method and cs_velocity = source do: on the
+!> iterative solver (ISOLV = 2) and on irregular frequency removal (IRSP = 1), whose lid the hull-only source operator does
+!> not have; and with qtf_direct = 1, whose free-surface source needs phi_zz at the inner points. The stencil route takes
+!> all three; the source route without the full terms is not checked (the key is ignored there).
+subroutine test_qtf_fs_inner_source_rejections(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(so_options) :: fs, src
+  logical :: ok
+  character(len=200) :: msg
+
+  fs%active = .true.; fs%mean_drift = 1; fs%do_near = .true.; fs%qtf = 1; fs%qtf_terms = QTF_TERMS_FULL
+  src = fs; src%qtf_fs_inner = 2
+
+  call validate_second_order(src, 1, 20d0, 2, 0, .false., ok, msg)
+  call check(error, .not. ok, "qtf_fs_inner source with GMRES accepted")
+  if (allocated(error)) return
+  call check(error, trim(msg) == "qtf_fs_inner = source needs the direct solver (ISOLV=1) in ControlFile.in.", &
+    "isolv message: "//trim(msg))
+  if (allocated(error)) return
+
+  call validate_second_order(src, 1, 20d0, 1, 1, .false., ok, msg)
+  call check(error, .not. ok, "qtf_fs_inner source with IRSP accepted")
+  if (allocated(error)) return
+  call check(error, trim(msg) == "qtf_fs_inner = source cannot be used with irregular frequency removal (IRSP=1) in "// &
+    "ControlFile.in.", "irsp message: "//trim(msg))
+  if (allocated(error)) return
+
+  src%qtf_direct = 1
+  call validate_second_order(src, 1, 20d0, 1, 0, .false., ok, msg)
+  call check(error, .not. ok, "qtf_fs_inner source with qtf_direct = 1 accepted")
+  if (allocated(error)) return
+  call check(error, trim(msg) == "qtf_fs_inner = source cannot be used with qtf_direct = 1 (the direct solve needs phi_zz "// &
+    "at the inner points); use qtf_fs_inner = stencil.", "direct message: "//trim(msg))
+  if (allocated(error)) return
+
+  ! The stencil route takes all three
+  fs%qtf_direct = 1
+  call validate_second_order(fs, 1, 20d0, 2, 1, .false., ok, msg)
+  call check(error, ok, "the stencil route is refused: "//trim(msg))
+end subroutine test_qtf_fs_inner_source_rejections
 
 subroutine expect_read_message(error, root, lines, expected)
   type(error_type), allocatable, intent(out) :: error

@@ -73,6 +73,7 @@ MODULE QTFFreeSurface
    PUBLIC :: fs_outer_moments, fs_forcing_points
    PUBLIC :: fs_wl_state, fs_inner_fields_source, fs_wl_normal_derivative, fs_waterline_state, fs_edge_points
    PUBLIC :: fs_edge_state, fs_edge_psi, fs_inner_pair_ibp, fs_line_pair, fs_waterline_fit_source
+   PUBLIC :: fs_waterline_closure, FS_CLOSE_TOL
 
    ! The mode check: the partial waves must give the samples on the circle to this fraction of their largest value
    REAL(8), PARAMETER :: FS_MODE_TOL = 1D-3
@@ -94,6 +95,11 @@ MODULE QTFFreeSurface
    ! fitting it gave 28 % at 0.1 m), grad and phi_zz take the cubic (within 4.9 % and 3.5 % at 0.1 m from the
    ! waterline; the log basis overfits, phi_zz 35 %), inner sum integral 1.9 % off against 42.7 % without the fit
    INTEGER, PARAMETER :: WLFIT_KINDS(3) = [0, 2, 2]
+   ! fs_waterline_closure: the largest distance of a hull waterline point from the edges of the inner mesh, in segment
+   ! lengths, that the source route accepts. Measured on a generated mesh: 4.5e-16 (448-panel cylinder, 2850 inner panels,
+   ! fs_inner_mesh_closure); with its waterline nodes moved 0.2 m off the hull 9.1e-2. Files with 10 digits
+   ! stay far below 1e-6.
+   REAL(8), PARAMETER :: FS_CLOSE_TOL = 1D-6
    COMPLEX(8), PARAMETER :: CI = (0D0, 1D0)
    REAL(8), PARAMETER :: PI = 3.14159265358979323846D0
    ! The outer integral (Task 7): Gauss-Legendre points per radial interval, Gauss-Laguerre points per tail contour, the
@@ -593,6 +599,40 @@ CONTAINS
       END DO
       t_line = -FS_SIGN*CI*pair_omega(kn, w1, w2)*rho/g*t_line
    END SUBROUTINE fs_line_pair
+
+   REAL(8) FUNCTION fs_waterline_closure(fsp, geom) RESULT(miss)
+      ! How far the inner free-surface mesh fsp (the panels of the inner points, build_fs_inner) is from ending on the hull
+      ! waterline of geom: the largest distance of a waterline point (both ends and the midpoint of every segment) from the
+      ! nearest edge of the mesh, over the length of its segment. The source route (qtf_fs_inner = source) integrates the
+      ! area over the mesh and the line over the waterline (fs_line_pair), so the two must bound the same region; 0 to
+      ! rounding when the mesh has nodes on the waterline nodes (the generated mesh, spec D2 review I2). It checks the inner
+      ! edge only: the outer edge is the circle or polygon of fs_edge_points. 0 for no waterline.
+      TYPE(panel_mesh), INTENT(IN) :: fsp
+      TYPE(surface_geom), INTENT(IN) :: geom
+      REAL(8) :: x(2, 3), p(2), d, best
+      INTEGER :: iw, j, ip, ie
+
+      miss = 0D0
+      !$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(x, p, d, best, j, ip, ie) REDUCTION(MAX:miss) SCHEDULE(DYNAMIC, 4)
+      DO iw = 1, geom%nwl
+         x(:, 1) = geom%wl_x1(1:2, iw)
+         x(:, 2) = geom%wl_x2(1:2, iw)
+         x(:, 3) = geom%wl_xm(1:2, iw)
+         DO j = 1, 3
+            best = HUGE(1D0)
+            DO ip = 1, fsp%n
+               DO ie = 1, fsp%ncn(ip)
+                  CALL nearest_on_segment(x(:, j), fsp%xnode(1:2, fsp%ncon(ie, ip)), &
+                                          fsp%xnode(1:2, fsp%ncon(MOD(ie, fsp%ncn(ip)) + 1, ip)), p)
+                  d = NORM2(x(:, j) - p)
+                  best = MIN(best, d)
+               END DO
+            END DO
+            miss = MAX(miss, best/geom%wl_len(iw))
+         END DO
+      END DO
+      !$OMP END PARALLEL DO
+   END FUNCTION fs_waterline_closure
 
    SUBROUTINE fs_waterline_fit_source(fit, fsamp, states, f)
       ! The near-waterline fit (fs_waterline_fit_setup) on the source route: the horizontal gradient of each near-waterline

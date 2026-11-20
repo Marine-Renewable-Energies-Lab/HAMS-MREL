@@ -125,7 +125,7 @@ MODULE QTFDriver
    PUBLIC :: qtf_direct_at_omega, qtf_direct_pairs, qtf_direct_missing, qtf_diff_omega, qtf_direct_sum_pairs, qtf_sum_omega
    PUBLIC :: qtf_direct_sum_load, qtf_direct_diff_load, qtf_indirect_sum_load, potential_part_sum, psi_bad_files
    PUBLIC :: qtf_set_control_surface, qtf_keep_cs_velocity, qtf_keep_cs_psi, qtf_set_edge_weights
-   PUBLIC :: qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active
+   PUBLIC :: qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active, qtf_set_fs_inner
 
    LOGICAL :: active = .FALSE.
    INTEGER :: kind_qtf = 0, nbeta = 0, nkept = 0, all_headings_pairs = 0
@@ -199,6 +199,8 @@ MODULE QTFDriver
    ! at the inner points too, (n_fs, 2, 6*nbody, nneed), kept by qtf_keep_fs_psi
    LOGICAL :: fs_source = .FALSE.
    COMPLEX(8), ALLOCATABLE :: fs_gpsi(:, :, :, :)
+   ! qtf_stored_mb counts fs_gpsi: set by qtf_set_fs_inner before the estimate (the store is allocated later, by qtf_init)
+   LOGICAL :: estimate_gpsi = .FALSE.
    ! Non-finite results of the potential part, over the run (reset by qtf_init, kept after qtf_finish for the exit code)
    INTEGER :: n_bad_psi = 0                              ! difference frequencies whose psi has NaN or Inf
    INTEGER :: n_bad_pairs = 0                            ! frequency and heading pairs whose T_pot has NaN or Inf
@@ -1622,6 +1624,13 @@ CONTAINS
       qtf_kept = nkept
    END FUNCTION qtf_kept
 
+   SUBROUTINE qtf_set_fs_inner(mode)
+      ! The route of the inner free-surface fields for qtf_stored_mb: qtf_fs_inner, 1 stencil, 2 source (grad psi counted)
+      INTEGER, INTENT(IN) :: mode
+
+      estimate_gpsi = mode == 2
+   END SUBROUTINE qtf_set_fs_inner
+
    REAL(8) FUNCTION qtf_stored_mb(n_panels, nwl, nbody, nfreq, nb, npsi, npairs, ncs, nfs, npw, nsum_pairs)
       ! Size of the store in MB for nfreq frequencies and nb headings: 8 complex values per panel, 6 per body, 1 per segment.
       ! With npsi, also psi at npsi difference frequencies: 6*nbody complex values per panel. With npairs heading pairs, also
@@ -1648,6 +1657,9 @@ CONTAINS
       IF (PRESENT(nfs) .AND. PRESENT(npw)) THEN
          qtf_stored_mb = qtf_stored_mb + 16D0*REAL(5*nfs + npw, 8)*REAL(nfreq, 8)*REAL(nb, 8)/1D6
          IF (PRESENT(npsi)) qtf_stored_mb = qtf_stored_mb + 16D0*REAL(6*nbody, 8)*REAL(nfs + npw, 8)*REAL(npsi, 8)/1D6
+         ! qtf_fs_inner = source (qtf_set_fs_inner): grad_h psi_k too, 2 per point, mode and psi frequency
+         IF (PRESENT(npsi) .AND. estimate_gpsi) qtf_stored_mb = qtf_stored_mb + &
+                                                                16D0*REAL(6*nbody, 8)*2D0*REAL(nfs, 8)*REAL(npsi, 8)/1D6
       END IF
    END FUNCTION qtf_stored_mb
 

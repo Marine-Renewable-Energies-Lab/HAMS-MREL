@@ -12,7 +12,8 @@ module test_qtf_free_surface
                              fs_coverage_check, fs_outer_moments, fs_forcing_points, fs_local_rankine, &
                              fs_wl_fit, fs_waterline_fit_setup, fs_waterline_fit_apply, &
                              fs_wl_state, fs_inner_fields_source, fs_wl_normal_derivative, fs_waterline_state, &
-                             fs_edge_state, fs_inner_pair_ibp, fs_line_pair, fs_waterline_fit_source
+                             fs_edge_state, fs_inner_pair_ibp, fs_line_pair, fs_waterline_fit_source, &
+                             fs_waterline_closure, FS_CLOSE_TOL
   use SurfaceVelocity, only : source_operator, build_source_operator, velocity_source
   use HAMS_mod, only : NTHREAD, ISOL, IRSP
   use WaveDyn_mod, only : AMP, BETA, H, NK, TP, V, W1, WK, WVN
@@ -120,7 +121,8 @@ subroutine collect_qtf_free_surface(testsuite)
     new_unittest("inner_ibp_identity", test_inner_ibp_identity), &
     new_unittest("waterline_normal_derivative", test_waterline_normal_derivative), &
     new_unittest("fs_pair_terms_ibp_order", test_pair_terms_ibp_order), &
-    new_unittest("fs_inner_source_matches_exact", test_inner_source_matches_exact) &
+    new_unittest("fs_inner_source_matches_exact", test_inner_source_matches_exact), &
+    new_unittest("fs_inner_mesh_closure", test_inner_mesh_closure) &
     ]
 end subroutine collect_qtf_free_surface
 
@@ -3459,11 +3461,11 @@ end subroutine test_pair_terms_ibp_order
 !> pair (1.4, 1.0) and of the difference pair over a < r < a + 5 m (as fs_fields_exact_integral and _diff; the source
 !> route by fs_inner_pair_ibp + fs_line_pair, with the exact grad psi_k at the grid points and psi_k on both edges from
 !> fs_fields_exact_grid_psi*.txt, the states on the outer edge r = 15 m from the partial waves of fs_circle_modes, as the
-!> driver takes them, and on the waterline r = a d_n of the total field = V_n = 0, a fixed wall-sided body). The table goes
-!> to validation-runs/fs-speedups/gate/fs_inner_source_exact.txt. Gates: each route within SRC_* (1.3x measured).
+!> driver takes them, and on the waterline r = a d_n of the total field = V_n = 0, a fixed wall-sided body). The table is
+!> printed only (no file, no times in it); validation-runs/fs-speedups/gate/fs_inner_source_exact.txt is a copy of it.
+!> The times of the two routes are printed apart. Gates: each route within SRC_* (1.3x measured).
 subroutine test_inner_source_matches_exact(error)
   type(error_type), allocatable, intent(out) :: error
-  character(len=*), parameter :: gate_file = 'validation-runs/fs-speedups/gate/fs_inner_source_exact.txt'
   type(panel_mesh) :: mesh
   type(first_order_state) :: st(1), scratch
   type(cs_points) :: pts
@@ -3471,7 +3473,7 @@ subroutine test_inner_source_matches_exact(error)
   real(8), allocatable :: xp(:, :), xc(:, :), delta(:), scale(:), x3(:, :)
   complex(8), allocatable :: fp(:, :), fc(:, :), sig(:, :)
   real(8) :: w, k, h_ex, e(3, 2), lam, rr, wst(2), wsr(2), wsf(2), tst, tsr, t0
-  integer :: ib, i, n, nshrunk, nthread_saved, ir, j, u, ios
+  integer :: ib, i, n, nshrunk, nthread_saved, ir, j
   type(surface_geom) :: geom
   type(fs_wl_fit) :: fit
   type(source_operator) :: op
@@ -3483,14 +3485,12 @@ subroutine test_inner_source_matches_exact(error)
 
   nthread_saved = NTHREAD
   NTHREAD = 8
-  call execute_command_line('mkdir "validation-runs/fs-speedups/gate" 2> nul', wait=.true.)
-  open (newunit=u, file=gate_file, status='replace', action='write', iostat=ios)
-  call check(error, ios == 0, "cannot write "//gate_file)
-  if (allocated(error)) return
-  write (u, '(a)') '# G1 input, Task 6 (spec D2): inner fields and inner integral, stencil route against the source route,'
-  write (u, '(a)') '# exact potential on the sharp m1 hull (448 panels), fixed body, test fs_inner_source_matches_exact.'
-  write (u, '(a)') '# Errors relative to the largest exact value of the ring (fields) or of the three psi_k (integral).'
-  write (u, '(a)') '# FIELDS omega r-a  stencil+fit: phi grad   source: phi grad   source+grad fit: grad'
+  print '(a)', '# G1 input, Task 6 (spec D2): inner fields and inner integral, stencil route against the source route,'
+  print '(a)', '# exact potential on the sharp m1 hull (448 panels), fixed body, test fs_inner_source_matches_exact.'
+  print '(a)', '# Errors relative to the largest exact value of the ring (fields) or of the three psi_k (integral).'
+  print '(a)', '# Regenerate: run the unit test fs_inner_source_matches_exact and copy the lines that start with # or a'
+  print '(a)', '# capital tag (FIELDS, WORST_*, INTEGRAL) from its output.'
+  print '(a)', '# FIELDS omega r-a  stencil+fit: phi grad   source: phi grad   source+grad fit: grad'
   wst = 0d0
   wsr = 0d0
   wsf = 0d0
@@ -3529,9 +3529,7 @@ subroutine test_inner_source_matches_exact(error)
       call ring_errors(fsr, e(1, 2), e(2, 2))
       call ring_errors(fsf, e(3, 1), e(3, 2))
       rr = norm2(xp(:, 5*ir - 4))
-      print '(4x,a,f4.1,a,f5.2,a,2es10.2,a,2es10.2,a,es10.2)', "omega ", w, ", r - a = ", rr - 10d0, &
-        ": stencil+fit phi, grad ", e(1:2, 1), "; source ", e(1:2, 2), "; source+grad fit grad ", e(3, 2)
-      write (u, '(a,f4.1,f6.2,5es11.3)') 'FIELDS ', w, rr - 10d0, e(1:2, 1), e(1:2, 2), e(3, 2)
+      print '(a,f4.1,f6.2,5es11.3)', 'FIELDS ', w, rr - 10d0, e(1:2, 1), e(1:2, 2), e(3, 2)
       wst = max(wst, e(1:2, 1))
       wsr = max(wsr, e(1:2, 2))
       wsf = max(wsf, [e(1, 2), e(3, 2)])
@@ -3539,16 +3537,14 @@ subroutine test_inner_source_matches_exact(error)
     deallocate (x3, delta, scale, fst, fsr, fsf, sig, fsamp)
   end do
   if (allocated(error)) then
-    close (u)
     NTHREAD = nthread_saved
     return
   end if
   print '(4x,a,2f8.2,a)', "inner field times, stencil+fit and source (both frequencies, 30 points): ", tst, tsr, " s"
-  write (u, '(a,2es11.3)') 'WORST_FIELDS_STENCIL_FIT phi grad ', wst
-  write (u, '(a,2es11.3)') 'WORST_FIELDS_SOURCE phi grad ', wsr
-  write (u, '(a,2es11.3)') 'WORST_FIELDS_SOURCE_GRADFIT phi grad ', wsf
-  write (u, '(a,2f9.3)') 'TIME_FIELDS_S stencil+fit source (incl. operator and solve) ', tst, tsr
-  write (u, '(a)') '# INTEGRAL kernel  stencil+fit  source  source+grad fit  (max over psi_1, psi_3, psi_5)'
+  print '(a,2es11.3)', 'WORST_FIELDS_STENCIL_FIT phi grad ', wst
+  print '(a,2es11.3)', 'WORST_FIELDS_SOURCE phi grad ', wsr
+  print '(a,2es11.3)', 'WORST_FIELDS_SOURCE_GRADFIT phi grad ', wsf
+  print '(a)', '# INTEGRAL kernel  stencil+fit  source  source+grad fit  (max over psi_1, psi_3, psi_5)'
   lab = [character(len=10) :: 'sum', 'difference']
   call source_integral('test/data/fs_sum_exact/fs_fields_exact_grid.txt', &
                        'test/data/fs_sum_exact/fs_fields_exact_grid_psi.txt', KERNEL_SUM, int_err(:, 1), error)
@@ -3556,16 +3552,10 @@ subroutine test_inner_source_matches_exact(error)
     call source_integral('test/data/fs_sum_exact/fs_fields_exact_grid_diff.txt', &
                          'test/data/fs_sum_exact/fs_fields_exact_grid_psi_diff.txt', KERNEL_DIFF, int_err(:, 2), error)
   NTHREAD = nthread_saved
-  if (allocated(error)) then
-    close (u)
-    return
-  end if
+  if (allocated(error)) return
   do j = 1, 2
-    print '(4x,a,a,a,3f8.2,a)', "inner ", trim(lab(j)), " integral off the exact, stencil+fit, source, source+grad fit: ", &
-      100d0*int_err(:, j), " %"
-    write (u, '(a,a,3es11.3)') 'INTEGRAL ', lab(j), int_err(:, j)
+    print '(a,a,3es11.3)', 'INTEGRAL ', lab(j), int_err(:, j)
   end do
-  close (u)
   write (info, '(a,2es9.2,a,2es9.2)') "fields off the exact, source route phi, grad: ", wsr, "; stencil+fit: ", wst
   call check(error, maxval(wsr) <= SRC_FIELD_GATE, trim(info))
   if (allocated(error)) return
@@ -3817,5 +3807,45 @@ contains
 
 end subroutine source_integral
 
+
+!> The guard of the source route on the inner mesh (fs_waterline_closure): the line integral runs over the hull waterline,
+!> so the inner mesh must end on it. On the generated mesh of the 448-panel cylinder every waterline segment (its ends
+!> and midpoint) lies on an edge of the inner mesh, to rounding (printed, measured value in FS_CLOSE_TOL's comment); with
+!> the mesh nodes on the waterline moved 2 % of the radius outwards (a gap between mesh and hull) the miss is far above
+!> FS_CLOSE_TOL.
+subroutine test_inner_mesh_closure(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh, fsp
+  type(surface_geom) :: geom
+  type(so_options) :: opts
+  type(first_order_state) :: st(1)
+  type(cs_points) :: pts
+  real(8) :: centre(2), radius, miss, r
+  integer :: npc, i
+  logical :: ok
+  character(len=:), allocatable :: msg
+
+  call cylinder_fixture(mesh, st, error)
+  if (allocated(error)) return
+  call build_surface_geom(mesh, 1d-6, DEFAULT_SHARP_DEG, geom, ok, msg)
+  call check(error, ok, "geometry: "//msg)
+  if (allocated(error)) return
+  opts%qtf_fs_radius = 20d0
+  call build_fs_inner(mesh, geom, opts, fx_depth, 'fs_task8_no_input_dir', pts, centre, radius, ok, msg, &
+                      omega_max=2.2d0, np_circle=npc, fs_panels=fsp)
+  call check(error, ok, "inner mesh: "//msg)
+  if (allocated(error)) return
+  miss = fs_waterline_closure(fsp, geom)
+  print '(4x,a,i0,a,es10.2,a,es10.2)', "generated mesh (", fsp%n, " panels): closure miss ", miss, ", tolerance ", FS_CLOSE_TOL
+  call check(error, miss <= FS_CLOSE_TOL, "the generated inner mesh does not close on the waterline")
+  if (allocated(error)) return
+  do i = 1, fsp%nnode
+    r = norm2(fsp%xnode(1:2, i) - centre)
+    if (abs(r - 10d0) < 1d-6) fsp%xnode(1:2, i) = centre + (fsp%xnode(1:2, i) - centre) * (1d0 + 0.02d0 * 10d0 / r)
+  end do
+  miss = fs_waterline_closure(fsp, geom)
+  print '(4x,a,es10.2)', "nodes on the waterline moved 0.2 m out: closure miss ", miss
+  call check(error, miss > 1d2 * FS_CLOSE_TOL, "a gap between the inner mesh and the waterline is not found")
+end subroutine test_inner_mesh_closure
 
 end module test_qtf_free_surface

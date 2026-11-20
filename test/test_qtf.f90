@@ -11,7 +11,7 @@ module test_qtf
   use QTFDriver, only : qtf_init, qtf_keep, qtf_pair_load, qtf_finish, qtf_kept, qtf_radiation_list, qtf_radiation_omegas, &
                         qtf_direct_omegas, qtf_keep_psi, qtf_nonfinite_psi, qtf_nonfinite_pairs, qtf_psi_tolerance, &
                         qtf_psi_index, qtf_direct_missing, qtf_omega_list, irregular_frequency_estimate, sum_pair_index, &
-                        qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active, qtf_stored_mb, &
+                        qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active, qtf_stored_mb, qtf_set_fs_inner, &
                         qtf_direct_sum_pairs, qtf_direct_at_omega, qtf_direct_sum_load, qtf_direct_pairs, &
                         qtf_direct_diff_load, qtf_sum_omega, qtf_diff_omega, qtf_psi_count, qtf_indirect_sum_load, &
                         potential_part_sum, psi_bad_files
@@ -77,6 +77,7 @@ subroutine collect_qtf(testsuite)
     new_unittest("fs_store_order", test_fs_store_order), &
     new_unittest("qtf_sum_pairs_cover", test_sum_pairs_cover), &
     new_unittest("qtf_stored_mb_sum", test_stored_mb_sum), &
+    new_unittest("qtf_stored_mb_gpsi", test_stored_mb_gpsi), &
     new_unittest("radiation_list_sum_indirect", test_radiation_list_sum_indirect), &
     new_unittest("radiation_list_diff_unchanged", test_radiation_list_diff_unchanged), &
     new_unittest("qtf_sum_indirect_list_body", test_sum_indirect_list_body), &
@@ -1044,6 +1045,23 @@ subroutine test_stored_mb_sum(error)
   expected = 16d0 * (5d0 * (nfs1 - nfs0) * nfreq * nb + 6d0 * nbody * (nfs1 - nfs0) * npsi) / 1d6
   call check(error, abs((mb1 - mb0) - expected) <= 1d-12 * expected, "the larger inner mesh in qtf_stored_mb")
 end subroutine test_stored_mb_sum
+
+!> qtf_stored_mb with qtf_fs_inner = source (qtf_set_fs_inner(2)): grad_h psi_k at the inner points adds 16 bytes x 2 n_fs
+!> x 6 nbody per psi frequency; the stencil route (1) adds nothing, and is the default
+subroutine test_stored_mb_gpsi(error)
+  type(error_type), allocatable, intent(out) :: error
+  integer, parameter :: nbody = 2, nfreq = 4, nb = 2, npsi = 5, nfs = 70, npw = 33
+  real(8) :: mb0, mb1, mb2, expected
+
+  mb0 = qtf_stored_mb(10, 4, nbody, nfreq, nb, npsi=npsi, nfs=nfs, npw=npw)
+  call qtf_set_fs_inner(2)
+  mb1 = qtf_stored_mb(10, 4, nbody, nfreq, nb, npsi=npsi, nfs=nfs, npw=npw)
+  call qtf_set_fs_inner(1)
+  mb2 = qtf_stored_mb(10, 4, nbody, nfreq, nb, npsi=npsi, nfs=nfs, npw=npw)
+  expected = 16d0 * 2 * nfs * 6 * nbody * npsi / 1d6
+  call check(error, abs((mb1 - mb0) - expected) <= 1d-12 * expected .and. mb2 == mb0, &
+             "the grad psi store of the source route in qtf_stored_mb")
+end subroutine test_stored_mb_gpsi
 
 !> Phase 6b: qtf = 2 with qtf_direct = 0 keeps the sums of the list. Grid 0.3, 0.6, 0.9: the sums are 0.6, 0.9, 1.2, 1.2, 1.5,
 !> 1.8; 0.6 and 0.9 are main-grid solves, so the radiation-only list is 1.2, 1.5, 1.8. qtf_direct_omegas still stops at

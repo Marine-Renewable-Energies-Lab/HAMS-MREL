@@ -223,13 +223,6 @@ CONTAINS
          WRITE (*, '(a)') ' QTF note: qtf_fs_radius, qtf_fs_rows, qtf_fs_panel, qtf_fs_modes, qtf_fs_evanescent,'// &
             ' qtf_fs_circle and qtf_fs_inner are ignored; they apply with qtf_terms = full and qtf = 1, 2 or 3 only.'
       END IF
-      IF (uses_fs(opts) .AND. opts%qtf_fs_inner == 2 .AND. opts%qtf_direct == 1) THEN
-         ! The direct solve takes Q_D at the inner points as its free-surface source (fs_forcing_points), with phi_zz;
-         ! the source route has no phi_zz there
-         WRITE (*, '(a)') ' QTF: qtf_fs_inner = source gives the inner fields without phi_zz, which the direct solve'// &
-            ' (qtf_direct = 1) needs at the inner points; use qtf_fs_inner = stencil with qtf_direct = 1.'
-         ERROR STOP 1
-      END IF
       ALLOCATE (states(MERGE(NBETA, 1, keep_all_headings(opts))))
       ! Only the near-field and control-surface methods use the surface geometry (the control surface takes the waterplane
       ! extent from it), so only they can stop on the geometry's errors
@@ -470,6 +463,9 @@ CONTAINS
    END SUBROUTINE body_terms_setup
 
    SUBROUTINE fs_setup(opts, inputdir, omegas, omega_sum_max)
+      ! (local USEs, so that the module header, which another branch edits, stays as it is)
+      USE QTFFreeSurface, ONLY: fs_waterline_closure, FS_CLOSE_TOL
+      USE QTFDriver, ONLY: qtf_set_fs_inner
       ! qtf_terms = full: the inner free surface (build_fs_inner, panel size from the largest frequency of the grid omegas),
       ! the offsets of its points (fs_inner_steps, once: they do not depend on the frequency), the mode counts of the
       ! partial waves (M = qtf_fs_modes, or ceil(k0_max R) + 10 with k0_max the wave number of the largest frequency;
@@ -556,6 +552,19 @@ CONTAINS
       ! divided by delta^2, take over (fs_laplace_residual: 1.6e-2 at delta = 0.02 psize against 7.2e-4 at 0.1)
       fs_step = 2D0*opts%cs_fd_step
       ALLOCATE (fs_delta(fs_pts%n))
+      ! The size estimate counts grad psi of the source route; and that route integrates along the hull waterline, so the
+      ! inner mesh must end on it (fs_waterline_closure; a gap would enter amplified by the cancellation of its area and
+      ! line parts)
+      CALL qtf_set_fs_inner(opts%qtf_fs_inner)
+      IF (opts%qtf_fs_inner == 2) THEN
+         miss = fs_waterline_closure(fs_panels, geom)
+         IF (miss > FS_CLOSE_TOL) THEN
+            WRITE (*, '(a,ES10.3,a,ES9.2,a)') ' QTF free surface: the inner mesh does not end on the hull waterline (a'// &
+               ' waterline point is', miss, ' segment lengths off every mesh edge, tolerance', FS_CLOSE_TOL, '), which'// &
+               ' qtf_fs_inner = source needs: give FSInnerMesh.pnl nodes on the waterline nodes, or use qtf_fs_inner = stencil.'
+            ERROR STOP 1
+         END IF
+      END IF
       scaled = omega_mesh > omega_max .AND. fs_np > 0 .AND. .NOT. (opts%qtf_fs_panel > 0D0)
       IF (scaled) THEN
          ! lambda(omega_max)/10, the panel size at the circle of the mesh of the difference run (build_fs_inner)
