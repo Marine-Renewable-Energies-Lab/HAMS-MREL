@@ -32,3 +32,37 @@ check at the end of the job), so a failed start costs little.
 WAMIT's second-order run (the reference) used its direct method (".12d ... DIRECT METHOD" in its log). Option A gives the
 HAMS direct result (`QTF_Direct.12d`) as well as the indirect one (`QTF_Indirect.11d`), so both are compared with WAMIT,
 like with like, and the two HAMS methods against each other on a new hull.
+
+## Extension to the full range of the paper (estimate only; nothing prepared or submitted)
+
+Roland et al. (2026) run 0.30 to 2.50 rad/s for both platforms (their section 3.3; Figs. 5 and 7 reach 2.50, the OC4 WAMIT
+file 3.0). HAMS stops at 1.90 because `velocity_method = source` cannot remove irregular frequencies (IRSP = 1 is rejected).
+The first ones are about 1.98 rad/s for the OC4 offset columns (radius 6 m) and 1.94 rad/s for the VolturnUS-S outer
+columns (6.25 m), with more below 2.55 rad/s: J_m(ka) = 0 gives 2.50 (OC4, j_11) and 2.17, 2.45 (VolturnUS-S, central
+column j_01 and outer j_11) [derived: k = j_mn / a, omega^2 = g k for these drafts]. So the extension needs
+`velocity_method = differencing` with IRSP = 1 and a lid, and a full rerun: a QTF pair needs the first-order states of both
+its frequencies in one run, so the missing frequencies cannot be added to the existing runs. The overlap 0.25 to 1.90 rad/s
+then also compares differencing with the source velocity of the existing runs.
+
+Wavelength at 2.55 rad/s: 9.5 m (deep water). Longest panel edges: OC4 9208 panels median 0.44 m, 90 % 1.87 m (lambda/5),
+largest in the top 3 m 2.45 m (lambda/3.9); OC4 5022 panels 0.69 / 2.24 / 2.29 m; VolturnUS-S 1.62 / 1.62 m, 1.40 m at the
+waterline (lambda/7 at 2.50). The OC4 meshes resolve 2.55 rad/s with most panels but not with the largest near-surface ones;
+the VolturnUS-S mesh does. The VolturnUS-S inner free surface of 2 m is lambda/4.9 at 2.50 rad/s; 1.25 m (about 11,000
+triangles) keeps lambda/8.
+
+| Job | Frequencies | Expected | Limit (max billed) |
+|---|---|---|---|
+| OC4 full hull, 9208 panels (recommended) | 47, 0.25 to 2.55 | 8.4 h, 202 core-h | 22 h, 528 core-h |
+| OC4 full hull, 5022 panels | 47, 0.25 to 2.55 | 3.1 h, 74 core-h | 9 h, 216 core-h |
+| VolturnUS-S option A, inner FS 1.25 m (recommended) | 46, 0.25 to 2.50 | 9.9 h, 238 core-h | 30 h, 720 core-h |
+| VolturnUS-S option A, inner FS 2 m | 46, 0.25 to 2.50 | 6.7 h, 161 core-h | 18 h, 432 core-h |
+| VolturnUS-S option A as approved | 34, 0.25 to 1.90 | 5.1 h, 122 core-h | 18 h, 432 core-h |
+
+Basis. OC4: the logs of the existing runs. The control-surface field passes took 4.03 h of 5.08 h (5022 panels) and 9.27 h
+of 12.72 h (9208 panels), with 67 passes for 34 frequencies and 4 radiation-only solves; the source solve 0.47 and 1.48 h.
+With 47 frequencies the passes are 98 (times 1.46). The fs-speedups code cut these passes to 0.36 of their time on OC4
+(4538 s to 1613 s, deep-water rows above k0 h = 10); the upper bound takes no saving. The rest scales with the frequencies
+(times 1.38) and the lid (times 1.3, assumed); the source solve drops. VolturnUS-S: the parts of option A times 46/34 for
+the passes and the free-surface part, times 45/33 for the direct solves, times 2.6 for the finer inner mesh, and the lid for
+the first order. The 9208-panel OC4 run is enough for the comparison: the 5022-panel run adds only the mesh trend, which the
+existing runs already show up to 1.90 rad/s.

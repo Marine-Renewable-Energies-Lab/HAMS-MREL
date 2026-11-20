@@ -82,11 +82,13 @@ def main(argv):
         for solver in PAPER:
             pts = sorted(paper[(dw, solver)])
             x, y = np.array([w for w, _ in pts]), np.array([v for _, v in pts])
+            inside = (x >= lo - 1e-9) & (x <= hi + 1e-9)   # the plots and the measure keep the HAMS range only
+            x, y = x[inside], y[inside]
             top.plot(x, y, label=solver + " (paper)", **STYLE[solver])
             if solver == "WAMIT":
                 continue
             ref = np.interp(x, ww, wv)
-            m = (x >= lo - 1e-9) & (x <= hi + 1e-9)
+            m = np.ones_like(x, bool)
             e = 100 * np.abs(y - ref) / scale
             bottom.plot(x, 100 * (y - ref) / scale, **STYLE[solver])
             lines.append("  %-32s %7.2f at %.2f / %5.2f%s" % (solver + " (paper)", e[m].max(), x[m][np.argmax(e[m])],
@@ -109,15 +111,14 @@ def main(argv):
         bottom.set_ylabel("(X $-$ WAMIT) / max|WAMIT| (%)")
         bottom.set_xlabel(r"$\omega_1$ (rad/s)")
         bottom.axhline(0.0, color=INK2, lw=0.8)
-        for ax in (top, bottom):
-            ax.axvspan(hi, 2.6, color=GRID, alpha=0.5, lw=0)
         bottom.set_ylim(-60, 60)
-        top.set_xlim(0.25, 2.6)
+        top.set_xlim(lo - 0.03, hi + 0.03)
     axes[0, 0].legend(loc="upper left", fontsize=8)
     figure.suptitle(title or "%s: HAMS against the solvers of Roland et al. (2026), Fig. %s" % (platform, fig),
                     x=0.01, ha="left", color=INK)
     figure.text(0.01, 0.005, "Paper curves read from the vector paths of Roland et al. (2026), J. Phys.: Conf. Ser. 3346, "
-                "012006, Fig. %s (CC BY 4.0). Shaded: above %.2f rad/s, outside the HAMS grid." % (fig, hi),
+                "012006, Fig. %s (CC BY 4.0), shown over the HAMS range %.2f to %.2f rad/s only. Lower plots clipped at "
+                "+/-60 %%." % (fig, lo, hi),
                 fontsize=7.5, color=INK2)
     figure.tight_layout(rect=(0, 0.02, 1, 0.97))
     figure.savefig(out_png, dpi=160)

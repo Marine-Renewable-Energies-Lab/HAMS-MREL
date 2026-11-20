@@ -561,7 +561,7 @@ Roland et al. (2026) compare four boundary element solvers on the surge differen
 | HAMS, 5022 panels | 10.46 (1.80) / 1.49 | 15.77 (0.30) / 1.86 |
 | HAMS, 9208 panels | 7.92 (1.80) / 0.73 | 16.34 (0.30) / 1.07 |
 
-![Surge difference-frequency QTF of OC4 on the mean-drift diagonal and the diagonal of 0.05 rad/s: the six solver set-ups of Roland et al. (2026), Fig. 5, and HAMS at 5022 and 9208 panels; below, the difference from WAMIT over the largest WAMIT value. Above 1.90 rad/s (shaded) HAMS has no frequencies](figures/roland_oc4_diagonals.png)
+![Surge difference-frequency QTF of OC4 on the mean-drift diagonal and the diagonal of 0.05 rad/s: the six solver set-ups of Roland et al. (2026), Fig. 5, and HAMS at 5022 and 9208 panels; below, the difference from WAMIT over the largest WAMIT value; all curves over the HAMS range of 0.30 to 1.90 rad/s](figures/roland_oc4_diagonals.png)
 
 - HAMS integrates the pressure on the hull, a near-field method, yet its results fall in the group of the paper's middle-field solvers, not with the near-field ones. The paper's near-field results are 57% to 83% off WAMIT at the largest, with medians of 12.6% to 17.1%. Those of HAMS are 7.9% to 16.3%, with medians of 0.7% to 1.9%.
 - The median falls with the mesh, from 1.49% to 0.73% on the mean drift and from 1.86% to 1.07% at 0.05 rad/s. At 9208 panels it is the lowest of all the solvers.
