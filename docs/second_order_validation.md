@@ -541,6 +541,74 @@ What this does not show:
 - A close match at the natural frequencies. The pairs there, which carry the largest differences, are sensitive to the damping and the restoring, which we take from the files of the WAMIT run, and to the viscous damping that neither code has.
 - The conjugation and the axes of the WAMIT-format output. The diagonal fixes the sign but, being real, not the conjugation; the off-diagonal reading is fixed in advance and never chosen by agreement ([Open items](#open-items)).
 
+### OC4 against the solvers of Roland et al. (2026)
+
+Roland et al. (2026) compare four boundary element solvers on the surge difference-frequency QTF of the OC4-DeepCwind semisubmersible: WAMIT, OrcaWave and HydroStar, each by pressure integration (near field, "PI") and by a control surface (middle field, "CS"), and Nemoh (near field only). The frequencies run from 0.30 to 2.50 rad/s in steps of 0.05, heading 0, with the mass, damping and stiffness of the WAMIT input files (their section 3.3). Their WAMIT result is the OpenFAST file `marin_semi.12d` of the section above. Their Fig. 5 gives the mean-drift diagonal and the diagonal of 0.05 rad/s, close to the surge natural frequency of about 0.059 rad/s (their section 4.2.1).
+
+**Paper data.** The curves of Figs. 5 and 7 are vector paths in the PDF. `extract_roland_curves.py` reads them, calibrates the axes from the tick marks and snaps each point to the 0.05 rad/s grid. Nemoh of Fig. 5 is on its own grid (0.343, 0.390, ... rad/s), from Al-Ghuwaidi and Pribadi (2025), and is kept as read. `check_wamit_extraction.py` compares the WAMIT curves with the files they came from (|T| ρg, ρ = 1025 kg/m³, g = 9.80665 m/s²). The largest difference is 0.034% of the largest value for OC4 and 0.042% for VolturnUS-S, on both diagonals. The 0.05 rad/s diagonal is plotted at the higher frequency of each pair, (ω_1 − 0.05, ω_1). The other reading is 16% to 38% off the file. The scripts and the curves (`roland2026_fig5_fig7.csv`, derived from the paper under CC BY 4.0) are in `validation-runs/roland-benchmark/`.
+
+**HAMS model.** The full WAMIT hull, with the columns, pontoons and cross braces, meshed with gmsh at 5022 and 9208 panels, with symmetric brace waterlines (branch `diag/heave-flare`). It has the mass, centre of gravity, hydrostatic restoring and mooring of the WAMIT run. Free body, `qtf = 1`, `qtf_terms = body`, `qtf_b2 = control`, `velocity_method = source`, 34 frequencies from 0.25 to 1.90 rad/s, every pair. These runs were made on Snellius earlier (24 threads; 5 h 5 min and 12 h 43 min) and are reused here. HAMS has no frequencies above 1.90 rad/s: `velocity_method = source` keeps the irregular frequencies, the first near 1.98 rad/s ([OC4 against WAMIT](#oc4-against-wamit)). The free-surface part is left out, as in the paper and in the WAMIT file ([OC4 sum QTF against WAMIT](#oc4-sum-qtf-against-wamit)).
+
+**Measure.** `compare_diagonals.py`: |X − WAMIT| / max |WAMIT| per diagonal over ω_1 from 0.30 to 1.90 rad/s, largest (with its ω_1) and median, in percent, X being each solver of the paper or HAMS's `QTF_Indirect.11d` times ρg. For Nemoh, WAMIT is interpolated linearly onto the Nemoh grid.
+
+| Solver | Mean drift | Δω = 0.05 rad/s |
+| :--- | ---: | ---: |
+| OrcaWave CS | 6.48 (1.45) / 1.28 | 6.58 (1.45) / 1.42 |
+| HydroStar CS | 5.92 (1.45) / 0.96 | 113.16 (0.30) / 1.20 |
+| OrcaWave PI | 82.90 (1.90) / 12.57 | 77.83 (1.85) / 14.80 |
+| HydroStar PI | 57.30 (1.40) / 14.65 | 60.92 (1.45) / 17.10 |
+| Nemoh | 10.93 (1.88) / 2.10 | 11.59 (1.88) / 2.54 |
+| HAMS, 5022 panels | 10.46 (1.80) / 1.49 | 15.77 (0.30) / 1.86 |
+| HAMS, 9208 panels | 7.92 (1.80) / 0.73 | 16.34 (0.30) / 1.07 |
+
+![Surge difference-frequency QTF of OC4 on the mean-drift diagonal and the diagonal of 0.05 rad/s: the six solver set-ups of Roland et al. (2026), Fig. 5, and HAMS at 5022 and 9208 panels; below, the difference from WAMIT over the largest WAMIT value. Above 1.90 rad/s (shaded) HAMS has no frequencies](figures/roland_oc4_diagonals.png)
+
+- HAMS integrates the pressure on the hull, a near-field method, yet its results fall in the group of the paper's middle-field solvers, not with the near-field ones. The paper's near-field results are 57% to 83% off WAMIT at the largest, with medians of 12.6% to 17.1%. Those of HAMS are 7.9% to 16.3%, with medians of 0.7% to 1.9%.
+- The median falls with the mesh, from 1.49% to 0.73% on the mean drift and from 1.86% to 1.07% at 0.05 rad/s. At 9208 panels it is the lowest of all the solvers.
+- The largest HAMS difference at 0.05 rad/s is at ω_1 = 0.30 rad/s, the pair (0.25, 0.30), next to the heave and pitch natural frequencies ([OC4 against WAMIT](#oc4-against-wamit)); it does not fall with the mesh. HydroStar CS has its largest difference at the same pair. Roland et al. call such points near the lowest frequency of the grid numerical artifacts (their section 4.2.1). From ω_1 = 0.35 rad/s up, the largest HAMS difference at 0.05 rad/s is 11.11% at 5022 panels and 8.55% at 9208, both at 1.85 rad/s, and it falls with the mesh.
+
+The whole QTF, in the style of the paper's Fig. 4 (`compare_maps.py`, HAMS at 9208 panels against `marin_semi.12d`, both frequencies from 0.30 to 1.90 rad/s, |HAMS − WAMIT| over the largest |WAMIT| of the map, 3.03e5 N/m²), largest / median in percent:
+
+| Pairs | All | Without 0.25 to 0.35 rad/s |
+| :--- | ---: | ---: |
+| all | 41.42 / 1.61 | 17.10 / 1.43 |
+| 0 < Δω ≤ 0.30 rad/s | 4.66 / 0.87 | 4.66 / 0.80 |
+| diagonal | 3.36 / 0.38 | 3.36 / 0.39 |
+
+![Surge difference-frequency QTF of OC4, magnitude and phase, HAMS at 9208 panels and the WAMIT file of Roland et al. (2026), with the modulus of the difference; jet colour scale from 0 to 6e5 N/m² as in the paper's Fig. 4](figures/roland_oc4_maps.png)
+
+- Over the slow-drift range, 0 < Δω ≤ 0.30 rad/s, HAMS is within 4.66% of the largest WAMIT value (median 0.87%). The magnitude and phase maps show the same pattern.
+- The largest differences are far from the diagonal, at pairs with a frequency in 0.25 to 0.35 rad/s (the heave and pitch natural frequencies) or close to 1.90 rad/s, as in [OC4 against WAMIT](#oc4-against-wamit).
+
+What this does not show:
+
+- Accuracy. As in the paper, WAMIT is the reference, not an exact answer.
+- The paper's frequencies above 1.90 rad/s, where its solvers spread most.
+- How HAMS's middle-field-like agreement comes about. Its near-field method uses the source velocity and the control-surface form of B2, and neither was switched off here.
+
+### VolturnUS-S with the free-surface integral: prepared, not run
+
+The second platform of Roland et al. (2026) is the VolturnUS-S semisubmersible of the IEA Wind 15 MW reference turbine. Its WAMIT result is the second-order run of the IEA Wind Task 37 repository (IEA-15-240-RWT v1.1.18, Apache License 2.0). That run includes a free-surface mesh (Roland et al. 2026, section 3.1). It is thus a public external reference that contains the free-surface term, which the OC4 file does not ([OC4 sum QTF against WAMIT](#oc4-sum-qtf-against-wamit)).
+
+The WAMIT run, from its log and input files:
+
+- WAMIT v6.107S, higher-order panel method, with the hull given as 64 NURBS patches.
+- Direct method for the second-order potential.
+- Free-surface forcing on a mesh of the free surface out to RINNER = 200 m, with NAL = 0 (the run's own comment: to avoid gross errors).
+- External linear damping and mooring stiffness; depth 200 m; heading 0; 46 frequencies from 0.25 to 2.50 rad/s.
+- The WAMIT data are not in this repository.
+
+The HAMS case `q_volturnus_free_full` (`validation-runs/roland-benchmark/make_volturnus_case.py`):
+
+- **Hull.** The IEA low-order mesh, the one Roland et al. gave to every solver but Nemoh. Its 228 interior waterplane panels (the lid of WAMIT's irregular-frequency removal) are removed, and the half mesh is mirrored: 5076 panels. The hull is closed: the projected areas sum to zero to 1e-14 of the waterplane area. Its volume is 0.37% and its waterplane area 0.82% below those of the NURBS hull of the WAMIT run.
+- **Junctions.** The mesh does not conform where the columns meet the pontoons. HAMS accepts such edges and finds the neighbours there by distance (`SurfaceGeometry.f90`).
+- **Matrices.** The mass, the external damping and the mooring of the WAMIT run, scaled by 1000/1025 as for OC4. The hydrostatic and gravitational restoring is that of the WAMIT log, so that of the NURBS hull.
+- **Surfaces.** The control surface C has a radius of 70 m and F lies between the waterlines and C. The inner free surface of `qtf_terms = full` is a circle of 72 m about the centre of the waterline box, 4412 triangles of about 2 m.
+- **Frequencies.** 34, from 0.25 to 1.90 rad/s, below the first irregular frequency of the outer columns, about 1.94 rad/s [derived: k = j_01 / a, a = 6.25 m, ω² = g k coth(kT), T = 20 m]. Roland et al. report a Nemoh spike at 1.95 rad/s.
+- **Settings.** `qtf = 1`, `qtf_terms = full`, `qtf_direct = 1`, `qtf_fs_circle = panels`.
+
+HAMS's indirect and direct results will be compared with the WAMIT `.12d` file and with the paper's Figs. 6 and 7. The curves of Fig. 7 are already read, and its WAMIT curves match the IEA file. The run waits for approval of its cost.
+
 ### Cost of the potential part
 
 Wall time per run on Snellius, 32 threads, 101 frequencies and 30 radiation-only solves:
@@ -1379,6 +1447,9 @@ Garrett (1971), Yeung (1981), MacCamy and Fuchs (1954), Maruo (1960), Newman (19
 - Cong, P., Teng, B., Chen, L., Gou, Y. (2020). A novel solution to the second-order wave radiation force on an oscillating truncated cylinder based on the application of control surfaces. Ocean Engineering 204, 107278.
 - Robertson, A., Jonkman, J., Masciola, M., Song, H., Goupee, A., Coulling, A., Luan, C. (2014). Definition of the Semisubmersible Floating System for Phase II of OC4. NREL/TP-5000-60601, National Renewable Energy Laboratory.
 - Al-Ghuwaidi (2025). Reproduction of the WAMIT run of the OpenFAST r-test for the OC4-DeepCwind semisubmersible (`marin_semi.12d`). Zenodo, doi:10.5281/zenodo.16940342, CC BY 4.0.
-- Roland, S. et al. (2026). A benchmark of boundary element method solvers for predicting second-order hydrodynamic loads on floating offshore wind turbines. J. Phys.: Conf. Ser. 3346, 012006.
+- Roland, S., Pribadi, A., Al-Ghuwaidi, A., Lataire, E. (2026). A benchmark of boundary element method solvers for predicting second-order hydrodynamic loads on floating offshore wind turbines. J. Phys.: Conf. Ser. 3346, 012006, doi:10.1088/1742-6596/3346/1/012006. Open access, CC BY 4.0; the curves of its Figs. 5 and 7 are read into `validation-runs/roland-benchmark/roland2026_fig5_fig7.csv`.
+- Al-Ghuwaidi, A., Pribadi, A. B. K. (2025). Benchmark study of NEMOH vs WAMIT for the OC4-DeepCwind semi-submersible FOWT (the Nemoh results of Roland et al. 2026, Fig. 5).
+- Barter, G. et al. (2026). IEAWindSystems/IEA-15-240-RWT, release v1.1.18, Apache License 2.0: `OpenFAST/IEA-15-240-RWT-UMaineSemi/HydroData` (the VolturnUS-S WAMIT files and inputs).
+- Allen, C., Viscelli, A., Dagher, H., Goupee, A., Gaertner, E., Abbas, N., Hall, M., Barter, G. (2020). Definition of the UMaine VolturnUS-S reference platform developed for the IEA Wind 15-megawatt offshore reference wind turbine. NREL/TP-5000-76773, National Renewable Energy Laboratory.
 - Zhang, Y., Tosdevin, T., Tang, T., Stansby, P. (2026). Second-order difference-frequency effects on floating wind turbine responses: full-QTF modelling and experimental comparison. arXiv:2610.27940.
 - Kurnia, R., Ducrozet, G. (2023). NEMOH: open-source boundary element solver for first- and second-order hydrodynamic loads. Computer Physics Communications 292, 108885.
