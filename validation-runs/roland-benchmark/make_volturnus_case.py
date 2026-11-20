@@ -286,6 +286,34 @@ def _segment_distance(c, a, b):
     return math.hypot(c[0] - a[0] - t * ax, c[1] - a[1] - t * ay)
 
 
+def check_and_list(folder, meshes, md5_path=None):
+    """Guard before a case leaves the laptop: every file in folder is non-empty, the .in files have their key lines, and
+    every mesh, read back from disk, has the panel count it was written with (meshes: {name: panels}). Then, if md5_path
+    is given, writes the md5 list of the files as checked (the list the Snellius job verifies). Stops on any failure."""
+    import hashlib
+    names = sorted(os.listdir(folder))
+    for name in names:
+        if os.path.getsize(os.path.join(folder, name)) == 0:
+            raise ValueError("%s is empty" % name)
+    keys = {"ControlFile.in": ("Number_of_frequencies", "If_remove_irr_freq", "Waterdepth"),
+            "SecondOrder.in": ("qtf =", "qtf_terms", "velocity_method"),
+            "Hydrostatic.in": ("Body Mass Matrix", "External Restoring Matrix")}
+    for name, wanted in keys.items():
+        text = open(os.path.join(folder, name)).read()
+        missing = [k for k in wanted if k not in text]
+        if missing:
+            raise ValueError("%s lacks %s" % (name, ", ".join(missing)))
+    for name, panels in meshes.items():
+        found = len(mm.read_mesh(os.path.join(folder, name)).panels)
+        if found != panels:
+            raise ValueError("%s has %d panels on disk, %d written" % (name, found, panels))
+    if md5_path:
+        with open(md5_path, "w", newline="\n") as f:
+            for name in names:
+                f.write("%s  %s\n" % (hashlib.md5(open(os.path.join(folder, name), "rb").read()).hexdigest(), name))
+    return {name: os.path.getsize(os.path.join(folder, name)) for name in names}
+
+
 def main(argv):
     """Options: --fmax F (top of the 0.05 grid, default 1.90), --fs-panel P (inner free-surface panel, default 2.0 m),
     --lid (IRSP = 1 with a lid in WaterPlaneMesh.pnl and velocity_method = differencing, needed above the first irregular
