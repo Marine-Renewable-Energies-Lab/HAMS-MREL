@@ -335,6 +335,13 @@ module test_integration_drift
     ! measured 4.7e-6 (Task 5; the centroid samples are about 1e-6 off the exact series, pw_from_panels_matches_samples),
     ! limit 2x rounded up
     real(8), parameter :: fs_panels_limit = 1d-5
+    ! qtf_fs_inner = source against the stencil route (fs_inner_source_close, Task 6): FS_inner + FS_outer of qtf_fs_main
+    ! (difference, Omega = 0.2 rad/s only) over max |FS|, measured 0.559, and T+_pot of qtf_indsum_half (sum) over
+    ! max |T+_pot|, measured 6.03e-2; limits 1.3x measured. The two routes do not agree on qtf_fs_main: both converge with
+    ! the inner mesh (qtf_fs_panel 1.0 and 0.5 m: 0.3 % apart on the source route) to values 26 % apart (45 % with the
+    ! body fixed). At k a of about 0.5 the area and line parts of the source route are each about 13 times the inner term
+    ! and cancel, so the error of the waterline data is amplified (task 6 report). A record of the gap, not a pass mark.
+    real(8), parameter :: fs_source_limit = 0.73d0, fs_source_sum_limit = 7.9d-2
     character(len=20), parameter :: psi_reuse_cases(6) = [character(len=20) :: "qtf_fs_main", "qtf_b2c_main", &
                                                           psi_reuse_new]
 
@@ -400,6 +407,7 @@ contains
             new_unittest("run_qtf_deep_kh_cases", run_qtf_deep_kh_cases), &
             new_unittest("run_psi_reuse_cases", run_psi_reuse_cases), &
             new_unittest("run_qtf_fs_panels", run_qtf_fs_panels), &
+            new_unittest("run_qtf_fs_source", run_qtf_fs_source), &
             new_unittest("run_control_cyl", run_control_cyl), &
             new_unittest("run_control_cyl_sybo", run_control_cyl_sybo), &
             new_unittest("run_control_cases", run_control_cases) &
@@ -557,7 +565,8 @@ contains
             new_unittest("qtf_deep_kh_within_limits", qtf_deep_kh_within_limits), &
             new_unittest("psi_reuse_byte_identical", psi_reuse_byte_identical), &
             new_unittest("psi_reuse_log_counts", psi_reuse_log_counts), &
-            new_unittest("fs_circle_panels_close", fs_circle_panels_close) &
+            new_unittest("fs_circle_panels_close", fs_circle_panels_close), &
+            new_unittest("fs_inner_source_close", fs_inner_source_close) &
         ]
     end subroutine collect_tests_drift
 
@@ -7107,6 +7116,79 @@ contains
         if (allocated(error)) return
         call check_below(error, "fs_circle_panels_close", worst, fs_panels_limit)
     end subroutine fs_circle_panels_close
+
+    ! ------------------------------------------------------------------------------------- inner fields by the source route
+
+    !> qtf_fs_source: qtf_fs_main with qtf_fs_inner = source (the inner fields from the source strengths, phi_zz removed
+    !> by Green's theorem in the plane, spec D2 of the free-surface speed-ups); qtf_fs_source_sum: qtf_indsum_half (sum
+    !> frequency, half mesh) with it. With their run times.
+    subroutine run_qtf_fs_source(error)
+        type(error_type), allocatable, intent(out) :: error
+        integer(8) :: t0, t1, rate
+
+        call system_clock(t0, rate)
+        call run_case("qtf_fs_source", [character(len=40) :: qtf_diff_file, qtf_indirect_file, pot_terms_file], error)
+        call system_clock(t1)
+        print '(4x,a,F8.1,a)', "qtf_fs_source: run time ", real(t1 - t0, 8)/real(rate, 8), " s"
+        if (allocated(error)) return
+        call system_clock(t0, rate)
+        call run_case("qtf_fs_source_sum", [character(len=40) :: qtf_sum_file, qtf_indirect_sum_file, pot_sum_terms_file], &
+                      error)
+        call system_clock(t1)
+        print '(4x,a,F8.1,a)', "qtf_fs_source_sum: run time ", real(t1 - t0, 8)/real(rate, 8), " s"
+    end subroutine run_qtf_fs_source
+
+    !> qtf_fs_inner = source changes the inner free-surface term only: the files without it are those of the stencil route
+    !> line for line (qtf_fs_main expected_output; QTF_Quadratic.10s of qtf_indsum_half); FS_inner + FS_outer of every row
+    !> are within fs_source_limit of qtf_fs_main's over max |FS| (fs_against), and T+_pot of the sum within
+    !> fs_source_sum_limit of qtf_indsum_half's over max |T+_pot|. Prints the free-surface pass and source-solve lines of
+    !> the logs (indicative times).
+    subroutine fs_inner_source_close(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=*), parameter :: files(7) = [character(len=22) :: "AmssDamp.1", "ExcForce.3", "Hydrostat.hst", &
+            "MeanDriftMomentum.8", "MeanDriftPressure.9", "Motion.4", "QTF_Quadratic.10d"]
+        character(len=17), parameter :: logs(4) = [character(len=17) :: "qtf_fs_main", "qtf_fs_source", "qtf_indsum_half", &
+                                                   "qtf_fs_source_sum"]
+        character(len=:), allocatable :: lines(:)
+        real(8), allocatable :: ph(:,:), ps(:,:)
+        real(8) :: worst
+        integer :: f, matched, c, r
+
+        do f = 1, size(files)
+            call check_same_file(get_repo_root_path()//"test/data/qtf_fs_main/expected_output/"//trim(files(f)), &
+                                 output_dir("qtf_fs_source")//"Wamit_format/"//trim(files(f)), error)
+            if (allocated(error)) return
+        end do
+        call check_same_file(output_dir("qtf_indsum_half")//qtf_sum_file, output_dir("qtf_fs_source_sum")//qtf_sum_file, error)
+        if (allocated(error)) return
+        do c = 1, size(logs)
+            call read_lines(get_running_exe_path()//trim(logs(c))//".log", lines, error)
+            if (allocated(error)) return
+            do r = 1, size(lines)
+                if (index(lines(r), "QTF free surface fields: omega") > 0 .or. &
+                    index(lines(r), "QTF free surface psi: omega") > 0 .or. &
+                    index(lines(r), "QTF free surface source") > 0) print '(4x,a,": ",a)', trim(logs(c)), trim(lines(r))
+            end do
+        end do
+        call fs_against("qtf_fs_main", "qtf_fs_source", worst, matched, error)
+        if (allocated(error)) return
+        call report("fs_inner_source_close difference FS", worst)
+        call check(error, matched > 0, "qtf_fs_source: no rows matched to qtf_fs_main")
+        if (allocated(error)) return
+        call check_below(error, "fs_inner_source_close difference FS", worst, fs_source_limit)
+        if (allocated(error)) return
+        call read_pot_sum_total(output_dir("qtf_indsum_half")//pot_sum_terms_file, ph, error)
+        if (allocated(error)) return
+        call read_pot_sum_total(output_dir("qtf_fs_source_sum")//pot_sum_terms_file, ps, error)
+        if (allocated(error)) return
+        call check(error, size(ph, 1) == size(ps, 1) .and. size(ph, 1) > 0, &
+                   "qtf_fs_source_sum: not the rows of qtf_indsum_half in QTF_PotentialTermsSum.txt")
+        if (allocated(error)) return
+        call largest_difference(ps, ph, "fs_inner_source_close sum T+_pot", worst, error)
+        if (allocated(error)) return
+        call report("fs_inner_source_close sum T+_pot", worst)
+        call check_below(error, "fs_inner_source_close sum T+_pot", worst, fs_source_sum_limit)
+    end subroutine fs_inner_source_close
 
     !> The number of lines of the file at path that contain both text and also
     integer function count_lines_with(path, text, also)

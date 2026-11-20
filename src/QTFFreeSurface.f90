@@ -32,6 +32,10 @@ MODULE QTFFreeSurface
    ! fs_inner_steps); outside the circle r = R, the partial waves of the scattered potential (fs_circle_modes), from samples
    ! on the cylinder by the all-centroid route of the boundary integral formula (fs_sample_phi), so that the samples are a
    ! sum of the free-surface modes, with a check that the modes give the samples back (fs_mode_miss, fs_mode_warning).
+   ! qtf_fs_inner = source (spec D2 of the free-surface speed-ups) takes phi and grad phi at the inner points from the source
+   ! strengths instead (fs_inner_fields_source, one row per point), and removes phi_zz from the inner integral by Green's
+   ! theorem in the plane: an area part without it (fs_inner_pair_ibp) and line integrals on the waterlines and the outer
+   ! edge (fs_line_pair, with fs_waterline_state and fs_edge_state).
    !
    ! Sum frequency (Phase 7c-2; the optional kernel = KERNEL_SUM of the routines below, KERNEL_DIFF by default and
    ! bit-identical to the code without it). The sum-frequency phi_D is forced on z = 0 by
@@ -45,11 +49,11 @@ MODULE QTFFreeSurface
    ! gives the phase classes of the sum (derived in fs_outer_tail). Finite depth only, as the difference frequency.
 
    USE SecondOrderIncident, ONLY: free_surface_forcing
-   USE NearFieldDrift, ONLY: KERNEL_DIFF, KERNEL_SUM
+   USE NearFieldDrift, ONLY: KERNEL_DIFF, KERNEL_SUM, pair_product, rigid_displacement
    USE SecondOrderTypes, ONLY: panel_mesh, first_order_state, cs_points, cs_fields, CS_FREE, surface_geom
-   USE PartialWaves, ONLY: pw_set, pw_radial, pw_decompose, pw_eval_point, pw_radial_at, pw_bessel_k_scaled, &
+   USE PartialWaves, ONLY: pw_set, pw_radial, pw_decompose, pw_eval_point, pw_eval_surface, pw_radial_at, pw_bessel_k_scaled, &
                            pw_bessel_k_scaled_c, pw_hankel_scaled, pw_from_panels
-   USE FieldVelocity, ONLY: incident_at
+   USE FieldVelocity, ONLY: incident_at, fields_source
    USE FirstOrderState, ONLY: wave_gravity, image_signs
    USE PanelMesh_mod, ONLY: ISX, ISY
    USE WaterlineField, ONLY: field_influence_row, field_potential
@@ -67,6 +71,8 @@ MODULE QTFFreeSurface
    PUBLIC :: fs_outer_sliver, fs_radius_message, fs_pair_order_message
    PUBLIC :: fs_pair_terms, fs_coverage_check, fs_local_rankine
    PUBLIC :: fs_outer_moments, fs_forcing_points
+   PUBLIC :: fs_wl_state, fs_inner_fields_source, fs_wl_normal_derivative, fs_waterline_state, fs_edge_points
+   PUBLIC :: fs_edge_state, fs_edge_psi, fs_inner_pair_ibp, fs_line_pair, fs_waterline_fit_source
 
    ! The mode check: the partial waves must give the samples on the circle to this fraction of their largest value
    REAL(8), PARAMETER :: FS_MODE_TOL = 1D-3
@@ -134,6 +140,14 @@ MODULE QTFFreeSurface
       INTEGER :: kinds(3) = 0
       TYPE(cs_points) :: samp
    END TYPE fs_wl_fit
+
+   TYPE :: fs_wl_state
+      ! One first-order state on the boundary of the inner free surface (the waterlines and the outer edge), for the source
+      ! route of the inner integral (qtf_fs_inner = source, spec D2 of the free-surface speed-ups): at each boundary point
+      ! the total potential phi and its derivative dn along the in-plane normal out of the inner free surface (into the
+      ! waterplane on a waterline, outwards on the outer edge), and the same of the incident wave alone (phi_i, dn_i)
+      COMPLEX(8), ALLOCATABLE :: phi(:), dn(:), phi_i(:), dn_i(:)
+   END TYPE fs_wl_state
 
    TYPE :: fs_point_field
       ! One first-order state at one point of z = 0: potential, gradient, and d^2 phi / dz^2.
@@ -296,6 +310,321 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE fs_inner_fields
+
+   SUBROUTINE fs_inner_fields_source(mesh, pts, states, sigmas, is_multi, f, deep)
+      ! The total first-order fields of every state at the inner points by the source route (qtf_fs_inner = source, spec D2
+      ! of the free-surface speed-ups): phi_P and its horizontal gradient from the source strengths sigmas(n, SIZE(states))
+      ! of velocity_source (SurfaceVelocity), with the analytic gradient of G (fields_source of FieldVelocity), one row per
+      ! point for all states and no stencil. On z = 0, d phi_P/dz is nu phi_P (the linear free-surface condition, as
+      ! fs_inner_fields), the incident part is exact. phi_zz is not formed (left 0): the inner integral of this route has
+      ! none (fs_inner_pair_ibp, fs_line_pair). deep, if present, takes the deep-water Green function at finite depth, as
+      ! the Green route takes it at the same points (fs_sample_phi); the FINGREEN3D series are those of field mode, as the
+      ! field rows of the Green route. The states must be at the current global frequency.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(cs_points), INTENT(IN) :: pts
+      TYPE(first_order_state), INTENT(IN) :: states(:)
+      COMPLEX(8), INTENT(IN) :: sigmas(:, :)
+      LOGICAL, INTENT(IN) :: is_multi
+      TYPE(fs_point_field), INTENT(OUT) :: f(pts%n, SIZE(states))
+      LOGICAL, INTENT(IN), OPTIONAL :: deep
+      TYPE(cs_fields), ALLOCATABLE :: fl(:)
+      COMPLEX(8) :: phi_i, grad_i(3)
+      LOGICAL :: dw
+      INTEGER :: i, ist
+
+      IF (SIZE(sigmas, 1) /= mesh%n .OR. SIZE(sigmas, 2) /= SIZE(states)) THEN
+         WRITE (*, '(a)') ' fs_inner_fields_source: sigmas must have one column of n panels per state.'
+         ERROR STOP 1
+      END IF
+      IF (pts%n == 0) RETURN
+      dw = .FALSE.
+      IF (PRESENT(deep)) dw = deep
+      ALLOCATE (fl(SIZE(states)))
+      CALL fields_source(mesh, pts, states, sigmas, is_multi, fl, deep=dw, field_mode=.TRUE.)
+      DO ist = 1, SIZE(states)
+         DO i = 1, pts%n
+            CALL incident_at(states(ist), pts%x(:, i), phi_i, grad_i)
+            f(i, ist)%phi = fl(ist)%phi(i)
+            f(i, ist)%grad = fl(ist)%grad(:, i)
+            IF (pts%x(3, i) >= 0D0) f(i, ist)%grad(3) = states(ist)%nu*(fl(ist)%phi(i) - phi_i) + grad_i(3)
+            f(i, ist)%phizz = (0D0, 0D0)
+         END DO
+      END DO
+   END SUBROUTINE fs_inner_fields_source
+
+   PURE COMPLEX(8) FUNCTION fs_wl_normal_derivative(vn, nz, dzy)
+      ! The derivative of a field Y along the in-plane normal of a waterline, n_h / |n_h|, from its derivative along the
+      ! unit hull normal n = (n_h, n_z) (out of the fluid) and d_z Y [derived: grad Y . n = n_h . grad_h Y + n_z d_z Y]:
+      !   d_{n_h} Y = (V_n - n_z d_z Y) / |n_h|,   |n_h| = sqrt(1 - n_z^2),
+      ! with V_n = grad Y . n, the normal velocity of the body condition. A wall-sided hull (n_z = 0) gives V_n.
+      COMPLEX(8), INTENT(IN) :: vn, dzy
+      REAL(8), INTENT(IN) :: nz
+
+      fs_wl_normal_derivative = (vn - nz*dzy)/SQRT(MAX(1D0 - nz*nz, 0D0))
+   END FUNCTION fs_wl_normal_derivative
+
+   SUBROUTINE fs_waterline_state(mesh, geom, s, phi_wl, wl)
+      ! The state s on the waterline segments of geom, for the line integral of the source route (fs_wl_state, spec D2): at
+      ! the midpoint x of each segment the total potential phi_wl (the waterline potential of the near-field drift), and
+      ! its derivative along the in-plane normal into the waterplane by fs_wl_normal_derivative, with
+      !   V_n = -i omega (xi + alpha x (x - x_r)) . n   (the normal velocity of the body of the segment, n of its panel,
+      !                                                 out of the fluid; 0 for a fixed body),
+      !   d_z Y = nu Y_P + d_z Y_I,  Y_P = phi_wl - phi_I (the linear free-surface condition, as fs_inner_fields),
+      ! and the incident wave alone, phi_I and grad_h phi_I . n_h exactly. The segment normal n_h is that of the hull panel
+      ! (geom%wl_nh, geom%wl_nz), so a flared panel takes the formula; a wall-sided one gives V_n.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(surface_geom), INTENT(IN) :: geom
+      TYPE(first_order_state), INTENT(IN) :: s
+      COMPLEX(8), INTENT(IN) :: phi_wl(:)
+      TYPE(fs_wl_state), INTENT(OUT) :: wl
+      REAL(8) :: x(3), n3(3), nh
+      COMPLEX(8) :: phi_i, grad_i(3), vn, dzy, d(3)
+      INTEGER :: iw, b
+
+      IF (SIZE(phi_wl) /= geom%nwl) THEN
+         WRITE (*, '(a)') ' fs_waterline_state: phi_wl must have one value per waterline segment.'
+         ERROR STOP 1
+      END IF
+      ALLOCATE (wl%phi(geom%nwl), wl%dn(geom%nwl), wl%phi_i(geom%nwl), wl%dn_i(geom%nwl))
+      DO iw = 1, geom%nwl
+         b = geom%wl_body(iw)
+         x = [geom%wl_xm(1, iw), geom%wl_xm(2, iw), 0D0]
+         nh = SQRT(MAX(1D0 - geom%wl_nz(iw)**2, 0D0))
+         n3 = [geom%wl_nh(1, iw)*nh, geom%wl_nh(2, iw)*nh, geom%wl_nz(iw)]
+         d = rigid_displacement(s%xi(:, b), x - mesh%xr(:, b))
+         vn = -CI*s%omega*SUM(d*n3)
+         CALL incident_at(s, x, phi_i, grad_i)
+         dzy = s%nu*(phi_wl(iw) - phi_i) + grad_i(3)
+         wl%phi(iw) = phi_wl(iw)
+         wl%dn(iw) = fs_wl_normal_derivative(vn, geom%wl_nz(iw), dzy)
+         wl%phi_i(iw) = phi_i
+         wl%dn_i(iw) = grad_i(1)*geom%wl_nh(1, iw) + grad_i(2)*geom%wl_nh(2, iw)
+      END DO
+   END SUBROUTINE fs_waterline_state
+
+   SUBROUTINE fs_edge_points(np, centre, radius, mmax, x, nh, w)
+      ! The quadrature of the outer edge of the inner free surface for the line integral of the source route (spec D2):
+      ! np >= 3, the polygon of np chords of a generated inner mesh (vertices at theta_j = 2 pi (j - 1) / np, as
+      ! fs_outer_sliver), Gauss-Legendre of order 8 + ceil(3 pi M / np) on each chord, with the chord's outward normal;
+      ! np < 3 (a mesh from FSInnerMesh.pnl, which reaches the circle), the circle r = R by the trapezoidal rule with
+      ! 6 M + 64 points, normal e_r. The integrand psi a d_n b has angular orders up to about 3 M (M the partial-wave
+      ! order of each factor, which covers k0 R): the trapezoidal rule is exact below 6 M + 64, and each chord spans
+      ! 3 M (2 pi / np) radians of phase. x(2, ne), nh(2, ne), w(ne) the points, unit normals and line weights.
+      INTEGER, INTENT(IN) :: np, mmax
+      REAL(8), INTENT(IN) :: centre(2), radius
+      REAL(8), ALLOCATABLE, INTENT(OUT) :: x(:, :), nh(:, :), w(:)
+      REAL(8), ALLOCATABLE :: xg(:), wg(:)
+      REAL(8) :: dth, th0, v0(2), v1(2), clen, thm
+      INTEGER :: nq, ne, j, i, k
+
+      IF (np >= 3) THEN
+         nq = 8 + CEILING(3D0*PI*MAX(mmax, 0)/np)
+         ALLOCATE (xg(nq), wg(nq))
+         CALL gauss_legendre01(nq, xg, wg)
+         ne = np*nq
+         ALLOCATE (x(2, ne), nh(2, ne), w(ne))
+         dth = 2D0*PI/np
+         k = 0
+         DO j = 1, np
+            th0 = dth*(j - 1)
+            v0 = centre + radius*[COS(th0), SIN(th0)]
+            v1 = centre + radius*[COS(th0 + dth), SIN(th0 + dth)]
+            clen = NORM2(v1 - v0)
+            thm = th0 + 0.5D0*dth
+            DO i = 1, nq
+               k = k + 1
+               x(:, k) = v0 + xg(i)*(v1 - v0)
+               nh(:, k) = [COS(thm), SIN(thm)]
+               w(k) = wg(i)*clen
+            END DO
+         END DO
+      ELSE
+         ne = 6*MAX(mmax, 0) + 64
+         ALLOCATE (x(2, ne), nh(2, ne), w(ne))
+         dth = 2D0*PI/ne
+         DO k = 1, ne
+            th0 = dth*(k - 1)
+            nh(:, k) = [COS(th0), SIN(th0)]
+            x(:, k) = centre + radius*nh(:, k)
+            w(k) = radius*dth
+         END DO
+      END IF
+   END SUBROUTINE fs_edge_points
+
+   SUBROUTINE fs_edge_state(pw, w, k, beta, x, nh, st)
+      ! A state on the outer edge points x(2, ne) with normals nh (fs_edge_points), for the line integral of the source
+      ! route (fs_wl_state): its scattered potential from the partial waves pw (pw_eval_surface; on a chord a little inside
+      ! R, at most R (1 - cos(pi/np)), where the series still converge, as fs_outer_sliver uses them), plus the incident
+      ! wave of omega w, wave number k (pw%k0) and heading beta (radians) on z = 0, -i g_w / w e^{i k x . e_beta}, g_w =
+      ! wave_gravity as incident_at (k <= 0: no incident wave, as fs_outer_pair).
+      TYPE(pw_set), INTENT(IN) :: pw
+      REAL(8), INTENT(IN) :: w, k, beta, x(:, :), nh(:, :)
+      TYPE(fs_wl_state), INTENT(OUT) :: st
+      COMPLEX(8) :: phi, grad(3), phizz, amp
+      REAL(8) :: gw
+      INTEGER :: i, ne
+
+      ne = SIZE(x, 2)
+      ALLOCATE (st%phi(ne), st%dn(ne), st%phi_i(ne), st%dn_i(ne))
+      amp = (0D0, 0D0)
+      IF (k > 0D0) THEN
+         gw = wave_gravity(w, k, pw%h)
+         amp = -CI*gw/w
+      END IF
+      !$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(phi, grad, phizz) SCHEDULE(STATIC)
+      DO i = 1, ne
+         CALL pw_eval_surface(pw, [x(1, i), x(2, i), 0D0], phi, grad, phizz)
+         st%phi_i(i) = amp*EXP(CI*k*(x(1, i)*COS(beta) + x(2, i)*SIN(beta)))
+         st%dn_i(i) = CI*k*(COS(beta)*nh(1, i) + SIN(beta)*nh(2, i))*st%phi_i(i)
+         st%phi(i) = phi + st%phi_i(i)
+         st%dn(i) = grad(1)*nh(1, i) + grad(2)*nh(2, i) + st%dn_i(i)
+      END DO
+      !$OMP END PARALLEL DO
+   END SUBROUTINE fs_edge_state
+
+   SUBROUTINE fs_edge_psi(pw_psi, x, psi_e)
+      ! psi_k on the outer edge points x(2, ne) from its partial waves pw_psi(k) (pw_eval_surface): psi_e(ne, SIZE(pw_psi))
+      TYPE(pw_set), INTENT(IN) :: pw_psi(:)
+      REAL(8), INTENT(IN) :: x(:, :)
+      COMPLEX(8), INTENT(OUT) :: psi_e(:, :)
+      COMPLEX(8) :: grad(3), phizz
+      INTEGER :: i, k
+
+      !$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(k, grad, phizz) SCHEDULE(STATIC)
+      DO i = 1, SIZE(x, 2)
+         DO k = 1, SIZE(pw_psi)
+            CALL pw_eval_surface(pw_psi(k), [x(1, i), x(2, i), 0D0], psi_e(i, k), grad, phizz)
+         END DO
+      END DO
+      !$OMP END PARALLEL DO
+   END SUBROUTINE fs_edge_psi
+
+   SUBROUTINE fs_inner_pair_ibp(w1, f1, inc1, w2, f2, inc2, psi, gpsi, wts, g, rho, t_in, kernel)
+      ! The area part of the inner T_FS of the source route (qtf_fs_inner = source, spec D2 of the free-surface speed-ups):
+      ! the forcing without phi_zz, which Green's theorem in the plane moves to the boundary (fs_line_pair). With
+      ! P = pair_product, f = -i w phi of each state, Q = Q_0 + Z, Q_0 the Q of free_surface_forcing with phi_zz = 0 and
+      ! Z = P(f_1, a_zz, f_2, b_zz) = -P(f_1, lap_h a, f_2, lap_h b) (phi_zz = -lap_h phi, Laplace's equation for the
+      ! total field; a, b the fields of states 1 and 2). P is linear in its second and fourth arguments together, and
+      ! Green's first identity in the plane (the divergence theorem applied to psi f grad_h y; Kreyszig, Advanced
+      ! Engineering Mathematics, Green's theorem in the plane) gives, per term of P (own derivation),
+      !   int_S psi f lap_h y dS = oint_dS psi f d_n y dl - int_S grad_h(psi f) . grad_h y dS,
+      ! dS the boundary with n out of S. So
+      !   int_S psi Z dS = -oint psi P(f_1, d_n a, f_2, d_n b) dl
+      !                    + int_S [ psi sum_m P(d_m f_1, d_m a, d_m f_2, d_m b) + sum_m d_m psi P(f_1, d_m a, f_2, d_m b) ] dS,
+      ! m = x, y. This routine gives the area part,
+      !   t_in(k) = s_FS (i Omega rho / g) sum_i wts(i) [ psi(i, k) A_i + sum_m gpsi(i, m, k) B_m,i ],
+      !   A = Q_0 + sum_m P(d_m f_1, d_m a, d_m f_2, d_m b),   B_m = P(f_1, d_m a, f_2, d_m b),
+      ! each as the total fields f1, f2 minus the incident fields inc1, inc2 (Q_D = Q[tot] - Q[inc]; the identity holds for
+      ! each, so the incident part needs no k^2 phi_I). gpsi(n, 2, 6 nbody) is grad_h psi_k at the points. phi_zz of the
+      ! fields is not used. Omega and kernel as fs_inner_pair.
+      REAL(8), INTENT(IN) :: w1, w2, g, rho, wts(:)
+      TYPE(fs_point_field), INTENT(IN) :: f1(:), inc1(:), f2(:), inc2(:)
+      COMPLEX(8), INTENT(IN) :: psi(:, :), gpsi(:, :, :)
+      COMPLEX(8), INTENT(OUT) :: t_in(:)
+      INTEGER, INTENT(IN), OPTIONAL :: kernel
+      COMPLEX(8) :: a, b(2), ai, bi(2)
+      INTEGER :: i, k, kn
+
+      IF (SIZE(f1) /= SIZE(wts) .OR. SIZE(f2) /= SIZE(wts) .OR. SIZE(inc1) /= SIZE(wts) .OR. SIZE(inc2) /= SIZE(wts) &
+          .OR. SIZE(psi, 1) /= SIZE(wts) .OR. SIZE(t_in) /= SIZE(psi, 2) .OR. SIZE(gpsi, 1) /= SIZE(wts) .OR. &
+          SIZE(gpsi, 2) /= 2 .OR. SIZE(gpsi, 3) /= SIZE(psi, 2)) THEN
+         WRITE (*, '(a)') ' fs_inner_pair_ibp: the fields, psi, grad psi, the weights and t_in do not match in size.'
+         ERROR STOP 1
+      END IF
+      kn = kernel_arg(kernel)
+      t_in = (0D0, 0D0)
+      DO i = 1, SIZE(wts)
+         CALL ibp_terms(kn, w1, f1(i), w2, f2(i), g, a, b)
+         CALL ibp_terms(kn, w1, inc1(i), w2, inc2(i), g, ai, bi)
+         a = wts(i)*(a - ai)
+         b = wts(i)*(b - bi)
+         DO k = 1, SIZE(t_in)
+            t_in(k) = t_in(k) + psi(i, k)*a + gpsi(i, 1, k)*b(1) + gpsi(i, 2, k)*b(2)
+         END DO
+      END DO
+      t_in = FS_SIGN*CI*pair_omega(kn, w1, w2)*rho/g*t_in
+   END SUBROUTINE fs_inner_pair_ibp
+
+   PURE SUBROUTINE ibp_terms(kernel, w1, p1, w2, p2, g, a, b)
+      ! A and B_m of fs_inner_pair_ibp at one point for the fields p1, p2 (phi_zz not used)
+      INTEGER, INTENT(IN) :: kernel
+      REAL(8), INTENT(IN) :: w1, w2, g
+      TYPE(fs_point_field), INTENT(IN) :: p1, p2
+      COMPLEX(8), INTENT(OUT) :: a, b(2)
+      COMPLEX(8), PARAMETER :: ZERO = (0D0, 0D0)
+      INTEGER :: m
+
+      a = free_surface_forcing(kernel, w1, p1%phi, p1%grad, ZERO, w2, p2%phi, p2%grad, ZERO, g)
+      DO m = 1, 2
+         a = a + pair_product(kernel, -CI*w1*p1%grad(m), p1%grad(m), -CI*w2*p2%grad(m), p2%grad(m))
+         b(m) = pair_product(kernel, -CI*w1*p1%phi, p1%grad(m), -CI*w2*p2%phi, p2%grad(m))
+      END DO
+   END SUBROUTINE ibp_terms
+
+   SUBROUTINE fs_line_pair(w1, b1, w2, b2, psi_b, wb, g, rho, t_line, kernel)
+      ! The boundary part of the inner T_FS of the source route (fs_inner_pair_ibp): on the boundary points of b1, b2
+      ! (fs_wl_state of states 1 and 2: waterline segments, outer edge), with psi_b(nb, nk) psi_k there and wb(nb) the line
+      ! weights,
+      !   t_line(k) = -s_FS (i Omega rho / g) sum_l wb(l) psi_b(l, k) ( P(f_1, d_n a, f_2, d_n b)[tot] - P(..)[inc] ),
+      ! f = -i w phi, d_n along the normal out of the inner free surface. The inner T_FS is fs_inner_pair_ibp + t_line.
+      ! Omega and kernel as fs_inner_pair.
+      REAL(8), INTENT(IN) :: w1, w2, g, rho, wb(:)
+      TYPE(fs_wl_state), INTENT(IN) :: b1, b2
+      COMPLEX(8), INTENT(IN) :: psi_b(:, :)
+      COMPLEX(8), INTENT(OUT) :: t_line(:)
+      INTEGER, INTENT(IN), OPTIONAL :: kernel
+      COMPLEX(8) :: q
+      INTEGER :: l, k, kn
+
+      IF (SIZE(b1%phi) /= SIZE(wb) .OR. SIZE(b2%phi) /= SIZE(wb) .OR. SIZE(psi_b, 1) /= SIZE(wb) .OR. &
+          SIZE(t_line) /= SIZE(psi_b, 2)) THEN
+         WRITE (*, '(a)') ' fs_line_pair: the boundary states, psi, the weights and t_line do not match in size.'
+         ERROR STOP 1
+      END IF
+      kn = kernel_arg(kernel)
+      t_line = (0D0, 0D0)
+      DO l = 1, SIZE(wb)
+         q = pair_product(kn, -CI*w1*b1%phi(l), b1%dn(l), -CI*w2*b2%phi(l), b2%dn(l)) &
+             - pair_product(kn, -CI*w1*b1%phi_i(l), b1%dn_i(l), -CI*w2*b2%phi_i(l), b2%dn_i(l))
+         q = wb(l)*q
+         DO k = 1, SIZE(t_line)
+            t_line(k) = t_line(k) + psi_b(l, k)*q
+         END DO
+      END DO
+      t_line = -FS_SIGN*CI*pair_omega(kn, w1, w2)*rho/g*t_line
+   END SUBROUTINE fs_line_pair
+
+   SUBROUTINE fs_waterline_fit_source(fit, fsamp, states, f)
+      ! The near-waterline fit (fs_waterline_fit_setup) on the source route: the horizontal gradient of each near-waterline
+      ! point of fit replaced by the fit of the perturbation gradient at its samples, fsamp(fit%samp%n, SIZE(states)) the
+      ! source-route fields there (fs_inner_fields_source), plus the exact incident gradient at the point. phi keeps its
+      ! value (ruling W4 of the stencil route), and phi_zz is not used on this route, so only the gradient part of the fit
+      ! applies (spec D2).
+      TYPE(fs_wl_fit), INTENT(IN) :: fit
+      TYPE(fs_point_field), INTENT(IN) :: fsamp(:, :)
+      TYPE(first_order_state), INTENT(IN) :: states(:)
+      TYPE(fs_point_field), INTENT(INOUT) :: f(:, :)
+      COMPLEX(8) :: phi_i, grad_i(3), phi_s, grad_s(3), ag(3)
+      INTEGER :: k, j, ist, js
+
+      IF (fit%n == 0 .OR. fit%kinds(2) == 0) RETURN
+      IF (SIZE(fsamp, 1) /= fit%samp%n .OR. SIZE(fsamp, 2) /= SIZE(states)) THEN
+         WRITE (*, '(a)') ' fs_waterline_fit_source: fsamp must hold every sample of the fit for every state.'
+         ERROR STOP 1
+      END IF
+      DO ist = 1, SIZE(states)
+         DO k = 1, fit%n
+            ag = (0D0, 0D0)
+            DO j = 1, fit%nfit
+               js = (k - 1)*fit%nfit + j
+               CALL incident_at(states(ist), fit%samp%x(:, js), phi_s, grad_s)
+               ag = ag + fit%wt(j, k, 2)*(fsamp(js, ist)%grad - grad_s)
+            END DO
+            CALL incident_at(states(ist), fit%x(:, k), phi_i, grad_i)
+            f(fit%idx(k), ist)%grad(1:2) = grad_i(1:2) + ag(1:2)
+         END DO
+      END DO
+   END SUBROUTINE fs_waterline_fit_source
 
    SUBROUTINE fs_inner_steps(mesh, pts, step, delta, nshrunk, nfloor, scale)
       ! The offset delta of each inner point for fs_inner_fields: step x its size, halved until two conditions hold, but not
@@ -739,7 +1068,7 @@ CONTAINS
    END FUNCTION fs_pair_order_message
 
    SUBROUTINE fs_pair_terms(w1, f1, inc1, pw1, beta1, k1, w2, f2, inc2, pw2, beta2, k2, psi, pw_psi, wts, np, g, rho, &
-                            t_in, t_out, r_far, kernel)
+                            t_in, t_out, r_far, kernel, gpsi, b1, b2, psi_b, wb)
       ! The free-surface terms of T_pot of the pair of states 1 (omega w1, heading beta1 in radians, incident wave number
       ! k1 = pw1%k0) and 2, as QTFDriver adds them (qtf_terms = full):
       !   t_in   fs_inner_pair over the inner points: total fields f1, f2, incident fields inc1, inc2 (phi_zz = k^2 phi),
@@ -758,6 +1087,11 @@ CONTAINS
       ! psi and pw_psi at Omega. The pair is evaluated ordered w1 >= w2, as (2, 1) when w1 < w2, with no conjugate:
       ! Q_S(2, 1) = Q_S(1, 2) (pair_plus is symmetric) and psi is the same, so T(1, 2) = T(2, 1) (test fs_sum_swap). The
       ! diagonal w1 = w2 is a regular pair at 2 w1 (test fs_sum_diagonal).
+      ! gpsi, b1, b2, psi_b, wb (optional, all or none; qtf_fs_inner = source, spec D2 of the free-surface speed-ups): t_in by
+      ! the source route without phi_zz, fs_inner_pair_ibp with gpsi(n, 2, 6 nbody) = grad_h psi_k at the points plus
+      ! fs_line_pair on the boundary points (waterline segments and outer edge) with the states b1, b2 there, psi_k there
+      ! psi_b(nb, 6 nbody) and the line weights wb(nb). The order rules above hold for it as they are (the line terms are
+      ! pair products as Q is; test fs_pair_terms_ibp_order). t_out is unchanged.
       REAL(8), INTENT(IN) :: w1, beta1, k1, w2, beta2, k2, wts(:), g, rho
       TYPE(fs_point_field), INTENT(IN) :: f1(:), inc1(:), f2(:), inc2(:)
       TYPE(pw_set), INTENT(IN) :: pw1, pw2, pw_psi(:)
@@ -766,44 +1100,64 @@ CONTAINS
       COMPLEX(8), INTENT(OUT) :: t_in(:), t_out(:)
       REAL(8), INTENT(OUT), OPTIONAL :: r_far
       INTEGER, INTENT(IN), OPTIONAL :: kernel
+      COMPLEX(8), INTENT(IN), OPTIONAL :: gpsi(:, :, :), psi_b(:, :)
+      TYPE(fs_wl_state), INTENT(IN), OPTIONAL :: b1, b2
+      REAL(8), INTENT(IN), OPTIONAL :: wb(:)
       INTEGER :: kn
+      LOGICAL :: ibp
 
       t_in = (0D0, 0D0)
       t_out = (0D0, 0D0)
       IF (PRESENT(r_far)) r_far = 0D0
       kn = kernel_arg(kernel)
+      ibp = PRESENT(gpsi)
+      IF (ibp .NEQV. (PRESENT(b1) .AND. PRESENT(b2) .AND. PRESENT(psi_b) .AND. PRESENT(wb))) THEN
+         WRITE (*, '(a)') ' fs_pair_terms: gpsi, b1, b2, psi_b and wb go together.'
+         ERROR STOP 1
+      END IF
       IF (kn == KERNEL_SUM) THEN
          IF (w1 >= w2) THEN
-            CALL ordered(w1, f1, inc1, pw1, beta1, k1, w2, f2, inc2, pw2, beta2, k2)
+            CALL ordered(w1, f1, inc1, pw1, beta1, k1, w2, f2, inc2, pw2, beta2, k2, 1)
          ELSE
-            CALL ordered(w2, f2, inc2, pw2, beta2, k2, w1, f1, inc1, pw1, beta1, k1)
+            CALL ordered(w2, f2, inc2, pw2, beta2, k2, w1, f1, inc1, pw1, beta1, k1, 2)
          END IF
          RETURN
       END IF
       IF (w1 == w2) RETURN
       IF (w1 > w2) THEN
-         CALL ordered(w1, f1, inc1, pw1, beta1, k1, w2, f2, inc2, pw2, beta2, k2)
+         CALL ordered(w1, f1, inc1, pw1, beta1, k1, w2, f2, inc2, pw2, beta2, k2, 1)
       ELSE
-         CALL ordered(w2, f2, inc2, pw2, beta2, k2, w1, f1, inc1, pw1, beta1, k1)
+         CALL ordered(w2, f2, inc2, pw2, beta2, k2, w1, f1, inc1, pw1, beta1, k1, 2)
          t_in = CONJG(t_in)
          t_out = CONJG(t_out)
       END IF
 
    CONTAINS
 
-      SUBROUTINE ordered(wa, fa, ia, pa, ba, ka, wb, fb, ib, pb, bb, kb)
-         ! The terms of the pair (a, b) with wa > wb (wa >= wb for the sum)
-         REAL(8), INTENT(IN) :: wa, ba, ka, wb, bb, kb
+      SUBROUTINE ordered(wa, fa, ia, pa, ba, ka, wb_, fb, ib, pb, bb, kb, first)
+         ! The terms of the pair (a, b) with wa > wb_ (wa >= wb_ for the sum); first = 1: a is state 1, 2: a is state 2
+         REAL(8), INTENT(IN) :: wa, ba, ka, wb_, bb, kb
          TYPE(fs_point_field), INTENT(IN) :: fa(:), ia(:), fb(:), ib(:)
          TYPE(pw_set), INTENT(IN) :: pa, pb
-         COMPLEX(8) :: sl(SIZE(t_out))
+         INTEGER, INTENT(IN) :: first
+         COMPLEX(8) :: sl(SIZE(t_out)), tl(SIZE(t_in))
          REAL(8) :: rf
 
-         CALL fs_inner_pair(wa, fa, ia, wb, fb, ib, psi, wts, g, rho, t_in, kernel=kn)
+         IF (ibp) THEN
+            CALL fs_inner_pair_ibp(wa, fa, ia, wb_, fb, ib, psi, gpsi, wts, g, rho, t_in, kernel=kn)
+            IF (first == 1) THEN
+               CALL fs_line_pair(wa, b1, wb_, b2, psi_b, wb, g, rho, tl, kernel=kn)
+            ELSE
+               CALL fs_line_pair(wa, b2, wb_, b1, psi_b, wb, g, rho, tl, kernel=kn)
+            END IF
+            t_in = t_in + tl
+         ELSE
+            CALL fs_inner_pair(wa, fa, ia, wb_, fb, ib, psi, wts, g, rho, t_in, kernel=kn)
+         END IF
          rf = fs_outer_rfar(pa, ka, pb, kb, pw_psi, kernel=kn)
-         CALL fs_outer_pair(wa, pa, ba, ka, wb, pb, bb, kb, pw_psi, pair_omega(kn, wa, wb), g, rho, rf, t_out, kernel=kn)
+         CALL fs_outer_pair(wa, pa, ba, ka, wb_, pb, bb, kb, pw_psi, pair_omega(kn, wa, wb_), g, rho, rf, t_out, kernel=kn)
          IF (np >= 3) THEN
-            CALL fs_outer_sliver(wa, pa, ba, ka, wb, pb, bb, kb, pw_psi, pair_omega(kn, wa, wb), g, rho, np, sl, kernel=kn)
+            CALL fs_outer_sliver(wa, pa, ba, ka, wb_, pb, bb, kb, pw_psi, pair_omega(kn, wa, wb_), g, rho, np, sl, kernel=kn)
             t_out = t_out + sl
          END IF
          IF (PRESENT(r_far)) r_far = rf

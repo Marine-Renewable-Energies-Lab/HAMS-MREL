@@ -70,6 +70,10 @@ MODULE SecondOrderTypes
       ! The partial waves outside R: 1 samples (the centroid route at the circle samples, fitted), 2 panels (straight from the
       ! hull integral by Graf's addition theorem, mode check on every 8th sample; spec D3 of the free-surface speed-ups)
       INTEGER :: qtf_fs_circle = 1
+      ! The inner free-surface fields: 1 stencil (the 5-point stencil of the Green route, with phi_zz), 2 source (phi and grad
+      ! phi from the source strengths, phi_zz removed from the inner integral by Green's theorem in the plane; spec D2 of the
+      ! free-surface speed-ups)
+      INTEGER :: qtf_fs_inner = 1
       ! Field-pass rows (psi, grad psi at the hull, free-surface and field points): the deep-water Green function is used
       ! where k0 h >= field_deep_kh (k0 the wave number of the frequency, h the depth); 0 switches it off
       REAL(8) :: field_deep_kh = 10D0

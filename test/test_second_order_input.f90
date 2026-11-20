@@ -48,6 +48,7 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("field_deep_kh_read", test_field_deep_kh_read), &
     new_unittest("field_deep_kh_negative_stops", test_field_deep_kh_negative_stops), &
     new_unittest("qtf_fs_circle_key", test_qtf_fs_circle_key), &
+    new_unittest("qtf_fs_inner_key", test_qtf_fs_inner_key), &
     new_unittest("qtf_sum_full_deep_stops", test_qtf_sum_full_deep_stops), &
     new_unittest("qtf_edge_keys", test_qtf_edge_keys), &
     new_unittest("qtf_field_key", test_qtf_field_key) &
@@ -1035,6 +1036,40 @@ subroutine test_qtf_fs_circle_key(error)
                            'Invalid value "graf" for key "qtf_fs_circle" in SecondOrder.in.')
   call remove_directory(root)
 end subroutine test_qtf_fs_circle_key
+
+!> qtf_fs_inner (spec D2 of the free-surface speed-ups): absent gives stencil (1, the 5-point stencil with phi_zz), source
+!> gives 2 (the source route without phi_zz), any other word stops with the invalid-value message
+subroutine test_qtf_fs_inner_key(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_fs_inner"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_fs_inner, 1, "qtf_fs_inner default")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_fs_inner = source"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "source rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_fs_inner, 2, "qtf_fs_inner = source")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_fs_inner = stencil"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "stencil rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%qtf_fs_inner, 1, "qtf_fs_inner = stencil")
+  if (allocated(error)) return
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "qtf_fs_inner = green"], &
+                           'Invalid value "green" for key "qtf_fs_inner" in SecondOrder.in.')
+  call remove_directory(root)
+end subroutine test_qtf_fs_inner_key
 
 subroutine expect_read_message(error, root, lines, expected)
   type(error_type), allocatable, intent(out) :: error

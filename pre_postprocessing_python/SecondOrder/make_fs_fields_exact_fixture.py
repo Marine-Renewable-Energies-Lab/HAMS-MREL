@@ -121,9 +121,64 @@ def grid(out, kernel="sum"):
     print("wrote %s (%d points); expected T_FS inner (a, a + 5 m) %s" % (out, x.size, np.round(expect, 4)))
 
 
+def grid_psi(out, kernel="sum"):
+    """The psi data the source route of the inner integral needs on the grid of grid(kernel) (spec D2 of the free-surface
+    speed-ups: phi_zz removed by Green's theorem in the plane): grad_h psi_k at the grid points (psi_k = P(r) cos(m theta),
+    so grad psi = D cos e_r - (m P / r) sin e_theta, P and D of _z0_modal), and psi_k on the two edges of the annulus,
+    r = a (the waterline) and r = a + 5 m, at the grid's angles with its weights times r (the line element r dtheta).
+    'GRIDPSI n' then n lines 'Re Im of d_x psi, d_y psi' for k = 1, 3, 5 in the grid's order; 'EDGE r n' then n lines
+    'theta weight' and 'Re Im of psi' for k = 1, 3, 5; 'END'."""
+    cyl = t.Cylinder()
+    res = dict(t.FS_CHECK_RESOLUTION, n_modes=N_MODES)
+    w1, w2 = GRID_PAIR
+    big = w1 + w2 if kernel == "sum" else w1 - w2
+    rads = t._psi_solutions(cyl, big, res["n_modes"], t._spec_key(res["p_max"]))
+    xg, wg = np.polynomial.legendre.leggauss(GRID_GAUSS)
+    rr = []
+    for lo, hi in zip(GRID_EDGES[:-1], GRID_EDGES[1:]):
+        rr += list(cyl.radius + 0.5 * (hi - lo) * xg + 0.5 * (hi + lo))
+    th = math.pi * np.arange(GRID_NTH + 1) / GRID_NTH
+    wt = np.full(th.size, 2.0 * math.pi / GRID_NTH)
+    wt[0] = wt[-1] = math.pi / GRID_NTH
+    lines = ["# fs_fields_exact_grid_psi: written by make_fs_fields_exact_fixture.py --grid-psi%s, kernel %s, Omega %.4f"
+             % ("" if kernel == "sum" else "-diff", kernel, big),
+             "GRIDPSI %d" % (len(rr) * th.size)]
+    grads = []
+    for k in (1, 3, 5):
+        (m,) = rads[k].orders
+        p, d, _ = t._z0_modal(rads[k], np.array(rr))
+        p, d = p[:, 0], d[:, 0]
+        gx, gy = [], []
+        for i, r in enumerate(rr):
+            for a in th:
+                ur, ut = d[i] * math.cos(m * a), -m * p[i] / r * math.sin(m * a)
+                gx.append(math.cos(a) * ur - math.sin(a) * ut)
+                gy.append(math.sin(a) * ur + math.cos(a) * ut)
+        grads.append((np.array(gx), np.array(gy)))
+    for i in range(len(rr) * th.size):
+        lines.append(" ".join("%.16e %.16e %.16e %.16e" % (gx[i].real, gx[i].imag, gy[i].real, gy[i].imag)
+                              for gx, gy in grads))
+    for r in (cyl.radius, cyl.radius + GRID_EDGES[-1]):
+        lines.append("EDGE %.16e %d" % (r, th.size))
+        vals = []
+        for k in (1, 3, 5):
+            (m,) = rads[k].orders
+            vals.append(t._z0_modal(rads[k], np.array([r]))[0][0, 0] * np.cos(m * th))
+        for j, a in enumerate(th):
+            lines.append("%.16e %.16e " % (a, wt[j] * r) + " ".join("%.16e %.16e" % (v[j].real, v[j].imag) for v in vals))
+    lines.append("END")
+    with open(out, "w", newline="\n") as f:
+        f.write("\n".join(lines) + "\n")
+    print("wrote %s" % out)
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     data = os.path.join(here, "..", "..", "test", "data", "fs_sum_exact")
+    if "--grid-psi" in sys.argv:
+        return grid_psi(os.path.join(data, "fs_fields_exact_grid_psi.txt"))
+    if "--grid-psi-diff" in sys.argv:
+        return grid_psi(os.path.join(data, "fs_fields_exact_grid_psi_diff.txt"), kernel="diff")
     if "--grid" in sys.argv:
         return grid(os.path.join(data, "fs_fields_exact_grid.txt"))
     if "--grid-diff" in sys.argv:

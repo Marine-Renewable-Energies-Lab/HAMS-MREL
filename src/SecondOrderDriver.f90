@@ -133,6 +133,11 @@ MODULE SecondOrderDriver
    ! psi_main is kept, and its pass on the inner free surface (psi_fs_merge) and of grad psi on C and F (psi_cs_merge) is
    ! left to the fields passes of so_end_frequency at the same frequency (spec D4 of the free-surface speed-ups)
    LOGICAL :: psi_fs_merge = .FALSE., psi_cs_merge = .FALSE.
+   ! The frequency source_op was last built at (timed_source_build; -1: never), so that the source route of the inner
+   ! free-surface fields (qtf_fs_inner = source) builds it only where velocity_method or cs_velocity = source did not
+   REAL(8) :: source_op_omega = -1D0
+   ! qtf_fs_inner = source: the near-waterline fit of the gradient (fs_waterline_fit_source) on the source route
+   LOGICAL, PARAMETER :: FS_SOURCE_GRAD_FIT = .FALSE.
    INTEGER :: unit_psi = 0                             ! QTF_PsiCheck.txt (write_terms >= 1)
    LOGICAL :: b2_control = .FALSE.                     ! qtf_b2 = control: fields on C and F go to the QTF store
    TYPE(cs_points) :: b2_pts                           ! the points of C and F of cs_pts (no Gamma_c), for B2
@@ -215,8 +220,15 @@ CONTAINS
             ' full, qtf_b2 = control and qtf = 1, 2 or 3 (qtf_edge_angle also with qtf_direct = 1) only.'
       END IF
       IF (opts%qtf_fs_given .AND. .NOT. uses_fs(opts)) THEN
-         WRITE (*, '(a)') ' QTF note: qtf_fs_radius, qtf_fs_rows, qtf_fs_panel, qtf_fs_modes, qtf_fs_evanescent and'// &
-            ' qtf_fs_circle are ignored; they apply with qtf_terms = full and qtf = 1, 2 or 3 only.'
+         WRITE (*, '(a)') ' QTF note: qtf_fs_radius, qtf_fs_rows, qtf_fs_panel, qtf_fs_modes, qtf_fs_evanescent,'// &
+            ' qtf_fs_circle and qtf_fs_inner are ignored; they apply with qtf_terms = full and qtf = 1, 2 or 3 only.'
+      END IF
+      IF (uses_fs(opts) .AND. opts%qtf_fs_inner == 2 .AND. opts%qtf_direct == 1) THEN
+         ! The direct solve takes Q_D at the inner points as its free-surface source (fs_forcing_points), with phi_zz;
+         ! the source route has no phi_zz there
+         WRITE (*, '(a)') ' QTF: qtf_fs_inner = source gives the inner fields without phi_zz, which the direct solve'// &
+            ' (qtf_direct = 1) needs at the inner points; use qtf_fs_inner = stencil with qtf_direct = 1.'
+         ERROR STOP 1
       END IF
       ALLOCATE (states(MERGE(NBETA, 1, keep_all_headings(opts))))
       ! Only the near-field and control-surface methods use the surface geometry (the control surface takes the waterplane
@@ -859,6 +871,7 @@ CONTAINS
       ! psi_k outside R (samples by the centroid route, with the mode check), into the QTF store, with the deep-water Green
       ! function where field_deep says so. The solver globals (V, WK, WVN, H and the Green function) must be at omega, as
       ! after the radiation solve there.
+      USE QTFFreeSurface, ONLY: fs_inner_fields_source
       TYPE(so_options), INTENT(IN) :: opts
       REAL(8), INTENT(IN) :: omega
       COMPLEX(8), INTENT(IN) :: psi(:, :)
@@ -866,9 +879,11 @@ CONTAINS
       COMPLEX(8), ALLOCATABLE :: psi_pts(:, :)
       TYPE(pw_set), ALLOCATABLE :: pw(:)
       REAL(8), ALLOCATABLE :: miss(:)
+      COMPLEX(8), ALLOCATABLE :: sig(:, :), gpsi(:, :, :)
+      TYPE(fs_point_field), ALLOCATABLE :: fsrc(:, :)
       REAL(8) :: kev(fs_nev)
       INTEGER(8) :: t0, t1, rate
-      INTEGER :: nmode
+      INTEGER :: nmode, k
       LOGICAL :: deep
 
       IF (ABS(W1 - omega) > 1D-12*omega) THEN
@@ -883,17 +898,69 @@ CONTAINS
       CALL psi_states(omega, psi, ps)
       ALLOCATE (psi_pts(fs_pts%n, nmode), pw(nmode), miss(nmode))
       CALL SYSTEM_CLOCK(t0, rate)
-      CALL fs_sample_phi(mesh, fs_pts, ps, multi_arrays, psi_pts, deep=deep)
+      IF (opts%qtf_fs_inner == 2) THEN
+         ! The source route (spec D2 of the free-surface speed-ups): psi_k and grad_h psi_k from the source strengths of
+         ! this frequency, one row per point; the operator is built here (no first-order solve at this frequency)
+         ALLOCATE (sig(mesh%n, nmode), fsrc(fs_pts%n, nmode), gpsi(fs_pts%n, 2, nmode))
+         CALL fs_source_sigma(ps, 0, sig)
+         CALL fs_inner_fields_source(mesh, fs_pts, ps, sig, multi_arrays, fsrc, deep=deep)
+         DO k = 1, nmode
+            psi_pts(:, k) = fsrc(:, k)%phi
+            gpsi(:, 1, k) = fsrc(:, k)%grad(1)
+            gpsi(:, 2, k) = fsrc(:, k)%grad(2)
+         END DO
+      ELSE
+         CALL fs_sample_phi(mesh, fs_pts, ps, multi_arrays, psi_pts, deep=deep)
+      END IF
       CALL pw_evanescent_from_wvn(fs_nev, kev)
       CALL fs_circle_modes(mesh, fs_circle, ps, multi_arrays, fs_centre, fs_radius, H, WK, kev, fs_mmax, fs_nev, pw, miss, &
                            deep=deep, graf=opts%qtf_fs_circle == 2)
       CALL SYSTEM_CLOCK(t1)
       CALL log_mode_check(miss, omega, 'psi of mode')
-      CALL qtf_keep_fs_psi(omega, psi_pts, pw)
+      IF (opts%qtf_fs_inner == 2) THEN
+         CALL qtf_keep_fs_psi(omega, psi_pts, pw, gpsi=gpsi)
+      ELSE
+         CALL qtf_keep_fs_psi(omega, psi_pts, pw)
+      END IF
       WRITE (*, '(a,F10.5,a,F10.2,a,I0,a,I0,a,I0,a)') ' QTF free surface psi: omega', omega, ',', &
          REAL(t1 - t0, 8)/REAL(rate, 8), ' s for ', fs_pts%n, ' inner points, ', fs_circle%n, ' samples on the circle and ', &
          nmode, ' modes'
    END SUBROUTINE keep_fs_psi
+
+   SUBROUTINE fs_source_sigma(sts, nh, sig)
+      ! The source strengths sig(n, SIZE(sts)) of the states sts at the current frequency, for the source route of the inner
+      ! free-surface fields (qtf_fs_inner = source, spec D2 of the free-surface speed-ups). The source operator of this
+      ! frequency is built here unless velocity_method or cs_velocity = source built it already (source_op_omega); the
+      ! first nh states (the headings) take cs_sigma where cs_velocity = source solved them already (after_motion), so no
+      ! second solve. Every other state takes one solve (velocity_source on a copy, as its grad_p is overwritten). One log
+      ! line with the times.
+      TYPE(first_order_state), INTENT(IN) :: sts(:)
+      INTEGER, INTENT(IN) :: nh
+      COMPLEX(8), INTENT(OUT) :: sig(:, :)
+      TYPE(first_order_state) :: c
+      INTEGER(8) :: t0, t1, t2, rate
+      INTEGER :: ist, first
+      LOGICAL :: built
+
+      CALL SYSTEM_CLOCK(t0, rate)
+      built = .NOT. (source_op_omega == W1)
+      IF (built) CALL timed_source_build()
+      CALL SYSTEM_CLOCK(t1)
+      first = 1
+      IF (.NOT. built .AND. ALLOCATED(cs_sigma) .AND. nh > 0) THEN
+         sig(:, 1:nh) = cs_sigma(:, 1:nh)
+         first = nh + 1
+      END IF
+      DO ist = first, SIZE(sts)
+         c = sts(ist)
+         IF (.NOT. ALLOCATED(c%grad_p)) ALLOCATE (c%grad_p(3, mesh%n))
+         CALL velocity_source(mesh, source_op, c, sigma_full=sig(:, ist))
+      END DO
+      CALL SYSTEM_CLOCK(t2)
+      WRITE (*, '(a,F10.5,a,F10.2,a,a,I0,a,F10.2,a,I0,a)') ' QTF free surface source: omega', W1, ', operator', &
+         REAL(t1 - t0, 8)/REAL(rate, 8), ' s', TRIM(MERGE(' (built here)            ', ' (of the hull or C and F)', built)), &
+         SIZE(sts) - first + 1, ' solves', REAL(t2 - t1, 8)/REAL(rate, 8), ' s (', first - 1, ' strengths reused)'
+   END SUBROUTINE fs_source_sigma
 
    SUBROUTINE log_mode_check(miss, omega, what)
       ! The mode check of fs_circle_modes: one warning for the worst of the states, naming it (what and its index)
@@ -1152,6 +1219,7 @@ CONTAINS
 
       CALL SYSTEM_CLOCK(t0, rate)
       CALL build_source_operator(mesh, multi_arrays, ALLOCATED(phi_source), source_op)
+      source_op_omega = W1
       CALL SYSTEM_CLOCK(t1)
       source_build_seconds = source_build_seconds + REAL(t1 - t0, 8)/REAL(rate, 8)
       n_source_builds = n_source_builds + 1
@@ -1236,16 +1304,21 @@ CONTAINS
       ! row of fs_sample_phi at the point, before the waterline fit (which stays that of the headings); the circle samples
       ! are those of keep_fs_psi, and each group has its own mode-check scales (nsplit). Every state's sums are its own, so
       ! the values are those of the separate passes to the bit; the deep flag is the one both passes would take.
+      ! (a local USE, so that the module header, which another branch edits, stays as it is)
+      USE QTFFreeSurface, ONLY: fs_inner_fields_source, fs_waterline_fit_source
       TYPE(so_options), INTENT(IN) :: opts
       TYPE(fs_point_field), ALLOCATABLE :: f(:, :)
       TYPE(first_order_state), ALLOCATABLE :: sts(:), ps(:)
       TYPE(pw_set), ALLOCATABLE :: pw(:)
       COMPLEX(8), ALLOCATABLE :: centre(:, :)
       REAL(8), ALLOCATABLE :: miss(:)
+      ! qtf_fs_inner = source: the source strengths, the fields at the samples of the fit, grad_h psi_k at the points
+      COMPLEX(8), ALLOCATABLE :: sig(:, :), gpsi(:, :, :)
+      TYPE(fs_point_field), ALLOCATABLE :: fsamp(:, :)
       REAL(8), PARAMETER :: LIMES_NUH = 50D0
       REAL(8) :: kev(fs_nev)
       INTEGER(8) :: t0, t1, rate
-      INTEGER :: ib, nh, nst
+      INTEGER :: ib, nh, nst, ist
       LOGICAL :: deep
 
       deep = field_deep(opts)
@@ -1265,8 +1338,30 @@ CONTAINS
       nst = SIZE(sts)
       ALLOCATE (f(fs_pts%n, nst), pw(nst), miss(nst), centre(fs_pts%n, nst))
       CALL SYSTEM_CLOCK(t0, rate)
-      CALL fs_inner_fields(mesh, fs_pts, sts, fs_step, multi_arrays, f, fs_delta, deep=deep, centre=centre)
-      CALL fs_waterline_fit_apply(mesh, fs_fit, states, fs_step, multi_arrays, f(:, 1:nh), deep=deep)
+      IF (opts%qtf_fs_inner == 2) THEN
+         ! The source route (spec D2 of the free-surface speed-ups): phi and grad phi of the headings and psi_k from the
+         ! source strengths, one row per point; no phi_zz, so the near-waterline fit gives at most the gradient
+         ALLOCATE (sig(mesh%n, nst))
+         CALL fs_source_sigma(sts, nh, sig)
+         CALL fs_inner_fields_source(mesh, fs_pts, sts, sig, multi_arrays, f, deep=deep)
+         IF (FS_SOURCE_GRAD_FIT .AND. fs_fit%n > 0) THEN
+            ALLOCATE (fsamp(fs_fit%samp%n, nh))
+            CALL fs_inner_fields_source(mesh, fs_fit%samp, states, sig(:, 1:nh), multi_arrays, fsamp, deep=deep)
+            CALL fs_waterline_fit_source(fs_fit, fsamp, states, f(:, 1:nh))
+         END IF
+         ! psi_k has no incident wave: phi is phi_P
+         DO ist = 1, nst
+            centre(:, ist) = f(:, ist)%phi
+         END DO
+         ALLOCATE (gpsi(fs_pts%n, 2, nst - nh))
+         DO ist = nh + 1, nst
+            gpsi(:, 1, ist - nh) = f(:, ist)%grad(1)
+            gpsi(:, 2, ist - nh) = f(:, ist)%grad(2)
+         END DO
+      ELSE
+         CALL fs_inner_fields(mesh, fs_pts, sts, fs_step, multi_arrays, f, fs_delta, deep=deep, centre=centre)
+         CALL fs_waterline_fit_apply(mesh, fs_fit, states, fs_step, multi_arrays, f(:, 1:nh), deep=deep)
+      END IF
       CALL pw_evanescent_from_wvn(fs_nev, kev)
       CALL fs_circle_modes(mesh, fs_circle, sts, multi_arrays, fs_centre, fs_radius, H, WK, kev, fs_mmax, fs_nev, pw, miss, &
                            deep=deep, nsplit=nh, graf=opts%qtf_fs_circle == 2)
@@ -1277,7 +1372,11 @@ CONTAINS
       END DO
       IF (psi_fs_merge) THEN
          CALL log_mode_check(miss(nh + 1:), W1, 'psi of mode')
-         CALL qtf_keep_fs_psi(W1, centre(:, nh + 1:), pw(nh + 1:))
+         IF (opts%qtf_fs_inner == 2) THEN
+            CALL qtf_keep_fs_psi(W1, centre(:, nh + 1:), pw(nh + 1:), gpsi=gpsi)
+         ELSE
+            CALL qtf_keep_fs_psi(W1, centre(:, nh + 1:), pw(nh + 1:))
+         END IF
          psi_fs_merge = .FALSE.
          WRITE (*, '(a,F10.5,a,F10.2,a,I0,a,I0,a,I0,a,I0,a)') ' QTF free surface fields: omega', W1, ',', &
             REAL(t1 - t0, 8)/REAL(rate, 8), ' s for ', fs_pts%n, ' inner points, ', fs_circle%n, &

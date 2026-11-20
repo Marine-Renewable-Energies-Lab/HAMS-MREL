@@ -160,7 +160,7 @@ CONTAINS
       !$OMP END PARALLEL
    END SUBROUTINE fields_green
 
-   SUBROUTINE fields_source(mesh, pts, states, sigmas, is_multi, fields)
+   SUBROUTINE fields_source(mesh, pts, states, sigmas, is_multi, fields, deep, field_mode)
       ! phi and grad phi of every state at every point of pts, from the source strengths of velocity_source. With the image of
       ! base panel j under symmetry element is at full index (is-1)*nbase + j, and G(x, M q) = G(M x, q):
       !   phi_P(x)      = (1/4 pi) sum_is sum_j sigma g_int(M x, j)
@@ -170,12 +170,17 @@ CONTAINS
       ! its image (flag = 1), as in build_source_operator. phi is computed at every point, CS_WALL points included, since here
       ! it costs nothing extra. All states must be at the current global frequency: source_panel_integrals reads the module
       ! globals V, WVN and H.
+      ! deep and field_mode, if present, go to source_panel_integrals as deep and field: the deep-water Green function at
+      ! finite depth, and the series of FINGREEN3D without the Limes outliers (the inner free-surface fields of the source
+      ! route, QTFFreeSurface fs_inner_fields_source, take the deep flag of the Green route there). Absent: as before.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(cs_points), INTENT(IN) :: pts
       TYPE(first_order_state), INTENT(IN) :: states(:)
       COMPLEX(8), INTENT(IN) :: sigmas(:, :)
       LOGICAL, INTENT(IN) :: is_multi
       TYPE(cs_fields), INTENT(OUT) :: fields(SIZE(states))
+      LOGICAL, INTENT(IN), OPTIONAL :: deep, field_mode
+      LOGICAL :: dw, fm, opt
       COMPLEX(8) :: g_int, grad_int(3), phi_p(SIZE(states)), grad_p(3, SIZE(states)), grad_i(3), phi_i, sig
       REAL(8) :: x0(3), xf(3), f(3)
       INTEGER :: i, is, j, ist, nst, nb, ns, flag
@@ -186,6 +191,12 @@ CONTAINS
       DO ist = 1, nst
          ALLOCATE (fields(ist)%phi(pts%n), fields(ist)%grad(3, pts%n))
       END DO
+      ! The optional arguments go on only when one is given, so that the old calls take the old branch to the bit
+      opt = PRESENT(deep) .OR. PRESENT(field_mode)
+      dw = .FALSE.
+      IF (PRESENT(deep)) dw = deep
+      fm = .FALSE.
+      IF (PRESENT(field_mode)) fm = field_mode
 
       !$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(x0, xf, f, is, j, ist, flag, g_int, grad_int, phi_p, grad_p, grad_i, phi_i, sig) &
       !$OMP SCHEDULE(DYNAMIC, 4)
@@ -198,7 +209,11 @@ CONTAINS
             xf = f*x0
             DO j = 1, nb
                flag = MERGE(1, 0, NORM2(xf - mesh%xc(:, j)) <= NEAR_PANEL_SIZES*mesh%psize(j))
-               CALL source_panel_integrals(mesh, xf, j, flag, is_multi, g_int, grad_int)
+               IF (opt) THEN
+                  CALL source_panel_integrals(mesh, xf, j, flag, is_multi, g_int, grad_int, deep=dw, field=fm)
+               ELSE
+                  CALL source_panel_integrals(mesh, xf, j, flag, is_multi, g_int, grad_int)
+               END IF
                DO ist = 1, nst
                   sig = sigmas((is - 1)*nb + j, ist)
                   phi_p(ist) = phi_p(ist) + sig*g_int
