@@ -795,8 +795,9 @@ CONTAINS
    SUBROUTINE keep_cs_psi(opts, omega, psi)
       ! grad psi_k at the points of C and F, into the QTF store (qtf_b2 = control). psi_k is the perturbation potential of a
       ! state with omega, no incident wave and dpsi_k/dn = n_k (mesh%nj) on the panels of the body of mode k, 0 on the others,
-      ! as radiation_psi defines it; fields_green takes its gradient from the boundary integral formula, with the deep-water
-      ! Green function where field_deep says so. The solver globals (V, WK, H and the Green function) must be at omega, as
+      ! as radiation_psi defines it; fields_green takes its gradient from the boundary integral formula, always with the
+      ! Green function of the depth: the deep-water rows of field_deep are for the free surface only (see field_deep). The
+      ! solver globals (V, WK, H and the Green function) must be at omega, as
       ! after the radiation solve there.
       TYPE(so_options), INTENT(IN) :: opts
       REAL(8), INTENT(IN) :: omega
@@ -816,7 +817,7 @@ CONTAINS
       ALLOCATE (f(nmode), grad(3, b2_pts%n, nmode))
       CALL psi_states(omega, psi, ps)
       CALL SYSTEM_CLOCK(t0, rate)
-      CALL fields_green(mesh, b2_pts, ps, opts%cs_fd_step, multi_arrays, f, deep=field_deep(opts))
+      CALL fields_green(mesh, b2_pts, ps, opts%cs_fd_step, multi_arrays, f)
       CALL SYSTEM_CLOCK(t1)
       DO k = 1, nmode
          grad(:, :, k) = f(k)%grad
@@ -857,13 +858,19 @@ CONTAINS
    END SUBROUTINE psi_states
 
    LOGICAL FUNCTION field_deep(opts)
-      ! The field rows of a second-order pass at the current solver frequency take the deep-water Green function (deep of
-      ! field_influence_row) where the depth is finite and k0 h >= field_deep_kh, WK being k0 there; field_deep_kh = 0
-      ! switches it off (spec D1 of the free-surface speed-ups). Measured against the direct sum of the finite-depth row
-      ! (the deep-vs-finite benchmark): the deep row is within 1.3e-3 of the direct sum wherever it differs from the
-      ! finite-depth row by more than that; at k0 h = 40 the finite-depth row and the deep row differ by 3.4e-3
-      ! (the test pins 4.5e-3), because the finite-depth mode itself is off there. The passes that ask: fs_frequency,
-      ! keep_fs_psi, keep_cs_psi, and control_fields when B2 takes its fields. One log line the first time it is true.
+      ! The field rows of a free-surface pass (points at z = 0) at the current solver frequency take the deep-water Green
+      ! function (deep of field_influence_row) where the depth is finite and k0 h >= field_deep_kh, WK being k0 there;
+      ! field_deep_kh = 0 switches it off (item 1 of the field-pass speed-ups). Measured against the direct sum of the
+      ! finite-depth row (the deep-vs-finite benchmark): the deep row is within 1.3e-3 of the direct sum wherever it
+      ! differs from the finite-depth row by more than that; at k0 h = 40 the finite-depth row and the deep row differ by
+      ! 3.4e-3 (the test pins 4.5e-3), because the finite-depth mode itself is off there. The passes that ask:
+      ! fs_frequency and keep_fs_psi. One log line the first time it is true.
+      ! Not below z = 0. At high frequency the deep-water G tends to 1/r - 1/r1 (zero on z = 0), the finite-depth G to that
+      ! plus the images of a seabed with dG/dz = 0, which INFGREEN3D drops [derived]. The images cancel at z = 0 but not
+      ! where the point and the hull are both below it. At control-surface bottom points the deep row is 2.3e-3 to 9.3e-3 of the row
+      ! maximum off the direct sum on an OC4-like case (h = 10 drafts, C bottom 5 to 8 m under the hull) and 0.15 to 0.19
+      ! with 1 m of clearance in h = 2 drafts, at every k0 h from 10 to 40, while the finite-depth row is within 7e-5
+      ! (field_row_deep_seabed). So keep_cs_psi and control_fields (C and F) keep the Green function of the depth.
       TYPE(so_options), INTENT(IN) :: opts
 
       field_deep = H > 0D0 .AND. opts%field_deep_kh > 0D0 .AND. WK*H >= opts%field_deep_kh
@@ -1449,13 +1456,12 @@ CONTAINS
       ! global frequency, which fields_green and fields_source read.
       ! Above nu*h = 50 (VHLIN in FinGreen3D.f90) the field mode of FINGREEN3D keeps the Limes acceleration of PIDCOCK
       ! (FIELD_SERIES), whose isolated outliers a central difference takes over (FieldVelocity.f90), so the green route warns.
-      ! When B2 takes these fields (qtf_b2 = control), the green route takes the deep-water Green function where field_deep
-      ! says so, and then does not warn; the control-surface drift of the same run then uses these fields too. Without B2
-      ! on C and F the rows stay those of the depth.
+      ! The rows are always those of the depth: the deep-water rows of field_deep do not hold below z = 0, where they miss
+      ! the seabed images (field_deep, test field_row_deep_seabed).
       ! With psi_cs_merge (B2 on C and F, cs_velocity = green) the 6 x nbody psi states of psi_main (psi_states) join the
       ! headings in the one fields_green call, in place of the pass of keep_cs_psi (spec D4 of the free-surface speed-ups):
       ! grad psi at the points of B2 is that at b2_idx. The points are independent and each state's sums are its own, so
-      ! the values are those of the separate passes to the bit, with the deep flag both would take.
+      ! the values are those of the separate passes to the bit.
       TYPE(so_options), INTENT(IN) :: opts
       TYPE(cs_fields), INTENT(OUT) :: fields(:)
       REAL(8), PARAMETER :: LIMES_NUH = 50D0
@@ -1465,13 +1471,10 @@ CONTAINS
       INTEGER(8) :: t0, t1, rate
       INTEGER :: k, nh, npsi
       CHARACTER(LEN=:), ALLOCATABLE :: who
-      LOGICAL :: deep
 
       who = 'Mean drift control surface'
       IF (.NOT. opts%do_control) who = 'QTF B2 control surface'
-      deep = .FALSE.
-      IF (b2_control .AND. opts%cs_velocity /= 2) deep = field_deep(opts)
-      IF (opts%cs_velocity /= 2 .AND. .NOT. deep .AND. H >= 0D0 .AND. states(1)%nu*H > LIMES_NUH) THEN
+      IF (opts%cs_velocity /= 2 .AND. H >= 0D0 .AND. states(1)%nu*H > LIMES_NUH) THEN
          WRITE (*, '(a,F10.5,a,F8.2,a)') ' '//who//' warning: omega', W1, ', nu*h =', states(1)%nu*H, &
             ' > 50: the finite-depth field values on C may scatter (the Green function series still uses Limes there).'
          IF (opts%do_control) THEN
@@ -1490,13 +1493,13 @@ CONTAINS
          CALL psi_states(W1, psi_main, ps)
          npsi = SIZE(ps)
          ALLOCATE (fall(nh + npsi), grad(3, b2_pts%n, npsi))
-         CALL fields_green(mesh, cs_pts, [states, ps], opts%cs_fd_step, multi_arrays, fall, deep=deep)
+         CALL fields_green(mesh, cs_pts, [states, ps], opts%cs_fd_step, multi_arrays, fall)
          fields = fall(1:nh)
          DO k = 1, npsi
             grad(:, :, k) = fall(nh + k)%grad(:, b2_idx)
          END DO
       ELSE
-         CALL fields_green(mesh, cs_pts, states, opts%cs_fd_step, multi_arrays, fields, deep=deep)
+         CALL fields_green(mesh, cs_pts, states, opts%cs_fd_step, multi_arrays, fields)
       END IF
       CALL SYSTEM_CLOCK(t1)
       IF (npsi > 0) THEN

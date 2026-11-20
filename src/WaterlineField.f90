@@ -68,7 +68,8 @@ CONTAINS
       ! panel integrals of 1/r and of its image near the point satisfy phi_z = 0 on z = 0, not the free-surface condition,
       ! so they are not (PartialWaves; the circle samples of the QTF free-surface integral, QTFFreeSurface).
       ! deep, if present and true, takes the deep-water Green function (INFGREEN3D, as for H < 0) at finite depth too: the
-      ! second-order field passes pass it where k0 h >= field_deep_kh (field_deep of SecondOrderDriver). Measured gap to
+      ! second-order free-surface passes (points at z = 0) pass it where k0 h >= field_deep_kh (field_deep of
+      ! SecondOrderDriver); below z = 0 it misses the seabed images (field_row_deep_seabed). Measured gap at z = 0 to
       ! the finite-depth row in field mode, over the row maximum: 1.25e-3 at k0 h = 10 on the OC4 rows (gbench), and
       ! 5.7e-4, 8.8e-4 and 3.4e-3 at k0 h = 10, 20 and 40 on the test cylinder (field_row_deep_within_tol). At k0 h = 40
       ! the gap is the error of field mode: it misses the direct eigenfunction sum by 3.3e-3 in G at R/h = 0.016,

@@ -319,15 +319,16 @@ module test_integration_drift
     ! frequencies 1.80 to 2.10 rad/s at k0 h = 33 to 45; the difference 0.15 rad/s at k0 h = 1.6), coarser for run time
     ! (qtf_fs_panel = 5, qtf_fs_modes = 8, qtf_fs_evanescent = 8, cs_panel_size = 5: 68 s and 123 s on the laptop).
     ! max |on - off| / max |off| of each file (Re and Im of .11d and .11s, every term of the terms files), measured
-    ! 1.624e-6 (.11d: only the fields at 1.05 rad/s switch), 1.657e-3 (.11s), 1.379e-4 (QTF_PotentialTerms.txt) and
-    ! 1.730e-3 (QTF_PotentialTermsSum.txt); the limits are 1.3x measured, rounded up to two digits. The rows themselves
+    ! 1.196e-6 (.11d: only the fields at 1.05 rad/s switch), 7.719e-4 (.11s), 7.060e-5 (QTF_PotentialTerms.txt) and
+    ! 1.070e-3 (QTF_PotentialTermsSum.txt), with the deep-water rows on the free surface only (C and F keep the
+    ! finite-depth rows); the limits are 1.3x measured, rounded up to two digits. The rows themselves
     ! differ by 5.7e-4, 8.8e-4 and 3.4e-3 of the row maximum at k0 h = 10, 20 and 40 on the test cylinder (gbench: 1.25e-3
     ! at k0 h = 10 on OC4); at 40 that is the error of the finite-depth field mode, 3.3e-3 from the direct sum, with the
     ! deep-water row within 8e-5 (field_row_deep_within_tol of test_field_velocity).
     character(len=*), parameter :: deep_kh_files(4) = [character(len=40) :: qtf_indirect_file, qtf_indirect_sum_file, &
                                                        pot_terms_file, pot_sum_terms_file]
-    real(8), parameter :: deep_kh_limits(4) = [2.2d-6, 2.2d-3, 1.8d-4, 2.3d-3]
-    ! psi and grad psi of a main-grid frequency in the fields passes (spec D4 of the free-surface speed-ups): the fixtures of
+    real(8), parameter :: deep_kh_limits(4) = [1.6d-6, 1.1d-3, 9.2d-5, 1.4d-3]
+    ! psi and grad psi of a main-grid frequency in the fields passes (item 4 of the field-pass speed-ups): the fixtures of
     ! run_psi_reuse_cases, and all the cases of psi_reuse_byte_identical (two with psi on the grid among the 88e19bd fixtures)
     character(len=20), parameter :: psi_reuse_new(4) = [character(len=20) :: "qtf_psi_reuse", "qtf_psi_reuse_src", &
                                                         "qtf_psi_reuse_two", "qtf_psi_reuse_half"]
@@ -4875,9 +4876,8 @@ contains
     !> finite, the other four terms are the same to rounding, and B2 differs, by no more than the measured gap between C
     !> and the hull. A wiring error of the multi-body or IRSP route (the body of a point of C, its reference point, the
     !> per-body dpsi/dn) would show as a B2 far outside the gap.
-    !> The default field_deep_kh = 10 moves qtf_irsp_control against the outputs at 88e19bd: its main grid reaches k0 h = 12.3
-    !> at 1.10 rad/s (h = 100 m), where the fields on C and F take the deep-water Green function. .11d moved by 3.8e-6 and
-    !> QTF_PotentialTerms.txt by 1.8e-4 of the file maximum (the B2 column); this test passed before and after.
+    !> qtf_irsp_control (qtf_terms = body) has no free-surface pass, so field_deep_kh does not apply to it: the fields on C
+    !> and F keep the finite-depth rows (field_row_deep_seabed).
     subroutine qtf_b2_default_twins(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=21), parameter :: control(2) = [character(len=21) :: "qtf_two_round_control", "qtf_irsp_control"]
@@ -7007,7 +7007,9 @@ contains
     !> Stored again with qtf_fs_circle = panels as the default (accuracy gate G1, 2026-11-20): qtf_fs_main and qtf_psi_reuse_half,
     !> _src and _two moved by 1.3e-6 to 4.4e-6 of the largest value of QTF_Indirect.11d (laptop, per file, see the commit), the
     !> samples route's partial waves being about 1e-6 off the exact series. qtf_psi_reuse keeps qtf_fs_circle = samples (its
-    !> deep-water field rows, k0 h >= 0.25, apply on that route only: panels moves it by 1.2e-2) and is as stored at 85d867e.
+    !> deep-water field rows, k0 h >= 0.25, apply on that route only: panels moves it by 1.2e-2). It was stored again when
+    !> the C/F passes went back to finite-depth rows (the deep-water rows miss the seabed images below z = 0,
+    !> field_row_deep_seabed): QTF_Indirect.11d moved by 8.6e-3 and QTF_PotentialTerms.txt by 3.2e-4 of the largest value.
     subroutine psi_reuse_byte_identical(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=*), parameter :: files(11) = [character(len=22) :: "AmssDamp.1", "ExcForce.3", "Hydrostat.hst", &

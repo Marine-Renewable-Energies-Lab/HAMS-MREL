@@ -63,6 +63,7 @@ contains
       new_unittest("green_field_thread_invariant", test_green_threads), &
       new_unittest("field_row_deep_matches_inf", test_row_deep_matches_inf), &
       new_unittest("field_row_deep_within_tol", test_row_deep_within_tol), &
+      new_unittest("field_row_deep_seabed", test_row_deep_seabed), &
       new_unittest("field_deep_beats_limes", test_deep_beats_limes) &
       ]
   end subroutine collect_field_velocity
@@ -912,6 +913,114 @@ contains
       if (allocated(error)) return
     end do
   end subroutine test_row_deep_within_tol
+
+  !> Why the control-surface passes keep the finite-depth rows: below z = 0 the deep-water row misses the seabed images.
+  !> At high frequency the deep-water G tends to 1/r - 1/r1, the finite-depth G to that plus the images of a seabed with
+  !> dG/dz = 0 (image_d). They cancel at z = 0 (field_row_deep_within_tol) but not at the bottom of C under a hull.
+  !> Points on the plane z_C under a truncated cylinder (radius R, a draft), field-mode rows as the passes take them, at
+  !> k0 h = 10, 20 and 40, for (a) a barge-like case, h = 2 drafts, C bottom 1 m under the hull, and (b) OC4-like cases,
+  !> h = 10 drafts, C bottom 5 m and 8 m under the hull (OC4: hull to z = -20 m, C to -28 m, h = 200 m).
+  !> At every entry with |deep - finite| > 1.3e-3 of the row maximum, both rows against the direct eigenfunction sum.
+  !> Checks: the finite-depth row within 1e-4 of the row maximum of the direct sum there (measured at most 7.2e-5), and
+  !> the deep row more than the 1.3e-3 tolerance of item 1 of the field-pass speed-ups off it in every case (measured
+  !> 0.15 to 0.19 for (a), 2.3e-3 to 9.3e-3 for (b)). The image model (max A_j |image_d| / row max) is printed: it gives
+  !> 0.17 to 0.18 for (a), the measured size, but only 0.8e-3 to 2.0e-3 for (b), where the rest grows with k0 h.
+  subroutine test_row_deep_seabed(error)
+    type(error_type), allocatable, intent(out) :: error
+    real(8), parameter :: k0h(3) = [10d0, 20d0, 40d0], deep_row_limit = 1.3d-3, finite_limit = 1d-4
+    real(8), parameter :: rad(4) = [20d0, 20d0, 20d0, 12d0], dr(4) = [10d0, 20d0, 20d0, 20d0]
+    real(8), parameter :: dep(4) = [20d0, 200d0, 200d0, 200d0], zc(4) = [-11d0, -25d0, -28d0, -28d0]
+    real(8) :: gg, gd, model, e_inf, e_fin
+    integer :: ik, ic
+    character(len=200) :: info
+
+    do ic = 1, size(rad)
+      do ik = 1, size(k0h)
+        call seabed_gap(rad(ic), dr(ic), dep(ic), zc(ic), k0h(ik), gg, gd, model, e_inf, e_fin)
+        print '(4x,a,4f8.2,a,f6.1,a,5es11.3)', "seabed: R, draft, h, z_C ", rad(ic), dr(ic), dep(ic), zc(ic), &
+          ", k0 h ", k0h(ik), ": gap G, gap dG/dn, image model, deep-direct, finite-direct ", gg, gd, model, e_inf, e_fin
+        write (info, '(a,f7.2,a,f6.1,a,es10.3,a,es10.3)') "z_C = ", zc(ic), ", k0 h = ", k0h(ik), &
+          ": finite-depth row against the direct sum ", e_fin, " above ", finite_limit
+        call check(error, e_fin <= finite_limit, trim(info))
+        if (allocated(error)) return
+        write (info, '(a,f7.2,a,f6.1,a,es10.3,a)') "z_C = ", zc(ic), ", k0 h = ", k0h(ik), &
+          ": the deep row is within the tolerance of the direct sum (", e_inf, "); the seabed term is gone"
+        call check(error, e_inf > deep_row_limit, trim(info))
+        if (allocated(error)) return
+      end do
+    end do
+  end subroutine test_row_deep_seabed
+
+  !> The gaps of seabed_gap for one case: max |deep - finite| / row max for G (gap_g) and dG/dn (gap_dg), the image
+  !> model, and the worst |deep - direct| (e_inf) and |finite - direct| (e_fin) over the row max at the entries whose gap
+  !> is above 1.3e-3. 24 points at z = zc, r = 1 m, 0.5 R, 0.9 R and 1.3 R; cylinder of 24 x 4 side and 4 x 24 bottom panels.
+  subroutine seabed_gap(radius, draft, depth, zc, k0h, gap_g, gap_dg, model, e_inf, e_fin)
+    real(8), intent(in) :: radius, draft, depth, zc, k0h
+    real(8), intent(out) :: gap_g, gap_dg, model, e_inf, e_fin
+    type(panel_mesh) :: full, mesh
+    type(cs_points) :: pts
+    complex(8), allocatable :: fg(:, :), fdg(:, :), dg(:, :), ddg(:, :)
+    complex(8) :: wf(3), wi(3), wd(3), d_fin, d_inf
+    real(8) :: gmax, dmax, m, q(3), x(3), nrm(3), rh(2), rr
+    integer :: i, j, kind
+
+    call set_wave(depth)
+    call make_cylinder(radius, draft, 24, 4, 4, full, .true.)
+    call load_panels(full, 0, 0, mesh)
+    call ring_points(6, 18, [1d0, 0.5d0*radius, 0.9d0*radius, 1.3d0*radius], [zc, zc, zc, zc], pts)
+    call set_k0h(k0h, depth)
+    allocate (fg(mesh%nbase, mesh%nsys), fdg(mesh%nbase, mesh%nsys), dg(mesh%nbase, mesh%nsys), ddg(mesh%nbase, mesh%nsys))
+    gap_g = 0d0
+    gap_dg = 0d0
+    model = 0d0
+    e_inf = 0d0
+    e_fin = 0d0
+    do i = 1, pts%n
+      call field_influence_row(mesh, pts%x(:, i), .false., fg, fdg, pts%x(:, i), field_mode=.true.)
+      call field_influence_row(mesh, pts%x(:, i), .false., dg, ddg, pts%x(:, i), field_mode=.true., deep=.true.)
+      gmax = maxval(abs(fg))
+      dmax = maxval(abs(fdg))
+      gap_g = max(gap_g, maxval(abs(dg - fg))/gmax)
+      gap_dg = max(gap_dg, maxval(abs(ddg - fdg))/dmax)
+      m = 0d0
+      x = pts%x(:, i)
+      do j = 1, mesh%nbase
+        m = max(m, mesh%area(j)*abs(image_d(x(3), mesh%xc(3, j), depth, norm2(x(1:2) - mesh%xc(1:2, j)))))
+        do kind = 1, 2
+          if (kind == 1 .and. abs(dg(j, 1) - fg(j, 1)) <= 1.3d-3*gmax) cycle
+          if (kind == 2 .and. abs(ddg(j, 1) - fdg(j, 1)) <= 1.3d-3*dmax) cycle
+          q = mesh%xc(:, j)
+          nrm = mesh%nrm(:, j)
+          call pair_waves(q, x, V, WVN, NK, H, wf, wi, wd)
+          if (kind == 1) then
+            d_fin = mesh%area(j)*(wf(1) - wd(1))/gmax
+            d_inf = mesh%area(j)*(wi(1) - wd(1))/gmax
+          else
+            rr = sqrt((q(1) - x(1))**2 + (q(2) - x(2))**2)
+            rh = (q(1:2) - x(1:2))/rr
+            d_fin = mesh%area(j)*((wf(2) - wd(2))*dot_product(rh, nrm(1:2)) + (wf(3) - wd(3))*nrm(3))/dmax
+            d_inf = mesh%area(j)*((wi(2) - wd(2))*dot_product(rh, nrm(1:2)) + (wi(3) - wd(3))*nrm(3))/dmax
+          end if
+          e_inf = max(e_inf, abs(d_inf))
+          e_fin = max(e_fin, abs(d_fin))
+        end do
+      end do
+      model = max(model, m/gmax)
+    end do
+  end subroutine seabed_gap
+
+  !> The images of a seabed with dG/dz = 0 under a free surface with G = 0, less the n = 0 pair 1/r - 1/r1 that the
+  !> deep-water G keeps: sum over n /= 0 of (-1)^n (1/|x - x_n| - 1/|x - x_n'|), sources at zeta + 2nh and -zeta + 2nh,
+  !> at horizontal distance rr [derived: reflections in z = 0 (sign -) and z = -h (sign +)].
+  real(8) function image_d(z, zeta, h, rr)
+    real(8), intent(in) :: z, zeta, h, rr
+    integer :: n
+    image_d = 0d0
+    do n = -400, 400
+      if (n == 0) cycle
+      image_d = image_d + (-1d0)**n*(1d0/hypot(rr, z - zeta - 2d0*n*h) - 1d0/hypot(rr, z + zeta - 2d0*n*h))
+    end do
+  end function image_d
 
   !> An outlier-type pair of the field passes above nu h = 50 (gbench/results/outlier_check.txt, point 286 at 1.6 rad/s:
   !> h = 200 m, field point on z = 0, source 0.98 m down, R/h = 0.00147, nu h = 52.2). There FINGREEN3D in field mode keeps

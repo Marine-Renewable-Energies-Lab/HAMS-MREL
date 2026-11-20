@@ -162,7 +162,7 @@ CONTAINS
       ! flag = 1 takes 1/r and 1/r1 as panel integrals, like IMAGE_TERM_EXACT, and flag = 0 all at one point. The Green function
       ! holds 1/r1 at flag = 1, so it is taken out at the centroid.
       ! deep, if present and true, takes the deep-water Green function (INFGREEN3D) at finite depth too, as deep of
-      ! field_influence_row (the field passes of SecondOrderDriver where k0 h >= field_deep_kh). field, if present, goes to
+      ! field_influence_row (the free-surface passes of SecondOrderDriver where k0 h >= field_deep_kh). field, if present, goes to
       ! FINGREEN3D as FIELD (its series without the Limes outliers, as the field rows of field_influence_row). Both absent:
       ! as before.
       TYPE(panel_mesh), INTENT(IN) :: mesh
