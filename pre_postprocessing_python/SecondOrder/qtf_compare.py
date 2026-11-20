@@ -13,6 +13,8 @@ Usage:
                           (the q_*directsum* cases of the sum-frequency direct solve, Phase 7c-2)
     python qtf_compare.py <results> --indirect-sum <qtf_potential_sum.csv> [--exclude LO HI]
                           (the q_*indsum* cases of the sum-frequency indirect method, Phase 6b)
+    python qtf_compare.py <results> --motion <qtf_motion.csv> [<qtf_motion_sum.csv>] [--exclude LO HI]
+                          (the q_*motion* cases of the second-order motion, Phase 6c)
     python qtf_compare.py <results> --against-nemoh <folder> --kernel sum [--hull sharp|oc4] [--reading ...] [--exclude LO HI]
                           (QTF_Indirect.11s against Nemoh's OUT_QTFP_N.dat of the nemoh_*_free_fs_* runs)
     python qtf_compare.py <results> --against-wamit <file.12d> [--hull oc4w] [--reading as-is|conj|-1|-conj]
@@ -76,6 +78,17 @@ compared with Nemoh's OUT_QTFP_N.dat (DUOK + HASBO + HASFS + ASYMP) of nemoh_<hu
 omega_i <= omega_j, the matrix being symmetric (Nemoh documentation, doc/source/input-output.rst): no conjugate between
 the halves; the reading of Nemoh's value is fixed as for the difference (as-is) and never chosen by agreement with HAMS;
 `check` tests it (nemoh_sum_reader).
+
+Second-order motion (--motion REF [REF]). REF is a CSV of `truncated_cylinder_reference.py qtf-motion` (--kernel diff, sum,
+or one of each): xi_1, xi_3, xi_5 of the free sharp cylinder on the surge spring and damper of the motion cases (100 s), from
+the exact T and the exact A, B at Omega, internal e^{-i Omega t}, w_i <= w_j. For each q_*motion* case (qtf_motion = 1)
+QTF_Motion.11d and .12d are compared with the diff rows and .11s and .12s with the sum rows, |HAMS - exact| / max |exact| over
+the pairs, max and median, with the in-run row .11-12 (|.11 - .12| / max |.12|). The files hold conj(xi) L and conj(xi) L**2,
+L = 1 in these cases, so read_motion conjugates them back as read_hams does; their # lines are the header. A pair the file
+leaves out (its Omega has rcond < 1e-12, named in a "# Left out" line; the difference diagonal of a hull with a surge
+spring only, since sway and yaw have no restoring) or the reference leaves out is not compared: the cell shows
+(compared/pairs), and a line per file counts the pairs left out. --exclude LO HI leaves out a band, off by default (the
+validation leaves out 0.75 to 0.80 rad/s). `check` tests it (motion_compare).
 
 WAMIT (--against-wamit). A WAMIT numeric .12d (difference QTF; one header line, then PER_i PER_j BETA_i BETA_j I Mod Pha Re
 Im, periods in s, nondimensional by rho g L^k with L = 1 m: the layout HAMS writes for .10d and .11d) is read "as written":
@@ -654,6 +667,123 @@ def compare_indirect_sum(results, path, exclude=None):
             rows[label] = summary
             print("%-26s %-8s %18s %18s %18s" % (case, label, *cells))
         found.append((case, rows))
+    return found
+
+
+MOTION_QUANTITIES = (("xi1", 1), ("xi3", 3), ("xi5", 5))   # surge, heave, pitch: the columns of qtf-motion and I of the files
+MOTION_FILES = (("diff", ("11d", "12d")), ("sum", ("11s", "12s")))
+
+
+def read_motion_reference(paths):
+    """{(kernel, w_i, w_j): {quantity: complex, or None where the reference left the pair out (rcond < MOTION_RCOND)}} of
+    one or more CSVs of truncated_cylinder_reference.py qtf-motion (MOTION_COLUMNS; a diff and a sum run may be given
+    together), w_i <= w_j, internal e^{-i Omega t}, translations in m and rotations in rad per unit amplitudes squared, motion
+    free."""
+    out = {}
+    for path in paths:
+        with open(path, newline="") as f:
+            for r in csv.DictReader(f):
+                if r["motion"] != "free":
+                    continue
+                key = (r["kernel"], round(float(r["omega_i"]), 4), round(float(r["omega_j"]), 4))
+                out[key] = {q: None if r[q + "_re"] == "" else complex(float(r[q + "_re"]), float(r[q + "_im"]))
+                            for q, _ in MOTION_QUANTITIES}
+    return out
+
+
+def read_motion(path):
+    """({(w1, w2, I): xi}, header) of a QTF_Motion file (Phase 6c): the rows as read_hams reads a force file, conj(xi) of the
+    file conjugated back to e^{-i Omega t}, heading pair (0, 0), and the header, its lines that start with #. The files hold
+    xi L and xi L**2: L = 1 in the q_* cases (Reference_body_length 1.0D0), so these are xi. ({}, []) if the file is
+    missing."""
+    if not os.path.exists(path):
+        return {}, []
+    table, header = {}, []
+    with open(path) as f:
+        for line in f:
+            if line.lstrip().startswith("#"):
+                header.append(line.rstrip("\n"))
+                continue
+            p = line.split()
+            if len(p) != 9 or float(p[2]) != 0.0 or float(p[3]) != 0.0:
+                continue
+            table[(round(float(p[0]), 4), round(float(p[1]), 4), int(p[4]))] = complex(float(p[7]), -float(p[8]))
+    return table, header
+
+
+def compare_motion(results, paths, exclude=None):
+    """The --motion tables. paths: CSVs of truncated_cylinder_reference.py qtf-motion (diff, sum or both). For each
+    q_*motion* case (qtf_motion = 1, drift_convergence.qtf_motion_cases) QTF_Motion.11d and .12d against the reference of
+    kernel diff, and .11s and .12s against that of kernel sum, surge, heave and pitch, |HAMS - exact| / max |exact| over the
+    pairs omega_i <= omega_j of the reference, max and median, percent; and the in-run row .11-12 (|.11 - .12| / max |.12|).
+    The pairs that a file leaves out (an Omega whose matrix has rcond < 1e-12, named in its "# Left out" header lines)
+    and those the reference leaves out are not compared, and the cell shows (compared/pairs); the count of pairs left out
+    by the file is printed with its header lines. With exclude (lo, hi) the pairs with a frequency in the band are left out
+    of the max and median, the scales keep all the pairs (off by default; the validation leaves out 0.75 to
+    0.80 rad/s, the heave and coupled surge-pitch resonances). The reference keeps the M and C of the exact circle, while
+    the HAMS m1 polygon has M and C about 0.6 % lower, which shifts the response near the 100 s resonance by about 0.3 %.
+    Returns [(case, kernel, {row label: [(max, median) or None per quantity]})]."""
+    ref = read_motion_reference(paths)
+    print("Second-order motion (QTF_Motion.*) against the exact sharp cylinder with 100 s springs in surge, sway and "
+          "yaw (heading 0): "
+          "|HAMS - exact| / max |exact| over the pairs omega_i <= omega_j, max and median, percent")
+    if exclude:
+        print("Pairs with omega_i or omega_j in [%.3f, %.3f] rad/s left out; scales from all the pairs" % tuple(exclude))
+
+    def kept(p):
+        return not exclude or not any(exclude[0] - 1e-9 <= w <= exclude[1] + 1e-9 for w in p)
+    print("%-26s %-5s %-7s %18s %18s %18s" % ("case", "kern", "what", "surge", "heave", "pitch"))
+    found = []
+    for case in sorted(os.path.basename(c) for c in glob.glob(os.path.join(results, "q_*motion*"))):
+        folder = os.path.join(results, case, "output", "Wamit_format")
+        for kernel, (ext1, ext2) in MOTION_FILES:
+            exact_pairs = sorted(k[1:] for k in ref if k[0] == kernel)
+            first, header1 = read_motion(os.path.join(folder, "QTF_Motion." + ext1))
+            second, header2 = read_motion(os.path.join(folder, "QTF_Motion." + ext2))
+            if not first:
+                print("%-26s %-5s no QTF_Motion.%s" % (case, kernel, ext1))
+                continue
+            if not exact_pairs:
+                print("%-26s %-5s no reference of kernel %s" % (case, kernel, kernel))
+                continue
+            sources = [("." + ext1, first, None)]
+            if second:
+                sources += [("." + ext2, second, None), (".%s-%s" % (ext1[:2], ext2[:2]), first, second)]
+            rows = {}
+            for label, table, other in sources:
+                cells, summary = [], []
+                for q, index in MOTION_QUANTITIES:
+                    if other is None:
+                        exact = {p: ref[(kernel,) + p][q] for p in exact_pairs if ref[(kernel,) + p][q] is not None}
+                    else:
+                        exact = {p: lookup(other, p[0], p[1], index, kernel) for p in exact_pairs}
+                        exact = {p: v for p, v in exact.items() if v is not None}
+                    if not exact:
+                        cells.append("-")
+                        summary.append(None)
+                        continue
+                    scale = max(abs(v) for v in exact.values())   # of all the pairs, before the band is left out
+                    exact = {p: v for p, v in exact.items() if kept(p)}
+                    values = {p: lookup(table, p[0], p[1], index, kernel) for p in exact}
+                    cells.append(_potential_cell(values, exact, scale))
+                    e = errors_of(values, exact, scale)
+                    summary.append(e[:2] if e else None)
+                rows[label] = summary
+                print("%-26s %-5s %-7s %18s %18s %18s" % (case, kernel, label, *cells))
+            for ext, table, header in (("." + ext1, first, header1), ("." + ext2, second, header2)):
+                if not table:
+                    continue
+                # A pair on the grid of the file (both frequencies in it) without a row is one the file left out
+                # (rcond < 1e-12)
+                grid = {k[0] for k in table} | {k[1] for k in table}
+                on_grid = [p for p in exact_pairs if p[0] in grid and p[1] in grid]
+                absent = sum(lookup(table, p[0], p[1], 1, kernel) is None for p in on_grid)
+                left = [h.lstrip("# ").strip() for h in header if h.lstrip("# ").startswith("Left out")]
+                print("%-26s %-5s %-7s %d of %d reference pairs left out by the file (rcond < 1e-12), "
+                      "%d not on its grid; %s" % (
+                    case, kernel, ext, absent, len(on_grid), len(exact_pairs) - len(on_grid),
+                    "; ".join(left) or "no Left out line"))
+            found.append((case, kernel, rows))
     return found
 
 
@@ -1579,6 +1709,91 @@ def check_nemoh_sum_reader():
             "missing run noted" % (100 * exact, 100 * wrong, 100 * conj))
 
 
+def check_motion_compare():
+    """read_motion and compare_motion on a fixture: reference CSVs of qtf-motion (kernels diff and sum, three frequencies,
+    six pairs each) and a case q_sharp_motion_free_m1 whose QTF_Motion files hold conj(xi) of the same values in both orders
+    of each pair, with header lines; the difference files leave out the diagonal (Omega = 0, rcond < 1e-12, with its
+    "# Left out" line) and .12d and .12s are 1.02 times .11d and .11s. The .11 rows read 0.00 against the reference and
+    the .12 rows a largest error of at most 2 % (the scale holds the left-out diagonal too); the difference rows show
+    (3/6) and the left-out line 3 of 6 pairs; the in-run rows show 0.02/1.02 = 1.96 %; with --exclude 0.75 0.80 the
+    difference rows show (1/3). Returns a summary."""
+    import contextlib
+    import io
+    import tempfile
+    grid = (0.70, 0.75, 0.95)
+    pairs_ = [(wi, wj) for a, wi in enumerate(grid) for wj in grid[a:]]
+
+    def value(kernel, a, j):
+        return complex(0.1 + 0.03 * a - 0.02 * j + (0.5 if kernel == "sum" else 0.0), -0.04 + 0.01 * a * j)
+    with tempfile.TemporaryDirectory() as d:
+        refs = []
+        for kernel in ("diff", "sum"):
+            path = os.path.join(d, "mot_%s.csv" % kernel)
+            with open(path, "w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["motion", "omega_i", "omega_j", "kernel", "big_omega", "rcond"]
+                           + ["xi%d_%s" % (j, ri) for j in (1, 3, 5) for ri in ("re", "im")])
+                for a, (wi, wj) in enumerate(pairs_):
+                    big = wi - wj if kernel == "diff" else wi + wj
+                    w.writerow(["free", wi, wj, kernel, big, 1e-3]
+                               + [x for j in (1, 3, 5) for x in (value(kernel, a, j).real, value(kernel, a, j).imag)])
+            refs.append(path)
+        folder = os.path.join(d, "results", "q_sharp_motion_free_m1", "output", "Wamit_format")
+        os.makedirs(folder)
+        for kernel, exts in MOTION_FILES:
+            for ext, factor in zip(exts, (1.0, 1.02)):
+                with open(os.path.join(folder, "QTF_Motion." + ext), "w") as f:
+                    f.write("# Second-order motion of the free bodies (qtf_motion = 1), fixture\n")
+                    if kernel == "diff":
+                        f.write("# Left out: the pairs of Omega =   0.00000 rad/s, rcond 0.000E+00 < 1e-12 (modes 2 6 "
+                                "without restoring).\n")
+                    else:
+                        f.write("# Left out: none (every Omega has rcond >= 1e-12).\n")
+                    for a, (wi, wj) in enumerate(pairs_):
+                        if kernel == "diff" and wi == wj:
+                            continue
+                        for order in ((wi, wj), (wj, wi)) if wi != wj else ((wi, wj),):
+                            for j in range(1, 7):
+                                v = factor * value(kernel, a, j) if j in (1, 3, 5) else 0j
+                                if kernel == "diff" and order != (wi, wj):
+                                    v = v.conjugate()          # xi_ji = conj(xi_ij) for the difference
+                                v = v.conjugate()              # the file holds conj(xi)
+                                f.write("%14.6E%14.6E%14.6E%14.6E%6d%14.6E%14.6E%14.6E%14.6E\n"
+                                        % (order[0], order[1], 0.0, 0.0, j, abs(v), 0.0, v.real, v.imag))
+        table, header = read_motion(os.path.join(folder, "QTF_Motion.11d"))
+        assert len(table) == 6 * 6 and len(header) == 2, (len(table), header)
+        assert abs(table[(0.95, 0.7, 1)] - value("diff", 2, 1).conjugate()) < 1e-6, "xi_ji = conj(xi_ij) read back"
+        assert read_motion(os.path.join(folder, "missing.11d")) == ({}, []), "a missing file reads ({}, [])"
+        texts = {}
+        for exclude in (None, (0.75, 0.80)):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rows = compare_motion(os.path.join(d, "results"), refs, exclude)
+            texts[exclude] = (buf.getvalue(), rows)
+
+    def cell(text, kernel, what):
+        return [l for l in text.splitlines() if l.startswith("q_sharp_motion_free_m1") and l.split()[1:3] == [kernel, what]][0]
+    text, rows = texts[None]
+    assert len(rows) == 2, rows
+    for kernel, what in (("diff", ".11d"), ("diff", ".12d"), ("sum", ".11s"), ("sum", ".12s")):
+        numbers = [float(x) for x in cell(text, kernel, what).split()[3:] if not x.startswith("(")]
+        if what.startswith(".11"):
+            assert all(x == 0.0 for x in numbers), cell(text, kernel, what)
+        else:   # 1.02 times the reference: at most 2 % of the largest |exact|, the diagonal included in the scale
+            assert all(0.5 < x < 2.01 for x in numbers[::2]), cell(text, kernel, what)
+    assert set(cell(text, "diff", ".11d").split()[3:]) == {"0.00", "(3/6)"}, cell(text, "diff", ".11d")
+    assert "(" not in cell(text, "sum", ".11s"), cell(text, "sum", ".11s")
+    shown = float(cell(text, "diff", ".11-12").split()[3])
+    assert 1.9 < shown < 2.0, cell(text, "diff", ".11-12")
+    assert ("3 of 6 reference pairs left out by the file (rcond < 1e-12), 0 not on its grid; "
+            "Left out: the pairs of Omega") in text, \
+        "the left-out line"
+    excluded = texts[(0.75, 0.80)][0]
+    assert set(cell(excluded, "diff", ".11d").split()[3:]) == {"0.00", "(1/3)"}, cell(excluded, "diff", ".11d")
+    return ("fixture reads 0.00 against the reference, the singular diagonal left out (3/6), .12 scaled by 1.02 "
+            "seen as %.2f%% in .11-12, the band 0.75 to 0.80 left out (1/3)" % shown)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     if argv is None and sys.argv[1:2] in (["check"], ["--self-test"]):
@@ -1591,6 +1806,7 @@ def main(argv=None):
         print("compare_direct_sum   %s" % check_compare_direct_sum())
         print("indirect_sum_reader  %s" % check_indirect_sum_reader())
         print("nemoh_sum_reader     %s" % check_nemoh_sum_reader())
+        print("motion_compare       %s" % check_motion_compare())
         return 0
     parser.add_argument("results")
     parser.add_argument("--reference", help="CSV of truncated_cylinder_reference.py qtf (needed without --potential)")
@@ -1599,7 +1815,7 @@ def main(argv=None):
     parser.add_argument("--nemoh", help="folder holding nemoh_<hull>_<motion>_m<k>/results/QTF")
     parser.add_argument("--max-dw", type=float, default=0.3)
     parser.add_argument("--exclude", type=float, nargs=2, metavar=("LO", "HI"),
-                        help="with --potential or --against-nemoh: leave out the pairs with a frequency in [LO, HI] rad/s "
+                        help="with --potential, --against-nemoh or --motion: leave out the pairs with a frequency in [LO, HI] rad/s "
                              "(a resonance band)")
     parser.add_argument("--against-nemoh", metavar="FOLDER",
                         help="compare QTF_Indirect.11d of q_<hull>_* with Nemoh's nemoh_<hull>_* under FOLDER (no exact "
@@ -1614,6 +1830,11 @@ def main(argv=None):
                         help="compare QTF_Indirect.11s (and QTF_PotentialTermsSum.txt, and .12s where the run has it) of the "
                              "q_*indsum* cases with the CSV of truncated_cylinder_reference.py qtf-potential --kernel sum "
                              "--free-surface")
+    parser.add_argument("--motion", metavar="REF", nargs="+",
+                        help="compare QTF_Motion.11d, .12d, .11s and .12s of the q_*motion* cases with the CSVs of "
+                             "truncated_cylinder_reference.py qtf-motion (--kernel diff, sum or both); the pairs a file "
+                             "leaves out (rcond < 1e-12) are not compared; --exclude LO HI leaves out a band "
+                             "(off by default)")
     parser.add_argument("--kernel", choices=("diff", "sum"), default="diff",
                         help="with --against-nemoh: diff (default, .11d against OUT_QTFM_N.dat) or sum (.11s of the "
                              "q_*indsum* cases against OUT_QTFP_N.dat of the nemoh_*_free_fs_* runs)")
@@ -1630,6 +1851,9 @@ def main(argv=None):
                              "against the exact reference; never chosen by agreement with HAMS); with --against-wamit: "
                              "WAMIT's (default as-is, as written)")
     args = parser.parse_args(argv)
+    if args.motion:
+        rows = compare_motion(args.results, args.motion, args.exclude)
+        return 0 if rows else 1
     if args.indirect_sum:
         rows = compare_indirect_sum(args.results, args.indirect_sum, args.exclude)
         return 0 if rows else 1

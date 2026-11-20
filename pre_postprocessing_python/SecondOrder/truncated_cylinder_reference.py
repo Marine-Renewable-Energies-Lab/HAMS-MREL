@@ -504,6 +504,20 @@ state), per difference frequency 4 s for the three psi tests, per pair 0.33 s (t
 about 22 min of the run without --free-surface. fs_states are kept only while a later pair needs them (about 31 at a
 time, 4.5 MB each).
 
+Second-order motion (Phase 6c). python -I truncated_cylinder_reference.py qtf-motion --out CSV [--kernel diff|sum]
+[--k-ext K11] [--b-ext B11] [--grid motion|nemoh|hams] [--light] [--free-surface] [--from CSV] solves, for each pair of
+the kernel, the motion of the free cylinder [-Omega**2 (M + A) - i Omega (B + B_ext) + C + K_ext] xi = rho g T on surge,
+heave and pitch, with T the total of qtf-potential (computed, or read from its CSV with --from), A and B at |Omega| from
+the same psi solutions, M and C of body_matrices, and a surge spring and damper (default
+drift_convergence.SHARP_MOTION_K11, _B11: 100 s period, 5 % of critical). The HAMS cases also have sway and yaw springs
+(SHARP_MOTION_K22, _K66), which the reference does not need: it solves surge, heave and pitch, which these do not couple
+to at heading 0. The default grid, motion, is that of the HAMS cases q_sharp_motion_free_m*
+(drift_convergence.QTF_MOTION_FREQUENCIES: QTF_FREQUENCIES plus 1.013 rad/s, the slow-drift peak). Omega = omega_i -
+omega_j for the difference (the matrix conjugated for Omega < 0) and omega_i + omega_j for the sum; Omega = 0 is static;
+rcond < 1e-12 leaves the pair out, as HAMS does (qtf_motion_part). The section "second-order motion" beside the code has the
+conventions. Checks: motion_ref_one_dof_limit (heave alone against the closed form of one degree of freedom) and
+motion_ref_ab_match (A, B at Omega against the first-order A, B at the same omega).
+
 Sources.
 - Ogilvie, T.F. (1983). Second-order hydrodynamic effects on ocean platforms. Proc. Int. Workshop on Ship and Platform
   Motions, Berkeley, 205-265. The second-order body boundary condition on the mean surface.
@@ -3639,6 +3653,151 @@ def run_qtf_potential(out, motions=("fixed", "free"), frequencies=QTF_FREQUENCIE
     return 0
 
 
+# ------------------------------------------------------------------------------------------------ second-order motion
+#
+# The second-order motion of the free cylinder (Phase 6c; (2) of src/QTFMotion.f90 and qtf_motion_part of src/QTFDriver.f90),
+# from the reference T of a pair (the quadratic part, the five body-forcing terms and, with --free-surface, T_FS: the total
+# of qtf-potential) and A, B at the second-order frequency from psi, the radiation potentials of T:
+#
+#     [-Omega**2 (M + A(|Omega|)) - i Omega (B(|Omega|) + B_ext) + C + K_ext] xi = rho g T,
+#
+# modes 1, 3 and 5 (surge, heave and pitch about the origin; the others are not excited at heading 0), e^(-i Omega t), per
+# unit amplitudes: xi_1, xi_3 in m per m**2, xi_5 in rad per m**2. M and C are body_matrices (the exact circle), A and B
+# added_mass_damping of the psi solutions (motion_coefficients), K_ext and B_ext a surge spring and damper. A row of the
+# difference kernel, omega_i <= omega_j, holds T at Omega = omega_i - omega_j <= 0 (the row (i, j) of QTF_Indirect.11d,
+# conjugated back); A and B are even in Omega (the transform of a real response), so the matrix at -|Omega| is the conjugate
+# of that at |Omega|, as in QTFDriver.qtf_motion_part. A sum row holds Omega = omega_i + omega_j. Omega = 0 (the difference
+# diagonal) is static, (C + K_ext) xi = rho g T. A matrix with rcond < MOTION_RCOND (the 1-norm reciprocal condition
+# number, as ZGECON's) gives no xi, as HAMS leaves its pairs out of QTF_Motion; with K_11 > 0 that does not happen
+# here, since heave and pitch have restoring. The QTF_Motion files hold conj(xi) L (translations) and conj(xi) L**2
+# (rotations), so with L = 1 (the q_sharp_* cases) the CSV's xi is a file row conjugated back.
+MOTION_RCOND = 1e-12
+MOTION_COLUMNS = (("motion", "omega_i", "omega_j", "kernel", "big_omega", "rcond")
+                  + tuple("%s_%s" % (q, part) for q in ("Fx_total", "Fz_total", "My_total") for part in ("re", "im"))
+                  + tuple("xi%d_%s" % (j, part) for j in MOTION_MODES for part in ("re", "im")))
+
+
+def motion_coefficients(cyl, omega, n_modes, p_max):
+    """(A, B) at omega > 0 for the second-order motion, in added_mass_damping's normalisation (A/rho, B/(rho omega)): of
+    the psi solutions (_psi_solutions), the radiation potentials the potential part of T uses at that Omega."""
+    if not omega > 0.0:
+        raise ValueError("motion_coefficients: omega > 0, got %r" % (omega,))
+    return added_mass_damping(cyl, float(omega), _psi_solutions(cyl, float(omega), int(n_modes), _spec_key(p_max)))
+
+
+def motion_matrix(cyl, big_omega, k_ext, b_ext, n_modes, p_max):
+    """The 3 x 3 matrix of the second-order motion on MOTION_MODES at the signed Omega (module section above): k_ext and
+    b_ext are the external surge stiffness (N/m) and linear damping (N s/m), on the (1, 1) diagonal; A and B from
+    motion_coefficients at |Omega|; conjugated for Omega < 0; C + K_ext at Omega = 0."""
+    mass, restoring = body_matrices(cyl)
+    k = np.zeros((6, 6))
+    bx = np.zeros((6, 6))
+    k[0, 0], bx[0, 0] = k_ext, b_ext
+    w = abs(big_omega)
+    if w == 0.0:
+        lhs = (restoring + k).astype(complex)
+    else:
+        rho = make_mesh.RHO
+        a, b = motion_coefficients(cyl, w, n_modes, p_max)
+        lhs = -w ** 2 * (mass + rho * a) - 1j * w * (rho * w * b + bx) + restoring + k
+        if big_omega < 0.0:
+            lhs = np.conj(lhs)
+    return lhs[np.ix_(_MODE_INDEX, _MODE_INDEX)]
+
+
+def solve_motion(lhs, t):
+    """(xi, rcond) of lhs xi = rho g t, t the 3 complex loads over rho g on MOTION_MODES; xi None when rcond < MOTION_RCOND
+    (left out, as HAMS does). rcond = 1/(||lhs||_1 ||lhs^-1||_1), 0 for an exactly singular matrix."""
+    try:
+        inverse = np.linalg.inv(lhs)
+    except np.linalg.LinAlgError:
+        return None, 0.0
+    rcond = 1.0 / (np.linalg.norm(lhs, 1) * np.linalg.norm(inverse, 1))
+    if not rcond >= MOTION_RCOND:
+        return None, rcond
+    return np.linalg.solve(lhs, make_mesh.RHO * make_mesh.G * np.asarray(t, complex)), rcond
+
+
+def pair_total(row):
+    """T of a qtf-potential row, [Fx, Fz, My] complex over rho g: the quadratic part, the five body-forcing terms and, where
+    the row has them, the free-surface columns (the total of qtf_compare.read_potential_reference, total_fs with FS)."""
+    out = []
+    for q in ("Fx", "Fz", "My"):
+        value = complex(float(row[q + "_re"]), float(row[q + "_im"]))
+        for key in POTENTIAL_TERMS + (("FS",) if "%s_FS_re" % q in row else ()):
+            value += complex(float(row["%s_%s_re" % (q, key)]), float(row["%s_%s_im" % (q, key)]))
+        out.append(value)
+    return np.array(out)
+
+
+def qtf_motion_table(cyl, rows, k_ext, b_ext, n_modes, p_max, log=None):
+    """Rows of MOTION_COLUMNS, one per row of a qtf-potential table (rows: its dicts, as qtf_potential_table or
+    qtf_potential_sum_table return them or as read from its CSV): the total T (pair_total) and xi of the second-order motion
+    (module section above) at Omega = omega_i - omega_j (kernel diff) or omega_i + omega_j (sum), with A and B at the
+    resolution (n_modes, p_max) and the external surge stiffness k_ext and damping b_ext. A row whose matrix has rcond <
+    MOTION_RCOND has empty xi fields (left out, as HAMS does)."""
+    out, logged = [], set()
+    for row in rows:
+        wi, wj = float(row["omega_i"]), float(row["omega_j"])
+        big_omega = round(wi - wj if row["kernel"] == "diff" else wi + wj, 9)
+        t = pair_total(row)
+        xi, rcond = solve_motion(motion_matrix(cyl, big_omega, k_ext, b_ext, n_modes, p_max), t)
+        if log and abs(big_omega) not in logged:
+            logged.add(abs(big_omega))
+            log("motion at Omega = %.4f rad/s: rcond %.3e%s" % (abs(big_omega), rcond,
+                                                               "" if xi is not None else ", left out"))
+        record = dict(motion=row["motion"], omega_i=wi, omega_j=wj, kernel=row["kernel"], big_omega=big_omega, rcond=rcond)
+        for q, value in zip(("Fx_total", "Fz_total", "My_total"), t):
+            record[q + "_re"], record[q + "_im"] = value.real, value.imag
+        for n, j in enumerate(MOTION_MODES):
+            record["xi%d_re" % j], record["xi%d_im" % j] = ("", "") if xi is None else (xi[n].real, xi[n].imag)
+        out.append(record)
+    return out
+
+
+def _potential_rows_from_csv(path, kernel):
+    """The rows of kernel and motion free of a qtf-potential CSV, as dicts of strings (qtf_motion_table converts them)."""
+    with open(path, newline="") as handle:
+        return [r for r in csv.DictReader(handle) if r["kernel"] == kernel and r["motion"] == "free"]
+
+
+def run_qtf_motion(out, kernel="diff", k_ext=None, b_ext=None, frequencies=QTF_FREQUENCIES, resolution=None,
+                   max_dw=QTF_MAX_DW, free_surface=None, source=None):
+    """The qtf-motion subcommand: the second-order motion of the free cylinder (qtf_motion_table) for every pair of the
+    difference (kernel diff, omega_j - omega_i <= max_dw) or the sum (kernel sum, every pair omega_i <= omega_j) kernel,
+    written to out. T comes from qtf_potential_table or qtf_potential_sum_table at DEFAULT_RESOLUTION (or resolution), with
+    free_surface as there; or, given source, from the rows of that qtf-potential CSV (its kernel, motion free), which
+    must hold that kernel; A and B are then at resolution. k_ext, b_ext: the surge spring and damping, by default those
+    of the motion cases (drift_convergence.SHARP_MOTION_K11, SHARP_MOTION_B11)."""
+    res = resolution or DEFAULT_RESOLUTION
+    k_ext = drift_convergence.SHARP_MOTION_K11 if k_ext is None else k_ext
+    b_ext = drift_convergence.SHARP_MOTION_B11 if b_ext is None else b_ext
+    cyl, start = Cylinder(), time.time()
+    log = lambda text: print(text, flush=True)
+    if source:
+        rows = _potential_rows_from_csv(source, kernel)
+        if not rows:
+            raise SystemExit("qtf-motion: no rows of kernel %s and motion free in %s" % (kernel, source))
+        print("qtf-motion: T from %s, %d rows of kernel %s" % (source, len(rows), kernel), flush=True)
+    elif kernel == "sum":
+        rows = qtf_potential_sum_table(cyl, frequencies, "free", res["n_modes"], res["p_max"], res["orders"], log=log,
+                                       free_surface=free_surface)
+    else:
+        rows = qtf_potential_table(cyl, frequencies, "free", res["n_modes"], res["p_max"], res["orders"], max_dw, log=log,
+                                   free_surface=free_surface)
+    print("qtf-motion %s: K_11 %.6g N/m, B_11 %.6g N s/m, A and B at N %d, gap basis %s" % (
+        kernel, k_ext, b_ext, res["n_modes"], res["p_max"]), flush=True)
+    table = qtf_motion_table(cyl, rows, k_ext, b_ext, res["n_modes"], res["p_max"], log=log)
+    with open(out, "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(MOTION_COLUMNS)
+        for row in table:
+            writer.writerow([row[c] if isinstance(row[c], str) else "%.10g" % row[c] for c in MOTION_COLUMNS])
+    print("wrote %d rows to %s, %d without xi (left out); %.0f s" % (len(table), out, sum(r["xi1_re"] == "" for r in table),
+                                                              time.time() - start))
+    return 0
+
+
 def _plane_wave(k, beta, depth, x, y, z):
     """phi = Z_k(z) e^(i k (x cos beta + y sin beta)), its gradient (3, ...) and Hessian (3, 3, ...). For check_stokes."""
     p, q = k * math.cos(beta), k * math.sin(beta)
@@ -5161,6 +5320,59 @@ def check_fs_sum_radius_invariance():
     return worst <= FS_RADIUS_TOLERANCE, "max |T_FS+(15 m) - T_FS+(20 m)|/max |T_FS+| %.1e" % worst
 
 
+MOTION_CHECK_OMEGAS = (2.0 * math.pi / 100.0, 0.30, -0.30, 1.40)   # signed Omega of motion_ref_one_dof_limit, and 0
+MOTION_CHECK_TOLERANCE = 1e-12
+
+
+def check_motion_ref_one_dof_limit():
+    """motion_ref_one_dof_limit: heave alone (T = (0, t_3, 0)) through motion_matrix and solve_motion, with the surge
+    spring and damper, at the signed Omega of MOTION_CHECK_OMEGAS and at Omega = 0, against the one-degree-of-freedom closed
+    form of the unit test motion_one_dof (test/test_qtf_motion.f90), xi = F/(c - Omega**2 (m + a) - i Omega b), with
+    F = rho g t_3, m = M_33, a = rho A_33(|Omega|), b = rho |Omega| B_33(|Omega|) and c = C_33. Heave has no coupling to
+    surge and pitch on the cylinder (another azimuthal order), so xi_1 and xi_5 must vanish. LIGHT_RESOLUTION; to
+    MOTION_CHECK_TOLERANCE, relative to the closed form."""
+    cyl, res = Cylinder(), LIGHT_RESOLUTION
+    mass, restoring = body_matrices(cyl)
+    rho, g = make_mesh.RHO, make_mesh.G
+    t3 = 0.01 + 0.02j
+    worst = 0.0
+    for big_omega in MOTION_CHECK_OMEGAS + (0.0,):
+        lhs = motion_matrix(cyl, big_omega, drift_convergence.SHARP_MOTION_K11, drift_convergence.SHARP_MOTION_B11,
+                            res["n_modes"], res["p_max"])
+        xi, rcond = solve_motion(lhs, [0.0, t3, 0.0])
+        w = abs(big_omega)
+        a3 = b3 = 0.0
+        if w > 0.0:
+            a, b = motion_coefficients(cyl, w, res["n_modes"], res["p_max"])
+            a3, b3 = rho * a[2, 2], rho * w * b[2, 2]
+        expected = rho * g * t3 / (restoring[2, 2] - big_omega ** 2 * (mass[2, 2] + a3) - 1j * big_omega * b3)
+        worst = max(worst, abs(xi[1] - expected) / abs(expected), abs(xi[0]) / abs(expected), abs(xi[2]) / abs(expected))
+    return worst <= MOTION_CHECK_TOLERANCE, ("heave alone at Omega %s and 0 rad/s against the closed form: max relative gap "
+                                             "%.1e (xi_1, xi_5 included)" % (", ".join("%.4g" % w for w in
+                                                                                     MOTION_CHECK_OMEGAS), worst))
+
+
+MOTION_AB_OMEGAS = (2.0 * math.pi / 100.0, 0.25, 1.40)   # the slow-drift peak (100 s), a difference and a sum frequency
+
+
+def check_motion_ref_ab_match():
+    """motion_ref_ab_match: A and B at Omega of the second-order motion (motion_coefficients, from the psi solutions of T)
+    against the reference's first-order A and B at omega = Omega (added_mass_damping of the radiation solutions of the
+    first-order solve, _solved, as in reference), at MOTION_AB_OMEGAS, LIGHT_RESOLUTION: max |A - A1| / max |A1| and the
+    same for B, to MOTION_CHECK_TOLERANCE. Both sides take the identical solve (solve_radiation, through _psi_solutions
+    and _solved), so this guards the wiring of motion_coefficients (the Omega, the modes, the scaling) only, not the
+    radiation solve itself; an internal-consistency check of the reference, with no HAMS output."""
+    cyl, res = Cylinder(), LIGHT_RESOLUTION
+    worst = 0.0
+    for omega in MOTION_AB_OMEGAS:
+        a, b = motion_coefficients(cyl, omega, res["n_modes"], res["p_max"])
+        _, rads = _solved(cyl, float(omega), res["n_modes"], _spec_key(res["p_max"]), _orders_key(res["orders"]))
+        a1, b1 = added_mass_damping(cyl, float(omega), rads)
+        worst = max(worst, np.max(np.abs(a - a1)) / np.max(np.abs(a1)), np.max(np.abs(b - b1)) / np.max(np.abs(b1)))
+    return worst <= MOTION_CHECK_TOLERANCE, ("A, B at Omega %s rad/s against the first-order A, B: max relative gap %.1e" % (
+        ", ".join("%.4g" % w for w in MOTION_AB_OMEGAS), worst))
+
+
 CHECKS = {"roots": check_roots, "inner_products": check_inner_products, "polylog": check_polylog,
           "matching_tail": check_matching_tail, "bottom_limit_x1": check_bottom_limit_x1, "matching": check_matching,
           "scattering_energy": check_scattering_energy, "reciprocity": check_reciprocity,
@@ -5176,7 +5388,8 @@ CHECKS = {"roots": check_roots, "inner_products": check_inner_products, "polylog
           "fs_outer": check_fs_outer, "fs_sign_from_bvp": check_fs_sign_from_bvp,
           "incident2_sum": check_incident2_sum, "potential_sum_symmetry": check_potential_sum_symmetry,
           "fs_sum_forcing_vs_incident": check_fs_sum_forcing_vs_incident,
-          "fs_sum_bvp": check_fs_sum_bvp, "fs_sum_radius_invariance": check_fs_sum_radius_invariance}
+          "fs_sum_bvp": check_fs_sum_bvp, "fs_sum_radius_invariance": check_fs_sum_radius_invariance,
+          "motion_ref_one_dof_limit": check_motion_ref_one_dof_limit, "motion_ref_ab_match": check_motion_ref_ab_match}
 # Run by name (check uncertainty compare_signs) and by the reference subcommand, not by a bare check: uncertainty computes
 # nine rows at N = 128000 that no other check needs; compare_signs reads the study's results outside the repository and
 # computes the 22 reference rows (about 92 s)
@@ -5320,6 +5533,28 @@ def main(argv=None):
                        help="split radius of the free-surface integral, m (default %g)" % FS_RADIUS)
     p_pot.add_argument("--fs-check", action="store_true",
                        help="also split at %g R and write the relative change of T_FS (column fs_check)" % FS_CHECK_FACTOR)
+    p_mot = sub.add_parser("qtf-motion", help="second-order motion of the free cylinder from the reference T and A, B at "
+                                              "Omega, with a surge spring and damper (the reference of QTF_Motion.*)")
+    p_mot.add_argument("--out", metavar="CSV", required=True)
+    p_mot.add_argument("--kernel", choices=("diff", "sum"), default="diff",
+                       help="diff: Omega = omega_i - omega_j, omega_j - omega_i <= --max-dw (default); sum: Omega = "
+                            "omega_i + omega_j, every pair omega_i <= omega_j")
+    p_mot.add_argument("--k-ext", type=float, metavar="K11",
+                       help="external surge stiffness, N/m (default drift_convergence.SHARP_MOTION_K11, %g: a 100 s "
+                            "natural period)" % drift_convergence.SHARP_MOTION_K11)
+    p_mot.add_argument("--b-ext", type=float, metavar="B11",
+                       help="external surge damping, N s/m (default drift_convergence.SHARP_MOTION_B11, %g: 5 %%%% of "
+                            "critical)" % drift_convergence.SHARP_MOTION_B11)
+    p_mot.add_argument("--grid", choices=("motion", "nemoh", "hams"), default="motion",
+                       help="motion: the grid of q_sharp_motion_free_m* (drift_convergence.QTF_MOTION_FREQUENCIES, "
+                            "QTF_FREQUENCIES plus 1.013 rad/s, default); otherwise as qtf-potential")
+    p_mot.add_argument("--max-dw", type=float, default=QTF_MAX_DW)
+    p_mot.add_argument("--light", action="store_true", help="LIGHT_RESOLUTION instead of DEFAULT_RESOLUTION (a quick look)")
+    p_mot.add_argument("--free-surface", action="store_true", help="T with the free-surface integral (qtf_terms = full)")
+    p_mot.add_argument("--fs-radius", type=float, default=FS_RADIUS, metavar="R", help="as qtf-potential")
+    p_mot.add_argument("--from", dest="source", metavar="CSV",
+                       help="take T from this qtf-potential CSV (its rows of --kernel, motion free) instead of computing "
+                            "it; --grid, --max-dw and the free-surface options are then not used")
     p_cmp = sub.add_parser("compare", help="compare the HAMS a_sharp_* case folders under RESULTS with the reference")
     p_cmp.add_argument("results", metavar="RESULTS", help="folder holding the case folders (a_sharp_*/output/Wamit_format)")
     p_cmp.add_argument("--out", metavar="CSV", help="write the comparison to this CSV file")
@@ -5332,6 +5567,14 @@ def main(argv=None):
         return run_compare(args.results, args.out, args.reference)
     if args.command == "qtf":
         return run_qtf(args.out, ("fixed", "free") if args.motion == "both" else (args.motion,))
+    if args.command == "qtf-motion":
+        if args.fs_radius != FS_RADIUS and not args.free_surface:
+            parser.error("--fs-radius needs --free-surface")
+        grid = {"motion": drift_convergence.QTF_MOTION_FREQUENCIES, "hams": QTF_FINE_FREQUENCIES}.get(args.grid,
+                                                                                                    QTF_FREQUENCIES)
+        return run_qtf_motion(args.out, args.kernel, args.k_ext, args.b_ext, grid,
+                              LIGHT_RESOLUTION if args.light else None, args.max_dw,
+                              dict(radius=args.fs_radius, check=False) if args.free_surface else None, args.source)
     if args.command == "qtf-potential":
         if args.kernel == "sum":
             for flag, given in (("--fs-check", args.fs_check), ("--max-dw", args.max_dw != QTF_MAX_DW)):

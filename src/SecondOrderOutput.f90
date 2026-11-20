@@ -30,6 +30,7 @@ MODULE SecondOrderOutput
 
    PUBLIC :: write_drift_row, write_terms_row, write_qtf_row, write_qtf_terms_row, write_qtf_terms_header, write_field_row
    PUBLIC :: write_direct_terms_header, write_direct_sum_terms_header, write_potential_sum_terms_header
+   PUBLIC :: write_motion_row, write_motion_header
 
 CONTAINS
 
@@ -77,6 +78,51 @@ CONTAINS
       WRITE (unit, '(4ES14.6,I6,4ES14.6)') oufr1, oufr2, beta1_deg, beta2_deg, index, ABS(scaled), &
          ATAN2(AIMAG(scaled), REAL(scaled, 8))*RAD_TO_DEG, REAL(scaled, 8), AIMAG(scaled)
    END SUBROUTINE write_qtf_row
+
+   SUBROUTINE write_motion_row(unit, oufr1, oufr2, beta1_deg, beta2_deg, index, xi, refl, rotation)
+      ! Writes one row PER1 PER2 BETA1 BETA2 I Mod Pha Re Im of QTF_Motion.11d/.11s/.12d/.12s (Phase 6c, ruling R4): the
+      ! second-order motion xi per unit amplitude pair, e^{-i Omega t}, conjugated as write_qtf_row and scaled as WAMIT
+      ! scales motions. The force files hold F/(rho g A^2 L^k), k = 1 for a force and 2 for a moment. Dividing by a
+      ! stiffness of the size rho g L^2 (translations) or rho g L^4 (rotations) gives a translation of the size A^2/L and
+      ! a rotation of the size A^2/L^2 [derived], so with A = 1 the row holds xi L (translation) or xi L^2 (rotation,
+      ! radians). oufr1, beta1 belong to the first component of the pair, oufr2, beta2 to the second.
+      INTEGER, INTENT(IN) :: unit, index
+      REAL(8), INTENT(IN) :: oufr1, oufr2, beta1_deg, beta2_deg, refl
+      COMPLEX(8), INTENT(IN) :: xi
+      LOGICAL, INTENT(IN) :: rotation
+      REAL(8), PARAMETER :: RAD_TO_DEG = 180D0/3.141592653589793D0
+      COMPLEX(8) :: scaled
+
+      IF (rotation) THEN
+         scaled = CONJG(xi)*refl**2
+      ELSE
+         scaled = CONJG(xi)*refl
+      END IF
+      WRITE (unit, '(4ES14.6,I6,4ES14.6)') oufr1, oufr2, beta1_deg, beta2_deg, index, ABS(scaled), &
+         ATAN2(AIMAG(scaled), REAL(scaled, 8))*RAD_TO_DEG, REAL(scaled, 8), AIMAG(scaled)
+   END SUBROUTINE write_motion_row
+
+   SUBROUTINE write_motion_header(unit, force_file, route, left_out)
+      ! The comment lines of a QTF_Motion file (Phase 6c): the force file it follows and its route (indirect or direct),
+      ! the columns and scaling, the matrix of the equation of motion, and one line per Omega whose pairs are left out
+      ! (left_out, from QTFDriver: Omega, rcond and the modes without restoring), or "none"
+      INTEGER, INTENT(IN) :: unit
+      CHARACTER(LEN=*), INTENT(IN) :: force_file, route, left_out(:)
+      INTEGER :: m
+
+      WRITE (unit, '(a)') '# Second-order motion of the free bodies (qtf_motion = 1) from the force of '//force_file// &
+         ' ('//TRIM(route)//' route): its rows and order, less those left out below.'
+      WRITE (unit, '(a)') '# PER1 PER2 BETA1 BETA2 I Mod Pha Re Im; translations over A^2/L, rotations over A^2/L^2 (rad),'// &
+         ' conjugated as QTF_Quadratic.10d; I = 6 (body - 1) + mode, about the reference point of the body.'
+      WRITE (unit, '(a)') '# Solved per Omega: [-Omega^2 (M + A) - i Omega (B + BLNR) + C + KSTF] xi = F, A and B at |Omega|'// &
+         ' from psi; BQDR is not used. At Omega = 0: (C + KSTF) xi = F.'
+      IF (SIZE(left_out) == 0) THEN
+         WRITE (unit, '(a)') '# Left out: none (every Omega has rcond >= 1e-12).'
+      END IF
+      DO m = 1, SIZE(left_out)
+         WRITE (unit, '(a)') '# Left out: the pairs of '//TRIM(left_out(m))//'.'
+      END DO
+   END SUBROUTINE write_motion_header
 
    SUBROUTINE write_qtf_terms_header(unit, full)
       ! The four comment lines of QTF_PotentialTerms.txt: the 5 body-forcing terms (qtf_terms = body), or with full
@@ -198,7 +244,7 @@ CONTAINS
    END SUBROUTINE write_qtf_terms_row
 
    SUBROUTINE write_field_row(unit, oufr1, oufr2, beta1_deg, beta2_deg, kernel, ipt, surface, quad, pot, refl, direct, &
-                              has_direct)
+                              has_direct, has_radiated)
       ! Writes one row PER1 PER2 BETA1 BETA2 K IPT TYPE Mod Pha Re Im Re_quad Im_quad Re_inc Im_inc of QTF_FieldPartial.txt.
       ! quad and pot are the quadratic part and the second-order incident part, per unit amplitude pair, e^{-i omega t}, of
       ! the pressure (surface false, TYPE 1) or the elevation (surface true, TYPE 2). The row holds their sum and each part,
@@ -210,12 +256,14 @@ CONTAINS
       ! amplitude pair, e^{-i omega t}, as quad and pot), conjugated and scaled as they are, and not added to the sum
       ! columns. has_direct (default .TRUE.) = .FALSE. marks a row the direct solve does not cover (mean row, sum row): it
       ! gets 0 0 0 whatever direct holds.
+      ! With has_radiated (QTF_Field.txt with qtf_motion = 1, Phase 6c), the column has_rad follows: 1 where direct holds the
+      ! radiated wave of the second-order motion as well, else 0 (QTFField header). Absent, the row is the one of Phase 7c-2.
       INTEGER, INTENT(IN) :: unit, kernel, ipt
       REAL(8), INTENT(IN) :: oufr1, oufr2, beta1_deg, beta2_deg, refl
       LOGICAL, INTENT(IN) :: surface
       COMPLEX(8), INTENT(IN) :: quad, pot
       COMPLEX(8), INTENT(IN), OPTIONAL :: direct
-      LOGICAL, INTENT(IN), OPTIONAL :: has_direct
+      LOGICAL, INTENT(IN), OPTIONAL :: has_direct, has_radiated
       REAL(8), PARAMETER :: RAD_TO_DEG = 180D0/3.141592653589793D0
       COMPLEX(8) :: total, q, p, d
       LOGICAL :: have
@@ -233,6 +281,12 @@ CONTAINS
       IF (PRESENT(has_direct)) have = has_direct
       d = (0D0, 0D0)
       IF (have) d = field_value(direct, refl, surface)
+      IF (PRESENT(has_radiated)) THEN
+         WRITE (unit, '(4ES14.6,3I6,10ES14.6,2I6)') oufr1, oufr2, beta1_deg, beta2_deg, kernel, ipt, MERGE(2, 1, surface), &
+            ABS(total), ATAN2(AIMAG(total), REAL(total, 8))*RAD_TO_DEG, REAL(total, 8), AIMAG(total), REAL(q, 8), AIMAG(q), &
+            REAL(p, 8), AIMAG(p), REAL(d, 8), AIMAG(d), MERGE(1, 0, have), MERGE(1, 0, have .AND. has_radiated)
+         RETURN
+      END IF
       WRITE (unit, '(4ES14.6,3I6,10ES14.6,I6)') oufr1, oufr2, beta1_deg, beta2_deg, kernel, ipt, MERGE(2, 1, surface), &
          ABS(total), ATAN2(AIMAG(total), REAL(total, 8))*RAD_TO_DEG, REAL(total, 8), AIMAG(total), REAL(q, 8), AIMAG(q), &
          REAL(p, 8), AIMAG(p), REAL(d, 8), AIMAG(d), MERGE(1, 0, have)

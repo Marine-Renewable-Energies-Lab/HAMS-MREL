@@ -153,7 +153,7 @@ class Case:
                  frequencies=WIDE_FREQUENCIES, headings=(0.0, 30.0), grn=4, isolv=1, irsp=0, mean_drift=1, tier="both",
                  solver="hams", where="snellius", control=None, qtf=0, nemoh_range=None, qtf_terms=None, qtf_max_dw=None,
                  nemoh_contrib=1, edge_power=None, qtf_edge_weights=None, extra_options=None, damping=None, nemoh_qtf_range=None,
-                 limit_h=None):
+                 limit_h=None, stiffness=None):
         self.name = name
         self.group = group
         self.question = question
@@ -185,6 +185,9 @@ class Case:
         self.damping = damping or {}   # sharp and oc4 hulls: external linear damping {mode 1..6: value} (Hydrostatic.in)
         if self.damping and hull not in ("sharp", "oc4"):
             raise ValueError("%s: damping is written for the sharp and oc4 hulls only, not %s" % (name, hull))
+        self.stiffness = stiffness or {}   # sharp hull: external restoring {mode 1..6: value} on the diagonal (Hydrostatic.in)
+        if self.stiffness and hull != "sharp":
+            raise ValueError("%s: stiffness is written for the sharp hull only, not %s" % (name, hull))
 
 
 def in_tier(case, tier):
@@ -390,6 +393,32 @@ CS_FIXED_M1 = dict(cs_margin=7.84, cs_bottom_margin=7.84, cs_panel_size=1.96)
 # truncated_cylinder_reference reads it for its motion "free_damped".
 SHARP_DAMPING = {3: 3.8306e5, 5: 1.3416e7}
 
+# The surge spring and damping of the free sharp hull of the second-order motion (Phase 6c): K_11 for
+# a natural period of 100 s and B_11 = 5 % of critical, so that the static surge and the slow-drift peak at
+# omega_n = 2 pi / 100 = 0.0628319 rad/s are finite. M = rho pi a^2 d = 3.14159e6 kg (the exact cylinder,
+# truncated_cylinder_reference.body_matrices; Hydrostatic.in of the m1 polygon has 3.12145e6, 0.6 % less) and
+# A_11(omega_n) = 1.82474e6 kg (truncated_cylinder_reference.added_mass_damping, the same to 6 digits at 8000 and 64000
+# modes), so M + A_11 = 4.96633e6 kg: K_11 = (M + A_11) omega_n^2 = 1.96063e4 N/m and B_11 = 0.05 x 2 sqrt(K_11 (M + A_11))
+# = 0.1 (M + A_11) omega_n = 3.12044e4 N s/m. The cases q_sharp_motion_free_m* write them into Hydrostatic.in, and
+# truncated_cylinder_reference.py qtf-motion takes them as its defaults of --k-ext and --b-ext
+SHARP_MOTION_K11 = 1.96063e4
+SHARP_MOTION_B11 = 3.12044e4
+# Sway and yaw springs of the same cases (Phase 6c), so that C + K_ext is regular at Omega = 0 and HAMS writes the
+# static diagonal (an Omega whose matrix has rcond < 1e-12 is left out, and Omega = 0 is singular while a mode has no
+# restoring: docs/input_files.md, second-order motion). Same
+# 100 s natural period and 5 % of critical damping as surge. Sway: A_22 = A_11 and M the same (axisymmetric body), so
+# K_22 = K_11 and B_22 = B_11. Yaw: I_66 = rho d pi a^4 / 2 = 1000 x 10 x pi x 10^4 / 2 = 1.570796e8 kg m^2 (the exact
+# cylinder, M66 of truncated_cylinder_reference.body_matrices; the m1 polygon of Hydrostatic.in is 1.3 % lower) and
+# A_66 = 0: the yaw radiation condition is n_6 = x n_y - y n_x, which vanishes on the whole hull of an axisymmetric
+# body, on the side wall (n = (x, y, 0) / a, radial) and on the flat bottom (n = -z, no horizontal part). So K_66 = I_66
+# omega_n^2 = 6.20126e5 N m and B_66 = 0.1 I_66 omega_n = 9.86960e5 N m s. At heading 0 the first-order sway and yaw are
+# zero, so these springs do not change surge, heave or pitch; truncated_cylinder_reference.py qtf-motion solves surge,
+# heave and pitch only and needs neither
+SHARP_MOTION_K22 = SHARP_MOTION_K11
+SHARP_MOTION_B22 = SHARP_MOTION_B11
+SHARP_MOTION_K66 = 6.20126e5
+SHARP_MOTION_B66 = 9.86960e5
+
 # Grid of the q_oc4w cases: the omega of the WAMIT .12d of OpenFAST (marin_semi.12d: 0.25 to 3.00 rad/s in steps of 0.05) up
 # to 1.90, below the first irregular frequency of OC4, about 1.98 rad/s (upper columns, J0 zero under a deep lid [derived]):
 # velocity_method = source rejects IRSP = 1, so the grid stops there. 34 frequencies, 33 distinct differences
@@ -508,6 +537,7 @@ def qtf_potential_cases():
     chosen += qtf_directfs_cases(grid)
     chosen += qtf_directsum_cases(grid)
     chosen += qtf_indirectsum_cases(grid)
+    chosen += qtf_motion_cases(grid)
     return chosen
 
 
@@ -583,6 +613,13 @@ def qtf_directfs_cases(grid):
 # The 21-frequency grid of R7, 0.40 to 1.40 rad/s by 0.05 (not the 101 points of QTF_FREQUENCY_RANGE: the sum then costs 3 to 4
 # times more)
 QTF_SUM_FREQUENCIES = tuple(round(0.40 + 0.05 * i, 2) for i in range(21))
+# The grid of the second-order motion cases: QTF_SUM_FREQUENCIES plus 1.013 rad/s, so that the pair (0.95, 1.013) has
+# Delta omega = 0.063 rad/s, the slow-drift peak of the 100 s springs (omega_n = 0.0628). Both frequencies lie outside the
+# 0.75-0.80 rad/s surge-pitch resonance band and below the irregular frequency 1.10 (lid on anyway, IRSP = 1); near
+# 1.0 rad/s (ka = 1) the drift force of the cylinder is large, unlike at the low end of the grid. The added frequency also
+# brings 12 more difference frequencies (0.013 ... 0.287) and 22 more sum frequencies, each a psi solve
+QTF_MOTION_PEAK_OMEGA = 1.013
+QTF_MOTION_FREQUENCIES = tuple(sorted(QTF_SUM_FREQUENCIES + (QTF_MOTION_PEAK_OMEGA,)))
 
 
 def qtf_directsum_cases(grid):
@@ -647,6 +684,31 @@ def qtf_indirectsum_cases(grid):
     chosen.append(Case("nemoh_oc4_free_fs_m1", "I", "6b", "oc4", 1, "free", headings=(0.0,), solver="nemoh",
                        nemoh_range=NEMOH_SUM_RANGE, nemoh_qtf_range=NEMOH_SUM_QTF_RANGE, nemoh_contrib=3,
                        limit_h=24.0))
+    return chosen
+
+
+def qtf_motion_cases(grid):
+    """The cases of the second-order motion (Phase 6c): q_sharp_motion_free_m{1,2}, the cases of
+    q_sharp_directsum_free_m{1,2} (qtf = 3, qtf_terms = full, qtf_direct = 1, free body, IRSP = 1 with velocity_method =
+    differencing, heading 0, the fixed control surface CS_FIXED_M1 at m2) with qtf_motion = 1 and the surge, sway and yaw
+    springs and dampers SHARP_MOTION_K11, _B11, _K22, _B22, _K66, _B66 in Hydrostatic.in. m1 runs on
+    QTF_MOTION_FREQUENCIES (the 21-frequency grid QTF_SUM_FREQUENCIES plus 1.013 rad/s for the slow-drift peak), m2 on
+    QTF_SUM_FREQUENCIES only. They write QTF_Motion.11d, .12d, .11s and .12s; qtf_compare.py --motion compares them with
+    truncated_cylinder_reference.py qtf-motion (--grid motion, its default), whose 22-frequency grid holds every pair of
+    both meshes: the pairs off the m2 grid are counted apart ("not on its grid"), not compared. Group M, question 6c."""
+    chosen = []
+    # The grid per mesh is for the cost: an off-grid frequency adds 12 difference and 22 sum
+    # frequencies, each a radiation and a psi solve, so m2 would grow from 59 to about 86 core-hours on 22 frequencies
+    # (cost_model.py of validation-runs/snellius-qtf-motion, from the 7c-2 logs). m1 carries the slow-drift peak, m2 the
+    # mesh convergence of the rest and, with the springs, the static diagonal
+    grids = {1: QTF_MOTION_FREQUENCIES, 2: QTF_SUM_FREQUENCIES}
+    for m in (1, 2):
+        chosen.append(Case("q_sharp_motion_free_%s" % tag(m), "M", "6c", "sharp", m, "free", "differencing",
+                           frequencies=grids[m], headings=(0.0,), irsp=1, qtf=3, qtf_terms="full",
+                           qtf_max_dw=QTF_POTENTIAL_MAX_DW,
+                           extra_options=dict(CS_FIXED_M1 if m > 1 else {}, qtf_direct=1, qtf_motion=1),
+                           damping={1: SHARP_MOTION_B11, 2: SHARP_MOTION_B22, 6: SHARP_MOTION_B66},
+                           stiffness={1: SHARP_MOTION_K11, 2: SHARP_MOTION_K22, 6: SHARP_MOTION_K66}))
     return chosen
 
 
@@ -845,6 +907,8 @@ def write_hams_hull(case, path):
             params.update(graded=False, edge_power=case.edge_power)
         if case.damping:
             params.update(external_damping={j - 1: v for j, v in case.damping.items()})
+        if case.stiffness:
+            params.update(external_restoring={j - 1: v for j, v in case.stiffness.items()})
         mesh = make_mesh.write_cylinder(mesh_path, hydro_path, **params)
     elif case.hull == "round":
         mesh = make_mesh.write_rounded_cylinder(mesh_path, hydro_path,

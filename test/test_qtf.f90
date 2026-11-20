@@ -14,7 +14,10 @@ module test_qtf
                         qtf_keep_fs_state, qtf_keep_fs_psi, qtf_fs_state, qtf_fs_psi, qtf_fs_active, qtf_stored_mb, &
                         qtf_direct_sum_pairs, qtf_direct_at_omega, qtf_direct_sum_load, qtf_direct_pairs, &
                         qtf_direct_diff_load, qtf_sum_omega, qtf_diff_omega, qtf_psi_count, qtf_indirect_sum_load, &
-                        potential_part_sum, psi_bad_files
+                        potential_part_sum, psi_bad_files, potential_part, qtf_motion_part, qtf_motion_load, psi_at_points
+  use QTFField, only : qfield_init, qfield_keep, qfield_finish, field_direct, radiated_potential
+  use SecondOrderTypes, only : cs_fields
+  use QTFMotion, only : radiation_coefficients, motion_matrix, motion_solve_omega
   use QTFFreeSurface, only : fs_point_field
   use HAMS_mod, only : NTHREAD, ISOLV
   use Potentials_mod, only : MXPOT
@@ -26,7 +29,7 @@ module test_qtf
   use test_qtf_direct, only : radiation_at, radiation_at_irr, append_lid, set_lid, clear_lid
   use PartialWaves, only : pw_set
   use, intrinsic :: ieee_arithmetic, only : ieee_value, ieee_quiet_nan
-  use SecondOrderOutput, only : write_qtf_row
+  use SecondOrderOutput, only : write_qtf_row, write_motion_row
   use second_order_fixtures, only : make_cylinder, maccamy_fuchs_state, maccamy_fuchs_phi
   implicit none
   private
@@ -88,6 +91,16 @@ subroutine collect_qtf(testsuite)
     new_unittest("indirect11s_equals_tpot", test_indirect11s_equals_tpot), &
     new_unittest("indirect11s_routes_agree", test_indirect11s_routes_agree), &
     new_unittest("qtf3_diff_unchanged", test_qtf3_diff_unchanged), &
+    new_unittest("motion_rows_follow_force", test_motion_rows_follow_force), &
+    new_unittest("motion_equals_h_times_f", test_motion_equals_h_times_f), &
+    new_unittest("motion_scaling", test_motion_scaling), &
+    new_unittest("motion_sum_symmetric", test_motion_sum_symmetric), &
+    new_unittest("motion_sum_cutoff_rows", test_motion_sum_cutoff_rows), &
+    new_unittest("qtf_stored_mb_motion", test_stored_mb_motion), &
+    new_unittest("motion_off_unchanged", test_motion_off_unchanged), &
+    new_unittest("motion_fixed_no_file", test_motion_fixed_no_file), &
+    new_unittest("field_radiated_pipeline", test_field_radiated_pipeline), &
+    new_unittest("field_motion_no_omega", test_field_motion_no_omega), &
     new_unittest("qtf_files", test_files) &
     ]
 end subroutine collect_qtf
@@ -1141,7 +1154,7 @@ end subroutine test_stored_mb_indirect_sum
 !> mean_drift = 2, qtf = 2, qtf_terms = body, qtf_direct = 1, write_terms = 1. States: the incident wave and rigid motions
 !> (make_state). At every frequency of the list the radiation solve (radiation_at), psi into the store, and
 !> qtf_direct_at_omega, as RadiationOnlySolves and so_after_radiation_only do it. max_sw is qtf_max_sw.
-subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid, indirect_only)
+subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid, indirect_only, motion, fixed, irsp0, field)
   type(error_type), allocatable, intent(out) :: error
   real(8), intent(in) :: max_sw
   type(panel_mesh), intent(out) :: mesh
@@ -1151,7 +1164,15 @@ subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid, 
   real(8), intent(in), optional :: grid(:)    ! the frequencies, [0.4, 0.5] by default
   logical, intent(in), optional :: lid        ! IRSP = 1 with the lid of the cylinder (clear_lid after the test)
   logical, intent(in), optional :: indirect_only   ! qtf_direct = 0: psi of the radiation-only list, no direct solve
-  integer :: rf, kq, nl, kd
+  ! qtf_motion = 1 (Phase 6c) with the matrices of cylinder_body: 1 the free body (no spring), 2 moored; 0 (default) off
+  integer, intent(in), optional :: motion
+  logical, intent(in), optional :: fixed      ! motion_state = fixed (with motion, no matrices are passed)
+  logical, intent(in), optional :: irsp0      ! IRSP = 0 with the geometry: the sums at or above the irregular estimate are cut
+  ! qtf_field = 1 at these points (3, npt), z = 0 an elevation point, with zero first-order fields there (Phase 6c Task 5:
+  ! only the direct columns of QTF_Field.txt are read); qfield_finish after qtf_finish writes the file
+  real(8), intent(in), optional :: field(:, :)
+  real(8) :: mass(6, 6), c_hyd(6, 6), k_ext(6, 6), b_ext(6, 6)
+  integer :: rf, kq, nl, kd, kmot
   real(8), parameter :: hb(2) = [0d0, 30d0], h10 = 10d0
   real(8), allocatable :: w(:), pts(:, :)
   type(panel_mesh) :: full
@@ -1161,8 +1182,12 @@ subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid, 
   complex(8) :: x1(6, 1), x2(6, 1), xi(6, 1)
   real(8), allocatable :: om(:)
   integer :: i, ib, m
-  logical :: ok, use_lid
+  logical :: ok, use_lid, use_irsp0
   character(len=:), allocatable :: msg
+  type(cs_points) :: fpts
+  type(first_order_state) :: fst(2)
+  type(cs_fields) :: ffl(2)
+  logical, allocatable :: fsurf(:)
 
   call CreateDirectory(root//"/Wamit_format", ok)
   call check(error, ok, "could not create the test folder")
@@ -1196,7 +1221,42 @@ subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid, 
   if (allocated(error)) return
   opts%mean_drift = 2; opts%qtf = kq; opts%qtf_terms = QTF_TERMS_BODY; opts%qtf_direct = kd; opts%write_terms = 1
   opts%qtf_max_sw = max_sw
-  call qtf_init(opts, size(w), hb, geom%nwl, mesh%n, mesh%nbody, root, omegas_main=w)
+  kmot = 0
+  if (present(motion)) kmot = motion
+  opts%qtf_motion = merge(1, 0, kmot > 0)
+  if (present(fixed)) opts%motion_fixed = fixed
+  use_irsp0 = .false.
+  if (present(irsp0)) use_irsp0 = irsp0
+  if (kmot > 0 .and. .not. opts%motion_fixed) call cylinder_body(kmot == 1, mass, c_hyd, k_ext, b_ext)
+  if (use_irsp0) then
+    ! Only with the motion on (motion_sum_cutoff_rows)
+    call qtf_init(opts, size(w), hb, geom%nwl, mesh%n, mesh%nbody, root, omegas_main=w, geom=geom, g=G_SOLVER, irsp=0, &
+                  mass=mass, c_hyd=c_hyd, k_ext=k_ext, b_ext=b_ext)
+  else if (kmot > 0 .and. .not. opts%motion_fixed) then
+    call qtf_init(opts, size(w), hb, geom%nwl, mesh%n, mesh%nbody, root, omegas_main=w, mass=mass, c_hyd=c_hyd, &
+                  k_ext=k_ext, b_ext=b_ext)
+  else
+    call qtf_init(opts, size(w), hb, geom%nwl, mesh%n, mesh%nbody, root, omegas_main=w)
+  end if
+  if (present(field)) then
+    opts%qtf_field = 1
+    fpts%n = size(field, 2)
+    allocate (fpts%x(3, fpts%n), fpts%nrm(3, fpts%n), fpts%w(fpts%n), fpts%psize(fpts%n), fpts%kind(fpts%n), &
+              fpts%body(fpts%n))
+    fpts%x = field
+    fpts%nrm = 0d0
+    fpts%w = 0d0
+    fpts%psize = 1d0
+    fpts%kind = CS_FREE
+    fpts%body = 1
+    fsurf = field(3, :) == 0d0
+    call qfield_init(opts, size(w), hb, fpts, fsurf, root)
+    do ib = 1, 2
+      allocate (ffl(ib)%phi(fpts%n), ffl(ib)%grad(3, fpts%n))
+      ffl(ib)%phi = (0d0, 0d0)
+      ffl(ib)%grad = (0d0, 0d0)
+    end do
+  end if
   call motions(x1, x2)
   do i = 1, size(w)
     do ib = 1, 2
@@ -1204,7 +1264,9 @@ subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid, 
       xi = merge(x1, x2, mod(i, 2) == 1) * exp(ci * 0.4d0 * ib)
       call make_state(mesh, geom, w(i), hb(ib) * 3.141592653589793d0 / 180d0, h10, xi, s, wl)
       call qtf_keep(ib, s, wl, w(i))
+      if (present(field)) fst(ib) = s
     end do
+    if (present(field)) call qfield_keep(fst, ffl, w(i))
   end do
   if (kd == 1) then
     call direct_setup(mesh, DEFAULT_EDGE_DEG)
@@ -1230,6 +1292,195 @@ end subroutine sum_pipeline
 !> a sum (0.3 + 0.3), so its direct solve has both kinds of columns with qtf = 3. With two headings and mean_drift = 2,
 !> tdir and its two parts of every difference pair are the same to the bit with qtf = 1 and qtf = 3, without the lid and
 !> with it (IRSP = 1, the least-squares solve of HAMS with A^T r). The fixture has no field points (qtf_field = 0).
+!> The radiated wave of the second-order motion through the driver into QTF_Field.txt (Phase 6c Task 5, ruling R7): the
+!> moored cylinder of sum_pipeline, qtf = 3, qtf_direct = 1, two field points (a pressure point at (12, 3, -2) and an
+!> elevation point at (-8, 9, 0)), once with qtf_motion = 1 and once with 0. Every row with a direct part gets has_rad = 1
+!> (no Omega of the moored body is singular), the mean rows 0. Re_dir Im_dir of the motion run minus those of the run
+!> without are, for every such row, field_direct(Omega, phi_R) conjugated and scaled as the file: phi_R of
+!> radiated_potential with xi of the direct route (qtf_motion_load, route 2, as QTF_Motion.12d and .12s) and psi_j at the
+!> points from a fresh radiation solve at |Omega| (psi_at_points). This pins the route, the Omega of each row and the
+!> conjugation of Omega < 0 through the driver. The file has 7 digits, so the gap is relative to max |Re_dir|: 1e-5
+!> (1.7e-7 measured, with max |p_R| 0.16 against max |Re_dir| 0.073).
+subroutine test_field_radiated_pipeline(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: xf(3, 2) = reshape([12d0, 3d0, -2d0, -8d0, 9d0, 0d0], [3, 2])
+  real(8), parameter :: w(2) = [0.4d0, 0.5d0], hb(2) = [0d0, 30d0]
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  character(len=600), allocatable :: rows(:, :)
+  real(8), allocatable :: dir(:, :, :)
+  integer, allocatable :: hdir(:, :), hrad(:)
+  complex(8), allocatable :: xis(:, :), psi(:, :), pp(:, :)
+  complex(8) :: xi(6), f(6), phi_r(2), e, got
+  real(8) :: om, gap, big, rad_max, v4(4), v8(8)
+  integer :: run, n, r, kk, b1, b2, i, j, ip, nrad, iv3(3)
+  logical :: ok
+  character(len=250) :: line
+
+  allocate (rows(64, 2), dir(2, 64, 2), hdir(64, 2), hrad(64), xis(6, 64))
+  do run = 1, 2
+    if (run == 1) then
+      call sum_pipeline(error, 0d0, mesh, geom, kind_qtf=3, motion=2, field=xf)
+    else
+      call sum_pipeline(error, 0d0, mesh, geom, kind_qtf=3, field=xf)
+    end if
+    if (allocated(error)) return
+    if (run == 1) then
+      ! The motion of every row as the driver stores it (qtf_finish repeats these steps before it writes)
+      call potential_part(mesh, geom, 1d0)
+      call potential_part_sum(mesh, geom, 1d0)
+      call qtf_motion_part(mesh, geom)
+      r = 0
+      do kk = 1, 2
+        do b1 = 1, 2
+          do b2 = 1, 2
+            do i = 1, 2
+              do j = 1, 2
+                call qtf_motion_load(mesh, geom, merge(KERNEL_DIFF, KERNEL_SUM, kk == 1), 2, i, b1, j, b2, xi, f, ok)
+                do ip = 1, 2
+                  r = r + 1
+                  xis(:, r) = xi
+                end do
+              end do
+            end do
+          end do
+        end do
+      end do
+    end if
+    call qtf_finish(mesh, geom, 1d0)
+    call qfield_finish(1d0)
+    call field_rows(root//"/Wamit_format/QTF_Field.txt", rows(:, run), n)
+    call check(error, n == 64, "QTF_Field.txt does not have 2 kernels x 4 heading pairs x 4 frequency pairs x 2 points rows")
+    if (allocated(error)) return
+    do r = 1, 64
+      ! PER1 PER2 BETA1 BETA2 K IPT TYPE, the 8 partial values, Re_dir Im_dir, has_direct (and has_rad)
+      if (run == 1) then
+        read (rows(r, run), *) v4, iv3, v8, dir(:, r, run), hdir(r, run), hrad(r)
+      else
+        read (rows(r, run), *) v4, iv3, v8, dir(:, r, run), hdir(r, run)
+      end if
+    end do
+    call remove_files()
+  end do
+
+  ! The expected difference, row by row in the order of the file (kernel, heading pair, frequency pair, point)
+  allocate (psi(mesh%n, 6), pp(2, 6))
+  gap = 0d0
+  big = maxval(abs(dir))
+  rad_max = 0d0
+  nrad = 0
+  r = 0
+  do kk = 1, 2
+    do b1 = 1, 2
+      do b2 = 1, 2
+        do i = 1, 2
+          do j = 1, 2
+            om = merge(w(i) - w(j), w(i) + w(j), kk == 1)
+            if (om /= 0d0) then
+              call radiation_at(abs(om), .false., mesh%nbase)
+              call radiation_psi(mesh, abs(om), MXPOT, psi)
+              call psi_at_points(mesh, psi, abs(om), xf, pp)
+              phi_r = radiated_potential(om, xis(:, r + 1), pp)
+            end if
+            do ip = 1, 2
+              r = r + 1
+              call check(error, hdir(r, 1) == hdir(r, 2), "has_direct differs between the runs")
+              if (allocated(error)) return
+              if (hdir(r, 1) == 0) then
+                call check(error, hrad(r) == 0 .and. om == 0d0, "a row without a direct part has has_rad = 1, or a sum row none")
+                if (allocated(error)) return
+                cycle
+              end if
+              call check(error, hrad(r) == 1, "a row of a regular Omega has has_rad = 0")
+              if (allocated(error)) return
+              nrad = nrad + 1
+              ! The rho of the states (make_state: 1025), which field_direct takes in QTFField; the file scales the pressure
+              ! by the rho and g of Const_mod
+              e = field_direct(om, phi_r(ip), rho, G_SOLVER, xf(3, ip) == 0d0)
+              ! Conjugated and scaled as the file: pressure / (rho g), refl = 1
+              if (xf(3, ip) /= 0d0) e = e/(RHO_SOLVER*G_SOLVER)
+              e = conjg(e)
+              got = cmplx(dir(1, r, 1) - dir(1, r, 2), dir(2, r, 1) - dir(2, r, 2), 8)
+              gap = max(gap, abs(got - e))
+              rad_max = max(rad_max, abs(e))
+            end do
+          end do
+        end do
+      end do
+    end do
+  end do
+  write (line, '(a,i0,a,es10.2,a,es10.2,a,es10.2)') "field_radiated_pipeline: ", nrad, " rows with phi_R, max |p_R| ", &
+    rad_max, " against max |Re_dir| ", big, "; gap ", gap/big
+  print '(4x,a)', trim(line)
+  call check(error, nrad == 48 .and. rad_max > 1d-3*big .and. gap <= 1d-5*big, line)
+  call remove_files()
+end subroutine test_field_radiated_pipeline
+
+!> qtf_field = 1, qtf_direct = 1 and qtf_motion = 1 with no Omega in the list: the moored cylinder of sum_pipeline at one
+!> frequency (0.4 rad/s) with qtf = 1, so only the difference diagonal remains and no direct solve runs. motion_field_part
+!> must not stop (psi at the field points is never allocated then): qtf_finish writes QTF_Quadratic.10d, QTF_Indirect.11d,
+!> QTF_Direct.12d and QTF_Motion.11d and .12d, and qfield_finish QTF_Field.txt, whose rows (1 frequency pair x 4 heading
+!> pairs x 2 points) all have has_direct = 0 and has_rad = 0.
+subroutine test_field_motion_no_omega(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: xf(3, 2) = reshape([12d0, 3d0, -2d0, -8d0, 9d0, 0d0], [3, 2])
+  character(len=*), parameter :: names(5) = [character(len=20) :: "QTF_Quadratic.10d", "QTF_Indirect.11d", &
+                                             "QTF_Direct.12d", "QTF_Motion.11d", "QTF_Motion.12d"]
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  character(len=600), allocatable :: rows(:)
+  real(8) :: v4(4), v8(8), dir(2)
+  integer :: f, n, r, iv3(3), hdir, hrad
+  logical :: exists
+
+  call sum_pipeline(error, 0d0, mesh, geom, kind_qtf=1, grid=[0.4d0], motion=2, field=xf)
+  if (allocated(error)) return
+  call qtf_finish(mesh, geom, 1d0)
+  call qfield_finish(1d0)
+  do f = 1, size(names)
+    inquire (file=root//"/Wamit_format/"//trim(names(f)), exist=exists)
+    call check(error, exists, "no "//trim(names(f))//" with no Omega in the list")
+    if (allocated(error)) then
+      call remove_files()
+      return
+    end if
+  end do
+  allocate (rows(16))
+  call field_rows(root//"/Wamit_format/QTF_Field.txt", rows, n)
+  call check(error, n == 8, "QTF_Field.txt does not have 4 heading pairs x 1 frequency pair x 2 points rows")
+  if (allocated(error)) then
+    call remove_files()
+    return
+  end if
+  do r = 1, n
+    ! PER1 PER2 BETA1 BETA2 K IPT TYPE, the 8 partial values, Re_dir Im_dir, has_direct, has_rad
+    read (rows(r), *) v4, iv3, v8, dir, hdir, hrad
+    call check(error, hdir == 0 .and. hrad == 0, "a diagonal row has a direct part or a radiated wave")
+    if (allocated(error)) exit
+  end do
+  call remove_files()
+end subroutine test_field_motion_no_omega
+
+!> The data rows of a QTF_Field.txt (the lines that do not start with #)
+subroutine field_rows(path, rows, n)
+  character(len=*), intent(in) :: path
+  character(len=600), intent(out) :: rows(:)
+  integer, intent(out) :: n
+  character(len=600) :: line
+  integer :: unit, ios
+
+  n = 0
+  open (newunit=unit, file=path, status='old', action='read')
+  do
+    read (unit, '(a)', iostat=ios) line
+    if (ios /= 0) exit
+    if (line(1:1) == '#' .or. len_trim(line) == 0) cycle
+    n = n + 1
+    if (n <= size(rows)) rows(n) = line
+  end do
+  close (unit)
+end subroutine field_rows
+
 subroutine test_qtf3_diff_unchanged(error)
   type(error_type), allocatable, intent(out) :: error
   real(8), parameter :: w3(3) = [0.3d0, 0.6d0, 0.9d0]
@@ -1587,6 +1838,406 @@ subroutine test_indirect11s_routes_agree(error)
   call check(error, a3 == b3, "QTF_PotentialTermsSum.txt differs between qtf_direct = 0 and 1")
 end subroutine test_indirect11s_routes_agree
 
+!> Phase 6c: the body matrices of the cylinder of sum_pipeline (radius 5, draft 5): the mass rho pi r^2 T in surge, sway and
+!> heave, inertias in roll, pitch and yaw, the hydrostatic restoring in heave, roll and pitch, and a linear damper in surge
+!> and sway. Moored (free = .false.) adds springs in surge, sway and yaw, so that C + K_ext is regular at Omega = 0; the
+!> free body has none there, as an unmoored hull.
+subroutine cylinder_body(free, mass, c_hyd, k_ext, b_ext)
+  logical, intent(in) :: free
+  real(8), intent(out) :: mass(6, 6), c_hyd(6, 6), k_ext(6, 6), b_ext(6, 6)
+  real(8), parameter :: m_diag(6) = [4.025d5, 4.025d5, 4.025d5, 2.0d6, 2.0d6, 5.0d6]
+  real(8), parameter :: c_diag(6) = [0d0, 0d0, 7.9d5, 1.5d6, 1.5d6, 0d0]
+  real(8), parameter :: k_diag(6) = [4d4, 4d4, 0d0, 0d0, 0d0, 1d6]
+  real(8), parameter :: b_diag(6) = [2d4, 2d4, 0d0, 0d0, 0d0, 0d0]
+  integer :: md
+
+  mass = 0d0
+  c_hyd = 0d0
+  k_ext = 0d0
+  b_ext = 0d0
+  do md = 1, 6
+    mass(md, md) = m_diag(md)
+    c_hyd(md, md) = c_diag(md)
+    b_ext(md, md) = b_diag(md)
+    if (.not. free) k_ext(md, md) = k_diag(md)
+  end do
+end subroutine cylinder_body
+
+!> The rows of a QTF_Motion file, r(9, n) as read_qtf_rows, and its header (the lines that start with #), joined
+subroutine read_motion_rows(path, r, header)
+  character(len=*), intent(in) :: path
+  real(8), allocatable, intent(out) :: r(:, :)
+  character(len=:), allocatable, intent(out) :: header
+  character(len=1000) :: line
+  real(8) :: v(8)
+  integer :: unit, ios, n, idx
+  logical :: exists
+
+  header = ""
+  allocate (r(9, 0))
+  inquire (file=path, exist=exists)
+  if (.not. exists) return
+  n = 0
+  open (newunit=unit, file=path, status="old", action="read")
+  do
+    read (unit, '(a)', iostat=ios) line
+    if (ios /= 0) exit
+    if (len_trim(line) == 0) cycle
+    if (line(1:1) == "#") then
+      header = header//trim(line)//" "
+    else
+      n = n + 1
+    end if
+  end do
+  deallocate (r)
+  allocate (r(9, n))
+  rewind (unit)
+  n = 0
+  do
+    read (unit, '(a)', iostat=ios) line
+    if (ios /= 0) exit
+    if (len_trim(line) == 0 .or. line(1:1) == "#") cycle
+    n = n + 1
+    read (line, *) v(1:4), idx, v(5:8)
+    r(1:4, n) = v(1:4)
+    r(5, n) = idx
+    r(6:9, n) = v(5:8)
+  end do
+  close (unit)
+end subroutine read_motion_rows
+
+!> Phase 6c: QTF_Motion.11d (and with qtf_direct = 1 QTF_Motion.12d) of the free cylinder has the rows of QTF_Indirect.11d
+!> (QTF_Direct.12d) in their order, minus those of Omega = 0: C + K_ext has no surge, sway and yaw, so rcond < 1e-12 there
+!> (R6) and the header names Omega = 0 and the modes 1 2 6. Grid 0.4, 0.5 rad/s, two headings, mean_drift = 2: 96 rows
+!> of the force file, 48 of them on the diagonal.
+subroutine test_motion_rows_follow_force(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  real(8), allocatable :: rf(:, :), rm(:, :), rm_ind(:, :)
+  character(len=:), allocatable :: header
+  character(len=*), parameter :: force(2) = [character(len=16) :: "QTF_Indirect.11d", "QTF_Direct.12d"]
+  character(len=*), parameter :: motion(2) = [character(len=16) :: "QTF_Motion.11d", "QTF_Motion.12d"]
+  integer :: kd, f, i, k
+  real(8) :: route_gap
+
+  do kd = 1, 2
+    call sum_pipeline(error, 0d0, mesh, geom, kind_qtf=1, indirect_only=kd == 1, motion=1)
+    if (allocated(error)) return
+    call qtf_finish(mesh, geom, 1d0)
+    do f = 1, kd
+      call read_qtf_rows(root//"/Wamit_format/"//trim(force(f)), rf)
+      call read_motion_rows(root//"/Wamit_format/"//trim(motion(f)), rm, header)
+      call check(error, size(rf, 2), 96, "rows of "//trim(force(f)))
+      if (allocated(error)) return
+      call check(error, size(rm, 2), 48, "rows of "//trim(motion(f))//" (the diagonal left out)")
+      if (allocated(error)) return
+      k = 0
+      do i = 1, size(rf, 2)
+        if (rf(1, i) == rf(2, i)) cycle
+        k = k + 1
+        call check(error, all(rm(1:5, k) == rf(1:5, i)), trim(motion(f))//" is not in the order of "//trim(force(f)))
+        if (allocated(error)) return
+      end do
+      call check(error, index(header, "Omega =   0.00000 rad/s") > 0 .and. index(header, "modes 1 2 6") > 0, &
+                 trim(motion(f))//": the header does not name Omega = 0 and the modes 1 2 6: "//header)
+      if (allocated(error)) return
+      call check(error, index(header, trim(force(f))) > 0, trim(motion(f))//": the header does not name its force file")
+      if (allocated(error)) return
+    end do
+    if (kd == 2) then
+      ! The two routes have their own force, so their own motion
+      call read_motion_rows(root//"/Wamit_format/QTF_Motion.11d", rm_ind, header)
+      route_gap = maxval(abs(rm(8:9, :) - rm_ind(8:9, :)))
+      print '(4x,a,es10.2,a,es10.2)', "motion_rows_follow_force: max |QTF_Motion.12d - .11d| ", route_gap, &
+        ", max |QTF_Motion.11d| ", maxval(abs(rm_ind(8:9, :)))
+      call check(error, route_gap > 0d0, "QTF_Motion.12d is QTF_Motion.11d: the direct force is not used")
+      if (allocated(error)) return
+    end if
+    call remove_files()
+  end do
+end subroutine test_motion_rows_follow_force
+
+!> Phase 6c: xi2 of a pair solves the equation of motion with the force of its row (R4, R6). Moored cylinder, qtf = 3,
+!> grid 0.4, 0.5: the difference pairs at Omega = +0.1 and -0.1 (the conjugate system of R4) and at Omega = 0 (C + K_ext
+!> only), and two sum pairs at 0.9 and 1.0 rad/s. Unscaled: the backward error |lhs xi - F| / (|lhs| |xi|) (infinity
+!> norms) of the stored xi and force is rounding, 1e-13, with lhs from the radiation solve of the test at |Omega|.
+!> Rescaled: the rows of QTF_Motion.11d/.11s and QTF_Indirect.11d/.11s, written with refl = 2 and taken back to N and m
+!> (force times rho g L^k, motion over L^k, conjugated), solve it to the 7 digits of the files (1e-5). Also prints rcond
+!> of each lhs, as is and equilibrated (rows, then columns, to unit largest entry), for parked item J.
+subroutine test_motion_equals_h_times_f(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: refl = 2d0
+  integer, parameter :: ncase = 5
+  integer, parameter :: kernels(ncase) = [KERNEL_DIFF, KERNEL_DIFF, KERNEL_DIFF, KERNEL_SUM, KERNEL_SUM]
+  integer, parameter :: pairs(4, ncase) = reshape([2, 1, 1, 2,  1, 2, 2, 1,  1, 1, 1, 2,  1, 1, 2, 2,  2, 2, 2, 1], [4, ncase])
+  real(8), parameter :: w(2) = [0.4d0, 0.5d0], hb(2) = [0d0, 30d0]
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  real(8) :: mass(6, 6), c_hyd(6, 6), k_ext(6, 6), b_ext(6, 6), zero(6, 6), a(6, 6), b(6, 6)
+  complex(8) :: xi(6), f(6, 1), lhs(6, 6), xt(6, 1), lhs_eq(6, 6), xi_file(6), f_file(6)
+  complex(8), allocatable :: psi(:, :), xis(:, :), fs(:, :), lhss(:, :, :)
+  real(8), allocatable :: rm(:, :), rf(:, :)
+  character(len=:), allocatable :: header
+  real(8) :: om, berr, berr_file, worst, worst_file, rc, rc_eq, s
+  logical :: ok, okt
+  integer :: p, md, n, kk
+  character(len=250) :: line
+
+  call sum_pipeline(error, 0d0, mesh, geom, kind_qtf=3, indirect_only=.true., motion=2)
+  if (allocated(error)) return
+  call cylinder_body(.false., mass, c_hyd, k_ext, b_ext)
+  zero = 0d0
+  ! The parts qtf_finish computes, here before it, so that the stores can be read (qtf_finish computes them again)
+  call potential_part(mesh, geom, refl)
+  call potential_part_sum(mesh, geom, refl)
+  call qtf_motion_part(mesh, geom)
+  allocate (xis(6, ncase), fs(6, ncase), lhss(6, 6, ncase), psi(mesh%n, 6))
+  worst = 0d0
+  do p = 1, ncase
+    call qtf_motion_load(mesh, geom, kernels(p), 1, pairs(1, p), pairs(2, p), pairs(3, p), pairs(4, p), xi, f(:, 1), ok)
+    call check(error, ok, "a pair of a regular Omega is flagged")
+    if (allocated(error)) return
+    if (kernels(p) == KERNEL_DIFF) then
+      om = w(pairs(1, p)) - w(pairs(3, p))
+    else
+      om = w(pairs(1, p)) + w(pairs(3, p))
+    end if
+    if (om == 0d0) then
+      call motion_matrix(0d0, mass, zero, zero, b_ext, c_hyd, k_ext, lhs)
+    else
+      call radiation_at(abs(om), .false., mesh%nbase)
+      call radiation_psi(mesh, abs(om), MXPOT, psi)
+      call radiation_coefficients(mesh, psi, abs(om), rho, a, b)
+      call motion_matrix(abs(om), mass, a, b, b_ext, c_hyd, k_ext, lhs)
+      ! Omega < 0: the matrix of (2) at -|Omega| with A, B of |Omega| is the conjugate (R4)
+      if (om < 0d0) lhs = conjg(lhs)
+    end if
+    berr = maxval(abs(matmul(lhs, xi) - f(:, 1)))/(maxval(sum(abs(lhs), dim=2))*maxval(abs(xi)))
+    worst = max(worst, berr)
+    call motion_solve_omega(lhs, f, xt, okt, rc)
+    ! Equilibrated: rows to unit largest entry, then columns
+    lhs_eq = lhs
+    do md = 1, 6
+      lhs_eq(md, :) = lhs_eq(md, :)/maxval(abs(lhs_eq(md, :)))
+    end do
+    do md = 1, 6
+      lhs_eq(:, md) = lhs_eq(:, md)/maxval(abs(lhs_eq(:, md)))
+    end do
+    call motion_solve_omega(lhs_eq, f, xt, okt, rc_eq)
+    write (line, '(a,i0,a,f6.2,a,es10.2,a,es10.3,a,es10.3)') "kernel ", kernels(p), ", Omega ", om, &
+      ": backward error ", berr, ", rcond ", rc, ", equilibrated ", rc_eq
+    print '(4x,a)', trim(line)
+    xis(:, p) = xi
+    fs(:, p) = f(:, 1)
+    lhss(:, :, p) = lhs
+  end do
+  call qtf_finish(mesh, geom, refl)
+  ! Rescaled: the rows of the files at the keys of each pair
+  worst_file = 0d0
+  do p = 1, ncase
+    if (kernels(p) == KERNEL_DIFF) then
+      call read_motion_rows(root//"/Wamit_format/QTF_Motion.11d", rm, header)
+      call read_qtf_rows(root//"/Wamit_format/QTF_Indirect.11d", rf)
+    else
+      call read_motion_rows(root//"/Wamit_format/QTF_Motion.11s", rm, header)
+      call read_qtf_rows(root//"/Wamit_format/QTF_Indirect.11s", rf)
+    end if
+    do md = 1, 6
+      kk = 0
+      do n = 1, size(rm, 2)
+        if (rm(1, n) == w(pairs(1, p)) .and. rm(2, n) == w(pairs(3, p)) .and. rm(3, n) == hb(pairs(2, p)) .and. &
+            rm(4, n) == hb(pairs(4, p)) .and. nint(rm(5, n)) == md) kk = n
+      end do
+      call check(error, kk > 0, "a pair has no row in the motion file")
+      if (allocated(error)) return
+      s = merge(refl**2, refl, md > 3)
+      xi_file(md) = conjg(cmplx(rm(8, kk), rm(9, kk), kind=8))/s
+      do n = 1, size(rf, 2)
+        if (all(rf(1:5, n) == rm(1:5, kk))) exit
+      end do
+      call check(error, n <= size(rf, 2), "a motion row has no force row")
+      if (allocated(error)) return
+      f_file(md) = conjg(cmplx(rf(8, n), rf(9, n), kind=8))*RHO_SOLVER*G_SOLVER*s
+    end do
+    berr_file = maxval(abs(matmul(lhss(:, :, p), xi_file) - f_file))/(maxval(sum(abs(lhss(:, :, p)), dim=2))* &
+                maxval(abs(xi_file)))
+    worst_file = max(worst_file, berr_file)
+  end do
+  write (line, '(a,es10.2,a,es10.2)') "motion_equals_h_times_f: worst backward error unscaled ", worst, &
+    ", of the file rows (refl = 2) ", worst_file
+  print '(4x,a)', trim(line)
+  call check(error, worst <= 1d-13 .and. worst_file <= 1d-5, line)
+  call remove_files()
+end subroutine test_motion_equals_h_times_f
+
+!> Phase 6c, R4: write_motion_row scales a translation by refl (xi over A^2/L) and a rotation by refl^2 (over A^2/L^2), and
+!> conjugates as write_qtf_row; checked against a row scaled by hand, with refl = 2
+subroutine test_motion_scaling(error)
+  type(error_type), allocatable, intent(out) :: error
+  complex(8), parameter :: value = (0.3d0, -0.4d0)
+  integer :: unit, idx, md
+  real(8) :: w1, w2, b1, b2, mo, ph, re, im, s
+  complex(8) :: hand
+
+  open (newunit=unit, status="scratch")
+  call write_motion_row(unit, 0.8d0, 1.2d0, 0d0, 30d0, 2, value, 2d0, .false.)
+  call write_motion_row(unit, 0.8d0, 1.2d0, 0d0, 30d0, 5, value, 2d0, .true.)
+  rewind (unit)
+  do md = 1, 2
+    read (unit, *) w1, w2, b1, b2, idx, mo, ph, re, im
+    s = merge(4d0, 2d0, md == 2)
+    hand = conjg(value)*s
+    call check(error, w1 == 0.8d0 .and. w2 == 1.2d0 .and. b1 == 0d0 .and. b2 == 30d0 .and. idx == merge(5, 2, md == 2), &
+               "keys of the motion row")
+    if (allocated(error)) exit
+    call check(error, abs(re - real(hand, 8)) <= 1d-6*abs(hand) .and. abs(im - aimag(hand)) <= 1d-6*abs(hand) .and. &
+               abs(mo - abs(hand)) <= 1d-6*abs(hand) .and. &
+               abs(ph - atan2(aimag(hand), real(hand, 8))*180d0/3.141592653589793d0) <= 1d-4, &
+               "the motion row is not conj(xi) refl^k")
+    if (allocated(error)) exit
+  end do
+  close (unit)
+end subroutine test_motion_scaling
+
+!> Phase 6c: QTF_Motion.11s of the moored cylinder (qtf = 2) has row (i, b1, j, b2) equal to row (j, b2, i, b1): the sum
+!> force is symmetric (T+), and so is the matrix, which depends on Omega+ only. To the 7 digits of the file.
+subroutine test_motion_sum_symmetric(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  real(8), allocatable :: rm(:, :)
+  character(len=:), allocatable :: header
+  real(8) :: scale, gap
+  integer :: i, j
+  logical :: found
+
+  call sum_pipeline(error, 0d0, mesh, geom, kind_qtf=2, indirect_only=.true., motion=2)
+  if (allocated(error)) return
+  call qtf_finish(mesh, geom, 1d0)
+  call read_motion_rows(root//"/Wamit_format/QTF_Motion.11s", rm, header)
+  call check(error, size(rm, 2), 96, "rows of QTF_Motion.11s")
+  if (allocated(error)) return
+  scale = maxval(abs(rm(8:9, :)))
+  gap = 0d0
+  do i = 1, size(rm, 2)
+    found = .false.
+    do j = 1, size(rm, 2)
+      if (rm(1, j) /= rm(2, i) .or. rm(2, j) /= rm(1, i) .or. rm(3, j) /= rm(4, i) .or. rm(4, j) /= rm(3, i)) cycle
+      if (rm(5, j) /= rm(5, i)) cycle
+      found = .true.
+      gap = max(gap, maxval(abs(rm(8:9, j) - rm(8:9, i))))
+      exit
+    end do
+    call check(error, found, "a row of QTF_Motion.11s has no mirror")
+    if (allocated(error)) return
+  end do
+  print '(4x,a,es10.2,a,es10.2)', "motion_sum_symmetric: max |row - mirror| ", gap, ", max |QTF_Motion.11s| ", scale
+  call check(error, scale > 0d0 .and. gap <= 1d-6*scale, "QTF_Motion.11s is not symmetric")
+  call remove_files()
+end subroutine test_motion_sum_symmetric
+
+!> Phase 6c with IRSP = 0: the sum pairs at or above the estimate of the lowest irregular frequency (2.2 rad/s for the
+!> cylinder of radius 5) are cut from QTF_Indirect.11s (sum_pair_index), and from QTF_Motion.11s too. Grid 0.7, 1.3 (no
+!> sum on the main grid, whose psi the pipeline does not keep): the pair (1.3, 1.3) is cut, 72 of the 96 rows are kept;
+!> the motion file has the same keys in the same order.
+subroutine test_motion_sum_cutoff_rows(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  real(8), allocatable :: rs(:, :), rm(:, :)
+  character(len=:), allocatable :: header
+  real(8) :: cut
+
+  call sum_pipeline(error, 0d0, mesh, geom, kind_qtf=2, grid=[0.7d0, 1.3d0], indirect_only=.true., motion=2, irsp0=.true.)
+  if (allocated(error)) return
+  cut = irregular_frequency_estimate(geom, G_SOLVER)
+  call qtf_finish(mesh, geom, 1d0)
+  call read_qtf_rows(root//"/Wamit_format/QTF_Indirect.11s", rs)
+  call read_motion_rows(root//"/Wamit_format/QTF_Motion.11s", rm, header)
+  print '(4x,a,f8.4,a,i0,a,i0)', "motion_sum_cutoff_rows: cut at ", cut, " rad/s, rows of .11s ", size(rs, 2), &
+    ", of QTF_Motion.11s ", size(rm, 2)
+  call check(error, size(rs, 2), 72, "rows of .11s with the cut")
+  if (allocated(error)) return
+  call check(error, size(rm, 2), size(rs, 2), "rows of QTF_Motion.11s")
+  if (allocated(error)) return
+  call check(error, all(rm(1:5, :) == rs(1:5, :)), "QTF_Motion.11s does not have the keys of .11s")
+  if (allocated(error)) return
+  call check(error, all(rm(1, :) + rm(2, :) < cut), "QTF_Motion.11s has a row above the cut")
+  call remove_files()
+end subroutine test_motion_sum_cutoff_rows
+
+!> Phase 6c: qtf_stored_mb with nmotion grows by xi2 and xi2_sum, 16 bytes x 6 nbody x nfreq^2 per slice
+subroutine test_stored_mb_motion(error)
+  type(error_type), allocatable, intent(out) :: error
+  integer, parameter :: nfreq = 3, nb = 2, nbody = 2, npsi = 7, nmotion = 8
+  real(8) :: mb0, mb1, expected
+
+  mb0 = qtf_stored_mb(10, 4, nbody, nfreq, nb, npsi=npsi, npairs=4, nsum_pairs=4)
+  mb1 = qtf_stored_mb(10, 4, nbody, nfreq, nb, npsi=npsi, npairs=4, nsum_pairs=4, nmotion=nmotion)
+  expected = 16d0 * 6d0 * nbody * nfreq**2 * nmotion / 1d6
+  call check(error, abs((mb1 - mb0) - expected) <= 1d-12 * expected, "the motion stores in qtf_stored_mb")
+end subroutine test_stored_mb_motion
+
+!> Phase 6c: qtf_motion = 0 writes no QTF_Motion file, and the force files of qtf_motion = 1 are those of qtf_motion = 0
+!> to the byte (qtf = 3, the moored cylinder, qtf_direct = 0)
+subroutine test_motion_off_unchanged(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  character(len=*), parameter :: names(4) = [character(len=20) :: "QTF_Quadratic.10d", "QTF_Indirect.11d", &
+                                             "QTF_Quadratic.10s", "QTF_Indirect.11s"]
+  type :: text_t
+    character(len=:), allocatable :: s
+  end type text_t
+  type(text_t) :: off(4)
+  logical :: has_d, has_s
+  integer :: f, km
+
+  do km = 0, 2, 2
+    call sum_pipeline(error, 0d0, mesh, geom, kind_qtf=3, indirect_only=.true., motion=km)
+    if (allocated(error)) return
+    call qtf_finish(mesh, geom, 1d0)
+    inquire (file=root//"/Wamit_format/QTF_Motion.11d", exist=has_d)
+    inquire (file=root//"/Wamit_format/QTF_Motion.11s", exist=has_s)
+    if (km > 0) then
+      call check(error, has_d .and. has_s, "no QTF_Motion.11d or .11s with qtf_motion = 1")
+    else
+      call check(error, .not. (has_d .or. has_s), "a QTF_Motion file with qtf_motion = 0")
+    end if
+    if (allocated(error)) return
+    do f = 1, 4
+      if (km == 0) then
+        off(f)%s = slurp(root//"/Wamit_format/"//trim(names(f)))
+        call check(error, len(off(f)%s) > 0, trim(names(f))//" is empty")
+      else
+        call check(error, slurp(root//"/Wamit_format/"//trim(names(f))) == off(f)%s, &
+                   trim(names(f))//" differs between qtf_motion = 0 and 1")
+      end if
+      if (allocated(error)) return
+    end do
+    call remove_files()
+  end do
+end subroutine test_motion_off_unchanged
+
+!> Phase 6c, plan review focus 2: qtf_motion = 1 with motion_state = fixed computes nothing and writes no QTF_Motion file;
+!> qtf_init takes no body matrices then, and the force files are written as usual
+subroutine test_motion_fixed_no_file(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  logical :: has_d, has_s, has_force
+
+  call sum_pipeline(error, 0d0, mesh, geom, kind_qtf=3, indirect_only=.true., motion=2, fixed=.true.)
+  if (allocated(error)) return
+  call qtf_finish(mesh, geom, 1d0)
+  inquire (file=root//"/Wamit_format/QTF_Motion.11d", exist=has_d)
+  inquire (file=root//"/Wamit_format/QTF_Motion.11s", exist=has_s)
+  inquire (file=root//"/Wamit_format/QTF_Indirect.11d", exist=has_force)
+  call remove_files()
+  call check(error, has_force .and. .not. (has_d .or. has_s), "a fixed body wrote a QTF_Motion file, or no .11d")
+end subroutine test_motion_fixed_no_file
+
 !> The whole file as one string (stream access); empty if it does not exist
 function slurp(path) result(text)
   character(len=*), intent(in) :: path
@@ -1775,13 +2426,15 @@ subroutine check_file_symmetry(error, path, hermitian)
 end subroutine check_file_symmetry
 
 subroutine remove_files()
-  character(len=*), parameter :: names(6) = [character(len=24) :: "QTF_Quadratic.10d", "QTF_Quadratic.10s", &
-                                                "QTF_Direct.12s", "QTF_DirectTermsSum.txt", "QTF_Indirect.11s", &
-                                                "QTF_PotentialTermsSum.txt"]
+  character(len=*), parameter :: names(13) = [character(len=25) :: "QTF_Quadratic.10d", "QTF_Quadratic.10s", &
+                                                 "QTF_Direct.12s", "QTF_DirectTermsSum.txt", "QTF_Indirect.11s", &
+                                                 "QTF_PotentialTermsSum.txt", "QTF_Indirect.11d", "QTF_Direct.12d", &
+                                                 "QTF_Motion.11d", "QTF_Motion.11s", "QTF_Motion.12d", "QTF_Motion.12s", &
+                                                 "QTF_PotentialTerms.txt"]
   integer :: unit, ios, i
   logical :: exists
 
-  do i = 1, 6
+  do i = 1, size(names)
     inquire(file=root//"/Wamit_format/"//trim(names(i)), exist=exists)
     if (.not. exists) cycle
     open(newunit=unit, file=root//"/Wamit_format/"//trim(names(i)), status="old", iostat=ios)
