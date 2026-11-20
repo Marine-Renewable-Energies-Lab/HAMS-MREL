@@ -1042,27 +1042,28 @@ def write_qtf_indsum_fixtures(data):
 
 
 
-# The second-order motion (qtf_motion = 1, QTF_Motion.11d/.11s/.12d/.12s), Phase 6c Task 6: the free rounded hull of
+# The second-order motion (qtf_motion = 1, QTF_Motion.11d/.11s/.12d/.12s), Phase 6c: the free rounded hull of
 # qtf_direct_round (radius 10, draft 10, bilge radius 3, depth 100) at a coarse mesh, 16 x (4 + 2 + 2) = 128 panels against
 # its 480, at two frequencies and heading 0, to keep the run cheap. Omega = 0 (the diagonal) and 0.25 rad/s for the
 # difference, and for the sum 1.40 rad/s only (the cutoff of the sum, the estimate of the lowest irregular frequency, 1.536
 # rad/s, leaves out 1.65 and 1.90).
 QTF_MOTION_MESH = dict(ROUND_MESH, ntheta=16, nz=4, narc=2, nr=2)
 QTF_MOTION_FIXTURE_FREQUENCIES = (0.70, 0.95)
-# The surge spring and damping of R8 of the Phase 6c plan, for this hull: K_11 for a natural period of 100 s and B_11 = 5 %
+# A surge spring and damping as in drift_convergence.py, for this hull: K_11 for a natural period of 100 s and B_11 = 5 %
 # of critical. omega_n = 2 pi / 100 = 0.0628319 rad/s; M = 2.95113e6 kg (Hydrostatic.in of this mesh: rho times the volume
 # of the 16-gon with the rounded bilge); A_11(omega_n) = 1.82474e6 kg, that of the sharp cylinder of the same radius and
 # draft (truncated_cylinder_reference.added_mass_damping, 64000 modes), taken for this hull, whose rounded bilge lowers
 # it by a few percent, so the period is 100 s to within about that. K_11 = (M + A_11) omega_n^2 = 4.77587e6 x 3.94784e-3
 # = 1.8854e4 N/m; B_11 = 0.05 x 2 sqrt(K_11 (M + A_11)) = 0.1 (M + A_11) omega_n = 3.0008e4 N s/m. The spring makes the
-# surge column of C + K_ext regular; sway and yaw stay without restoring, so Omega = 0 stays singular (ruling R6)
+# surge column of C + K_ext regular; sway and yaw stay without restoring, so Omega = 0 stays singular and is left out
+# of the motion files (rcond < 1e-12: docs/input_files.md, second-order motion)
 QTF_MOTION_K11 = 1.8854e4
 QTF_MOTION_B11 = 3.0008e4
 
 
 def write_qtf_motion_fixtures(data):
-    """Fixtures of the second-order motion (qtf_motion = 1), Phase 6c Task 6: qtf_motion_round, the hull of QTF_MOTION_MESH
-    with the surge spring and damping of R8 (QTF_MOTION_K11, QTF_MOTION_B11), and qtf_motion_round_free, the same without
+    """Fixtures of the second-order motion (qtf_motion = 1), Phase 6c: qtf_motion_round, the hull of QTF_MOTION_MESH
+    with the surge spring and damping (QTF_MOTION_K11, QTF_MOTION_B11), and qtf_motion_round_free, the same without
     them. Both qtf = 3 with qtf_direct = 1 (the options of qtf_direct_round), so that each writes the four motion files."""
     options = dict(mean_drift=1, drift_methods="far near", motion_state="free", write_terms=1, qtf_terms="body", qtf=3,
                    qtf_b2="body", qtf_edge_weights="off", qtf_direct=1, qtf_max_dw=0.3, velocity_method="source",

@@ -509,12 +509,12 @@ Second-order motion (Phase 6c). python -I truncated_cylinder_reference.py qtf-mo
 the kernel, the motion of the free cylinder [-Omega**2 (M + A) - i Omega (B + B_ext) + C + K_ext] xi = rho g T on surge,
 heave and pitch, with T the total of qtf-potential (computed, or read from its CSV with --from), A and B at |Omega| from
 the same psi solutions, M and C of body_matrices, and a surge spring and damper (default
-drift_convergence.SHARP_MOTION_K11, _B11: ruling R8 of the plan). The HAMS cases also have sway and yaw springs
+drift_convergence.SHARP_MOTION_K11, _B11: 100 s period, 5 % of critical). The HAMS cases also have sway and yaw springs
 (SHARP_MOTION_K22, _K66), which the reference does not need: it solves surge, heave and pitch, which these do not couple
 to at heading 0. The default grid, motion, is that of the HAMS cases q_sharp_motion_free_m*
 (drift_convergence.QTF_MOTION_FREQUENCIES: QTF_FREQUENCIES plus 1.013 rad/s, the slow-drift peak). Omega = omega_i -
 omega_j for the difference (the matrix conjugated for Omega < 0) and omega_i + omega_j for the sum; Omega = 0 is static;
-rcond < 1e-12 leaves the pair out, as HAMS does (R6). The section "second-order motion" beside the code has the
+rcond < 1e-12 leaves the pair out, as HAMS does (qtf_motion_part). The section "second-order motion" beside the code has the
 conventions. Checks: motion_ref_one_dof_limit (heave alone against the closed form of one degree of freedom) and
 motion_ref_ab_match (A, B at Omega against the first-order A, B at the same omega).
 
@@ -3655,7 +3655,7 @@ def run_qtf_potential(out, motions=("fixed", "free"), frequencies=QTF_FREQUENCIE
 
 # ------------------------------------------------------------------------------------------------ second-order motion
 #
-# The second-order motion of the free cylinder (Phase 6c; rulings R4, R6 and R8 of its plan, and (2) of src/QTFMotion.f90),
+# The second-order motion of the free cylinder (Phase 6c; (2) of src/QTFMotion.f90 and qtf_motion_part of src/QTFDriver.f90),
 # from the reference T of a pair (the quadratic part, the five body-forcing terms and, with --free-surface, T_FS: the total
 # of qtf-potential) and A, B at the second-order frequency from psi, the radiation potentials of T:
 #
@@ -3663,12 +3663,12 @@ def run_qtf_potential(out, motions=("fixed", "free"), frequencies=QTF_FREQUENCIE
 #
 # modes 1, 3 and 5 (surge, heave and pitch about the origin; the others are not excited at heading 0), e^(-i Omega t), per
 # unit amplitudes: xi_1, xi_3 in m per m**2, xi_5 in rad per m**2. M and C are body_matrices (the exact circle), A and B
-# added_mass_damping of the psi solutions (motion_coefficients), K_ext and B_ext a surge spring and damper (R8). A row of the
+# added_mass_damping of the psi solutions (motion_coefficients), K_ext and B_ext a surge spring and damper. A row of the
 # difference kernel, omega_i <= omega_j, holds T at Omega = omega_i - omega_j <= 0 (the row (i, j) of QTF_Indirect.11d,
 # conjugated back); A and B are even in Omega (the transform of a real response), so the matrix at -|Omega| is the conjugate
 # of that at |Omega|, as in QTFDriver.qtf_motion_part. A sum row holds Omega = omega_i + omega_j. Omega = 0 (the difference
 # diagonal) is static, (C + K_ext) xi = rho g T. A matrix with rcond < MOTION_RCOND (the 1-norm reciprocal condition
-# number, as ZGECON's) gives no xi, as HAMS leaves its pairs out of QTF_Motion (R6); with K_11 > 0 that does not happen
+# number, as ZGECON's) gives no xi, as HAMS leaves its pairs out of QTF_Motion; with K_11 > 0 that does not happen
 # here, since heave and pitch have restoring. The QTF_Motion files hold conj(xi) L (translations) and conj(xi) L**2
 # (rotations), so with L = 1 (the q_sharp_* cases) the CSV's xi is a file row conjugated back.
 MOTION_RCOND = 1e-12
@@ -3707,7 +3707,7 @@ def motion_matrix(cyl, big_omega, k_ext, b_ext, n_modes, p_max):
 
 def solve_motion(lhs, t):
     """(xi, rcond) of lhs xi = rho g t, t the 3 complex loads over rho g on MOTION_MODES; xi None when rcond < MOTION_RCOND
-    (R6). rcond = 1/(||lhs||_1 ||lhs^-1||_1), 0 for an exactly singular matrix."""
+    (left out, as HAMS does). rcond = 1/(||lhs||_1 ||lhs^-1||_1), 0 for an exactly singular matrix."""
     try:
         inverse = np.linalg.inv(lhs)
     except np.linalg.LinAlgError:
@@ -3735,7 +3735,7 @@ def qtf_motion_table(cyl, rows, k_ext, b_ext, n_modes, p_max, log=None):
     qtf_potential_sum_table return them or as read from its CSV): the total T (pair_total) and xi of the second-order motion
     (module section above) at Omega = omega_i - omega_j (kernel diff) or omega_i + omega_j (sum), with A and B at the
     resolution (n_modes, p_max) and the external surge stiffness k_ext and damping b_ext. A row whose matrix has rcond <
-    MOTION_RCOND has empty xi fields (R6)."""
+    MOTION_RCOND has empty xi fields (left out, as HAMS does)."""
     out, logged = [], set()
     for row in rows:
         wi, wj = float(row["omega_i"]), float(row["omega_j"])
@@ -3745,7 +3745,7 @@ def qtf_motion_table(cyl, rows, k_ext, b_ext, n_modes, p_max, log=None):
         if log and abs(big_omega) not in logged:
             logged.add(abs(big_omega))
             log("motion at Omega = %.4f rad/s: rcond %.3e%s" % (abs(big_omega), rcond,
-                                                               "" if xi is not None else ", left out (R6)"))
+                                                               "" if xi is not None else ", left out"))
         record = dict(motion=row["motion"], omega_i=wi, omega_j=wj, kernel=row["kernel"], big_omega=big_omega, rcond=rcond)
         for q, value in zip(("Fx_total", "Fz_total", "My_total"), t):
             record[q + "_re"], record[q + "_im"] = value.real, value.imag
@@ -3768,7 +3768,7 @@ def run_qtf_motion(out, kernel="diff", k_ext=None, b_ext=None, frequencies=QTF_F
     written to out. T comes from qtf_potential_table or qtf_potential_sum_table at DEFAULT_RESOLUTION (or resolution), with
     free_surface as there; or, given source, from the rows of that qtf-potential CSV (its kernel, motion free), which
     must hold that kernel; A and B are then at resolution. k_ext, b_ext: the surge spring and damping, by default those
-    of R8 (drift_convergence.SHARP_MOTION_K11, SHARP_MOTION_B11)."""
+    of the motion cases (drift_convergence.SHARP_MOTION_K11, SHARP_MOTION_B11)."""
     res = resolution or DEFAULT_RESOLUTION
     k_ext = drift_convergence.SHARP_MOTION_K11 if k_ext is None else k_ext
     b_ext = drift_convergence.SHARP_MOTION_B11 if b_ext is None else b_ext
@@ -3793,7 +3793,7 @@ def run_qtf_motion(out, kernel="diff", k_ext=None, b_ext=None, frequencies=QTF_F
         writer.writerow(MOTION_COLUMNS)
         for row in table:
             writer.writerow([row[c] if isinstance(row[c], str) else "%.10g" % row[c] for c in MOTION_COLUMNS])
-    print("wrote %d rows to %s, %d without xi (R6); %.0f s" % (len(table), out, sum(r["xi1_re"] == "" for r in table),
+    print("wrote %d rows to %s, %d without xi (left out); %.0f s" % (len(table), out, sum(r["xi1_re"] == "" for r in table),
                                                               time.time() - start))
     return 0
 
@@ -5325,7 +5325,7 @@ MOTION_CHECK_TOLERANCE = 1e-12
 
 
 def check_motion_ref_one_dof_limit():
-    """motion_ref_one_dof_limit: heave alone (T = (0, t_3, 0)) through motion_matrix and solve_motion, with the R8 surge
+    """motion_ref_one_dof_limit: heave alone (T = (0, t_3, 0)) through motion_matrix and solve_motion, with the surge
     spring and damper, at the signed Omega of MOTION_CHECK_OMEGAS and at Omega = 0, against the one-degree-of-freedom closed
     form of the unit test motion_one_dof (test/test_qtf_motion.f90), xi = F/(c - Omega**2 (m + a) - i Omega b), with
     F = rho g t_3, m = M_33, a = rho A_33(|Omega|), b = rho |Omega| B_33(|Omega|) and c = C_33. Heave has no coupling to
@@ -5352,14 +5352,16 @@ def check_motion_ref_one_dof_limit():
                                                                                      MOTION_CHECK_OMEGAS), worst))
 
 
-MOTION_AB_OMEGAS = (2.0 * math.pi / 100.0, 0.25, 1.40)   # the slow-drift peak of R8, a difference and a sum frequency
+MOTION_AB_OMEGAS = (2.0 * math.pi / 100.0, 0.25, 1.40)   # the slow-drift peak (100 s), a difference and a sum frequency
 
 
 def check_motion_ref_ab_match():
     """motion_ref_ab_match: A and B at Omega of the second-order motion (motion_coefficients, from the psi solutions of T)
     against the reference's first-order A and B at omega = Omega (added_mass_damping of the radiation solutions of the
     first-order solve, _solved, as in reference), at MOTION_AB_OMEGAS, LIGHT_RESOLUTION: max |A - A1| / max |A1| and the
-    same for B, to MOTION_CHECK_TOLERANCE. An internal-consistency check of the reference: no HAMS output."""
+    same for B, to MOTION_CHECK_TOLERANCE. Both sides take the identical solve (solve_radiation, through _psi_solutions
+    and _solved), so this guards the wiring of motion_coefficients (the Omega, the modes, the scaling) only, not the
+    radiation solve itself; an internal-consistency check of the reference, with no HAMS output."""
     cyl, res = Cylinder(), LIGHT_RESOLUTION
     worst = 0.0
     for omega in MOTION_AB_OMEGAS:

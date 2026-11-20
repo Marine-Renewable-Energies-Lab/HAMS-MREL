@@ -393,7 +393,7 @@ CS_FIXED_M1 = dict(cs_margin=7.84, cs_bottom_margin=7.84, cs_panel_size=1.96)
 # truncated_cylinder_reference reads it for its motion "free_damped".
 SHARP_DAMPING = {3: 3.8306e5, 5: 1.3416e7}
 
-# The surge spring and damping of the free sharp hull of the second-order motion (Phase 6c, ruling R8 of its plan): K_11 for
+# The surge spring and damping of the free sharp hull of the second-order motion (Phase 6c): K_11 for
 # a natural period of 100 s and B_11 = 5 % of critical, so that the static surge and the slow-drift peak at
 # omega_n = 2 pi / 100 = 0.0628319 rad/s are finite. M = rho pi a^2 d = 3.14159e6 kg (the exact cylinder,
 # truncated_cylinder_reference.body_matrices; Hydrostatic.in of the m1 polygon has 3.12145e6, 0.6 % less) and
@@ -403,8 +403,9 @@ SHARP_DAMPING = {3: 3.8306e5, 5: 1.3416e7}
 # truncated_cylinder_reference.py qtf-motion takes them as its defaults of --k-ext and --b-ext
 SHARP_MOTION_K11 = 1.96063e4
 SHARP_MOTION_B11 = 3.12044e4
-# Sway and yaw springs of the same cases (Phase 6c, the user's option 1 to R6/R8), so that C + K_ext is regular at
-# Omega = 0 and HAMS writes the static diagonal (R6 leaves out every Omega = 0 pair while a mode has no restoring). Same
+# Sway and yaw springs of the same cases (Phase 6c), so that C + K_ext is regular at Omega = 0 and HAMS writes the
+# static diagonal (an Omega whose matrix has rcond < 1e-12 is left out, and Omega = 0 is singular while a mode has no
+# restoring: docs/input_files.md, second-order motion). Same
 # 100 s natural period and 5 % of critical damping as surge. Sway: A_22 = A_11 and M the same (axisymmetric body), so
 # K_22 = K_11 and B_22 = B_11. Yaw: I_66 = rho d pi a^4 / 2 = 1000 x 10 x pi x 10^4 / 2 = 1.570796e8 kg m^2 (the exact
 # cylinder, M66 of truncated_cylinder_reference.body_matrices; the m1 polygon of Hydrostatic.in is 1.3 % lower) and
@@ -687,7 +688,7 @@ def qtf_indirectsum_cases(grid):
 
 
 def qtf_motion_cases(grid):
-    """The cases of the second-order motion (Phase 6c, R8 of its plan): q_sharp_motion_free_m{1,2}, the cases of
+    """The cases of the second-order motion (Phase 6c): q_sharp_motion_free_m{1,2}, the cases of
     q_sharp_directsum_free_m{1,2} (qtf = 3, qtf_terms = full, qtf_direct = 1, free body, IRSP = 1 with velocity_method =
     differencing, heading 0, the fixed control surface CS_FIXED_M1 at m2) with qtf_motion = 1 and the surge, sway and yaw
     springs and dampers SHARP_MOTION_K11, _B11, _K22, _B22, _K66, _B66 in Hydrostatic.in. m1 runs on
@@ -696,7 +697,7 @@ def qtf_motion_cases(grid):
     truncated_cylinder_reference.py qtf-motion (--grid motion, its default), whose 22-frequency grid holds every pair of
     both meshes: the pairs off the m2 grid are counted apart ("not on its grid"), not compared. Group M, question 6c."""
     chosen = []
-    # The grid per mesh is for the cost (Task 7, the user's option (b)): an off-grid frequency adds 12 difference and 22 sum
+    # The grid per mesh is for the cost: an off-grid frequency adds 12 difference and 22 sum
     # frequencies, each a radiation and a psi solve, so m2 would grow from 59 to about 86 core-hours on 22 frequencies
     # (cost_model.py of validation-runs/snellius-qtf-motion, from the 7c-2 logs). m1 carries the slow-drift peak, m2 the
     # mesh convergence of the rest and, with the springs, the static diagonal
