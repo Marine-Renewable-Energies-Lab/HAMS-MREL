@@ -403,6 +403,19 @@ SHARP_DAMPING = {3: 3.8306e5, 5: 1.3416e7}
 # truncated_cylinder_reference.py qtf-motion takes them as its defaults of --k-ext and --b-ext
 SHARP_MOTION_K11 = 1.96063e4
 SHARP_MOTION_B11 = 3.12044e4
+# Sway and yaw springs of the same cases (Phase 6c, the user's option 1 to R6/R8), so that C + K_ext is regular at
+# Omega = 0 and HAMS writes the static diagonal (R6 leaves out every Omega = 0 pair while a mode has no restoring). Same
+# 100 s natural period and 5 % of critical damping as surge. Sway: A_22 = A_11 and M the same (axisymmetric body), so
+# K_22 = K_11 and B_22 = B_11. Yaw: I_66 = rho d pi a^4 / 2 = 1000 x 10 x pi x 10^4 / 2 = 1.570796e8 kg m^2 (the exact
+# cylinder, M66 of truncated_cylinder_reference.body_matrices; the m1 polygon of Hydrostatic.in is slightly lower, as for M)
+# and A_66 = 0 (the yaw added mass of an axisymmetric body is zero in potential flow: the normal n has no tangential
+# component, so x n_y - y n_x = 0 on the hull), so K_66 = I_66 omega_n^2 = 6.20126e5 N m and B_66 = 0.1 I_66 omega_n =
+# 9.86960e5 N m s. At heading 0 the first-order sway and yaw are zero, so these springs do not change surge, heave or
+# pitch; truncated_cylinder_reference.py qtf-motion solves surge, heave and pitch only and needs neither
+SHARP_MOTION_K22 = SHARP_MOTION_K11
+SHARP_MOTION_B22 = SHARP_MOTION_B11
+SHARP_MOTION_K66 = 6.20126e5
+SHARP_MOTION_B66 = 9.86960e5
 
 # Grid of the q_oc4w cases: the omega of the WAMIT .12d of OpenFAST (marin_semi.12d: 0.25 to 3.00 rad/s in steps of 0.05) up
 # to 1.90, below the first irregular frequency of OC4, about 1.98 rad/s (upper columns, J0 zero under a deep lid [derived]):
@@ -598,6 +611,13 @@ def qtf_directfs_cases(grid):
 # The 21-frequency grid of R7, 0.40 to 1.40 rad/s by 0.05 (not the 101 points of QTF_FREQUENCY_RANGE: the sum then costs 3 to 4
 # times more)
 QTF_SUM_FREQUENCIES = tuple(round(0.40 + 0.05 * i, 2) for i in range(21))
+# The grid of the second-order motion cases: QTF_SUM_FREQUENCIES plus 1.013 rad/s, so that the pair (0.95, 1.013) has
+# Delta omega = 0.063 rad/s, the slow-drift peak of the 100 s springs (omega_n = 0.0628). Both frequencies lie outside the
+# 0.75-0.80 rad/s surge-pitch resonance band and below the irregular frequency 1.10 (lid on anyway, IRSP = 1); near
+# 1.0 rad/s (ka = 1) the drift force of the cylinder is large, unlike at the low end of the grid. The added frequency also
+# brings 12 more difference frequencies (0.013 ... 0.287) and 22 more sum frequencies, each a psi solve
+QTF_MOTION_PEAK_OMEGA = 1.013
+QTF_MOTION_FREQUENCIES = tuple(sorted(QTF_SUM_FREQUENCIES + (QTF_MOTION_PEAK_OMEGA,)))
 
 
 def qtf_directsum_cases(grid):
@@ -668,17 +688,19 @@ def qtf_indirectsum_cases(grid):
 def qtf_motion_cases(grid):
     """The cases of the second-order motion (Phase 6c, R8 of its plan): q_sharp_motion_free_m{1,2}, the cases of
     q_sharp_directsum_free_m{1,2} (qtf = 3, qtf_terms = full, qtf_direct = 1, free body, IRSP = 1 with velocity_method =
-    differencing, the 21-frequency grid QTF_SUM_FREQUENCIES, heading 0, the fixed control surface CS_FIXED_M1 at m2) with
-    qtf_motion = 1 and the surge spring and damping SHARP_MOTION_K11, SHARP_MOTION_B11 in Hydrostatic.in. They write
-    QTF_Motion.11d, .12d, .11s and .12s; qtf_compare.py --motion compares them with truncated_cylinder_reference.py
-    qtf-motion. Group M, question 6c."""
+    differencing, heading 0, the fixed control surface CS_FIXED_M1 at m2) with qtf_motion = 1, on QTF_MOTION_FREQUENCIES
+    (the 21-frequency grid QTF_SUM_FREQUENCIES plus 1.013 rad/s for the slow-drift peak), and the surge, sway and yaw
+    springs and dampers SHARP_MOTION_K11, _B11, _K22, _B22, _K66, _B66 in Hydrostatic.in. They write QTF_Motion.11d, .12d,
+    .11s and .12s; qtf_compare.py --motion compares them with truncated_cylinder_reference.py qtf-motion (--grid motion,
+    its default). Group M, question 6c."""
     chosen = []
     for m in (1, 2):
         chosen.append(Case("q_sharp_motion_free_%s" % tag(m), "M", "6c", "sharp", m, "free", "differencing",
-                           frequencies=QTF_SUM_FREQUENCIES, headings=(0.0,), irsp=1, qtf=3, qtf_terms="full",
+                           frequencies=QTF_MOTION_FREQUENCIES, headings=(0.0,), irsp=1, qtf=3, qtf_terms="full",
                            qtf_max_dw=QTF_POTENTIAL_MAX_DW,
                            extra_options=dict(CS_FIXED_M1 if m > 1 else {}, qtf_direct=1, qtf_motion=1),
-                           damping={1: SHARP_MOTION_B11}, stiffness={1: SHARP_MOTION_K11}))
+                           damping={1: SHARP_MOTION_B11, 2: SHARP_MOTION_B22, 6: SHARP_MOTION_B66},
+                           stiffness={1: SHARP_MOTION_K11, 2: SHARP_MOTION_K22, 6: SHARP_MOTION_K66}))
     return chosen
 
 

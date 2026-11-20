@@ -505,12 +505,16 @@ about 22 min of the run without --free-surface. fs_states are kept only while a 
 time, 4.5 MB each).
 
 Second-order motion (Phase 6c). python -I truncated_cylinder_reference.py qtf-motion --out CSV [--kernel diff|sum]
-[--k-ext K11] [--b-ext B11] [--light] [--free-surface] [--from CSV] solves, for each pair of the kernel, the motion of the
-free cylinder [-Omega**2 (M + A) - i Omega (B + B_ext) + C + K_ext] xi = rho g T on surge, heave and pitch, with T the total of
-qtf-potential (computed, or read from its CSV with --from), A and B at |Omega| from the same psi solutions, M and C of
-body_matrices, and a surge spring and damper (default drift_convergence.SHARP_MOTION_K11, _B11: ruling R8 of the plan).
-Omega = omega_i - omega_j for the difference (the matrix conjugated for Omega < 0) and omega_i + omega_j for the sum; Omega = 0
-is static; rcond < 1e-12 leaves the pair out, as HAMS does (R6). The section "second-order motion" beside the code has the
+[--k-ext K11] [--b-ext B11] [--grid motion|nemoh|hams] [--light] [--free-surface] [--from CSV] solves, for each pair of
+the kernel, the motion of the free cylinder [-Omega**2 (M + A) - i Omega (B + B_ext) + C + K_ext] xi = rho g T on surge,
+heave and pitch, with T the total of qtf-potential (computed, or read from its CSV with --from), A and B at |Omega| from
+the same psi solutions, M and C of body_matrices, and a surge spring and damper (default
+drift_convergence.SHARP_MOTION_K11, _B11: ruling R8 of the plan). The HAMS cases also have sway and yaw springs
+(SHARP_MOTION_K22, _K66), which the reference does not need: it solves surge, heave and pitch, which these do not couple
+to at heading 0. The default grid, motion, is that of the HAMS cases q_sharp_motion_free_m*
+(drift_convergence.QTF_MOTION_FREQUENCIES: QTF_FREQUENCIES plus 1.013 rad/s, the slow-drift peak). Omega = omega_i -
+omega_j for the difference (the matrix conjugated for Omega < 0) and omega_i + omega_j for the sum; Omega = 0 is static;
+rcond < 1e-12 leaves the pair out, as HAMS does (R6). The section "second-order motion" beside the code has the
 conventions. Checks: motion_ref_one_dof_limit (heave alone against the closed form of one degree of freedom) and
 motion_ref_ab_match (A, B at Omega against the first-order A, B at the same omega).
 
@@ -5539,7 +5543,9 @@ def main(argv=None):
     p_mot.add_argument("--b-ext", type=float, metavar="B11",
                        help="external surge damping, N s/m (default drift_convergence.SHARP_MOTION_B11, %g: 5 %%%% of "
                             "critical)" % drift_convergence.SHARP_MOTION_B11)
-    p_mot.add_argument("--grid", choices=("nemoh", "hams"), default="nemoh", help="as qtf-potential")
+    p_mot.add_argument("--grid", choices=("motion", "nemoh", "hams"), default="motion",
+                       help="motion: the grid of q_sharp_motion_free_m* (drift_convergence.QTF_MOTION_FREQUENCIES, "
+                            "QTF_FREQUENCIES plus 1.013 rad/s, default); otherwise as qtf-potential")
     p_mot.add_argument("--max-dw", type=float, default=QTF_MAX_DW)
     p_mot.add_argument("--light", action="store_true", help="LIGHT_RESOLUTION instead of DEFAULT_RESOLUTION (a quick look)")
     p_mot.add_argument("--free-surface", action="store_true", help="T with the free-surface integral (qtf_terms = full)")
@@ -5562,8 +5568,9 @@ def main(argv=None):
     if args.command == "qtf-motion":
         if args.fs_radius != FS_RADIUS and not args.free_surface:
             parser.error("--fs-radius needs --free-surface")
-        return run_qtf_motion(args.out, args.kernel, args.k_ext, args.b_ext,
-                              QTF_FINE_FREQUENCIES if args.grid == "hams" else QTF_FREQUENCIES,
+        grid = {"motion": drift_convergence.QTF_MOTION_FREQUENCIES, "hams": QTF_FINE_FREQUENCIES}.get(args.grid,
+                                                                                                    QTF_FREQUENCIES)
+        return run_qtf_motion(args.out, args.kernel, args.k_ext, args.b_ext, grid,
                               LIGHT_RESOLUTION if args.light else None, args.max_dw,
                               dict(radius=args.fs_radius, check=False) if args.free_surface else None, args.source)
     if args.command == "qtf-potential":
