@@ -20,7 +20,8 @@ MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no vraghavan@s
     'mkdir -p /home/vraghavan/HAMS_drift_study/run_roland/logs /home/vraghavan/HAMS_drift_study/run_roland/q_volturnus_free_full/input'
 MSYS_NO_PATHCONV=1 scp $C/input/* vraghavan@snellius.surf.nl:/home/vraghavan/HAMS_drift_study/run_roland/q_volturnus_free_full/input/
 MSYS_NO_PATHCONV=1 scp $J/md5sums_input.txt $J/run_volturnus.sbatch vraghavan@snellius.surf.nl:/home/vraghavan/HAMS_drift_study/run_roland/
-MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no vraghavan@snellius.surf.nl \n    "sed -i 's/\$//' /home/vraghavan/HAMS_drift_study/run_roland/md5sums_input.txt /home/vraghavan/HAMS_drift_study/run_roland/run_volturnus.sbatch"
+MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no vraghavan@snellius.surf.nl \
+    "cd /home/vraghavan/HAMS_drift_study/run_roland && sed -i 's/\r\$//' md5sums_input.txt run_volturnus.sbatch"
 ```
 
 For option B of COST.md (indirect only), delete the line `qtf_direct = 1` from `SecondOrder.in` before the copy, rewrite
