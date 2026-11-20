@@ -33,7 +33,7 @@ WAMIT's second-order run (the reference) used its direct method (".12d ... DIREC
 HAMS direct result (`QTF_Direct.12d`) as well as the indirect one (`QTF_Indirect.11d`), so both are compared with WAMIT,
 like with like, and the two HAMS methods against each other on a new hull.
 
-## Extension to the full range of the paper (estimate only; nothing prepared or submitted)
+## Extension to the full range of the paper (prepared, not submitted)
 
 Roland et al. (2026) run 0.30 to 2.50 rad/s for both platforms (their section 3.3; Figs. 5 and 7 reach 2.50, the OC4 WAMIT
 file 3.0). HAMS stops at 1.90 because `velocity_method = source` cannot remove irregular frequencies (IRSP = 1 is rejected).
@@ -66,3 +66,9 @@ With 47 frequencies the passes are 98 (times 1.46). The fs-speedups code cut the
 the passes and the free-surface part, times 45/33 for the direct solves, times 2.6 for the finer inner mesh, and the lid for
 the first order. The 9208-panel OC4 run is enough for the comparison: the 5022-panel run adds only the mesh trend, which the
 existing runs already show up to 1.90 rad/s.
+
+Chosen jobs (cases written by `make_oc4_extension.py` and `make_volturnus_case.py --fmax 2.50 --fs-panel 1.25 --lid`;
+job files `run_oc4_ext.sbatch` and `run_volturnus_ext.sbatch`): OC4 9208 panels, expected 202 core-h, limit 528;
+VolturnUS-S 0.25-2.50 with the 1.25 m inner mesh, expected 238, limit 720. Total expected about 440 core-h (about 660 SBU),
+at most 1248 core-h. The lids: OC4 1674 panels on the 7 waterline loops (4 columns, 3 brace crossings), nearest centroid
+0.44 waterline row heights from the wall; VolturnUS-S 654 panels on the 4 columns, 0.50 row heights.

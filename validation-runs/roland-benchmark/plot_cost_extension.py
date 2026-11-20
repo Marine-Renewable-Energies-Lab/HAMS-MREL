@@ -11,13 +11,11 @@ parts = ["First order", "Field passes / body part", "Free-surface part", "Direct
 colours = ["#9ec5f4", "#2a78d6", "#1c5cab", "#eb6834"]
 # (expected hours per part, upper-bound hours per part, limit in hours)
 options = {
-    "OC4, 9208 panels\n0.25-2.55 rad/s (rec.)": ([3.5, 4.9, 0, 0], [3.5, 13.5, 0, 0], 22),
-    "OC4, 5022 panels\n0.25-2.55 rad/s": ([1.0, 2.1, 0, 0], [1.0, 5.9, 0, 0], 9),
-    "VolturnUS-S A, 0.25-2.50\ninner FS 1.25 m (rec.)": ([0.9, 1.6, 5.2, 2.2], [0.9, 5.8, 13.0, 4.0], 30),
-    "VolturnUS-S A, 0.25-2.50\ninner FS 2 m": ([0.9, 1.6, 2.0, 2.2], [0.9, 5.8, 5.0, 4.0], 18),
-    "VolturnUS-S A as approved\n0.25-1.90": ([0.8, 1.2, 1.5, 1.6], [0.8, 4.3, 7.7, 3.0], 18),
+    "1. OC4 full hull, 9208 panels\n0.25-2.55 rad/s, body terms": ([3.5, 4.9, 0, 0], [3.5, 13.5, 0, 0], 22),
+    "2. VolturnUS-S, free surface,\nindirect + direct, 0.25-2.50 rad/s": ([0.9, 1.6, 5.2, 2.2], [0.9, 5.8, 13.0, 4.0], 30),
+    "Total of 1 and 2": ([4.4, 6.5, 5.2, 2.2], [4.4, 19.3, 13.0, 4.0], 52),
 }
-fig, ax = plt.subplots(figsize=(10.5, 6.6), facecolor=SURFACE)
+fig, ax = plt.subplots(figsize=(10.5, 4.6), facecolor=SURFACE)
 ax.set_facecolor(SURFACE)
 ticks = []
 for k, (name, (exp, upper, limit)) in enumerate(options.items()):
@@ -31,19 +29,19 @@ for k, (name, (exp, upper, limit)) in enumerate(options.items()):
         ax.text(left + 6, y - 0.24 * row, "%s %.0f" % ("expected" if row == 0 else "upper", left), va="center",
                 fontsize=8, color=INK)
     ax.plot([limit * 24] * 2, [y - 0.38, y + 0.14], color=INK2, lw=1.2, ls=(0, (4, 2)))
-    ax.text(limit * 24 + 6, y + 0.14, "limit %d h = %d (max billed)" % (limit, limit * 24), fontsize=7.5, color=INK2,
+    ax.text(limit * 24 + 6, y + 0.14, ("limits %d h = %d (max billed)" if limit == 52 else "limit %d h = %d (max billed)") % (limit, limit * 24), fontsize=7.5, color=INK2,
             va="center")
     ticks.append((y - 0.12, name))
 ax.set_yticks([t for t, _ in ticks])
 ax.set_yticklabels([n for _, n in ticks], fontsize=8.5)
 ax.set_xlabel("core-hours (24 CPUs, fat_genoa, tdsei3290); one job each, none submitted")
-ax.set_xlim(0, 900)
+ax.set_xlim(0, 1450)
 ax.grid(axis="x", color=GRID)
 for s in ("top", "right"):
     ax.spines[s].set_visible(False)
 ax.legend([plt.Rectangle((0, 0), 1, 1, color=c) for c in colours], parts, loc="upper center",
           bbox_to_anchor=(0.5, -0.1), frameon=False, fontsize=8, ncol=4)
-ax.set_title("Extending HAMS to the frequency range of Roland et al. (2026): full reruns with irregular-frequency removal",
+ax.set_title("Two jobs for the full range of Roland et al. (2026), none submitted (the 0.25-1.90 VolturnUS-S job runs apart)",
              loc="left", fontsize=10, color=INK)
 fig.tight_layout()
 fig.savefig(sys.argv[1], dpi=150)

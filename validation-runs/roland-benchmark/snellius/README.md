@@ -48,3 +48,10 @@ MSYS_NO_PATHCONV=1 scp vraghavan@snellius.surf.nl:/home/vraghavan/HAMS_drift_stu
 ```
 
 Then `compare_diagonals.py` (figure 7) and `compare_maps.py` against `IEA-15-240-RWT-UMaineSemi.12d` (see ../README.md).
+
+## Full-range jobs (not submitted; cost in COST.md)
+
+The same steps for `q_oc4wfull_sym_free_L1_ext` (job file `run_oc4_ext.sbatch`, inputs from `make_oc4_extension.py`)
+and `q_volturnus_free_full_ext` (`run_volturnus_ext.sbatch`, inputs from `make_volturnus_case.py --fmax 2.50 --fs-panel
+1.25 --lid`): copy each case's `input/` to `run_roland/<case>/input/`, copy `md5sums_<case>.txt` and the job file to
+`run_roland/`, strip CR as above, then `sbatch` the job file. Both reuse the binary of section 2.
