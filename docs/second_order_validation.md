@@ -1,6 +1,6 @@
 # Second-order wave loads: validation
 
-This page holds the evidence behind the second-order methods, defaults and advice of [SecondOrder.in](input_files.md#secondorderin-optional): the mean drift convergence study, the comparison with Nemoh, the semi-analytical reference for a sharp truncated cylinder, the control-surface study, a study of graded meshes, the quadratic QTFs, the potential part of the difference QTF, the direct method against the indirect method, the direct method at the sum frequency, the indirect method at the sum frequency, the partial second-order field and the second-order motion. The integration fixtures and the limits of their tests are in [test/data/drift_cyl/README.md](../test/data/drift_cyl/README.md). All values are measured unless marked inferred.
+This page holds the evidence behind the second-order methods, defaults and advice of [SecondOrder.in](input_files.md#secondorderin-optional): the mean drift convergence study, the comparison with Nemoh, the semi-analytical reference for a sharp truncated cylinder, the control-surface study, a study of graded meshes, the quadratic QTFs, the potential part of the difference QTF, the direct method against the indirect method, the direct method at the sum frequency, the indirect method at the sum frequency, the partial second-order field, the second-order motion and an exact multi-body case, the Linton & Evans array. The integration fixtures and the limits of their tests are in [test/data/drift_cyl/README.md](../test/data/drift_cyl/README.md). All values are measured unless marked inferred.
 
 ## Mean drift convergence study
 
@@ -1349,6 +1349,60 @@ The estimate was 96.3 core-h. It came from runs made before the near-waterline f
 - **The radiated wave in the field** is checked through ψ at the points (near-panel and Kochin far field) and through the driver chain (`field_radiated_pipeline`), not against an independent second-order field, and not on Snellius.
 - **Not checked:** `BQDR` in the second-order motion (by design: it has no second-order form, see [usage](input_files.md#second-order-motion)); WAMIT's names and scaling of the second-order motion files (option 16 of WAMIT; not compared with its manual); the end message of `ReportCompletion` does not name the `QTF_Motion` files when a force has NaN or Inf.
 
+## Linton & Evans array: four bottom-mounted cylinders
+
+This case checks the multi-body solve, and the mean drift per body, against an exact solution. [linton_evans_reference.py](../pre_postprocessing_python/SecondOrder/linton_evans_reference.py) solves wave scattering by an array of bottom-mounted vertical circular cylinders without panels. It needs no HAMS run. All values in this section were measured with it in November 2026, on a laptop.
+
+**Method.** Every boundary is vertical and reaches the sea bed, so the potential separates exactly into cosh k(z + h)/cosh kh times a solution of the 2D Helmholtz equation. Only the propagating mode exists. The scattered wave of each cylinder is a series of Hankel functions. Graf's addition theorem moves the other cylinders' waves to each cylinder, and the no-flux condition then gives one linear system for all the coefficients (Spring & Monkmeyer 1974; Linton & Evans 1990). The script solves it in scaled unknowns, which keeps the condition number of the system below 10 for this layout. It also truncates at the order where every cylinder's series has converged on its neighbours. From the coefficients it computes:
+
+- the exciting forces and moments per cylinder, in the normalisation and phase convention of `ExcForce.3`;
+- the total elevation at any point, as the diffraction rows of `PressureElevation.6p` give it;
+- the near-field mean drift per cylinder: the waterline term and the quadratic-velocity term, with the depth integrals in closed form (WAMIT v7.5 manual, eqs. 15.54 to 15.57; for a fixed body the other terms vanish). F_z and M_z are zero for a vertical circle;
+- the far-field mean F_x and F_y of the array, from the Kochin function (Maruo 1960; Newman 1967);
+- the mean drift on any vertical control circle, from the momentum balance (Chen 2007, eqs. 39 to 41, without the hull terms).
+
+**Checks.** `check` runs 11 checks in about 10 minutes and exits with 1 if one fails. The two four-cylinder cases are the square of the HAMS case and an irregular array of three unequal cylinders off the origin, so that no symmetry hides an error.
+
+| Check | Requirement | Measured |
+| :--- | :--- | ---: |
+| One cylinder: X_1, X_5 against MacCamy-Fuchs, heading 0 and 90 deg, 17 frequencies | 1e-13 | 4.5e-16 |
+| One cylinder: near-field F_x against the far-field of `drift_convergence.maccamy_fuchs_fx` (separate code) and of this script | 1e-10 | 3.9e-15 |
+| Boundary condition on every cylinder, by summing all the Hankel series directly (no Graf) | 1e-11 | 2.1e-15 |
+| Surface values from the Wronskian form against the direct sum | 1e-11 | 2.7e-15 |
+| Loads at truncation M and M + 10 | 1e-12 | 9.5e-15 |
+| Energy: the optical theorem on the Kochin function | 1e-12 | 1.4e-15 |
+| Near-field F_x, F_y summed over the cylinders against far-field | 1e-10 | 1.7e-15 |
+| Control circle around each cylinder against its near-field load; around the array against far-field F_x, F_y and the near-field M_z | 1e-9 | 3.8e-15 |
+| The square renumbered, and the square with the heading turned by 90 deg | 1e-11 | 6.0e-15 |
+| Depth integrals in closed form against Gauss-Legendre | 1e-13 | 1.8e-15 |
+| Published values: Kim (1993), Fig. 3 (below) | 1.5e-3 | 1.1e-3 |
+
+The invariance check found one error while the script was written: the sign of the sway force and roll moment. Every other check had passed with that error in place, since it only enters the sin part of the force integral. The MacCamy-Fuchs check now also runs at heading 90 deg, so that it covers that part.
+
+**Published values.** Linton & Evans (1990) was not available while this was written, so its figures are not compared. Kim (1993), Fig. 3, gives |F_x| and |F_y|/(π ρ g a h A) on each of 19 bottom-mounted cylinders in a row: centre spacing 4a, h = 12a, k a = 0.5, heading 45 deg. Kim computed them with the same exact method, and they agree in that figure with the full interaction method and hybrid finite elements of Kagemoto & Yue (1986). The 38 values were digitised from the scanned figure and are stored in the script (`KIM_FIG3_X`, `KIM_FIG3_Y`). The largest difference from the reference is 0.0011 (cylinder 19, |F_y|: reference 0.1333, figure 0.1344), below the height of a marker, about 0.0015. The differences grow from cylinder 1 to 19 on both panels, consistent with a slight tilt of the scan.
+
+![Kim (1993), Fig. 3, against the reference](figures/le_reference_kim1993_fig3.png)
+
+**The HAMS case.** Four cylinders of the bottom-mounted hull of the convergence study: radius 5 m, depth 10 m, centres (±10, ±10) m, so the centre spacing is 4 radii. Each cylinder is a wall from the waterline to the sea bed with no bottom panel, uniform rows, as in group B of the convergence study, where one such cylinder agreed with MacCamy-Fuchs within 0.12% at 4096 panels. The bodies are fixed. The mean drift is computed with `drift_methods = far near` and `velocity_method = differencing` (the closer method on that cylinder), at headings 0 and 45 deg and 17 frequencies from 0.40 to 1.90 rad/s, so k a runs from 0.19 to 1.84. That is below the first irregular frequency of a bottom-mounted circle, k a = 2.405 (2.17 rad/s here). The grid is dense at 1.75 to 1.85 rad/s, where heading 45 deg has a near-trapped mode between the cylinders: the exact mean F_x of cylinder 4 peaks at 10.6 ρ g A² at 1.79 rad/s, against 2.2 for one cylinder alone. There are 16 field points at z = 0, in the gaps and around the array. The meshes have 256, 1024 and 2304 panels per cylinder (1024, 4096 and 9216 in all). `drift_convergence.py --linton-evans` writes and runs the cases (`l_square_diff_m1` to `_m3`), and `linton_evans_reference.py compare` and `plot` compare them.
+
+![Exact loads per cylinder against one cylinder alone](figures/le_reference_loads.png)
+
+**Integration test.** `test/test_integration_array.f90` runs the case at test size, `drift_le_square`: 64 panels per cylinder, 0.95 and 1.60 rad/s, heading 45 deg. It compares the run with the exact rows in `test/data/drift_le_square/array_reference.txt`. At this mesh the differences are mesh errors (1.60 rad/s has 12 panels per wavelength around a cylinder), so the limits are about twice the measured values, not accuracy claims. The measured values [ifort 2022.1, Windows]:
+
+- X forces: 0.108;
+- X moments: 0.142;
+- near-field F_x, F_y: 0.231, over the largest load of the array;
+- near-field M_x, M_y: 0.079;
+- far-field F: 0.018;
+- elevation: 0.092 per unit amplitude;
+- F_z and M_z: 1.7e-11.
+
+At 0.95 rad/s, X agrees within 1.9% for every body, with the right phase, body order and moment centre. A sign, conjugation or body-order error would give errors of order 1.
+
+**HAMS against the reference on Snellius.** Not run yet.
+
+**Limits of this check.** It covers fixed bodies only: the reference solves the diffraction problem, not the radiation problem. It also covers vertical walls only, so it tests nothing of a bottom or a bilge, and a single layout at two headings. Linton & Evans (1990) itself is not compared (see above).
+
 ## Open items
 
 - A free sharp body at low frequency has no good near-field result from HAMS. Far-field is the number to use for F_x, and the control-surface method for F_z. For the sharp cylinder, the [semi-analytical reference](#semi-analytical-reference-sharp-truncated-cylinder) gives near-field F_x, F_z and M_y, with stated uncertainties.
@@ -1368,6 +1422,7 @@ The estimate was 96.3 core-h. It came from runs made before the near-waterline f
 - Indirect method at the sum frequency (`QTF_Indirect.11s`): the sharp cylinder is checked against the exact sum QTF at two meshes (7.8 / 6.0 / 3.0% at m1 and 6.1 / 4.1 / 2.1% at m2, max, F_x / F_z / M_y). For the OC4 semisubmersible HAMS and Nemoh differ by 82 / 33 / 27% (max) and the cause is open; the WAMIT sum file appears to hold no free-surface part ([indirect method at the sum frequency](#indirect-method-at-the-sum-frequency)).
 - Second-order motion (`QTF_Motion.*`): checked against the exact motion of one hull, the sharp cylinder with springs in surge, sway and yaw, at two meshes, with the slow-drift peak at m1 only. The motion error there is the force error of the sharp hull (`.12d` surge 39.5% at m1 and 27.5% at m2, max, out of band), so the motion converges as the difference force does. The radiated wave in `QTF_Field.txt` has no independent reference ([second-order motion](#second-order-motion)).
 - WAMIT: the OC4 comparison with the public WAMIT run of OpenFAST now exists ([OC4 against WAMIT](#oc4-against-wamit)). A WAMIT licence would still be needed to settle the conjugation and axes of the WAMIT-format output on a hull with a known answer, since the diagonal of that comparison is real. The semi-analytical reference covers the signs of the mean drift values (210 values agree at 7168 panels), not the phases of the complex outputs.
+- Linton & Evans array: the HAMS runs on Snellius are not run yet, and the paper's own figures are not compared ([Linton & Evans array](#linton--evans-array-four-bottom-mounted-cylinders)).
 
 ## Sources
 
@@ -1381,4 +1436,8 @@ Garrett (1971), Yeung (1981), MacCamy and Fuchs (1954), Maruo (1960), Newman (19
 - Al-Ghuwaidi (2025). Reproduction of the WAMIT run of the OpenFAST r-test for the OC4-DeepCwind semisubmersible (`marin_semi.12d`). Zenodo, doi:10.5281/zenodo.16940342, CC BY 4.0.
 - Roland, S. et al. (2026). A benchmark of boundary element method solvers for predicting second-order hydrodynamic loads on floating offshore wind turbines. J. Phys.: Conf. Ser. 3346, 012006.
 - Zhang, Y., Tosdevin, T., Tang, T., Stansby, P. (2026). Second-order difference-frequency effects on floating wind turbine responses: full-QTF modelling and experimental comparison. arXiv:2610.27940.
+- Linton, C. M., Evans, D. V. (1990). The interaction of waves with arrays of vertical circular cylinders. J. Fluid Mech. 215, 549-569. doi:10.1017/S0022112090002750
+- Spring, B. H., Monkmeyer, P. L. (1974). Interaction of plane waves with vertical cylinders. Proc. 14th Int. Conf. Coastal Eng., 1828-1847.
+- Kim, M. H. (1993). Interaction of waves with N vertical circular cylinders. J. Waterway, Port, Coastal, Ocean Eng. 119(6), 671-689.
+- Kagemoto, H., Yue, D. K. P. (1986). Wave forces on a platform supported on a large number of floating legs. Proc. 5th Int. Offshore Mech. and Arctic Eng. Symp., ASME.
 - Kurnia, R., Ducrozet, G. (2023). NEMOH: open-source boundary element solver for first- and second-order hydrodynamic loads. Computer Physics Communications 292, 108885.

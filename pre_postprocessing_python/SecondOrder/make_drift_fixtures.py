@@ -38,6 +38,14 @@ ROTATED_DEG = 30.0
 # Bottom-mounted: the wall reaches the sea bed, with no bottom panels, so MacCamy-Fuchs is exact
 BOTTOM_MOUNTED_MESH = dict(radius=5.0, draft=10.0, ntheta=64, nz=16, nr=0)
 BOTTOM_MOUNTED_FREQUENCIES = (1.0, 1.6)
+# Linton & Evans array (drift_le_square): four bottom-mounted cylinders of radius 5 m, depth 10 m, centres (+-10, +-10) m (the
+# layout of drift_convergence.LE_CENTRES), 64 panels each (16 around, 4 rows), heading 45 deg, against the exact solution of
+# linton_evans_reference.py, whose rows are written beside the input (array_reference.txt). Field points at z = 0 in three gaps
+ARRAY_CENTRES = ((10.0, 10.0), (-10.0, 10.0), (-10.0, -10.0), (10.0, -10.0))
+ARRAY_MESH = dict(radius=5.0, draft=10.0, ntheta=16, nz=4, nr=0)
+ARRAY_FREQUENCIES = (0.95, 1.6)
+ARRAY_HEADING = 45.0
+ARRAY_FIELD_POINTS = ((0.0, 0.0, 0.0), (10.0, 0.0, 0.0), (0.0, 10.0, 0.0), (25.0, 25.0, 0.0))
 # Fractions of the waterline segment length
 WATERLINE_OFFSETS = (0.005, 0.01, 0.05, 0.1)
 # Hull panels whose centroids are the field points of drift_cyl: side, bottom, bilge, lee and weather
@@ -456,6 +464,7 @@ def main():
     write_qtf_directsum_fixtures(data)
     write_qtf_indsum_fixtures(data)
     write_qtf_motion_fixtures(data)
+    write_array_fixture(data)
 
     # The control-surface method on the hull of drift_cyl: held fixed, and with the limit frequencies and all heading pairs
     for name, control, options in (("control_cyl", dict(), dict(mean_drift=1, drift_methods="far control", write_terms=1,
@@ -1075,6 +1084,39 @@ def write_qtf_motion_fixtures(data):
                                          external_restoring=spring, external_damping=damping, **QTF_MOTION_MESH)
         write_control(os.path.join(target, "ControlFile.in"), frequencies=QTF_MOTION_FIXTURE_FREQUENCIES, headings=(0.0,))
         write_second_order(os.path.join(target, "SecondOrder.in"), **options)
+
+
+def write_array_fixture(data):
+    """drift_le_square: the Linton & Evans array at test size (ARRAY_*), fixed, mean drift far and near, and the exact rows
+    of linton_evans_reference.py in array_reference.txt (needs numpy and scipy)."""
+    import linton_evans_reference as le
+    target = case_dir(data, "drift_le_square")
+    for b in range(1, len(ARRAY_CENTRES) + 1):
+        make_mesh.write_cylinder(os.path.join(target, "HullMesh_%d.pnl" % b), os.path.join(target, "Hydrostatic_%d.in" % b),
+                                 **ARRAY_MESH)
+    write_control(os.path.join(target, "ControlFile.in"), depth=ARRAY_MESH["draft"], frequencies=ARRAY_FREQUENCIES,
+                  headings=(ARRAY_HEADING,), body_origins=list(ARRAY_CENTRES), field_points=ARRAY_FIELD_POINTS)
+    write_second_order(os.path.join(target, "SecondOrder.in"), mean_drift=1, drift_methods="far near", motion_state="fixed",
+                       write_terms=0, velocity_method="differencing")
+    array = le.Array([c for c in ARRAY_CENTRES], ARRAY_MESH["radius"], ARRAY_MESH["draft"])
+    rows = le.reference_rows(array, ARRAY_FREQUENCIES, (ARRAY_HEADING,), ARRAY_FIELD_POINTS)
+    with open(os.path.join(data, "drift_le_square", "array_reference.txt"), "w") as f:
+        f.write("! Exact rows of drift_le_square, from pre_postprocessing_python/SecondOrder/linton_evans_reference.py, in the\n"
+                "! conventions of the HAMS files (ExcForce.3: NREL NIMG; MeanDriftPressure.9 and MeanDriftMomentum.8: Re, per rho g A^2;\n"
+                "! PressureElevation.6p: Re Im of the total elevation per unit amplitude). Moments about each body centre, M_z of\n"
+                "! the array about the origin. Rows:\n"
+                "! body  omega heading b X1re X1im X2re X2im X4re X4im X5re X5im Fx Fy Mx My\n"
+                "! array omega heading Fx Fy Mz\n"
+                "! field omega heading point eta_re eta_im\n")
+        for r in rows:
+            if r["kind"] == "body":
+                values = [r[k] for k in ("X1_re", "X1_im", "X2_re", "X2_im", "X4_re", "X4_im", "X5_re", "X5_im", "Fx", "Fy",
+                                         "Mx", "My")]
+                f.write("body %.4f %.3f %d %s\n" % (r["omega"], r["heading"], r["body"], " ".join("%.15e" % v for v in values)))
+            elif r["kind"] == "array":
+                f.write("array %.4f %.3f %s\n" % (r["omega"], r["heading"], " ".join("%.15e" % r[k] for k in ("Fx", "Fy", "Mz"))))
+            else:
+                f.write("field %.4f %.3f %d %.15e %.15e\n" % (r["omega"], r["heading"], r["point"], r["eta_re"], r["eta_im"]))
 
 
 if __name__ == "__main__":
