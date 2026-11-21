@@ -1,11 +1,11 @@
 #!/bin/bash
-# One G1 item-3 run: run_one.sh <samples|panels> <case>. Writes the case under run_fsspeed/g1_<route>/<case> (make_case.py),
+# One G1 item-3 run: run_one.sh <samples|panels> <case>. Writes the case under run_fsfix/g1_<route>/<case> (make_case.py),
 # runs HAMS as run_oc4wsum/jobs/run_hams.sbatch does (input and output folders with a trailing slash, log.txt, time.txt,
 # result.json), and checks that the route reached the log. Called by run_sharp.sbatch and run_round.sbatch.
 set -u
 R="<run root>"
-RUN=$R/run_fsspeed
-REPO=$R/repo_fsspeed
+RUN=$R/run_fsfix
+REPO=$R/repo_fsfix
 JOBS=$REPO/validation-runs/fs-speedups/snellius
 BIN=$RUN/hamsmrel_grn4
 ROUTE=$1

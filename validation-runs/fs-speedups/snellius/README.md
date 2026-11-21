@@ -124,3 +124,13 @@ and the change column first: the totals carry the route-independent quadratic er
 margin.
 
 Known limits of the compare scripts: `qtf_files_compare.py` reports a file that exists in one folder only as a problem (exit 1), so a legitimate extra file in a run would fail the check although the outputs are written; `g1_compare.py` indexes the terms files by column and raises IndexError (non-zero exit) on a terms file from a run without `qtf_terms = full`; all G1 cases use `qtf_terms = full`.
+
+## 5. Re-run with the fix of the deep-water rows (C/F on finite-depth rows)
+
+The first runs above took deep-water rows on C and F, which are off below z = 0 (validation document, "Deep-water rows
+below z = 0"). The scripts now run the fix (source of 9255d92) in new folders, `<run root>/run_fsfix` and
+`<run root>/repo_fsfix`, so that the first runs and their binary stay as they are. Jobs: build.sbatch (0:30),
+oc4_compare/run_oc4.sbatch (6:00, expected 3.48 h) and g1_item3/run_sharp.sbatch, now only the panels lines 2 and 4 of
+sharp.txt (4:00 each, expected 2.21 h each); run_round.sbatch is not needed (the round hull has no B2 control-surface
+pass). Expected 190 core-hours, at most 348. Steps 1 to 4 apply with `fsfix` in place of `fsspeed` in the folder and
+bundle names, and without run_round.sbatch.
