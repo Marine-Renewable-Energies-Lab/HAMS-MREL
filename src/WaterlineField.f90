@@ -45,12 +45,32 @@ MODULE WaterlineField
    PRIVATE
 
    PUBLIC :: field_influence_row, field_potential, waterline_rows, waterline_field, field_point_inside_body
-   PUBLIC :: rankine_panel_integral
+   PUBLIC :: rankine_panel_integral, deep_rows_allowed, deep_rows_guarded
 
    REAL(8), PARAMETER :: PI = 3.141592653589793D0
    INTEGER, PARAMETER :: IRR_HULL = 1          ! source panel on the hull, in SGLINTBD_*2
 
 CONTAINS
+
+   PURE LOGICAL FUNCTION deep_rows_allowed(depth, draft, k0, kh_min, draft_ratio)
+      ! Whether the field rows of a free-surface pass may take the deep-water Green function (deep of field_influence_row):
+      ! finite depth (depth > 0), the switch on (kh_min > 0), k0 depth >= kh_min, and the depth at least draft_ratio times
+      ! the draft of the hull (draft_ratio = 0: no depth guard). In water shallow relative to the draft the deep row misses
+      ! the seabed by more than the threshold in k0 h accounts for: on the sharp cylinder the sum free-surface F_z moved by
+      ! 6.6 percentage points at 2.5 drafts and 2.2 at 5 drafts, and passed the gate at 10 drafts
+      ! (validation-runs/fs-speedups/deep_inner/findings.md).
+      REAL(8), INTENT(IN) :: depth, draft, k0, kh_min, draft_ratio
+
+      deep_rows_allowed = depth > 0D0 .AND. kh_min > 0D0 .AND. k0*depth >= kh_min .AND. &
+         .NOT. deep_rows_guarded(depth, draft, draft_ratio)
+   END FUNCTION deep_rows_allowed
+
+   PURE LOGICAL FUNCTION deep_rows_guarded(depth, draft, draft_ratio)
+      ! True where the depth guard of deep_rows_allowed keeps the finite-depth rows: finite depth below draft_ratio drafts.
+      REAL(8), INTENT(IN) :: depth, draft, draft_ratio
+
+      deep_rows_guarded = depth > 0D0 .AND. draft_ratio > 0D0 .AND. depth < draft_ratio*draft
+   END FUNCTION deep_rows_guarded
 
    SUBROUTINE field_influence_row(mesh, xp, is_multi, row_g, row_dg, x_decide, field_mode, near_panel, deep)
       ! G and dG/dn at xp, integrated over each base panel for each image. The panels stay in place and xp is mirrored, as in

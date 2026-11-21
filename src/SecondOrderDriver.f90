@@ -76,7 +76,7 @@ MODULE SecondOrderDriver
    USE SurfaceVelocity, ONLY: velocity_differencing, source_operator, build_source_operator, velocity_source
    USE FarFieldDrift, ONLY: far_amplitude, far_field_pair, far_field_pairs
    USE NearFieldDrift, ONLY: waterline_extrapolate, near_field_pair, T_WATERLINE, T_HYDROSTATIC
-   USE WaterlineField, ONLY: waterline_rows, waterline_field, field_point_inside_body
+   USE WaterlineField, ONLY: waterline_rows, waterline_field, field_point_inside_body, deep_rows_allowed, deep_rows_guarded
    USE ControlSurfaceMesh, ONLY: build_control_surface, check_control_surface, write_control_surface, build_fs_inner, &
                                  hull_radius
    USE FieldVelocity, ONLY: fields_green, fields_source
@@ -149,6 +149,8 @@ MODULE SecondOrderDriver
    LOGICAL :: fs_terms = .FALSE.                       ! the fields on the inner free surface and the partial waves are kept
    LOGICAL :: sum_nuh_warned = .FALSE.                  ! the nu*h > 50 warning of the second-order solves was logged
    LOGICAL :: deep_logged = .FALSE.                     ! the first switch of the field rows to deep water was logged
+   LOGICAL :: guard_logged = .FALSE.                    ! the depth guard of field_deep (field_deep_draft) was logged
+   REAL(8) :: hull_draft = -1D0                         ! the draft of the hull for field_deep, from mesh%xnode; < 0 not yet
    TYPE(cs_points) :: fs_pts                           ! the inner free-surface points (build_fs_inner)
    TYPE(cs_points) :: fs_circle                        ! the samples on the circle r = R (pw_sample_points)
    REAL(8) :: fs_centre(2) = 0D0, fs_radius = 0D0      ! the circle
@@ -210,6 +212,8 @@ CONTAINS
 
       b2_control = uses_b2_control(opts)
       deep_logged = .FALSE.
+      guard_logged = .FALSE.
+      hull_draft = -1D0
       IF (opts%qtf_b2_given .AND. .NOT. (opts%qtf_terms >= QTF_TERMS_BODY .AND. opts%qtf >= 1)) THEN
          ! B2 of the difference QTF (qtf = 1 or 3) and of T+_pot of the sum QTF (qtf = 2 or 3) both have a surface piece to
          ! move to C and F. Only qtf_terms below body or qtf = 0 leaves no B2 (by design: the same input gives
@@ -932,9 +936,21 @@ CONTAINS
       ! maximum off the direct sum on an OC4-like case (h = 10 drafts, C bottom 5 to 8 m under the hull) and 0.15 to 0.19
       ! with 1 m of clearance in h = 2 drafts, at every k0 h from 10 to 40, while the finite-depth row is within 7e-5
       ! (field_row_deep_seabed). So keep_cs_psi and control_fields (C and F) keep the Green function of the depth.
+      ! Depth guard (field_deep_draft): in water shallower than field_deep_draft drafts of the hull (its deepest node) the rows
+      ! keep the finite-depth Green function at every k0 h (deep_rows_allowed); one log line the first time it acts.
       TYPE(so_options), INTENT(IN) :: opts
 
-      field_deep = H > 0D0 .AND. opts%field_deep_kh > 0D0 .AND. WK*H >= opts%field_deep_kh
+      IF (hull_draft < 0D0) hull_draft = MAX(0D0, -MINVAL(mesh%xnode(3, :)))
+      field_deep = deep_rows_allowed(H, hull_draft, WK, opts%field_deep_kh, opts%field_deep_draft)
+      IF (.NOT. field_deep .AND. .NOT. guard_logged .AND. H > 0D0 .AND. opts%field_deep_kh > 0D0 .AND. &
+          WK*H >= opts%field_deep_kh) THEN
+         IF (deep_rows_guarded(H, hull_draft, opts%field_deep_draft)) THEN
+            guard_logged = .TRUE.
+            WRITE (*, '(a,F8.2,a,F8.2,a,F8.2,a,F7.2,a)') ' QTF field rows: the finite-depth Green function is kept from k0 h =', &
+               WK*H, ' on: the depth', H, ' m is below field_deep_draft =', opts%field_deep_draft, ' times the draft', &
+               hull_draft, ' m (shown once).'
+         END IF
+      END IF
       IF (field_deep .AND. .NOT. deep_logged) THEN
          deep_logged = .TRUE.
          WRITE (*, '(a,F8.2,a,F8.2,a,F10.5,a)') ' QTF field rows: the deep-water Green function from k0 h =', WK*H, &

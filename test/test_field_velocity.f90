@@ -10,7 +10,7 @@ module test_field_velocity
   use PanelMesh_mod, only : ISX, ISY
   use SecondOrderTypes, only : panel_mesh, first_order_state, cs_points, cs_fields, CS_WALL, CS_LINE
   use FirstOrderState, only : image_signs, incident_phi, incident_grad, wave_gravity
-  use WaterlineField, only : field_influence_row
+  use WaterlineField, only : field_influence_row, deep_rows_allowed, deep_rows_guarded
   use FinGreen3D_Open, only : FINGREEN3D
   use INFG3D_Open, only : INFGREEN3D
   use direct_sum_green_mod, only : direct_sum_green
@@ -64,7 +64,8 @@ contains
       new_unittest("field_row_deep_matches_inf", test_row_deep_matches_inf), &
       new_unittest("field_row_deep_within_tol", test_row_deep_within_tol), &
       new_unittest("field_row_deep_seabed", test_row_deep_seabed), &
-      new_unittest("field_deep_beats_limes", test_deep_beats_limes) &
+      new_unittest("field_deep_beats_limes", test_deep_beats_limes), &
+      new_unittest("field_deep_draft_guard", test_deep_draft_guard) &
       ]
   end subroutine collect_field_velocity
 
@@ -1047,6 +1048,38 @@ contains
       e_fin
     call check(error, e_fin > 10d0*e_inf, trim(info))
   end subroutine test_deep_beats_limes
+
+  !> The depth guard of the deep-water field rows (deep_rows_allowed, field_deep_draft): a draft of 10 m, k0 h = 12 at every
+  !> depth. With the default guard of 10 drafts the rows go deep at h = 100 m (the bound is in) and stay finite at 50 m and
+  !> 25 m (5 and 2.5 drafts, where the deep rows moved the sum free-surface F_z by 2.2 and 6.6 percentage points of the exact
+  !> maximum); with a guard of 5 they go deep at 50 m; without the guard (0) they go deep at 25 m too. Below field_deep_kh, with the switch off (0), and in deep water (h <= 0) they never go deep, and the
+  !> guard reports itself only at finite depth below the ratio.
+  subroutine test_deep_draft_guard(error)
+    type(error_type), allocatable, intent(out) :: error
+    real(8), parameter :: draft = 10d0, kh = 12d0
+
+    call check(error, deep_rows_allowed(100d0, draft, kh/100d0, 10d0, 10d0), "h = 100 m, 10 drafts: deep (the bound is in)")
+    if (allocated(error)) return
+    call check(error, .not. deep_rows_allowed(50d0, draft, kh/50d0, 10d0, 10d0), "h = 50 m, 5 drafts: finite")
+    if (allocated(error)) return
+    call check(error, deep_rows_guarded(50d0, draft, 10d0), "h = 50 m: the guard acts")
+    if (allocated(error)) return
+    call check(error, .not. deep_rows_allowed(25d0, draft, kh/25d0, 10d0, 10d0), "h = 25 m, 2.5 drafts: finite")
+    if (allocated(error)) return
+    call check(error, deep_rows_allowed(50d0, draft, kh/50d0, 10d0, 5d0), "h = 50 m with a guard of 5 drafts: deep")
+    if (allocated(error)) return
+    call check(error, deep_rows_allowed(25d0, draft, kh/25d0, 10d0, 0d0), "h = 25 m, no guard: deep")
+    if (allocated(error)) return
+    call check(error, .not. deep_rows_guarded(25d0, draft, 0d0), "no guard: never guarded")
+    if (allocated(error)) return
+    call check(error, .not. deep_rows_allowed(100d0, draft, 8d0/100d0, 10d0, 10d0), "k0 h = 8 below field_deep_kh: finite")
+    if (allocated(error)) return
+    call check(error, .not. deep_rows_allowed(100d0, draft, kh/100d0, 0d0, 10d0), "field_deep_kh = 0: finite")
+    if (allocated(error)) return
+    call check(error, .not. deep_rows_allowed(-1d0, draft, 1d0, 10d0, 10d0), "deep water (h < 0): no switch")
+    if (allocated(error)) return
+    call check(error, .not. deep_rows_guarded(-1d0, draft, 10d0), "deep water: not guarded")
+  end subroutine test_deep_draft_guard
 
   !> The errors of FINGREEN3D in field mode (e_fin) and of INFGREEN3D (e_inf) against the direct eigenfunction sum
   !> (direct_sum_green) for the source xq and the field point xf: the largest of the wave parts G, dG/dR and dG/dz
