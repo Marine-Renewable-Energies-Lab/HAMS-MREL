@@ -72,3 +72,12 @@ job files `run_oc4_ext.sbatch` and `run_volturnus_ext.sbatch`): OC4 9208 panels,
 VolturnUS-S 0.25-2.50 with the 1.25 m inner mesh, expected 238, limit 720. Total expected about 440 core-h (about 660 SBU),
 at most 1248 core-h. The lids: OC4 1674 panels on the 7 waterline loops (4 columns, 3 brace crossings), nearest centroid
 0.44 waterline row heights from the wall; VolturnUS-S 654 panels on the 4 columns, 0.50 row heights.
+
+## The 200 m cut-off check (run)
+
+`run_volturnus_r200.sbatch`, inputs from `make_volturnus_r200.py`: the extended VolturnUS-S case, indirect only, with the
+inner free surface to 200 m in 10 m panels (2640 triangles). Expected 3.3 h (79 core-h) from the parts of
+`q_volturnus_free_full_ext` (first order and B2 passes as there, the free-surface fields scaled by the inner points, the
+integral by the partial-wave modes); upper estimate 6.3 h (152 core-h); limit 8 h (192 core-h). It took 3.2 h, 77.7
+core-h, 2.8 GB. The job ends with code 1 because FS_outer is not finite at Δω = 0.05 and 0.10 rad/s for pairs of a low with
+a high frequency (the open defect of section 10); every output file is written.
