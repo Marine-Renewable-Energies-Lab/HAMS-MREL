@@ -10,7 +10,7 @@ HydroData, Apache-2.0) and the case inputs derived from the IEA mesh. Run Python
 | File | What it does |
 |---|---|
 | `extract_roland_curves.py PDF OUT_CSV` | Reads the curves of Figs. 5 and 7 from the vector paths of the PDF |
-| `roland2026_fig5_fig7.csv` | Its output: figure, platform, diagonal, solver, omega_1, |QTF| in N/m^2 (derived from the paper, CC BY 4.0) |
+| `roland2026_fig5_fig7.csv` | Its output, not in the repository: figure, platform, diagonal, solver, omega_1, |QTF| in N/m^2 (derived from the paper, CC BY 4.0) |
 | `check_wamit_extraction.py CSV FIG WAMIT_12D` | The WAMIT curves against the WAMIT file (0.034 % for Fig. 5, 0.042 % for Fig. 7) |
 | `compare_diagonals.py CSV FIG OUT_PNG OUT_TXT LABEL=HAMS_FILE ...` | HAMS on the two diagonals against the six solver set-ups of the paper |
 | `compare_maps.py HAMS_FILE WAMIT_12D OUT_PNG OUT_TXT TITLE` | The whole QTF, magnitude and phase, in the style of Figs. 4 and 6 |
