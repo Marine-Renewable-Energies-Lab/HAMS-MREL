@@ -1062,7 +1062,7 @@ def _signed_area(a, b, c):
     return 0.5 * ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]))
 
 
-def oc4_free_surface(polygons, c_radius, c_count, panel_size=4.0, centre=(0.0, 0.0)):
+def oc4_free_surface(polygons, c_radius, c_count, panel_size=4.0, centre=(0.0, 0.0), axes=None):
     """F, the free surface z = 0 between the column waterlines (the polygons of oc4_hull) and Gamma_c (the top ring of C, of
     c_count nodes at c_radius), as triangles with HAMS normals -z. Its boundary nodes are those of the hull waterlines and of
     Gamma_c. Points: the boundary nodes, staggered rings around each waterline and inside Gamma_c whose spacing grows by
@@ -1071,11 +1071,13 @@ def oc4_free_surface(polygons, c_radius, c_count, panel_size=4.0, centre=(0.0, 0
     holes stay holes. Checked: the triangles tile the region exactly (area), and the boundary edges are the waterline and
     Gamma_c edges. centre: the centre of the circle Gamma_c (the origin for F; the inner free surface of HAMS, see
     oc4_inner_free_surface, has it at the centre of the waterline bounding box, as FSInnerMesh.pnl needs). Keep it on y = 0:
-    the mesh is then symmetric about y = 0. Returns the mesh."""
+    the mesh is then symmetric about y = 0. axes: (x, y, radius) of the circular column of each polygon, in the order of
+    polygons; None takes those of OC4. Returns the mesh."""
     cx, cy = centre
     far = panel_size / math.sqrt(math.sqrt(3.0) / 4.0)   # side of an equilateral triangle of area panel_size^2
-    columns = [(0.0, 0.0, OC4_MAIN_RADIUS, len(polygons[0]))]
-    columns += [(x, y, OC4_UPPER_RADIUS, len(poly)) for (x, y), poly in zip(OC4_OFFSET_AXES, polygons[1:])]
+    if axes is None:
+        axes = [(0.0, 0.0, OC4_MAIN_RADIUS)] + [(x, y, OC4_UPPER_RADIUS) for x, y in OC4_OFFSET_AXES]
+    columns = [(x, y, r, len(poly)) for (x, y, r), poly in zip(axes, polygons)]
     fixed = [p for poly in polygons for p in poly]
     centres = [(x, y) for x, y, _, _ in columns]
     boundary = [_ring_point(cx, cy, c_radius, c_count, k, 0.0)[:2] for k in range(c_count)]
