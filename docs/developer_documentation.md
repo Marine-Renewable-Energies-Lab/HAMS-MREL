@@ -273,6 +273,19 @@ Sources: Molin (1979), Sharma and Dean (1981), Ogilvie (1983) as under the poten
 
 The tests use the exact potential of the sharp cylinder on the hull panels, so no BEM solve: `fs_fields_exact_inner` (the fields on rings 0.1 to 3.5 m from the waterline, worst 4.9e-2 with the fit, 4.51 without), and `fs_fields_exact_integral` and `fs_fields_exact_integral_diff` (the inner integral over a < r < a + 5 m, 42.7% → 2.05% at the sum pair (1.4, 1.0) and 24.0% → 2.28% at the difference). The fixtures are written by `pre_postprocessing_python/SecondOrder/make_fs_fields_exact_fixture.py` (`--grid`, `--grid-diff`). The fit changes the difference free-surface terms too: the 7b fixtures `qtf_directfs_{round,irsp,two}` were re-pinned (largest change 4.9e-3 of the largest value) and the gate of `directfs_irsp_limit` went from 1.9e-3 to 2.5e-3.
 
+##### How the cause was found
+
+The sum runs of the sharp cylinder showed the direct D_FS and the indirect P_FS agreeing (≤ 0.3% median) while both were off the semi-analytical free-surface part, by an error that did not fall with the hull mesh. Four checks then narrowed it down, all on sharp m2 unless stated.
+
+1. **Not the inner mesh.** A run with `qtf_fs_panel` = 0.55 m (5168 inner points, against 2496 at the default 0.786 m; 78.5 core-h) also has φ_zz offsets 5.7 times smaller (step × 0.55 m against step × 3.14 m). The QTF⁺_1 median stays at 9.2 → 8.8% and the QTF⁺_5 median at 8.7 → 8.8%.
+2. **Set by the first-order frequency.** Pairs with both ω below 0.75 rad/s are within 2%. Once one ω is above the surge–pitch resonance the error appears and grows with it, then with Ω⁺, with a phase error whose sign changes with the hull mesh. At Ω⁺ = 2.8 rad/s the median is 11, 17 and 11% at m1, m2 and m3; the largest error over all pairs is 27% (m2, QTF⁺_1). The free-body complex motions match the semi-analytical ones to 2% (ξ_1, ξ_3, ξ_5, all three meshes; the complex ratio, not only the modulus). So the suspect was the first-order field of the free body on z = 0 above about 0.8 rad/s (kh > 6.5 at h = 100 m).
+3. **Not the radiated waves.** A fixed-body run against the fixed reference (59.3 core-h) is off by a median of 8.0% in QTF⁺_1 (24.5% max), against 9.2% for the free body; direct and indirect again agree to 0.09%. By Ω⁺ the fixed error is 1–5% up to 1.7 rad/s, rises steeply to 24% at 2.4 rad/s and falls to 16% at 2.8 rad/s. On the (ω_i, ω_j) map it grows smoothly with both frequencies, with no resonance stripe. The rise starts at Ω⁺ ≈ 1.8 rad/s, below νh = 50 (2.21 rad/s at h = 100 m), so the regime of the finite-depth Green function does not explain it [inferred]. That left the scattered first-order field on z = 0, ψ at Ω⁺, or the reference's sum free-surface term.
+4. **Not the reference, ψ or the assembly.** The sum assembly with exact fields matches the reference formula to 1e-15 (inner) and 4e-8 (outer) (`fs_sum_exact_inner`, `fs_sum_exact_outer`). HAMS's φ on z = 0 and ψ at Ω⁺ match the exact series away from the hull (a field check on Snellius, 0.6 core-h), and the partial waves on the circle are within 2.6% (`fs_fields_exact_circle`).
+
+**Cause.** The inner fields next to the waterline, as described at the top of this section. With exact panel data on the sharp m1 hull, ∇φ is 3–105% and φ_zz 20–450% off within 1 m of the waterline, while φ is within 2.5% [measured, `fs_fields_exact_inner` without the fit]. At Ω⁺ = 2.4 rad/s that metre carries 37% of the semi-analytical QTF⁺_1 free-surface term [reference quadrature], which is why the error grew with Ω⁺.
+
+**Check of the fix.** The full solve with the fit (sharp m2, fixed and free, 153.4 core-h) fitted 832 inner points from 4992 samples and left none on the stencil. Its before/after table is in [Second-order validation](second_order_validation.md#the-free-surface-part-and-the-near-waterline-fit).
+
 ### Indirect sum frequency without the direct solve (Phase 6b)
 
 `qtf = 2` or `3` with `qtf_terms = body` or `full` writes `QTF_Indirect.11s` (`.10s` + T⁺_pot) and, with `write_terms` ≥ 1, `QTF_PotentialTermsSum.txt`, with or without `qtf_direct = 1`. Phase 7c-2 computed T⁺_pot only with the direct solve; Phase 6b is wiring, with no new physics. Usage is in [QTFs, potential part](input_files.md#qtfs-potential-part), the files in [Output Files](output_files.md#wamit-format).
@@ -357,6 +370,156 @@ Five changes make the field passes of `qtf_terms = full` and `qtf_b2 = control` 
 - **Item 2, the inner fields from the source strengths (`qtf_fs_inner = source`, off).** `fs_inner_fields_source` forms φ and ∇φ at the inner points from the source strengths, one row per point, without φ_zz; `fs_inner_pair_ibp` and `fs_line_pair` move the φ_zz part of the inner integral to the boundary by Green's first identity (an area part and a line integral over the waterline and the outer edge). `fs_source_sigma` solves for the strengths per state (or reuses `cs_sigma`), and `fs_gpsi` stores ∇ψ. It stops with `qtf_direct = 1`, `IRSP = 1` and `ISOLV = 2` (`validate_second_order`), and with an inner mesh that does not close on the waterline (`fs_waterline_closure`, tolerance `FS_CLOSE_TOL` = 1e-6 segment lengths; it checks the inner edge only, so a mesh that overshoots into the hull and still has edges on the waterline would pass). It is off because it failed the gate (sum integral 3.58 % against 2.05 %, ∇φ at 0.1 m 5.84 % against 4.92 %, and 16 to 25 % against 0.3 to 1 % between the 220- and 960-panel hulls); see the validation document. Tests: `inner_ibp_identity` (1.15e-14 and 7.1e-15), `waterline_normal_derivative`, `fs_pair_terms_ibp_order`, `fs_inner_source_matches_exact` (prints the table that is stored in `validation-runs/fs-speedups/gate/fs_inner_source_exact.txt`), `fs_inner_mesh_closure`, `qtf_fs_inner_key`, `qtf_fs_inner_source_rejections`, `qtf_stored_mb_gpsi`, and `fs_inner_source_close` in the integration suite. Two checks are open before the source route can ever be switched on: ψ_k and ∇_h ψ_k by the source route were never compared with exact data, and the reuse of `cs_sigma` (with `cs_velocity = source`) has no fixture.
 
 **Suites.** After the last commit of this work (ifort with OpenMP, laptop): the unit suite passed 456 tests, 0 failed, with 1 expected failure (`invalid2`); the integration suite passed 251 tests, 0 failed. Item 1 adds about 3 minutes to the integration suite (the pair `qtf_deep_kh` and `qtf_deep_kh_off`), item 4 about 4 minutes (the fixtures `qtf_psi_reuse*`, `qtf_psi_reuse_two` alone about 135 s).
+
+## Validation runs
+
+This section holds the run logs behind [Second-order validation](second_order_validation.md): where and how the runs were made, their cost, and the checks of their logs. The results are on that page. Unless stated otherwise the runs are on Snellius, partition `fat_genoa`, which bills at least 24 CPUs per job. The run folders (`validation-runs/...`) are in the working folder, outside the repository.
+
+### Mean drift study
+
+**Build.** November 2026, 32 threads, ifx 2024.2. HAMS was built without `-heap-arrays`, because of the crash described in [Mean drift tests](#mean-drift-tests), with `OMP_STACKSIZE=1G` and `ulimit -s unlimited`. Commit dff7a32 makes the documented flag `-heap-arrays 0` work; it was tested on ifx 2024.2 with the unit and integration tests.
+
+**Runs.** 80 HAMS runs and 12 Nemoh runs, from [drift_convergence.py](../pre_postprocessing_python/SecondOrder/drift_convergence.py). The per-frequency tables are not in the repository.
+
+**Wall time per run** (32 threads, 11 frequencies):
+
+| Hull, panels | `differencing` | `source` |
+| :--- | ---: | ---: |
+| Sharp, 7168 | 884 to 885 s | 1750 s |
+| Rounded, 7680 | 1031 s | 2042 to 2045 s |
+
+The largest run, the rounded box with `source` at 8000 panels, used 8.40 GB.
+
+### Difference QTF: potential part
+
+**Wall time per run** (32 threads, 101 frequencies and 30 radiation-only solves):
+
+| Panels | Hull form | Control, default C | Control, fixed C |
+| ---: | ---: | ---: | ---: |
+| 448 | 93 s | 15 min 34 s | |
+| 1792 | 23 min | 2 h 49 min | 1 h 18 min |
+| 4032 | 1 h 44 min | 11 h 52 min | 3 h 58 min |
+| 7168 | 5 h 23 min | not run | |
+
+- With the control-surface form, the time goes into the field passes over C and F. With the default C this is 6.5 s per frequency at 448 panels (1416 points), 69 s at 1792 (3212 points) and 288 s at 4032 (5648 points). With the fixed C it is 25 s at 1792 panels. The default C is refined with the hull, so its pass grows faster than the hull solve.
+- A first 4032-panel run with the default C was stopped after 31 of 101 frequencies: it would not have finished within its 7 h limit. The rerun (2026-11-11, 32 threads) took 11 h 52 min. With C fixed at its 448-panel size, the 4032-panel run took 3 h 58 min, about a third of that.
+- The 7168-panel free run with the hull form took 6.95 GB.
+
+### Difference QTF: free-surface integral
+
+At m1 a full run took 1 h on 24 CPUs:
+- the fields at the 186 inner points, 0.22 h (3.9 s per frequency, with 6840 samples on the circle);
+- ψ there, 0.04 h;
+- the pair loop, 0.5 h (0.35 s per pair, serial).
+
+Peak memory was 148 MB. m2 took 2 h 45 min and m3 7 h 10 min. The 11 runs of the study cost 673 core-hours.
+
+### Difference QTF: direct method, body forcing
+
+The direct solves add the right sides and one block solve per Ω. The matrix is that of the radiation-only solve at Ω, which the potential part already makes.
+- **Laptop** (8 threads), 448-panel sharp case: 36.8 s of 746 s in the direct solves, for 30 Ω and 5130 pairs, so 7.2 ms per pair. Of this, the B2 right side took 32.9 s, the pair forcing 3.3 s and the block solve 0.4 s.
+- The cost per pair grows with the square of the number of panels.
+- **Snellius**: the 4032-panel sharp case took 2 h 26 min (24 CPUs, about 58 core-hours).
+
+### Difference QTF: direct method with the free-surface forcing
+
+**Runs.** Six free-body cases at 97dd419, 24 CPUs:
+- the rounded hull of the direct-method cases at m1, m2 and m3 (480, 1920 and 4320 panels; `q_round_directfs_free_*`), with `qtf_b2 = body`;
+- the sharp cylinder of the free-surface-integral cases at m1, m2 and m3 (448, 1792 and 4032 panels; `q_sharp_directfs_free_*`), with the default `qtf_b2 = control` on the indirect side.
+
+The cases come from `drift_convergence.py` (`qtf_directfs_cases`). They are compared with `qtf_compare.py --direct` and `--potential`. The results, the scripts and a figure are in `validation-runs/snellius-qtf-directfs` (`findings.md`, `split_gap.py`).
+
+**Cost, sharp cylinder:**
+
+| Mesh | Wall time | Peak memory | Indirect full run |
+| --- | --- | --- | --- |
+| m1 | 1.54 h | 0.38 GB | 0.99 h, 0.15 GB |
+| m2 | 3.36 h | 1.25 GB | 2.74 h, 0.64 GB |
+| m3 | 7.95 h | 3.54 GB | 7.17 h, 2.37 GB |
+
+The direct free-surface forcing adds 2000–2800 s to the indirect full run: 56 % at m1, 23 % at m2 and 11 % at m3. The free-surface set-up that both methods share dominates the cost. The rounded hull took 32 s, 150 s and 553 s. All six cases took about 313 core-hours.
+
+**Cost per Ω** (24 threads). The `QTF direct free surface:` lines of the HAMS logs give, per difference frequency Ω, the set-up (the inner Green matrix and the Graf amplitudes of every row) and the pair work (Q_D with the outer moments, then the contraction):
+
+| Case | Rows | Inner panels | Set-up per Ω | Memory per Ω | Pairs per Ω | Q_D and outer moments per Ω | Contraction per Ω |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| sharp m1 | 448 | 186 | 1.3–1.4 s | 82 MB | 142–200 | 50–220 s | 0.03–0.04 s |
+| sharp m2 | 1792 | 276 | 6.0–6.4 s | 357 MB | 142–200 | 51–219 s | 0.06–0.10 s |
+| sharp m3 | 4032 | 360 | 16.7–17.9 s | 809 MB | 142–200 | 51–219 s | 0.15–0.20 s |
+| rounded m1 | 480 | 100 | 1.0 s | 92 MB | 4 | 1.0–1.1 s | 0.00 s |
+| rounded m2 | 1920 | 164 | 5.3 s | 379 MB | 4 | 1.0–1.1 s | 0.01 s |
+| rounded m3 | 4320 | 228 | 15.5 s | 858 MB | 4 | 1.0–1.1 s | 0.02 s |
+
+- The set-up grows with the rows: 4 to 5 s per 1000 rows at 360 inner panels, under 20 s even at 4032 rows.
+- The memory is 16 bytes × rows × (inner panels + (2M + 1)(N_ev + 1)), with M = 44–46 and N_ev = 125–130 here.
+- The pair work does not depend on the hull mesh. The outer moments of Q_D take 0.44 s per pair on average (50–220 s for the 142–200 pairs of one Ω, 24 threads); the contraction with the rows adds under 0.2 s.
+- So at 4032 rows the set-up is about 10 % of the cost of one Ω, and the moments are the rest. An earlier estimate of minutes per Ω for the set-up (from the near-panel rule) was an order of magnitude too high.
+
+**Log checks.** None of the six logs has a `QTF direct FS: warning` line: no cut of the evanescent modes or of the Graf orders, and every Ω ran with the orders and mode counts of the rule (`orders M (cut at M)`). The only warning-class line is the note about the generated inner mesh (2 or 3 radial rows), which asks for a finer hull mesh.
+
+### Sum QTF: direct method
+
+**Runs.** Code at ed27bd3, 24 CPUs. Free bodies with IRSP = 1, `qtf = 3`, `qtf_terms = full`:
+- the sharp cylinder at m1 to m3 (448, 1792 and 4032 panels plus the lid, heading 0);
+- the rounded hull of the free-surface-forcing cases at m1 to m3 (480, 1920 and 4320 panels, headings 0 and 30°).
+
+The reference is `truncated_cylinder_reference.py qtf-potential --kernel sum --free-surface`, fixed and free, on the 21-frequency grid 0.40 to 1.40 rad/s (231 pairs). Three follow-up runs, all sharp m2, located the free-surface error (see [How the cause was found](#how-the-cause-was-found)). The folder is `validation-runs/snellius-qtf-directsum` (`findings_stage1.md`, `findings.md`, the job logs and the compare files).
+
+| Run | Wall | Core-h |
+| :--- | :--- | :--- |
+| build, reference | 1 min 33 s, 7 min 21 s | 3.5 |
+| sharp m1 / m2 / m3 | 54 min / 2 h 28 min / 6 h 9 min | 21.5 / 59.4 / 147.4 |
+| rounded m1 / m2 / m3 | 3.6 / 13 / 35 min | 1.4 / 5.2 / 14.0 |
+| **Total of the runs above** | | **252.5** (planned about 210) |
+| finer inner mesh, sharp m2 | 3 h 16 min | 78.5 |
+| **Total with the finer-mesh run** | | **331.0** |
+| fixed body, sharp m2 | 2 h 28 min | 59.3 |
+| near-waterline fit, sharp m2 fixed and free (code at 47d5911) | 3 h 12 min each | 153.4 |
+| **Total of all sum runs** | | **543.7** |
+
+Peak memory 3.7 GB (sharp m3). The tables of the validation page come from `qtf_compare.py results --direct-sum qtfdirectsum_reference.csv` [measured, 2026-11-17].
+
+### Sum QTF: indirect method
+
+24 CPUs (`findings.md`, cost tables). The first block ran first, to check the set-up at m1:
+
+| Run | Wall | Core-h |
+| :--- | :--- | ---: |
+| build | 1 min 34 s | 0.63 |
+| HAMS sharp m1 | 50 min 7 s | 20.05 |
+| Nemoh sharp m1, default mesh | 5 min 59 s | 2.39 |
+| Nemoh sharp m1, first try (failed on a path) | 19 s | 0.13 |
+| **First block** | | **23.2** |
+| HAMS sharp m2 | 2 h 29 min | 59.76 |
+| HAMS OC4 m1 | 1 h 23 min | 33.37 |
+| Nemoh sharp m2, default mesh | 57 min 33 s | 23.02 |
+| Nemoh OC4 m1 | 23 min 5 s | 9.23 |
+| Nemoh sharp m1, matched mesh | 9 min 46 s | 3.91 |
+| Nemoh sharp m2, matched mesh | 1 h 3 min | 25.21 |
+| **Second block** | | **154.5** |
+| **Both blocks** | | **177.7** |
+
+- HAMS without the direct solve took 50 minutes at m1, against 54 minutes for the direct-sum run with it. Most of the time is the free-surface fields (63 s per frequency, 21 frequencies).
+- Nemoh took 6 minutes at m1, not the 2 h that was estimated.
+- The two matched-mesh runs added 29.1 core-h to the planned second block.
+
+### Second-order motion
+
+**Runs.** `q_sharp_motion_free_m1` (m1 mesh, 22 frequencies) and `q_sharp_motion_free_m2` (m2 mesh, 21 frequencies), with the settings and springs of the validation page, and the reference run of `truncated_cylinder_reference.py qtf-motion` on the 22 frequencies. Sources in `validation-runs/snellius-qtf-motion`: `findings.md`, `compare_motion.txt`, `compare_motion_excl.txt`, `force_baseline.txt` and `motion_summary.json` (from `scripts/analyse_motion.py`) [measured, 2026-11-20]. The figure `motion_summary.png` (|ξ_1|, |ξ_3| and |ξ_5| along the sum diagonal, and along ω_j = 0.95 + Δω for the difference) is kept there and not copied into the repository.
+
+**Cost** (24 CPUs, wall times from sacct):
+
+| Run | Wall | Core-h |
+| :--- | :--- | ---: |
+| build | 1 min 29 s | 0.6 |
+| m1 (22 frequencies) | 1 h 28 min 30 s | 35.4 |
+| m2 (21 frequencies) | 3 h 9 min 59 s | 76.0 |
+| reference, difference and sum | 9 min 34 s | 3.8 |
+| **Total** | | **115.8** |
+
+The estimate was 96.3 core-h. It came from runs made before the near-waterline fit (47d5911), which doubles the cost of the free-surface fields at every frequency (m2: 2291 s then, 4769 s now). The motion itself adds one small solve per Ω; the ψ solves, the direct solve and the pair loops took the same time as before.
+
+**Log checks.** All four files of both cases have `Left out: none`, and the logs have no line that leaves an Ω out. The smallest rcond is 2.6e-5 (m1) and 9.6e-5 (m2).
 
 ## Continous Integration in GitHub Actions
 

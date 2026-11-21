@@ -292,3 +292,227 @@ Control now gives the same small asymmetry as far-field [measured]. Before the f
 ### Snellius studies
 
 The convergence study of F_x, F_y and M_z and the study of F_z, M_x and M_y on finer meshes are in [Second-order validation](../../../docs/second_order_validation.md#control-surface-method).
+
+<a id="second-order-qtf-tests"></a>
+## Second-order QTF tests
+
+The unit and integration tests of the second-order QTF methods, with their measured values and limits. They were moved here from [Second-order validation](../../../docs/second_order_validation.md#unit-and-integration-tests), which keeps a summary per feature. The limits are measured values with a margin (mostly 1.3 times the measured value, rounded up) unless a test is an identity; laptop, ifort 2022.1, Windows.
+
+### Direct method with the free-surface forcing
+
+#### Unit tests
+
+| Test | What it compares | Measured | Limit |
+| :--- | :--- | :--- | :--- |
+| `green_modes_match_fingreen` (partial_waves) | Partial waves of G (`pw_green_modes`, 17 orders, 40 evanescent modes) against the direct eigenfunction sum, and against `FINGREEN3D` | 6.6e-10 and 4.3e-7 | 1e-7 and 1e-6 |
+| `green_modes_near_circle` | The same at 0.9 R (219 orders, 200 modes) | 7.8e-9 and 9.8e-6 | 1e-6 and 3e-5 |
+| `green_modes_cut_reported` | The overflow cut of the orders (Ω = 0.2 rad/s, h = 200 m, R = 30 m, source at 0.97 R): `mcut` 109 against 756 asked, dropped tail about 3e-4 | position of the cut against `bessel_yn` and `pw_bessel_k` | exact |
+| `outer_moments_contract_psi` (qtf_free_surface) | Σ a mom against the ψ integral of the indirect method, synthetic fields, with and without incident waves | 2.0e-15 and 6.6e-16 | 1e-10 |
+| `outer_moments_contract_green` | Σ a mom with the amplitudes of G (`pw_green_modes`, 34 orders, 10 modes) against the same | 3.3e-15 | 1e-10 |
+| `fs_green_matrix_matches` (qtf_direct_fs) | The Green matrix to the inner panels against a 20 × 20 Gauss rule of `FINGREEN3D`; the far branch | 2e-14 to 1.0e-7; far 0 | 1e-6; 1e-12 |
+| `fs_green_near_waterline` | The waterline rows against the nearest inner panel; one point instead of the rule | 8.0e-7; one point at least 0.127 | 1e-3; above 1e-2 |
+| `fs_rhs_inner_only` | The inner right side against a 10 × 10 Gauss brute force (448-panel cylinder) | 6.5e-8 (waterline rows), 2.9e-7 (others) | 1e-3; 1e-6 |
+| `fs_rhs_symmetry` | Half mesh against whole mesh, random q and mom | 1.1e-8 | 1e-7 |
+| `fs_amplitudes_match_green` | Σ a B_mn against `FINGREEN3D` at R and 1.4 R (waterline row, bottom row, a lid point) | 1.5e-7 | 1e-5 |
+| `fs_rhs_order_cut_finite` | mcut = 93 < M = 161 at Ω = 0.05 rad/s, R = 11 m about r = 10 m; moments Inf or NaN above mcut; the bound of the dropped tail against the explicit tail sum | the right side stays finite; bound 2.04e-6 against the sum 1.89e-6 | |
+| `fs_rhs_outer_contraction` | Outer right side with evanescent partial waves only against a direct quadrature of G Q_D at three hull rows; and an explicit loop | 5.5e-8, 7.1e-7, 2.2e-8; loop 4.6e-15 | 1e-5; 1e-12 |
+| `fs_rfar_evanescent` | k₁ (r_far − R) | 40 | 1e-12 |
+| `outer_moments_cost` | Moments against the ψ integral of the same pair, one thread, fastest of three | 3.3 times (2.88 s against 0.87 s) | 5 times |
+| `direct_fs_equals_indirect_full` | Whole path: the D_FS slice against FS_inner + FS_outer of the indirect method, 480-panel rounded hull, depth 100 m, 0.70, 0.95, 1.10 rad/s, heading 30°, rigid motions in every mode, both orders of each pair | 2.3e-3 (Ω = 0.25) and 2.8e-3 (Ω = 0.15) of max abs T_pot | 3.7e-3 |
+| `direct_fs_pair_order` | 448-panel cylinder, depth 15 m, Ω = ±0.3: the pair with Ω < 0 against the conjugate of the swapped pair; the load with and without the 3-slice `parts` | 0; 2.8e-16 and 9.9e-16 | 1e-12 |
+| `qtf_direct_full_accepted` (second_order_input) | `qtf_direct = 1` with `qtf_terms = full` is accepted | passes | |
+
+- The limits against `FINGREEN3D` are looser than those against the exact eigenfunction sum, because `FINGREEN3D` is itself 4.3e-7 off the sum in this region (`EIGENE` with `Limes`, rated 1e-5 in its header) and 9.8e-6 near the circle (`LINTON` or `PIDCOCK`).
+- **The sign s_D is pinned by `direct_fs_equals_indirect_full`.** With s_D = +1 the difference is 2.3e-3 and 2.8e-3 of max abs T_pot; with s_D = −1 it is 0.67 and 0.78, over 10 times the limit. The free-surface part is 0.34 and 0.39 of max abs T_pot, so the test is not vacuous.
+- The near rule of the inner Green matrix was changed from one point to the Gauss rule after one point missed the 1e-6 aim by three orders (1.7e-3, see the developer documentation).
+- Run time: `direct_fs_equals_indirect_full` takes about 220 to 320 s on 8 threads, since it solves the first-order fields at the inner points of three states, ψ at two Ω, the radiation solves and two set-ups in 100 m of water (N_ev 129).
+
+#### Integration tests
+
+Four fixtures, all with `qtf_direct = 1`, `qtf_terms = full`, `qtf = 1`, `qtf_max_dw = 0.3`, `qtf_b2 = body`, differencing velocity, 8 threads, and a depth of 20 m: `qtf_directfs_round` (the 480-panel rounded hull of `qtf_round_body`, 0.70, 0.95 and 1.10 rad/s, headings 0 and 30°, so Ω = 0.25 and 0.15 rad/s; the generated inner mesh), `qtf_directfs_half` (its half mesh), `qtf_directfs_irsp` (the hull with a waterplane lid, `If_remove_irr_freq = 1`, 0.95 and 1.10 rad/s) and `qtf_directfs_two` (two hulls at y = ±10 m, `FSInnerMesh.pnl`, R = 25 m, heading 0). The depth is 20 m and not 100 m because 100 m took 333 s for the round case on 8 threads, over the run-time limit set for the tests. In 100 m of water `direct_fs_equals_indirect_full` above is the check.
+
+**Measure.** The gap is the largest |T_dir − T_pot| over the largest |T_pot|, over the rows of the forces or of the moments (T_dir = `.12d` − `.10d` and T_pot = `.11d` − `.10d`, from the 16-digit terms files; the same from the printed files agrees to 4 digits).
+
+| Test | Measured | Limit |
+| :--- | :--- | :--- |
+| `direct_fs_vs_indirect_full` (round): T_dir against T_pot | 3.9e-2 (1.1e-1 without D_FS) | 5.1e-2 |
+| the same from the files, (`.12d` − `.10d`) against (`.11d` − `.10d`) | 3.9e-2 | 5.1e-2 |
+| D_FS against FS_inner + FS_outer, over max \|FS\|: round / irsp / two bodies | 8.2e-3 / 8.7e-3 / 5.0e-3 | 1.2e-2 |
+| `direct_fs_half_matches_full`: half mesh against whole mesh | 2.8e-8 | 1e-6 |
+| the half mesh, T_dir against T_pot | 3.9e-2 | 5.1e-2 |
+| `direct_fs_irsp_lid`: T_dir against T_pot (1.3e-1 without D_FS) | 1.4e-3 | 1.9e-3 |
+| `direct_fs_two_bodies_file`: body 2 against body 1 mirrored | 1.4e-8 | 1e-5 |
+| the two bodies, T_dir against T_pot (1.8 without D_FS) | 4.4e-1 | 5.7e-1 |
+| `direct_fs_off_unchanged`: `.12d` and `QTF_DirectTerms.txt` of three cases of the body-forcing direct solve | byte for byte | exact |
+
+- **The round gap is the body-forcing gap, not the free-surface part.** The 3.9e-2 is close to the gate of the direct solve without free-surface forcing on this hull (`direct_round_limit`, 5.2e-2): the mesh error of the B1 and B2 parts at the pairs (0.70, 0.95), where they nearly cancel in QTF⁻_5. The free-surface part alone agrees with the indirect one to 8.2e-3 of its own maximum, so the free-surface wiring adds no visible error.
+- **Two bodies.** The 4.4e-1 is the body-forcing mesh error of the coarse 220-panel hulls (QTF⁻_5: error 6.3e-2 against a T_pot of 0.144), the effect seen in `qtf_direct_two` of the body-forcing case. The gate of 5.7e-1 is a regression gate. The free-surface wiring is gated by the D_FS check (5.0e-3 measured; the free-surface part of QTF⁻_5 is 0.20 and agrees to 3e-4) and by the mirror check (1.4e-8).
+- **Not vacuous.** The gap without D_FS is larger than 2 times that with it in each of round (2.85 times), irsp (89) and two bodies (4.2). The factor is 2 and not 10, since the round gap is itself the body-forcing error. The D_FS check is the sharper one.
+- **Lid.** The IRSP hull has a gap of 1.4e-3, smaller than the round one, with the lid rows carrying the same r_FS.
+- **Without `full` nothing changes.** `direct_fs_off_unchanged` compares the outputs of three cases of `qtf_direct` with `qtf_terms = body` (`qtf_direct_round`, `_irsp`, `_two`) with the body-forcing files stored in their `expected_output` (taken from a build that leaves the direct path as merged with the body forcing, and checked byte for byte equal to this branch for all 11 `qtf_direct_*` fixtures), and checks that their logs have no free-surface line.
+- Run time of the four cases at 20 m, 8 threads: 71, 71, 35 and 38 s on a quiet laptop (121, 134, 82 and 83 s while other runs were going), about 215 s in all. The round case at 20 m: fields 3.4, 3.6 and 2.9 s, ψ 3.2 and 3.0 s, the set-up of the free-surface forcing 4.9 s, the outer moments 8.6 s (Ω = 0.15) and 6.5 s (Ω = 0.25).
+
+### Direct method at the sum frequency
+
+#### Unit tests
+
+| Test | What it compares | Measured | Limit |
+| :--- | :--- | :--- | :--- |
+| `omega_list_union`, `omega_list_sum_top`, `omega_list_diff_unchanged` | The union list of difference and sum frequencies, the cutoff by `sum_top`; the difference list without the sum against the old one on three grids and two `qtf_max_dw` | exact; bit for bit | exact |
+| `irregular_estimate_cylinder`, `irregular_estimate_two_loops` | The estimate of the lowest irregular frequency against the polygon formula, and against 1.536 rad/s; two loops (6 m loop: 1.983 rad/s); an open chain is skipped | 1e-12; within 0.5% | 1e-12; 0.5% |
+| `irregular_cutoff_applies` | The cutoff with IRSP 0 and 1 and with `qtf_max_sw` | as designed | exact |
+| `qtf_direct_sum_accepted`, `qtf_sum_indirect_stops`, `qtf_max_sw_negative`, `qtf_sum_full_deep_stops` (second_order_input) | The input rules: `qtf_direct = 1` with the sum accepted; `qtf = 2` with `qtf_direct = 0` and a negative `qtf_max_sw` stop; `full` in deep water stops, accepted at 20 m | pass | |
+| `pot_kernel_default`, `direct_kernels_default`, `fs_kernel_default`, `direct_fs_kernel_default` | Without the kernel argument, and with `KERNEL_DIFF`, the results of the code before the change | bit for bit | exact |
+| `pot_sum_symmetric` | T⁺(1, 2) against T⁺(2, 1), FK, diffraction, B1, B2, B3, two headings, 480-panel rounded hull; a conjugation branch would give 2.0 | 0 (bitwise) | 1e-12 |
+| `pot_sum_b1_direct`, `pot_sum_b3_direct` | B1 and B3 of the sum against the time series of the product of two two-component signals (ω = 0.8, 0.7; Ω⁺ = 1.5) | 5.0e-15, 6.9e-15 | 1e-12 |
+| `direct_sum_matches_indirect_pair` | Direct sum load against the indirect one on a sphere: pairs at Ω⁺ = 1.5 and the diagonal at 1.6 rad/s; (2, 1) against (1, 2) | 2.1e-3, 8.4e-3; 0 | 2.8e-3, 1.1e-2; 1e-12 |
+| `direct_sum_mixed_block` | One block with the sum pair (0.4, 0.4) and both orders of a difference pair, against each solved alone: tdir, parts, phi_field | 1.0e-16, 9.7e-17, 1.8e-16 | 1e-13 |
+| `fs_sum_ring_sampled` | The ring integral of the sum (modes of field 2 reversed, −ω₂) against the trapezoid rule on 720 angles of ψ Q_S, synthetic fields with both incident waves, at 1.2 R and 3 R | 4.6e-16, 2.2e-15 | 1e-11 |
+| `fs_sum_tail_contour` | The tail of the sum (three phase classes, rotated contours) against the real axis: tail(r_far) = annulus(r_far, 2 r_far) + tail(2 r_far); pair (1.0, 0.8) and diagonal (0.8, 0.8); the share of that annulus in the total | 5.9e-17, 3.9e-16; share 2.9e-3, 1.4e-2 | 1e-8; above 1e-4 |
+| `fs_sum_classes_positive` | The classes κ_a, κ_b, κ_c are positive; sum r_far against difference r_far (class part); the evanescent ratio | no class ≤ 0 (least 3.67e-2 1/m); ratio ≤ 0.85; evanescent 1.065 | 0 failures; 1.39 |
+| `fs_sum_swap` | The pair (1, 2) against (2, 1) with no conjugate (against the conjugate: 1.74) | 0 | 1e-12 |
+| `fs_sum_diagonal` | The diagonal against (ω, ω + 1e-5), inner and outer | 1.35e-5, 2.4e-5 | 1e-4 |
+| `fs_sum_moments_contract_psi` | The moments of the sum contracted with the amplitudes of ψ against `fs_outer_pair` + sliver, with and without incident waves; `fs_forcing_points` weighted by the panel areas and ψ against `fs_inner_pair` | 8.1e-16, 7.8e-16; inner 2.0e-16 | 1e-10; 1e-14 |
+| `fs_green_matrix_large_kh` | The inner Green matrix at K h = 49 against 20 × 20 Gauss of the eigenfunction series; against `INFGREEN3D`; the panel rule on the exact series | 1.40e-4; 3.8e-3; 1.2e-7 | 2e-4; 1e-2; 1.6e-7 |
+| `direct_fs_mixed_block` | Four columns (sum pairs and a difference pair with its swap) against each solved alone; (1, 2) against (2, 1); the free-surface share | 0; 4.1e-16; free-surface share 6.2e-2 | 1e-13, 1e-12; above 1e-3 |
+| `direct_fs_sum_equals_indirect` | Whole path: the D_FS slice against FS_inner + FS_outer of the indirect sum, 448-panel cylinder, diagonal (0.70, 0.70), inner mesh built for Ω⁺ = 1.40, as a share of max abs T⁺_pot; with the sign of s_D reversed | 6.0e-3; 1.55 | 7.9e-3; above 10 times the limit |
+| `qtf_sum_pairs_cover` | The sum pairs of `qtf = 2` and `3`: 21 for 6 states, each unordered pair once | exact | exact |
+| `qtf_stored_mb_sum` | The store estimate with the sum stores | formula | 1e-12 relative |
+| `qtf_sum_store_symmetric` | 112-panel cylinder, 2 frequencies, 2 headings: both slots of T⁺_dir equal | to the bit; smallest max abs T⁺_dir 2.24e5 | bits; above 0 |
+| `direct12s_rows` | `.12s` with `qtf_max_sw = 0.9`: 72 of 96 rows, in `.10s` order, the pair (0.5, 0.5) cut; the diagonal (0.4, 0.4) differs from `.10s` | exact; by up to 38.5 | exact |
+| `direct_sum_terms_waterline`, `direct_sum_terms_header` | The terms file through the driver, the writers and the radiation solves at every sum Ω; the parts add to `.12s` − `.10s`; 15 columns (full) and 11 (body) | 6.8e-6 (printed digits) | the gates below |
+| `fs_inner_steps_scale` | The stencil offsets on a mesh refined for the sum: 288 finer points, offset step × λ(1.1)/10 exactly; the residual of the finite-difference φ_zz at fixed points | 1.21e-3, 2.32e-3, 1.10e-3 | 3.1e-3 |
+| `fs_sum_exact_inner`, `fs_sum_exact_outer` | The sum assembly (`fs_inner_pair`; `fs_outer_pair` with the tail) with the semi-analytical fields and ψ of the sharp cylinder against the reference formula, pairs (1.2, 1.2) and (1.4, 1.0) | 9.4e-16; 4.3e-8 | 1e-8; 1e-4 |
+| `fs_fields_exact_inner` | HAMS's φ, ∇φ and φ_zz on rings 0.1 to 3.5 m from the waterline of the sharp m1 hull, from the semi-analytical panel data, with the near-waterline fit, against the exact series (1.0 and 1.4 rad/s); without the fit 1.05 (∇φ) and 4.51 (φ_zz) | worst 4.9e-2 (∇φ at 0.1 m) | 6.5e-2 |
+| `fs_fields_exact_circle` | The partial waves fitted on the circle from the semi-analytical panel data, at r = 15.5 and 20 m | 2.6e-2 (φ_zz) | 3e-2 |
+| `fs_fields_exact_integral`, `fs_fields_exact_integral_diff` | The inner free-surface integral over a < r < a + 5 m (408 points graded to the waterline) from HAMS's fields with semi-analytical panel data and exact ψ, sum pair (1.4, 1.0) and the difference at Ω⁻ = 0.4; without the fit 42.7% and 24.0% | 2.05e-2; 2.28e-2 | 2.7e-2; 3.0e-2 |
+| `qtf3_diff_unchanged` | The difference results of a `qtf = 3` run (tdir, tdir_i2, tdir_d) against `qtf = 1`, with 8 difference and 3 sum columns in one Ω, IRSP 0 and 1 | 0; max abs T_dir 2.79e5 | bit for bit |
+| `direct_field_sum_hook_matches` | φ_D of the field hook at the sum Ω against the direct solve at the points | 0 (bitwise) | bits |
+| `field_direct_sum_rows`, `field_direct_sum_symmetric`, `field_direct_sum_cutoff`, `field_direct_sum_only`, `field_direct_both_kernels` | The sum rows of `QTF_Field.txt` (file digits), both slots, no direct part beyond the cutoff, `qtf = 2` alone, `qtf = 3` with both kernels | pass | 1e-5 on file rows |
+
+- **The sharp-edge gap of `direct_sum_terms_waterline`.** On the sharp-edged 112 / 448 / 1008-panel cylinders the part D_I2 + D_D against P_BODY, as a share of max |P_BODY|, is below.
+
+| Panels | All pairs (the diagonal dominates) | Pair (0.4, 0.5) | Difference kernel, same runs (`.12d` against `.11d`) |
+| :--- | :--- | :--- | :--- |
+| 112 | 8.8e-2 | 2.4e-2 | 7.8e-3 |
+| 448 | 5.9e-2 | 1.6e-2 | 4.9e-3 |
+| 1008 | 4.5e-2 | 1.2e-2 | 3.7e-3 |
+
+  The gap falls at order about 0.6 in the panel size for both kernels (the difference kernel was measured in a temporary `qtf = 3` variant, and the 1008-panel run was temporary, neither committed). A sum-path error would not fall with the mesh, so this is read as the shared waterline and sharp-edge mesh error of the sharp cylinder. The sum constant is 3 to 10 times the difference one: Ω is higher, and the diagonal B terms are large (the sphere of `direct_sum_matches_indirect_pair` also has a diagonal about 4 times the pairs). The gates are, at 448 panels, all pairs at most 7.7e-2 and the pair (0.4, 0.5) at most 2.1e-2 (1.3 times measured), and a 112 to 448 ratio of at least 1.3 (measured 1.49).
+- **The sum at the inner mesh for Ω⁺.** With an inner mesh built for 1.1 rad/s (100 points) `direct_fs_sum_equals_indirect` gave 1.54e-2, with the mesh for 1.40 rad/s (180 points) 6.0e-3 and for 2.0 rad/s (648 points) 4.5e-3. The body-part gap is 2.6e-3 to 2.9e-3, so the free-surface mesh is the larger part of the difference, and the driver builds the inner mesh for the largest sum frequency.
+- **The sign.** With s_D = +1 the free-surface part agrees with the indirect one to 6.0e-3; with −1 the gap is 1.55 (order 1), so the sign carries over from the difference, and the free-surface part is not vacuous.
+- **Known limit.** `fs_green_matrix_large_kh` finds `FINGREEN3D` about 2e-4 off the exact eigenfunction series at ν h ≈ 50 with small R/h (1.40e-4 at the worst panel, growing with ν h); the panel rule is not the cause (1.2e-7 on the exact series). It is small next to the 6e-3 mesh error, and is listed in the [open items](../../../docs/second_order_validation.md#open-items).
+
+#### Integration tests
+
+Seven fixtures, written by `make_drift_fixtures.py` into `test/data/qtf_directsum_*`: `qtf_directsum_round` (the inputs of `qtf_direct_round`, `qtf = 3`, `qtf_terms = body`, IRSP 0, depth 100 m), `qtf_directsum_irsp` (the 480-panel rounded hull with a 192-panel lid, depth 20 m, 0.95 and 1.10 rad/s, `qtf = 2`, `qtf_terms = full`), `qtf_directsum_half` and `_halfref` (the rounded hull on a half mesh and the whole mesh, IRSP 0, depth 20 m, 0.50, 0.60 and 0.70 rad/s, `qtf = 2`, `full`), `qtf_directsum_d1` and `_d3` (`irsp` with `qtf` 1 and 3, `qtf_fs_panel = 3.0`, `qtf_fs_modes = 24`) and `qtf_directsum_field` (`qtf_direct_field_six` with `qtf = 3`). The depth of 20 m for the free-surface cases is as for the free-surface forcing of the difference. The measure is that of the previous section: the largest |T_dir − T_pot| over the largest |T_pot|, over the forces or the moments, with T⁺_dir = `.12s` − `.10s`.
+
+| Test | Measured | Limit |
+| :--- | :--- | :--- |
+| `direct_sum_cutoff_rows` (round, IRSP 0): `.12s` has 12 rows (only the pair (0.70, 0.70), Ω = 1.40 rad/s, 2 headings × 6), `.10s` 108; the log warns "5 of 6 pairs"; the estimate is 1.5382 rad/s | exact | exact |
+| `direct_sum_vs_indirect_body` (round): `.12s` − `.10s` against P_BODY (moments; forces 1.6e-2) | 1.27e-1 | 1.7e-1 |
+| the same against D_I2 + D_D of the terms file (printed digits) | 2.4e-7 | 1e-5 |
+| `direct_sum_irsp_full` (lid hull, 48 rows, no cut, no warning): T⁺_dir against T⁺_pot (forces 3.8e-2), and `.12s` − `.10s` against it | 1.375e-1 for both; 7.755e-1 without D_FS | 1.8e-1; above 2 times |
+| `direct_sum_half_matches_full`: half mesh against whole mesh, T⁺_dir and T⁺_pot (108 rows each) | 4.4e-8 and 3.3e-8 | 1e-6 |
+| `direct_sum_field_rows`: the sum rows against `expected_sum.txt` (24 rows, modulus); the K = 1 rows of the `qtf = 3` run against the `qtf = 1` run | within the limit | 1e-6 of the modulus |
+| `direct_sum_off_unchanged`: `.12d` and `QTF_DirectTerms.txt` of `qtf_direct_irsp`, `qtf_direct_two` (body forcing) and `qtf_directfs_round`, `_irsp`, `_two` (free-surface forcing); no sum solve in their logs | byte for byte | exact |
+| `direct_sum_qtf3_diff_unchanged`: `.11d`, `.12d`, `.10d` and `QTF_DirectTerms.txt` of `_d3` against `_d1` | byte for byte | exact |
+
+- **The gap of the rounded hull.** The direct sum is 12.7% from the in-run indirect sum on the rounded hull, and 13.8% on the lid hull, whose gap without D_FS is 77.5%. The gap is in the moments; the forces are 1.6% and 3.8%. It is the same on the half and the whole mesh (13.4%), so it is not a half-mesh effect. The cause is taken to be the coarse hull bottom, as for the difference at the same hull (3.9e-2 there), larger at Ω = 1.4 to 2.2 rad/s, where the waves are short on a 480-panel hull. The rounded-hull meshes m1 to m3 on Snellius settled it: the gap falls to 2.7% and 1.2% (moments) at m2 and m3, so it is mesh error ([Snellius validation](../../../docs/second_order_validation.md#snellius-validation-of-the-sum-frequency)).
+- **Not vacuous.** The lid hull gap without D_FS is 5.6 times the one with it, so the free-surface forcing of the sum is tested by the whole path as well as by `direct_fs_sum_equals_indirect`.
+- **The outputs of the difference direct method do not change.** `direct_sum_off_unchanged` and `direct_sum_qtf3_diff_unchanged` compare the whole files. The stored free-surface-forcing files were made with the merge binary of the second-order-drift branch (c716ed7), after reproducing the stored `qtf_direct_irsp` output byte for byte; the `qtf = 1` runs of this build match them to the byte.
+- **The pins are of this build.** `expected_sum.txt` is written from this build by `extract_direct_field_expected.py` (7 digits): it pins the rows against later changes and is not an independent reference. The `.12s` file holds both orders of an unequal pair (48 rows for 2 frequencies and 2 headings, not 36), as `.10s` does.
+- Run time: the integration suite takes about 65 minutes on the laptop (the runs contend for threads); the sum fixtures add about 10 minutes, and `qtf_directsum_round` takes 43 s alone.
+
+#### Reference checks (Python)
+
+`truncated_cylinder_reference.py` has the sum kernel (`qtf-potential --kernel sum`), whose default `--kernel diff` output is byte for byte the old one, and `qtf_compare.py --direct-sum REF` compares `.12s`, `.12s` − `.10s`, D_FS and P_BODY + P_FS of a run with the reference rows ([Python Scripts](../../../docs/python_scripts.md)). Five of the 34 checks of `check` are new with the sum:
+
+| Check | What it tests | Measured | Limit |
+| :--- | :--- | :--- | :--- |
+| `incident2_sum` | The second-order incident potential of the sum against Stokes' second-order wave (h = 20 m, 1.2 rad/s; in deep water the forcing cancels to rounding) | 1.8e-11 | |
+| `potential_sum_symmetry` | T⁺(1, 2) against T⁺(2, 1) | 0 | 1e-12 |
+| `fs_sum_forcing_vs_incident` | The sum free-surface forcing against the second-order incident wave, Cartesian and polar | 2.3e-13, 7.0e-14 | |
+| `fs_sum_bvp` | The direct free-surface force at Ω⁺ against ID + FS of the reference (the load of φ_D; N = 4000, default strip of 36 decay lengths) at (0.70, 0.95) and (0.70, 0.70) | 4.3e-7, 2.5e-7 | 1e-5 |
+| `fs_sum_radius_invariance` | The free-surface integral at R = 15 and 20 m | 4.3e-14 | 1e-6 |
+
+The strip step δ = decay · h/(N π) matters for the yardstick: with the default 36 decay lengths and a coarser N, `fs_sum_bvp` read 2.9e-4 to 2e-3, and between 36 and 12 decay lengths both sides moved by about 1%, so the strip fit and not the sum forcing was the limit. The checks now use the default width with N = 4000, and the sum table keeps the default width, which at N = 64000 converged to about 1e-7 (measured in the code review). Do not use `--light` for the yardstick: it is up to 6% off with the sum and the free-surface term. The comparison reads the pair-by-pair gap, and `compare_direct_sum` was tested on a synthetic fixture (exact D = P reads 0.00, D_FS × 1.01 is seen), since the sum-frequency fixtures hold inputs only. The fixed-body direct force at Ω⁺ is not a column of the sum rows: it is a direct solve per pair (5 to 10 s at N = 2000), and the identity direct = ID + FS is tested at two pairs by `fs_sum_bvp`.
+
+### Indirect method at the sum frequency
+
+Sources: `git log --oneline 4ba2ddb..HEAD` and the task reports of the indirect-sum work. The fixtures are `test/data/qtf_indsum_*`, written by `make_drift_fixtures.py`: the direct-sum fixtures with `qtf_direct = 0`, a half-mesh pair, a two-hull case with `qtf_fs_panel` and `qtf_fs_modes` given (and its `qtf_direct = 1` and `qtf = 1` twins), and a GMRES case.
+
+| Test | What it pins | Measured | Limit |
+| :--- | :--- | :--- | :--- |
+| `radiation_list_sum_indirect`, `radiation_list_diff_unchanged` (unit) | The list of the radiation problems at the sum frequencies with `qtf_direct = 0` is the same as with it; the difference lists are not changed | exact | exact |
+| `qtf_sum_indirect_list_body`, `qtf_stored_mb_indirect_sum` (unit) | The sum frequencies are flagged as sums and no difference frequency is in the list; the memory of the stored T⁺_pot is 1 × the heading pairs | exact | exact |
+| `indirect11s_rows` (unit) | `.11s` has the rows of `.10s` whose sum is kept (72 of 96 with `qtf_max_sw` = 0.9), the diagonal included, and there is no `.12s` | exact | exact |
+| `indirect11s_equals_tpot` (unit) | `.11s` − `.10s` is T⁺_pot as the driver holds it, to the 7 digits of the file; the terms of the terms file add up to it | 5.75e-16 (terms sum, per row) | 1e-14 |
+| `indirect11s_routes_agree` (unit) | `.10s`, `.11s` and the terms file with `qtf_direct = 0` and `1`: the same to the byte | exact | exact |
+| `psi_bad_files_text` (unit) | The message of a non-finite ψ names the terms files only when they are written | exact | exact |
+| `qtf_sum_indirect_accepted`, `qtf_sum_body_warns` (input unit) | `qtf = 2` and `3` with `qtf_terms` = `body` or `full` and `qtf_direct = 0` are read; `full` needs a finite depth; `body` is accepted (the warning that the free-surface integral is left out is pinned by `indirect_sum_cutoff_rows`) | exact | exact |
+| `potential_sum_terms_header` (output unit) | Header and column count of `QTF_PotentialTermsSum.txt`: 19 columns with `full`, 15 with `body` | exact | exact |
+| `indirect_sum_cutoff_rows` (integration, round hull, `body`) | `.11s` has 12 rows (only the pair (0.70, 0.70), below the cutoff), the terms file has the same rows, the log warns "5 of 6 pairs" once and the free-surface warning once | exact | exact |
+| `indirect_sum_matches_direct_run` (integration, lid hull) | `.11s` and the terms file are those of the `qtf_direct = 1` run, to the byte; `.11s` − `.10s` against P_BODY + P_FS of `QTF_DirectTermsSum.txt` | 7.3e-7 | 1e-5 |
+| `indirect_sum_vs_direct` (integration, lid hull) | `.11s` against `.12s` of the direct run, over max `.12s`: 1.3 times the gap of the direct sum (1.375e-1 for `direct_sum_irsp_full`) | 5.4e-2 | 1.79e-1 |
+| `indirect_sum_half_matches_full` (integration) | Half mesh against whole mesh, T⁺_pot, 108 rows | 3.3e-8 | 1e-6 |
+| `indirect_sum_two_bodies` (integration) | Two hulls: `.11s` and the terms file are those of the `qtf_direct = 1` twin, to the byte; the index I covers the 12 modes | exact | exact |
+| `indirect_sum_isolv_factored` (integration, GMRES) | With ISOLV = 2, `.11s` and the terms file are those of the `qtf_direct = 1` twin, to the byte; T⁺_pot against the LU solve | 6.9e-4 | 1e-3 (GMRES stops at 1e-4) |
+| `indirect_sum_qtf3_diff_unchanged` (integration) | `.10d` and `.11d` of the `qtf = 3` two-hull run are those of the `qtf = 1` run, to the byte | exact | exact |
+| `indirect_sum_off_unchanged` (integration) | `QTF_Direct.12s` and `QTF_DirectTermsSum.txt` of `qtf_directsum_round` and `_irsp` are those of the base without the indirect sum, to the byte: `_round` from the direct-sum merge 4ba2ddb, `_irsp` from the v2.3.4 merge 5792fb9, whose lid fixes move it by at most 1.3e-3 of the column maximum | exact | exact |
+| `indirect_sum_log_lines` (integration) | The set-up log lines of `SecondOrderDriver.f90` (not the end message of `ReportCompletion`) name `.11s` (and `.11d` for `qtf = 3` only) and say whether the free-surface integral is in it | exact | exact |
+| `indirect_sum_b2_qtf2_matches_qtf3` (integration) | `qtf = 2` takes the control-surface B2 as `qtf = 3` does by design: same input, same `.11s` and terms file, to the byte, and the log has the line of the points of C and F | exact | exact |
+| `direct_sum_qtf2_default_b2` (integration) | `qtf = 2`, `qtf_direct = 1` and the default `qtf_b2` = `control`: `QTF_Direct.12s` and the D columns are those of the `qtf_b2 = body` run, to the byte; P_BODY changes; the log has the line of C and F | exact | exact |
+
+- **The `qtf = 2` change of B2 is a change of output.** A `qtf = 2`, `qtf_direct = 1` run without a `qtf_b2` line now builds C and F and gives a different P_BODY in `QTF_DirectTermsSum.txt` (`.12s` is unchanged). The user accepted it (option a, 2026-11-19) and it is documented in [Input Files](../../../docs/input_files.md).
+- **The pins are of this build.** The byte-for-byte checks compare two routes of the same code, so they test that the routes agree and that nothing else moved. They do not test the value of T⁺_pot; the values are tested in the next sections.
+- The limits are measured values with a margin, as in the sections above; `indirect_sum_vs_direct` keeps 1.3 times the direct-sum gap, so it is loose against its own measurement (5.4e-2).
+
+### Second-order motion
+
+#### Unit tests
+
+| Test | What it compares | Measured | Limit |
+| :--- | :--- | :--- | :--- |
+| `radiation_coefficients_match_first_order` | A and B from ψ against `RFORCE` of the same solve, round body (480 panels, depth 100 m), 0.70 and 0.95 rad/s | 7.9e-16 | 1e-12 |
+| `radiation_coefficients_half` | Half mesh (`ISY = 1`): the half-mesh ψ put on the whole mesh; against `RFORCE` on the half mesh; against a separate whole-mesh solve | 1.1e-15; 9.9e-16; 3.8e-7 | 1e-10; 1e-12; 1e-6 |
+| `radiation_coefficients_two_bodies` | Two cylinders against the blocks of `RFORCE_MULTI`, the off-diagonal blocks included (4.3e-2 of the largest A) | 8.9e-16 | 1e-12 |
+| `radiation_coefficients_symmetric` | Reciprocity, A = Aᵀ and B = Bᵀ: round body; two coarse cylinders (48 panels each) | 6.0e-4; 4.2e-2 | 7.8e-4; 5.5e-2 |
+| `radiation_coefficients_sum_frequency` | Sharp cylinder (448 panels) at Ω = 1.8 and 2.8 rad/s, off the main grid, against the semi-analytical A and B | A 4.0e-2, B 1.3e-1 | 5.24e-2, 1.68e-1 |
+| `motion_damping_includes_blnr` | The matrix with and without B_ext differs by −iΩ B_ext; the matrix against the formula | 1.8e-16 | 1e-14 |
+| `motion_first_order_limit` | At Ω = ω with the first-order force F = i EXFC and the first-order matrices, ξ against conj(DSPL) of `SolveMotion`, in the same process, with springs and a linear damper | 4.2e-16 | 1e-10 |
+| `motion_one_dof`, `motion_static_diagonal` | One mode against the closed form; Ω = 0 against (C + K_ext)⁻¹ F | 0.0; 1.95e-16 | 1e-14 |
+| `motion_singular_flagged` | C_11 = 0 gives rcond 0, C_11 = 1e-8 gives rcond 1.67e-15: both flagged, ξ = 0 | exact | exact |
+| `motion_columns_independent` | Several force columns in one solve against one solve per column; the columns do not mix, and the matrix is not changed | 2.3e-15 | 1e-14 |
+| `motion_rows_follow_force` | Free cylinder, both routes: the rows of the force file, less the diagonal (48 of 96 rows, modes 1 2 6 named) | exact | exact |
+| `motion_equals_h_times_f` | Backward error of ξ at Ω = 0.1, −0.1 and 0 and at the sums 0.9 and 1.0: unscaled; on the 7-digit file rows (`REFL` = 2) | 5.7e-17; 6.1e-8 | 1e-13; 1e-5 |
+| `motion_scaling`, `motion_sum_symmetric` | A row scaled by hand (L and L²), on the 7-digit file row; the sum rows against their mirrors | passes; 0 | 1e-6; 1e-6 |
+| `motion_sum_cutoff_rows` | With `If_remove_irr_freq = 0` the motion leaves out the sums of `.11s` (cut at 2.1859 rad/s, 72 rows in both) | exact | exact |
+| `motion_two_bodies_coupled` | Two bodies: the driver's ξ solves the coupled 12 × 12 system; doubling the force of body 2 moves body 1 by 4.5e-3 with A and B, and by 0 without | 1.9e-17 | 1e-13 |
+| `motion_off_unchanged`, `motion_fixed_no_file`, `qtf_stored_mb_motion` | The force files are the same to the byte with `qtf_motion` 0 and 1, and 0 writes no motion file; a fixed body gets no file; the store estimate | exact | exact |
+| `psi_at_points_near_panel` | ψ_j at 1e-3 L from a panel centroid against ψ_j − d n_j of the panel, whole and half mesh | 9.8e-5 (surge to pitch), 1.8e-4 (yaw), 1.9e-6 (heave) | 2.4e-4 |
+| `psi_at_points_far_kochin` | ψ_j at r = 20 L against the far field of the Kochin function (`far_amplitude`, Fourier-Hankel form) | 6.8e-6 | 1e-3 |
+| `field_radiated_rows`, `field_radiated_off` | The forms iρΩφ_R and (iΩ/g)φ_R, and the file rows; `qtf_motion = 0` gives the earlier `QTF_Field.txt` to the byte | 1.1e-16, 1.5e-7; exact | 1e-14, 1e-5; exact |
+| `field_radiated_pipeline` | Driver end to end, moored cylinder, 2 points: the change of `Re_dir` against `field_direct(Ω, φ_R)` | 1.7e-7 | 1e-5 |
+| `qtf_motion_default_off`, `_needs_body`, `_needs_qtf`, `_bad_value`, `_fixed_skips` | The input key and its stops | exact | exact |
+
+The errors are relative to the largest value of the compared quantity. Source: the test files `test/test_qtf_motion.f90`, `test/test_qtf.f90`, `test/test_qtf_field.f90` and `test/test_second_order_input.f90`.
+
+- **A and B are those of the first-order code.** At main-grid frequencies they match `RFORCE` and `RFORCE_MULTI` to rounding. The separate whole-mesh solve of the half-mesh test differs by 3.8e-7, which is the single-precision storage of the Green function (about 6e-8 per value), not an error of the sum.
+- **Reciprocity holds only to the mesh error.** `RFORCE`'s own A and B, which these equal to rounding, are asymmetric by the same amounts. So this test cannot catch a transposition; the `RFORCE` comparisons do.
+- **Off the grid A and B carry the mesh error.** The same 3–5% gap is found at 0.7 rad/s on the main grid, so the gap at Ω = 1.8 and 2.8 rad/s is the error of the 448-panel mesh. The largest gap is the pitch damping B_55 at 2.8 rad/s (13%), where B_55 is small (152 against 5352 at 0.7 rad/s). Both Ω are above the lowest irregular frequencies of this cylinder (about 1.55 rad/s), and the fixture has `If_remove_irr_freq = 0`, so part of that gap may come from them.
+- **The sign of the damping is pinned.** With the imaginary part of the matrix flipped, `motion_first_order_limit` fails with 4.3e-1.
+
+#### Integration tests
+
+Two runs of 128 panels, about 3.4 s each: `qtf_motion_round`, the free rounded hull of `qtf_direct_round` (radius 10 m, draft 10 m, bilge radius 3 m, depth 100 m) at 0.70 and 0.95 rad/s, heading 0, `qtf = 3`, `qtf_direct = 1`, `qtf_terms = body`, with a surge spring K_11 = 1.8854e4 N/m and damper B_11 = 3.0008e4 N s/m; and `qtf_motion_round_free`, the same without them.
+
+| Test | What it checks | Measured | Limit |
+| :--- | :--- | :--- | :--- |
+| `motion_integration_rows` (moored) | `.11d`, `.12d`, `.11s` and `.12s` have the rows of their force files in order, less Ω = 0 for the difference, and are finite; the header has `Left out` naming modes 2 6 (difference) and `Left out: none` (sum); the log has the set-up lines once, the line that leaves out Ω = 0 (rcond < 1e-12, modes 2 6) once, and one `QTF motion: Omega =` line per Ω | exact | exact |
+| `motion_routes_agree` (moored) | The gap \|.11d − .12d\| / max \|.12d\| of the motion against the same gap of the force on the same rows | 4.93e-2 (force 7.39e-2) | 9.61e-2 (1.3 × force) |
+| `motion_unmoored_diagonal_absent` | Without the spring the header and log name modes 1 2 6; the surge rows differ from those of the moored run | 5.48e-2 | above 1e-3 |
+
+The motion gap between the routes is smaller than the force gap, so the solve does not amplify the route difference. The fixture has one Ω > 0 (0.25 rad/s) and one sum (1.40 rad/s), so it does not pass through a slow-drift peak.
+
+**Python reference checks.** `truncated_cylinder_reference.py check` has two new checks: `motion_ref_one_dof_limit` (one mode against the closed form, with the conjugate matrix at Ω < 0; 2.1e-16 against 1e-12) and `motion_ref_ab_match` (A and B from the ψ of T against those of the first-order solve; 0.0, the same solve by construction, so it guards the path only). `qtf_compare.py check` has the self-check `motion_compare` ([Python Scripts](../../../docs/python_scripts.md)).
