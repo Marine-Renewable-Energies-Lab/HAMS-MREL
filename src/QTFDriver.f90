@@ -86,11 +86,11 @@ MODULE QTFDriver
    ! C and F and psi on the inner free surface are kept at every one of them, indexed like psi_store. qtf_direct_at_omega
    ! solves every difference pair and every sum pair of an Omega with one factorisation, the sum pairs in a
    ! direct_at_omega call of their own, so that the difference results keep the bits of a run without the sum.
-   ! T+ is symmetric, T+(i, b1, j, b2) = T+(j, b2, i, b1) (pair_plus; ruling R6 of the plan), so only the canonical half of
+   ! T+ is symmetric, T+(i, b1, j, b2) = T+(j, b2, i, b1) (pair_plus), so only the canonical half of
    ! the sum pairs is solved (qtf_direct_sum_pairs: i < j, or i = j with b1 <= b2) and each result fills both slots of
    ! tdir_sum. qtf_finish then writes QTF_Direct.12s: the rows of .10s whose sum is kept (sum_pair_index > 0), in its
    ! order, each .10s + T+_dir, the diagonal included (Omega = 2 omega_i is a regular pair of the sum). It also computes
-   ! the indirect sum load T+_pot of the same pairs from the same psi (potential_part_sum, into tpot_sum; ruling R1), and
+   ! the indirect sum load T+_pot of the same pairs from the same psi (potential_part_sum, into tpot_sum), and
    ! with write_terms >= 1 writes it beside the parts of T+_dir in QTF_DirectTermsSum.txt, the in-run check of .12s.
    ! Phase 6b: the same T+_pot is computed with qtf_direct = 0, where no direct solve runs (the radiation-only solves
    ! give the same psi at the sum frequencies), and qtf_finish writes QTF_Indirect.11s, the rows of .10s whose sum is kept
@@ -101,14 +101,14 @@ MODULE QTFDriver
    ! Phase 6c, qtf_motion = 1: the second-order motion xi2 of the free bodies at every row of .11d and .11s (and with
    ! qtf_direct = 1 of .12d and .12s), from the force of that row: per Omega of the list, the added mass and damping from
    ! psi (radiation_coefficients of QTFMotion), the matrix of the equation of motion with the body matrices that qtf_init
-   ! is given (mass, hydrostatic restoring, external stiffness and linear damper: B(Omega) + BLNR only, ruling R5) and one
+   ! is given (mass, hydrostatic restoring, external stiffness and linear damper: B(Omega) + BLNR only) and one
    ! solve over every pair of that Omega, per kernel and route (motion_part, into xi2 and xi2_sum). On the difference
-   ! diagonal Omega = 0 the equation is static, (C + K_ext) xi2 = F (R6). An Omega whose matrix has rcond < 1e-12 is logged
-   ! with the modes without restoring, and its rows are left out of the motion files (R6). qtf_finish writes
+   ! diagonal Omega = 0 the equation is static, (C + K_ext) xi2 = F. An Omega whose matrix has rcond < 1e-12 is logged
+   ! with the modes without restoring, and its rows are left out of the motion files. qtf_finish writes
    ! QTF_Motion.11d, .11s (and .12d, .12s): the rows of the force file in its order, scaled by A^2/L (translations) and
-   ! A^2/L^2 (rotations) and conjugated as .10d (R4), after a header that names the route and what is left out. A fixed
+   ! A^2/L^2 (rotations) and conjugated as .10d, after a header that names the route and what is left out. A fixed
    ! body (motion_state = fixed) gets none: qtf_init logs it and allocates nothing for the motion.
-   ! With qtf_field = 1 and qtf_direct = 1 the radiated wave of that motion also goes into QTF_Field.txt (R7): at each
+   ! With qtf_field = 1 and qtf_direct = 1 the radiated wave of that motion also goes into QTF_Field.txt: at each
    ! Omega qtf_direct_at_omega takes psi_j at the field points (psi_at_points, into mot_psi_pts), and qtf_finish, after the
    ! motion, adds phi_R = sum_j (-i Omega xi_j) psi_j of the direct route to the direct part of every row whose Omega has a
    ! regular matrix (motion_field_part; QTFField has the forms and the conjugation of Omega < 0).
@@ -186,7 +186,7 @@ MODULE QTFDriver
    ! forcing (tdir_fs), the third column pair of QTF_DirectTerms.txt
    COMPLEX(8), ALLOCATABLE :: tdir_fs(:, :, :, :)                       ! as tdir
    LOGICAL :: direct_terms = .FALSE.                     ! QTF_DirectTerms.txt is written
-   ! The sum frequency (Phase 7c-2): T+_dir and T+_pot of each pair, both slots of a symmetric pair filled (R6), and with
+   ! The sum frequency (Phase 7c-2): T+_dir and T+_pot of each pair, both slots of a symmetric pair filled, and with
    ! write_terms >= 1 the parts of T+_dir, as those of tdir, for QTF_DirectTermsSum.txt
    COMPLEX(8), ALLOCATABLE :: tdir_sum(:, :, :, :), tpot_sum(:, :, :, :)          ! (6*nbody, nfreq, nfreq, heading pairs)
    COMPLEX(8), ALLOCATABLE :: tdir_sum_i2(:, :, :, :), tdir_sum_d(:, :, :, :), tdir_sum_fs(:, :, :, :)   ! as tdir_sum
@@ -382,8 +382,8 @@ CONTAINS
          IF (st /= 0) CALL out_of_memory(body=.TRUE.)
          tdir = (0D0, 0D0)
       END IF
-      ! The indirect sum load tpot_sum (R1) comes with the sum, with or without the direct solve (Phase 6b); the direct
-      ! one, tdir_sum (R6), only with qtf_direct = 1; with write_terms >= 1 also the parts of tdir_sum for
+      ! The indirect sum load tpot_sum comes with the sum, with or without the direct solve (Phase 6b); the direct
+      ! one, tdir_sum, only with qtf_direct = 1; with write_terms >= 1 also the parts of tdir_sum for
       ! QTF_DirectTermsSum.txt
       IF (body_active .AND. sum_on) THEN
          ALLOCATE (tpot_sum(6*nbody, nfreq, nfreq, heading_pairs(nbeta)), STAT=st)
@@ -574,7 +574,7 @@ CONTAINS
       END SUBROUTINE check_pairs
 
       SUBROUTINE sum_warnings(w)
-         ! The log of what the sum leaves out (rulings R2 and R5, docs/developer_documentation.md, Phase 7c-2)
+         ! The log of what the sum leaves out (docs/developer_documentation.md, Phase 7c-2)
          REAL(8), INTENT(IN) :: w(:)
          INTEGER :: i, j, nleft, ntot
          CHARACTER(LEN=40) :: left_out, also   ! the files of the sum this run writes: the first, and the one after it
@@ -649,7 +649,7 @@ CONTAINS
 
    REAL(8) FUNCTION irregular_frequency_estimate(geom, g)
       ! Estimate of the lowest irregular frequency (rad/s) of the closed waterline loops of geom, for the cutoff of the sum
-      ! frequencies (ruling R2): the minimum over the loops of every body of sqrt(g j01 / a_eq), with j01 = 2.404826 the first
+      ! frequencies: the minimum over the loops of every body of sqrt(g j01 / a_eq), with j01 = 2.404826 the first
       ! zero of J_0 and a_eq = sqrt(A / pi), A the shoelace area of the loop. Why: for a wall-sided hull the interior
       ! eigenfunction J_m(kr) sinh k(z + d) has omega^2 = g k coth(k d) with coth >= 1 [derived], so omega^2 >= g k;
       ! by Faber-Krahn the disc of equal area has the smallest first Dirichlet eigenvalue (Polya and Szego, 1951), so
@@ -1334,8 +1334,8 @@ CONTAINS
 
    SUBROUTINE qtf_direct_sum_pairs(omega, pairs)
       ! The canonical half of the sum pairs whose omega_i + omega_j is the sum frequency omega (sum_pair_index), as
-      ! pairs(4, npair) = frequency and heading of state 1, then of state 2, in the store: i < j, or i = j with b1 <= b2
-      ! (ruling R6). T+ is symmetric (pair_plus = (f1 g2 + f2 g1)/4 in every term, and the sum Omega and psi do not depend
+      ! pairs(4, npair) = frequency and heading of state 1, then of state 2, in the store: i < j, or i = j with b1 <= b2.
+      ! T+ is symmetric (pair_plus = (f1 g2 + f2 g1)/4 in every term, and the sum Omega and psi do not depend
       ! on the order), so the other half is the same pair and is not solved again. The diagonal i = j, b1 = b2 is a pair
       ! of its own. Empty unless the sum is on (with or without qtf_direct, Phase 6b), or before the frequencies are kept.
       REAL(8), INTENT(IN) :: omega
@@ -1367,7 +1367,7 @@ CONTAINS
 
    SUBROUTINE qtf_direct_sum_load(i, b1, j, b2, t)
       ! T+_dir(6 nbody) of the stored pair (frequency i, heading b1; frequency j, heading b2) as tdir_sum holds it, for the
-      ! tests of the slots (R6); zero before the direct solve at omega_i + omega_j, and when the sum is off
+      ! tests of the slots; zero before the direct solve at omega_i + omega_j, and when the sum is off
       INTEGER, INTENT(IN) :: i, b1, j, b2
       COMPLEX(8), INTENT(OUT) :: t(:)
 
@@ -1411,8 +1411,8 @@ CONTAINS
       ! The direct method at the frequency omega of the list (qtf_direct = 1): T_dir of every difference pair with that
       ! Omega (qtf_direct_pairs) and, with the sum on (Phase 7c-2), T+_dir of the canonical half of its sum pairs
       ! (qtf_direct_sum_pairs), with one factorisation: two direct_at_omega calls, the difference columns as without the
-      ! sum, then the sum columns. The difference results go into tdir, each sum result into both slots of tdir_sum
-      ! (R6). Call after the frequency loop, when every frequency is kept, with the solver at omega after its radiation solve
+      ! sum, then the sum columns. The difference results go into tdir, each sum result into both slots of tdir_sum.
+      ! Call after the frequency loop, when every frequency is kept, with the solver at omega after its radiation solve
       ! (RadiationOnlySolves). Pairs with NaN or Inf are counted in qtf_nonfinite_pairs() and logged. npair, nsum and
       ! seconds (optional): the number of difference and of sum pairs solved, and the times of direct_at_omega (4: forcing,
       ! B2, solve and load, field evaluation), for the log. A frequency with neither kind of pair is only marked as done.
@@ -1520,13 +1520,13 @@ CONTAINS
          END IF
          IF (qfield_direct_active()) THEN
             ! qtf_field = 1 with qtf_direct = 1: phi_D of every sum pair at the field points for the sum rows of
-            ! QTF_Field.txt (QTFField), body-forced as for the difference columns (R4). Not conjugated: Omega+ > 0.
+            ! QTF_Field.txt (QTFField), body-forced as for the difference columns. Not conjugated: Omega+ > 0.
             CALL qfield_direct_points(xfield)
             ALLOCATE (phi_field(SIZE(xfield, 2), ns))
             CALL direct_at_omega(mesh, geom, omega, store, store_wl, ps, t, omega_tol=psi_tol, seconds=sec2, parts=parts, &
                                  fs=fs, kernels=kernels, factored=nd > 0, field_points=xfield, phi_field=phi_field)
             DO p = 1, ns
-               ! One call fills both slots of the symmetric pair (R6)
+               ! One call fills both slots of the symmetric pair
                CALL qfield_keep_direct(ps(1, p), ps(2, p), ps(3, p), ps(4, p), phi_field(:, p), KERNEL_SUM)
             END DO
             DEALLOCATE (phi_field, xfield)
@@ -1536,7 +1536,7 @@ CONTAINS
          END IF
          sec = sec + sec2
          DO p = 1, ns
-            ! Both slots of the symmetric pair (R6): (i, b1, j, b2) and its mirror (j, b2, i, b1), the same values
+            ! Both slots of the symmetric pair: (i, b1, j, b2) and its mirror (j, b2, i, b1), the same values
             h = heading_pair(ps(2, p), ps(4, p))
             hm = heading_pair(ps(4, p), ps(2, p))
             tdir_sum(:, ps(1, p), ps(3, p), h) = t(:, p)
@@ -1554,7 +1554,7 @@ CONTAINS
             IF (.NOT. ALL(IEEE_IS_FINITE(REAL(t(:, p), 8)) .AND. IEEE_IS_FINITE(AIMAG(t(:, p))))) nbad = nbad + 1
          END DO
       END IF
-      ! Phase 6c: psi_j at the field points at this Omega, for the radiated wave of the motion in QTF_Field.txt (R7); after
+      ! Phase 6c: psi_j at the field points at this Omega, for the radiated wave of the motion in QTF_Field.txt; after
       ! the direct solves, whose results it does not touch. Its time goes with the field evaluation (sec(4)).
       IF (mot_active .AND. qfield_radiated_active()) CALL keep_psi_points()
       IF (PRESENT(npair)) npair = nd
@@ -1615,7 +1615,7 @@ CONTAINS
 
    SUBROUTINE psi_at_points(mesh, psi, omega, points, psi_pts)
       ! The radiation potentials psi_j (6 nbody columns) at the field points, e^{-i omega t}, by Green's formula with their
-      ! body values and dpsi_j/dn = n_j: direct_field_at_points of QTFDirect on the 6 nbody columns (ruling R7 of Phase 6c).
+      ! body values and dpsi_j/dn = n_j: direct_field_at_points of QTFDirect on the 6 nbody columns.
       !   psi      (n, 6 nbody)    radiation_psi at omega on the full panels, as psi_store holds it
       !   points   (3, npt)        points in the fluid off the hull, full coordinates
       !   psi_pts  (npt, 6 nbody)  out
@@ -2188,7 +2188,7 @@ CONTAINS
                      IF (pair_m(i, j) /= m) CYCLE
                      ASSOCIATE (s1 => store(i, b1), s2 => store(j, b2))
                         ! phi_I2 with the gravity of the first-order incident wave, which has the k of DISPERSION
-                        ! (wave_gravity): both orders of the incident wave then have one dispersion relation (ruling R8)
+                        ! (wave_gravity): both orders of the incident wave then have one dispersion relation
                         g_wave = wave_gravity(s1%omega, s1%k, s1%h)
                         IF (b2_control .AND. ALLOCATED(edge_w)) THEN
                            CALL potential_pair(mesh, geom, s1, s2, store_wl(:, i, b1), store_wl(:, j, b2), &
@@ -2271,8 +2271,8 @@ CONTAINS
    END SUBROUTINE potential_part
 
    SUBROUTINE potential_part_sum(mesh, geom, refl)
-      ! The indirect sum load T+_pot (Phase 7c-2, ruling R1 of its plan) of the canonical half of the sum pairs
-      ! (qtf_direct_sum_pairs), Omega by Omega over the sum frequencies of the list, into both slots of tpot_sum (R6):
+      ! The indirect sum load T+_pot (Phase 7c-2) of the canonical half of the sum pairs
+      ! (qtf_direct_sum_pairs), Omega by Omega over the sum frequencies of the list, into both slots of tpot_sum:
       ! potential_pair with KERNEL_SUM from the same psi, grad psi, psi at the waterline, psi on C and F and psi on the
       ! inner free surface as potential_part, indexed by the union list, and with qtf_terms = full the free-surface terms
       ! of fs_pair_terms with KERNEL_SUM (ordered w1 >= w2 there, no conjugate on the swap). With write_terms >= 1 every
@@ -2281,7 +2281,7 @@ CONTAINS
       ! mirror (j, b2, i, b1) both have a row, with the same values. With write_terms >= 1 the five body terms and with
       ! full FS_inner and FS_outer of every such row also go to QTF_PotentialTermsSum.txt (Phase 6b), in the same order,
       ! with or without the direct solve. Nothing here reads a direct-solve store (tdir_sum_* only for QTF_DirectTermsSum.txt),
-      ! so the two routes fill the same slots of tpot_sum from the same psi (R2). Stops if psi of a needed Omega, or a
+      ! so the two routes fill the same slots of tpot_sum from the same psi. Stops if psi of a needed Omega, or a
       ! free-surface field, was not stored. Pairs with NaN or Inf are counted in qtf_nonfinite_pairs() and logged per Omega.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
@@ -2338,7 +2338,7 @@ CONTAINS
             j = pairs(3, p)
             b2 = pairs(4, p)
             ASSOCIATE (s1 => store(i, b1), s2 => store(j, b2))
-               ! phi_I2 with the gravity of the first-order incident wave, as potential_part (ruling R8 of Phase 6)
+               ! phi_I2 with the gravity of the first-order incident wave, as potential_part
                g_wave = wave_gravity(s1%omega, s1%k, s1%h)
                IF (b2_control .AND. ALLOCATED(edge_w)) THEN
                   CALL potential_pair(mesh, geom, s1, s2, store_wl(:, i, b1), store_wl(:, j, b2), psi_store(:, :, m), grad, &
@@ -2478,11 +2478,11 @@ CONTAINS
    END SUBROUTINE free_motion_stores
 
    SUBROUTINE motion_field_part()
-      ! The radiated wave of the second-order motion at the field points (R7), after qtf_motion_part: for every row of
+      ! The radiated wave of the second-order motion at the field points, after qtf_motion_part: for every row of
       ! QTF_Field.txt with a direct part (K = 1: omega_i /= omega_j within qtf_max_dw, the pairs of qtf_direct_pairs; K = 2:
       ! the kept sums, sum_pair_index > 0) whose Omega has a regular matrix (mot_ok), phi_R = radiated_potential(Omega,
       ! xi, psi at the points) with Omega signed and xi of the direct route (route 2, QTF_Motion.12d and .12s, whose force
-      ! is the one of the direct part), handed to qfield_add_radiated. A row of an Omega left out of the motion (R6) gets
+      ! is the one of the direct part), handed to qfield_add_radiated. A row of an Omega left out of the motion gets
       ! none, so QTF_Field.txt marks it has_rad = 0. The difference diagonal has no direct part (and phi_R = 0 at
       ! Omega = 0). No-op unless QTFField takes the radiated wave.
       COMPLEX(8), ALLOCATABLE :: phi_r(:)
@@ -2545,17 +2545,17 @@ CONTAINS
    END SUBROUTINE motion_field_part
 
    SUBROUTINE qtf_motion_part(mesh, geom)
-      ! The second-order motion of every row of the difference and the sum files (Phase 6c, rulings R4 to R6 of its plan),
+      ! The second-order motion of every row of the difference and the sum files (Phase 6c),
       ! Omega by Omega, into xi2 and xi2_sum. Call after potential_part, potential_part_sum and the direct solves, which
       ! fill the forces; qtf_finish does. Per Omega of the list with rows: A and B from psi (radiation_coefficients, with
       ! the rho of the states), the matrix of (2) of QTFMotion (motion_matrix), and per kernel and route one solve over the
       ! force columns of all the pairs of that Omega (motion_solve_omega). Each Omega is logged with its rcond; one below
       ! 1e-12 (mot_ok false) also with the modes without restoring, and its rows are not written.
       !
-      ! Omega = 0, the difference diagonal (R6): the equation is static, (C + K_ext) xi2 = F. motion_matrix at Omega = 0
+      ! Omega = 0, the difference diagonal: the equation is static, (C + K_ext) xi2 = F. motion_matrix at Omega = 0
       ! gives exactly that: the -Omega^2 (M + A) and -i Omega (B + B_ext) terms vanish, so A and B are passed as zero.
       !
-      ! The sign of Omega (R4). The force of the difference row (i, j) is the coefficient of e^{-i Omega t} with
+      ! The sign of Omega. The force of the difference row (i, j) is the coefficient of e^{-i Omega t} with
       ! Omega = omega_i - omega_j, negative when omega_i < omega_j. The matrix of (2) at Omega < 0 needs A and B at -|Omega|.
       ! The radiation force (Omega^2 A + i Omega B) xi is the transform of a real response, so its coefficient at -Omega is
       ! the conjugate of that at Omega: A and B are even in Omega. With M, C, K_ext and B_ext real, the matrix at -|Omega| is
@@ -2686,7 +2686,7 @@ CONTAINS
 
    FUNCTION free_modes(lhs) RESULT(free)
       ! The modes without restoring in a singular matrix of the motion: those whose row or column is zero to rounding
-      ! (1e-12 of the largest entry), as surge, sway and yaw of C + K_ext for an unmoored body (R6)
+      ! (1e-12 of the largest entry), as surge, sway and yaw of C + K_ext for an unmoored body
       COMPLEX(8), INTENT(IN) :: lhs(:, :)
       LOGICAL :: free(SIZE(lhs, 1))
       REAL(8) :: bound

@@ -38,7 +38,7 @@ SUBMODULE (QTFDirect) QTFDirectField_sm
    ! (WaterlineField has the same free term for the first-order field).
    !
    ! The right side. dphi_D/dn = b on S splits as in direct_at_omega: the panel part vf = B1 + B3 - dphi_I2/dn
-   ! (pair_forcing) and B2 = -n.[(X.grad)u], which enters in the Stokes form of QTFDirect (ruling R7-1):
+   ! (pair_forcing) and B2 = -n.[(X.grad)u], which enters in the Stokes form of QTFDirect:
    !    int_S G B2 dS = -r_B2,   r_B2 = int_S G n.[(X.grad)u] dS = b2_stokes_at_point(x)
    ! with fresh panel integrals at x (green_panel_integrals; no row, no lid_row: x is not a stored collocation or lid
    ! point), the same sign as direct_rhs_b2_block, whose right side is -r. G is smooth on S for x off S, so the Stokes form

@@ -98,7 +98,7 @@ QTF_FS_MAIN_FREQUENCIES = (0.2, 0.8, 1.0)
 QTF_FS_DEPTH = 20.0
 QTF_FS_RADIUS = 10.0
 
-# The direct method at the sum frequency (qtf_direct = 1, qtf = 2 or 3, QTF_Direct.12s), Phase 7c-2 Task 6. The rounded hull
+# The direct method at the sum frequency (qtf_direct = 1, qtf = 2 or 3, QTF_Direct.12s), Phase 7c-2. The rounded hull
 # of qtf_direct_round has its cutoff of the sum (the estimate of the lowest irregular frequency, 1.536 rad/s) between
 # 0.70 + 0.70 and 0.70 + 0.95, so only Omega = 1.40 rad/s survives. With IRSP = 1 no cutoff applies (qtf_directsum_irsp:
 # the lid hull of qtf_directfs_irsp, depth 20, Omega = 1.90, 2.05 and 2.20 rad/s). The half mesh and its whole mesh are the
@@ -115,7 +115,7 @@ QTF_FS_TWO_SPACING = 4.0   # point spacing of FSInnerMesh.pnl away from the wate
 # IRSP = 1 against IRSP = 0 on a finer mesh of the same hull (960 panels): the lid changes the first-order solution at the
 # discretisation level, and the free-surface terms with it (measured 3.0e-3 at 220 panels, 9.6e-4 at 512, 6.3e-4 at 960)
 QTF_FS_IRSP_MESH = dict(TWO_ROUND_MESH, ntheta=48, nz=10, narc=5, nr=5)
-# The direct method with the free-surface forcing (qtf_direct = 1, qtf_terms = full), Phase 7b Task 5: the rounded hull of
+# The direct method with the free-surface forcing (qtf_direct = 1, qtf_terms = full), Phase 7b: the rounded hull of
 # qtf_round_body (480 panels) at 0.70, 0.95 and 1.10 rad/s, whose pairs within 0.3 rad/s are Omega = 0.25 and 0.15 rad/s,
 # the same on its half mesh, with IRSP = 1 (the lid of qtf_round_body_irsp, 0.95 and 1.10 rad/s), and the two hulls of
 # qtf_fs_two with FSInnerMesh.pnl. 8 threads. In 20 m of water instead of the 100 m of qtf_round_body: at 100 m the run took
@@ -525,7 +525,7 @@ def write_qtf_body_fixtures(data, both):
 
 def write_qtf_direct_fixtures(data, body):
     """Fixtures of the direct method (qtf_direct = 1, QTF_Direct.12d) against the indirect one (QTF_Indirect.11d with
-    qtf_b2 = body) of the same run, Phase 7a Task 5. Each is an indirect fixture with qtf_direct = 1, or a variant of one."""
+    qtf_b2 = body) of the same run, Phase 7a. Each is an indirect fixture with qtf_direct = 1, or a variant of one."""
     direct = dict(body, qtf_direct=1)
     # The rounded hull of qtf_round_body (480 panels, three frequencies, two headings)
     target = case_dir(data, "qtf_direct_round")
@@ -566,7 +566,7 @@ def write_qtf_direct_fixtures(data, body):
     write_second_order(os.path.join(target, "SecondOrder.in"),
                        **dict(direct, mean_drift=1, velocity_method="source", qtf_field=1))
     # The same hull, six field points (three on z = 0, so elevation points) and the difference QTF, with qtf_direct = 1 and
-    # with qtf_direct = 0 (Phase 7c-1 Task 5): the second run is the independent reference of the partial columns, and
+    # with qtf_direct = 0 (Phase 7c-1): the second run is the independent reference of the partial columns, and
     # qtf_direct_field_six/expected_direct.txt holds the direct part of the solved rows (extract_direct_field_expected.py)
     for name, mode in (("qtf_direct_field_six", 1), ("qtf_direct_field_six_off", 0)):
         target = case_dir(data, name)
@@ -938,7 +938,7 @@ def write_control_physics(data):
 
 
 def write_qtf_directsum_fixtures(data):
-    """Fixtures of the direct method at the sum frequency (QTF_Direct.12s), Phase 7c-2 Task 6: qtf_directsum_round,
+    """Fixtures of the direct method at the sum frequency (QTF_Direct.12s), Phase 7c-2: qtf_directsum_round,
     qtf_directsum_irsp, qtf_directsum_half and its whole mesh qtf_directsum_halfref, qtf_directsum_d1 and _d3 (qtf = 1 and
     3, the difference outputs must be the same), and qtf_directsum_field."""
     inputs = ("HullMesh.pnl", "Hydrostatic.in", "ControlFile.in")
@@ -984,7 +984,7 @@ def write_qtf_directsum_fixtures(data):
 
 
 def write_qtf_indsum_fixtures(data):
-    """Fixtures of the indirect sum frequency QTF (qtf_direct = 0, QTF_Indirect.11s), Phase 6b Task 3: the 7c-2 sum fixtures
+    """Fixtures of the indirect sum frequency QTF (qtf_direct = 0, QTF_Indirect.11s), Phase 6b: the 7c-2 sum fixtures
     with qtf_direct = 0 (qtf_indsum_round, _irsp, _half, _halfref), qtf_indsum_gmres and _gmres_dir (qtf_indsum_irsp with the
     GMRES solve, Solver_type 2, without and with the direct solve), and the two hulls of qtf_directfs_two with qtf = 3:
     qtf_indsum_two, its qtf_direct = 1 twin qtf_indsum_two_dir and its qtf = 1 twin qtf_indsum_two1. The two-hull

@@ -212,7 +212,7 @@ CONTAINS
       deep_logged = .FALSE.
       IF (opts%qtf_b2_given .AND. .NOT. (opts%qtf_terms >= QTF_TERMS_BODY .AND. opts%qtf >= 1)) THEN
          ! B2 of the difference QTF (qtf = 1 or 3) and of T+_pot of the sum QTF (qtf = 2 or 3) both have a surface piece to
-         ! move to C and F. Only qtf_terms below body or qtf = 0 leaves no B2 (user ruling, 2026-11-19: the same input gives
+         ! move to C and F. Only qtf_terms below body or qtf = 0 leaves no B2 (by design: the same input gives
          ! the same .11s with qtf = 2 and 3)
          WRITE (*, '(a)') ' QTF note: qtf_b2 is ignored; it applies with qtf_terms = body or full and qtf = 1, 2 or 3 only.'
       END IF
@@ -401,7 +401,7 @@ CONTAINS
       mb_dfs = 0D0
       IF (fs_terms) THEN
          IF (want_sum .AND. ANY(is_sum)) THEN
-            ! The inner mesh is built for the largest sum frequency of the list (ruling R3 a)
+            ! The inner mesh is built for the largest sum frequency of the list
             CALL fs_setup(opts, inputdir, omegas, MAXVAL(PACK(need, is_sum)))
          ELSE
             CALL fs_setup(opts, inputdir, omegas)
@@ -447,7 +447,7 @@ CONTAINS
             mot_k = KSTF
             mot_b = BLNR
          END IF
-         ! R5: B_quad is a linearisation on |xi1| with no second-order form, so the motion uses B(Omega) + BLNR only
+         ! B_quad is a linearisation on |xi1| with no second-order form, so the motion uses B(Omega) + BLNR only
          IF (multi_arrays) THEN
             bqdr_on = ANY(BQDR_MULTI /= 0D0)
          ELSE
@@ -506,7 +506,7 @@ CONTAINS
          END IF
       END IF
       IF (opts%qtf_direct == 1) THEN
-         ! The sharp-edge mask of the B2 right side, once for the run (ruling M9 of Phase 7a)
+         ! The sharp-edge mask of the B2 right side, once for the run
          CALL direct_setup(mesh, opts%qtf_edge_angle, nmask)
          WRITE (*, '(a,I0,a,I0,a,F6.1,a)') ' QTF direct: phi_D solved at every difference frequency; ', nmask, ' of ', &
             mesh%n, ' panels at sharp edges (qtf_edge_angle', opts%qtf_edge_angle, ') keep the one-point rule in B2.'
@@ -536,8 +536,8 @@ CONTAINS
       ! (fs_coverage_check): it must reach the circle, since it has no sliver; its coverage goes to the log.
       ! omega_sum_max (optional, Phase 7c-2 with the sum on): the largest sum frequency of the list. The partial waves of
       ! psi at Omega+ and the inner integral of psi at Omega+ then need the finer scale lambda(Omega+): the mesh is built
-      ! for max(omega_max, omega_sum_max) and M takes its wave number (ruling R3 a and b). The offsets of phi_zz keep the
-      ! first-order scale (R3 c), step x max(psize, lambda(omega_max)/10), when the generated mesh got finer for the sum,
+      ! for max(omega_max, omega_sum_max) and M takes its wave number. The offsets of phi_zz keep the
+      ! first-order scale, step x max(psize, lambda(omega_max)/10), when the generated mesh got finer for the sum,
       ! i.e. with qtf_fs_panel = 0. With qtf_fs_panel given or a file mesh the mesh is that of the difference run, and
       ! the offsets stay step x psize, so that the difference files of qtf = 3 equal those of qtf = 1 (plan, global
       ! constraints). Direct versus indirect sum load on a mesh built for the first-order omega_max: 1.5e-2, on one built
@@ -642,7 +642,7 @@ CONTAINS
          CALL fs_waterline_fit_setup(mesh, geom, fs_pts, fs_step, fs_fit)
       END IF
       ! Within one waterline segment of a waterline the stencil differences the panel field below its smooth scale; those
-      ! points take a fit from [d0, 3 d0] instead (fs_waterline_fit_setup, Phase 7c-2 fix wave)
+      ! points take a fit from [d0, 3 d0] instead (fs_waterline_fit_setup, Phase 7c-2)
       WRITE (*, '(a,I0,a,I0,a,I0,a)') ' QTF free surface: ', fs_fit%n, ' inner points within one waterline segment of a'// &
          ' waterline take the fit of their fields from ', fs_fit%n*fs_fit%nfit, ' samples (', fs_fit%nskip, &
          ' kept on the stencil: another waterline within one segment of their samples)'
@@ -1089,7 +1089,7 @@ CONTAINS
    LOGICAL FUNCTION uses_b2_control(opts)
       ! qtf_b2 = control applies: B2 of the potential part of the difference QTF (qtf = 1 or 3) and of the sum QTF T+_pot
       ! (qtf = 2 or 3, QTF_Indirect.11s) is computed with its surface piece on C and F. The same input then gives the same
-      ! .11s with qtf = 2 and 3 (user ruling, 2026-11-19). The fields of potential_part_sum are those of potential_part:
+      ! .11s with qtf = 2 and 3. The fields of potential_part_sum are those of potential_part:
       ! the velocity on C and F of every kept frequency, and grad psi_k there at every psi frequency, sum frequencies too.
       TYPE(so_options), INTENT(IN) :: opts
 

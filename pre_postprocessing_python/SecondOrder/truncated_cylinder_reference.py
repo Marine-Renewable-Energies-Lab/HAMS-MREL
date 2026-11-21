@@ -2538,7 +2538,7 @@ def qtf_table(cyl, frequencies, motion, n_modes, p_max, orders, xr=(0.0, 0.0, 0.
 
     Phase of the wave. The solutions here take HAMS's VINP as the incident potential, so their wave has elevation
     eta_I = -i A e^(i k x) (module docstring, "Incident wave"), while the QTFs of HAMS-MREL and Nemoh are per unit
-    amplitude of a wave with eta_I = A e^(i k x) at the origin (spec 5.2: the physical potential is i VINP). Every
+    amplitude of a wave with eta_I = A e^(i k x) at the origin (the physical potential is i VINP). Every
     first-order quantity here is therefore -i times that of the unit wave. The factor cancels in T- (one factor
     conjugated) and in the mean drift, but gives (-i)**2 = -1 in T+, so the sum rows are multiplied by -1."""
     quad = body_quadrature(cyl, NEAR_QUADRATURE["n_corner"], NEAR_QUADRATURE["n_far"])
@@ -2602,7 +2602,7 @@ def run_qtf(out, motions=("fixed", "free"), frequencies=QTF_FREQUENCIES, resolut
 # Fortran code; module docstring, "QTF potential part".
 
 # The quadrature of the potential part (corner nodes, far nodes): NEAR_QUADRATURE's (12, 8) leaves 4.9e-4 of B2 M_y in
-# the piece (n x grad psi).(X x u), against (48, 32), and (24, 16) 3e-5 (check_potential_convergence; Task 6 fix report)
+# the piece (n x grad psi).(X x u), against (48, 32), and (24, 16) 3e-5 (check_potential_convergence)
 POTENTIAL_QUADRATURE = (24, 16)
 QTF_MAX_DW = 0.3                         # the qtf_max_dw of the HAMS cases: pairs with |omega_i - omega_j| above it are left out
 POTENTIAL_TERMS = ("FK", "ID", "B1", "B2", "B3")   # the order of QTF_PotentialTerms.txt
@@ -3188,7 +3188,7 @@ def _fs_outer_moments(grid, si, sj, plus=False):
 FS_CLASSES = ((1, -1), (-1, -1), (1, 1))
 # The sum kernel (field j unconjugated) flips the sign of s_j: kappa_a = k_i + k_j + nu (S_i S_j and both H1 halves),
 # kappa_b = -k_i + k_j + nu (the H2 half of I_i with S_j), kappa_c = k_i - k_j + nu (S_i with the H2 half of I_j). Each
-# is the class of FS_CLASSES at the same position with s_j -> -s_j; all three are positive (R3 of the 7c-2 plan).
+# is the class of FS_CLASSES at the same position with s_j -> -s_j; all three are positive.
 FS_CLASSES_SUM = ((1, 1), (-1, 1), (1, -1))
 
 
@@ -3912,7 +3912,7 @@ def _sampled_forcing(omega_i, beta_i, omega_j, beta_j, depth, grav, samples=64):
 
 def check_incident2():
     """incident2 (the second-order difference-frequency incident potential of the Formulation) against the values of the
-    Fortran unit test incident2_values (Task 1, src/SecondOrderIncident.f90): abs(coefficient) at heading 0 for
+    Fortran unit test incident2_values (src/SecondOrderIncident.f90): abs(coefficient) at heading 0 for
     (1.0, 0.8) and (1.2, 0.5) rad/s, deep and h = 100 m, g = 9.81, to 1e-10 (deep, exact values) and 5e-7 (h = 100, the
     six printed decimals); the deep-water coefficients themselves, 0.5i and 0.6i (Formulation: they do not vanish for
     the difference frequency), to 1e-10; and the free-surface forcing Q- of the coefficient against the exact forcing
@@ -4126,7 +4126,7 @@ def check_potential_convergence():
     finest rung, orders 30 and (48, 32); the B2 pieces and the coarse columns are printed, not gated. Also check_stokes (b)
     at DEFAULT_RESOLUTION, (24, 16) against (48, 32), below 1e-4. In SLOW_CHECKS: the same columns, run one process
     each, took 25 min for (0.70, 0.95) and 15 min for (0.80, 0.81) on the laptop, check_stokes (b) 4 min (November
-    2026). Measured, against (48, 32) and N 128000 (30, 6, 6): B2 and T_pot within 3.1e-5 and 2.7e-5 (Task 6 fix report).
+    2026). Measured, against (48, 32) and N 128000 (30, 6, 6): B2 and T_pot within 3.1e-5 and 2.7e-5.
     The orders column is exactly 0: X and alpha are of orders 0 and 1, psi_k of order 0 or 1, and phi_I2 is analytic,
     so the theta integrals see the orders 0 ... 2 of u only, and each order is solved on its own; it checks only that
     the higher orders enter nowhere else."""

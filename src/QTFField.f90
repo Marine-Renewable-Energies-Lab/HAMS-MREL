@@ -58,16 +58,16 @@ MODULE QTFField
    !
    ! The sum frequency (Phase 7c-2, qtf = 2 or 3 with qtf_direct = 1). The sum columns of direct_at_omega (kernel = KERNEL_SUM,
    ! Omega = omega_i + omega_j > 0, never conjugated: the ordered pair w1 >= w2 of QTFDriver) go to qfield_keep_direct with the
-   ! kernel. The sum pair is symmetric, phi_D(i, j) = phi_D(j, i) (R6), so one call fills both slots. The pressure and the
+   ! kernel. The sum pair is symmetric, phi_D(i, j) = phi_D(j, i), so one call fills both slots. The pressure and the
    ! elevation are the same forms with the sum Omega, i rho Omega phi_D and (i Omega/g) phi_D, per unit amplitudes; the
    ! physical amplitude is 2 a_i a_j (i /= j) or a_i^2 (i = j), the 5b factors above, applied by the reader as for quad and
    ! pot. A sum row the direct solve did not keep (outside qtf_max_sw, beyond the irregular-frequency cutoff of QTFDriver)
-   ! has 0 and has_direct = 0. The direct part is the body-forced phi_D for both kernels (R4): with qtf_terms = full the
+   ! has 0 and has_direct = 0. The direct part is the body-forced phi_D for both kernels: with qtf_terms = full the
    ! free-surface forcing is left out of the field, as for the difference.
    ! The value with the direct part is the sum of the Re Im of QTF_FieldPartial.txt and Re_dir Im_dir of QTF_Field.txt; the
    ! first file is written as without qtf_direct, to the byte.
    !
-   ! The radiated wave of the second-order motion (Phase 6c, qtf_motion = 1 with qtf_direct = 1, ruling R7 of its plan).
+   ! The radiated wave of the second-order motion (Phase 6c, qtf_motion = 1 with qtf_direct = 1).
    ! A free body moves at Omega with xi (QTF_Motion.12d, .12s: the motion of the direct route, e^{-i Omega t}, unscaled),
    ! and radiates phi_R. With the velocity -i Omega xi_j of mode j and psi_j the unit-velocity radiation potential at Omega
    ! (header of QTFMotion: phi = psi_k (-i Omega xi_k)),
@@ -84,7 +84,7 @@ MODULE QTFField
    ! sum_j (-i Omega xi_j) conj(psi_j), which is conj(phi_R of (j, i)): the row is conj of its mirror, as phi_D, and
    ! field_direct with the signed Omega gives p_R(i, j) = conj(p_R(j, i)), as for the direct rows. The file conjugates
    ! once more (e^{+i omega t}, write_field_row), as for every column.
-   ! Rows left out of the motion (an Omega whose matrix has rcond < 1e-12, R6, as QTF_Motion leaves them out) get no
+   ! Rows left out of the motion (an Omega whose matrix has rcond < 1e-12, as QTF_Motion leaves them out) get no
    ! phi_R. QTF_Field.txt then has the column has_rad after has_direct, as has_direct marks the rows without a direct part:
    ! 1 where Re_dir Im_dir include phi_R, 0 where they do not (no direct part, or the motion is left out). With
    ! qtf_motion = 0 neither the column nor the header lines change: the file is that of Phase 7c-2, to the byte.
@@ -346,7 +346,7 @@ CONTAINS
       direct_diff = opts%qtf_direct == 1 .AND. (opts%qtf == 1 .OR. opts%qtf == 3)
       direct_sum = opts%qtf_direct == 1 .AND. (opts%qtf == 2 .OR. opts%qtf == 3)
       direct_on = direct_diff .OR. direct_sum
-      ! The radiated wave needs the direct part (R7) and a free body: a fixed one has no motion (QTFDriver computes none)
+      ! The radiated wave needs the direct part and a free body: a fixed one has no motion (QTFDriver computes none)
       radiated_on = direct_on .AND. opts%qtf_motion == 1 .AND. .NOT. opts%motion_fixed
       nbeta = SIZE(beta_in_deg)
       npt = pts%n
@@ -437,7 +437,7 @@ CONTAINS
       ! Keeps phi_D at the points (npt) of the pair of frequencies i, j (in the order of qfield_keep) and headings b1, b2:
       ! as direct_at_omega returns it, e^{-i omega t}, conjugated for omega_i < omega_j (header). No-op unless the direct part
       ! is kept. The heading pair must be one of the QTFs (b1 = b2 unless mean_drift = 2). kernel (default KERNEL_DIFF, as
-      ! before) = KERNEL_SUM keeps the sum column, not conjugated, in both slots (i, b1, j, b2) and (j, b2, i, b1) (header, R6).
+      ! before) = KERNEL_SUM keeps the sum column, not conjugated, in both slots (i, b1, j, b2) and (j, b2, i, b1) (header).
       INTEGER, INTENT(IN) :: i, b1, j, b2
       COMPLEX(8), INTENT(IN) :: phi_d(:)
       INTEGER, INTENT(IN), OPTIONAL :: kernel
@@ -488,7 +488,7 @@ CONTAINS
       ! i2, heading b2) of kernel (KERNEL_DIFF or KERNEL_SUM), and marks the row (has_rad = 1). phi_R is in the form of the
       ! stored phi_D of that row: e^{-i Omega t} at the signed Omega (header). One slot only: for the sum, whose two slots
       ! keep_direct fills with one call, the driver calls this for each slot, with the xi of each. No-op unless the store
-      ! takes the radiated wave. Stops for a row without a direct part (R7: the radiated wave goes only into rows that have
+      ! takes the radiated wave. Stops for a row without a direct part (the radiated wave goes only into rows that have
       ! one) or a row given twice.
       INTEGER, INTENT(IN) :: i1, b1, i2, b2, kernel
       COMPLEX(8), INTENT(IN) :: phi_r(:)
@@ -686,7 +686,7 @@ CONTAINS
                ' sum pairs of QTF_Direct.12s), else 0 with Re_dir = Im_dir = 0 (mean rows and rows outside the direct solve).'
          END IF
          IF (radiated_on) THEN
-            ! The radiated wave (R7): what Re_dir Im_dir add, and the column that marks the rows left out of the motion
+            ! The radiated wave: what Re_dir Im_dir add, and the column that marks the rows left out of the motion
             WRITE (unit, '(a)') '# has_rad: 1 where Re_dir Im_dir also hold the radiated wave of the second-order motion,'// &
                ' i rho Omega phi_R (pressure) and (i Omega/g) phi_R (elevation), phi_R = sum_j (-i Omega xi_j) psi_j, xi of'// &
                ' QTF_Motion.12d (K = 1) or .12s (K = 2); else 0: no direct part, or the Omega of the row is left out of the'// &

@@ -119,7 +119,7 @@ NEMOH_N3 = 0.5e-9
 NEMOH_QTF_N2 = 6.2e-6
 NEMOH_BYTES = 102.0   # per N^2, measured at 1792 panels
 # Snellius time of a Nemoh run over nemoh_seconds: nemoh_sharp_*_m2 (1792 panels, 140 frequencies, DUOK + HASBO) took
-# 2 h 34 min on one thread (job 29017289) against 1.635 h from nemoh_seconds. One point only: an N^3 share above the modelled
+# 2 h 34 min on one thread of fat_genoa against 1.635 h from nemoh_seconds. One point only: an N^3 share above the modelled
 # one would make larger runs slower, which the time limit of twice the estimate covers
 NEMOH_SNELLIUS_FACTOR = 2.567 / 1.635
 
@@ -435,12 +435,12 @@ EDGE_POWERS = (2.5, 3)
 # fixtures of the method
 DIRECT_OPTIONS = dict(qtf_b2="body", qtf_edge_weights="off", qtf_direct=1)
 # The rounded hull of the fixture qtf_direct_round (qtf_round_body: 0.70, 0.95, 1.10 rad/s, headings 0 and 30): 4.0% at
-# 480 panels, 1.27e-2 with 8 bottom rings, 8.1e-3 at 1920 panels (Task 5 scratch runs); m2 and m3 show the plan's 1%
+# 480 panels, 1.27e-2 with 8 bottom rings, 8.1e-3 at 1920 panels (development runs); m2 and m3 show the 1% target
 DIRECT_ROUND_FREQUENCIES = (0.70, 0.95, 1.10)
 # IRSP = 1 across the first irregular frequency of the sharp hull: 1.536 rad/s from J0(ka) = 0 with a = 10 (k = 2.405/a,
 # omega^2 = g k tanh(k T) with tanh(k T) ~ 1, analytic), 1.548 rad/s as IRREGULAR_FREQUENCIES uses it; both lie in the band.
 # The pairs of 0.20 with 1.700 to 1.800 rad/s by 0.005 have Omega = 1.500 to 1.600 by 0.005, so the direct solve at Omega
-# crosses it (the discrete irregular frequency of a mesh lies near, not at, the analytic one; Task 5 found a spike of 15%
+# crosses it (the discrete irregular frequency of a mesh lies near, not at, the analytic one; a development run found a spike of 15%
 # without the lid, 6% at 0.0025 from it, on another hull). The first-order frequencies lie between the first two
 # irregular frequencies (the second near 1.939); the pairs among them add Omega = 0.005 to 0.100. 22 frequencies, 41
 # Omega. Velocity by differencing: velocity_method = source rejects IRSP = 1. q_sharp_direct_irsp0_m1 is the same case
@@ -610,8 +610,8 @@ def qtf_directfs_cases(grid):
     return chosen
 
 
-# The 21-frequency grid of R7, 0.40 to 1.40 rad/s by 0.05 (not the 101 points of QTF_FREQUENCY_RANGE: the sum then costs 3 to 4
-# times more)
+# The 21-frequency grid of the Snellius cases, 0.40 to 1.40 rad/s by 0.05 (not the 101 points of QTF_FREQUENCY_RANGE:
+# the sum then costs 3 to 4 times more)
 QTF_SUM_FREQUENCIES = tuple(round(0.40 + 0.05 * i, 2) for i in range(21))
 # The grid of the second-order motion cases: QTF_SUM_FREQUENCIES plus 1.013 rad/s, so that the pair (0.95, 1.013) has
 # Delta omega = 0.063 rad/s, the slow-drift peak of the 100 s springs (omega_n = 0.0628). Both frequencies lie outside the

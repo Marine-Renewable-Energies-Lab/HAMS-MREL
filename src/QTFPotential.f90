@@ -41,8 +41,8 @@ MODULE QTFPotential
    !
    ! u at the waterline: without u1_wl, u2_wl it is extrapolated along the panel from its centroid value. With a
    ! differenced u the waterline row is fitted one-sided, which limits the line term to O(h) (measured in
-   ! stokes_identity_differenced_velocity). potential_pair therefore passes u at the waterline from waterline_velocity
-   ! (ruling R7): the incident wave exactly; for the disturbance, u_z from the free-surface condition, the normal part from
+   ! stokes_identity_differenced_velocity). potential_pair therefore passes u at the waterline from waterline_velocity:
+   ! the incident wave exactly; for the disturbance, u_z from the free-surface condition, the normal part from
    ! the body condition and the tangential part by differencing phi along the waterline. That is O(h^2)
    ! (stokes_identity_waterline_velocity).
    !
@@ -376,7 +376,7 @@ CONTAINS
 
    SUBROUTINE waterline_velocity(mesh, geom, s, phi_wl, vn_wl, u_wl)
       ! Total first-order velocity at the waterline segment midpoints (z = 0), without the one-sided fit of the waterline
-      ! row (ruling R7). The incident wave is exact. The disturbance phi_p = phi_wl - phi_I has, in the frame of the
+      ! row. The incident wave is exact. The disturbance phi_p = phi_wl - phi_I has, in the frame of the
       ! segment direction t, the horizontal normal nh (wl_nh) and the vertical e_z:
       !   u_z = nu phi_p                                  free-surface condition -omega^2 phi + g phi_z = 0, nu = s%nu
       !   u_t = d(phi_p)/ds along the waterline           3-point differencing of the midpoint values of each loop

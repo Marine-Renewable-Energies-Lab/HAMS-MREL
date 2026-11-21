@@ -90,7 +90,7 @@ MODULE QTFFreeSurface
    ! WLFIT_NB basis functions (WLFIT_KINDS)
    INTEGER, PARAMETER :: WLFIT_N = 6, WLFIT_NB = 4
    ! The basis of each fitted quantity (phi, grad phi, phi_zz), wlfit_basis: 0 keeps the stencil value, 1 is 1, log s, s,
-   ! s log s; 2 is 1, s, s^2, s^3; 3 is 1, s, s log s, s^2. Ruling W4 of the fix wave, from fs_fields_exact_inner and
+   ! s log s; 2 is 1, s, s^2, s^3; 3 is 1, s, s log s, s^2. The choice comes from fs_fields_exact_inner and
    ! fs_fields_exact_integral (sharp m1, exact panel data) over six combinations: phi stays on the stencil (1-2.5 %,
    ! fitting it gave 28 % at 0.1 m), grad and phi_zz take the cubic (within 4.9 % and 3.5 % at 0.1 m from the
    ! waterline; the log basis overfits, phi_zz 35 %), inner sum integral 1.9 % off against 42.7 % without the fit
@@ -638,7 +638,7 @@ CONTAINS
       ! The near-waterline fit (fs_waterline_fit_setup) on the source route: the horizontal gradient of each near-waterline
       ! point of fit replaced by the fit of the perturbation gradient at its samples, fsamp(fit%samp%n, SIZE(states)) the
       ! source-route fields there (fs_inner_fields_source), plus the exact incident gradient at the point. phi keeps its
-      ! value (ruling W4 of the stencil route), and phi_zz is not used on this route, so only the gradient part of the fit
+      ! value, and phi_zz is not used on this route, so only the gradient part of the fit
       ! applies (item 2 of the field-pass speed-ups).
       TYPE(fs_wl_fit), INTENT(IN) :: fit
       TYPE(fs_point_field), INTENT(IN) :: fsamp(:, :)
@@ -679,9 +679,9 @@ CONTAINS
       ! but closer than the clearance asks). A stencil still in a waterplane at the floor stops the run, naming the point.
       ! Frequency-independent: the driver calls it once.
       ! scale (optional, n): the length the step is a fraction of, per point (default pts%psize, bit-identical). With the
-      ! sum frequency the inner mesh is built for the largest sum frequency (ruling R3 a of Phase 7c-2), finer than the
+      ! sum frequency the inner mesh is built for the largest sum frequency, finer than the
       ! first-order fields need; the driver then passes max(psize, lambda(omega_max)/10), omega_max the largest first-order
-      ! frequency (R3 c): the first-order fields vary on lambda(omega), and a smaller offset only raises the rounding of
+      ! frequency: the first-order fields vary on lambda(omega), and a smaller offset only raises the rounding of
       ! the Green function divided by delta^2 (fs_laplace_residual: 1.6e-2 at delta = 0.02 psize against 7.2e-4 at 0.1).
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(cs_points), INTENT(IN) :: pts
@@ -2017,7 +2017,7 @@ CONTAINS
       ! a sum of five products u_t(a) v_t(b): evaluated as such, not by a call per pair (the cost of the moments, test
       ! outer_moments_cost). Against the call per pair the results agree to rounding: 9e-16 relative on fs_outer_pair.
       !
-      ! The sum frequency: called with w2 -> -w2 and c2(b, :) = the modes -b of field 2 itself (R3 of the 7c-2 plan)
+      ! The sum frequency: called with w2 -> -w2 and c2(b, :) = the modes -b of field 2 itself
       ! [derived]. Field 2 is sum_m X2_m e^{im theta}; with c2(b) = X2_{-b} it is sum_b c2(b) e^{-ib theta}, the form of
       ! conj(field 2) above, so its angular derivative is again (-i b / r) c2(b) and mode pair (a, b) again carries
       ! e^{i(a - b) theta}. pair_plus has field 2 where pair_minus has its conjugate: the gradient terms are
@@ -2620,7 +2620,7 @@ CONTAINS
       ! (asinh(tan phi) = ln(sec phi + tan phi).) The sum over the edges is I0 = sum d_e [asinh-type log terms], M likewise,
       ! and val = 2 (q0 I0 + qg . M). d is positive when x is on the inner side of the edge (the left of a counter-clockwise
       ! polygon, found from the sign of the shoelace area). The routine requires x inside the polygon, or on its boundary,
-      ! and the polygon star-shaped about x (ruling C12 of the 7c-1 ledger): then d >= 0 for every edge and every edge adds
+      ! and the polygon star-shaped about x: then d >= 0 for every edge and every edge adds
       ! its triangle (x, P1, P2). An edge with d <= 0 is skipped (CYCLE): for d = 0 (x on the line of the edge, on the edge
       ! or at its vertex) the triangle has zero angle at x and the edge adds 0 to I0 and M, and the term must not be
       ! evaluated (asinh(s/d) would divide by zero; d asinh(s/d) -> 0 as d -> 0). For d < 0 (x outside the polygon, outside
@@ -2668,16 +2668,16 @@ CONTAINS
    END SUBROUTINE fs_local_rankine
 
    SUBROUTINE fs_waterline_fit_setup(mesh, geom, pts, step, fit, scale)
-      ! The near-waterline fit of the inner fields (Phase 7c-2 fix wave, validation-runs/snellius-qtf-directsum/findings.md
-      ! section 9). Within about one hull panel of a waterline the 5-point stencil of fs_inner_fields differences the field
+      ! The near-waterline fit of the inner fields (Phase 7c-2; docs/second_order_validation.md, the free-surface part of
+      ! the sum). Within about one hull panel of a waterline the 5-point stencil of fs_inner_fields differences the field
       ! of constant panels below the scale on which it is smooth (fs_inner_steps shrinks its offsets to millimetres there):
       ! with exact panel data on the sharp m1 hull grad phi is 3-105 % and phi_zz 20-450 % off within 1 m of the
       ! waterline, phi itself 1-2.5 % (fs_fields_exact_inner), and that metre carries a third of the sum free-surface
       ! term at high Omega+. Such a point x gets its perturbation fields from a least-squares fit along the line from the
       ! nearest waterline point p through x, at s = |x - p|: the values at WLFIT_N Gauss-Legendre samples p + s_j e,
       ! s_j in [d0, 3 d0], fitted per quantity to the basis of WLFIT_KINDS (grad phi and phi_zz: 1, s, s^2, s^3; phi keeps
-      ! the stencil, which is accurate there; ruling W4). d0 is the
-      ! length of the nearest waterline segment, about one hull panel (ruling W1: on the sharp m1 hull, 1.96 m segments,
+      ! the stencil, which is accurate there). d0 is the
+      ! length of the nearest waterline segment, about one hull panel (on the sharp m1 hull, 1.96 m segments,
       ! the stencil is within 2 % from 2 m out and 3-26 % off at 1 m). The fit is linear, fit%wt(j, k, q) its weights.
       ! A point whose samples are not clear of every waterplane by d0 (another body, or a concave waterline of the same
       ! body, in the way: closer than d0 the stencil itself is 3-26 % off, and the fit would amplify it, review I-2) keeps

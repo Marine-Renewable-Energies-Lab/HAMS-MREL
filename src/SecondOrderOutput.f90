@@ -80,7 +80,7 @@ CONTAINS
    END SUBROUTINE write_qtf_row
 
    SUBROUTINE write_motion_row(unit, oufr1, oufr2, beta1_deg, beta2_deg, index, xi, refl, rotation)
-      ! Writes one row PER1 PER2 BETA1 BETA2 I Mod Pha Re Im of QTF_Motion.11d/.11s/.12d/.12s (Phase 6c, ruling R4): the
+      ! Writes one row PER1 PER2 BETA1 BETA2 I Mod Pha Re Im of QTF_Motion.11d/.11s/.12d/.12s (Phase 6c): the
       ! second-order motion xi per unit amplitude pair, e^{-i Omega t}, conjugated as write_qtf_row and scaled as WAMIT
       ! scales motions. The force files hold F/(rho g A^2 L^k), k = 1 for a force and 2 for a moment. Dividing by a
       ! stiffness of the size rho g L^2 (translations) or rho g L^4 (rotations) gives a translation of the size A^2/L and
@@ -172,7 +172,7 @@ CONTAINS
    END SUBROUTINE write_direct_terms_header
 
    SUBROUTINE write_direct_sum_terms_header(unit, full)
-      ! The four comment lines of QTF_DirectTermsSum.txt (Phase 7c-2, ruling R1 of its plan): the parts of the direct sum
+      ! The four comment lines of QTF_DirectTermsSum.txt (Phase 7c-2): the parts of the direct sum
       ! load of QTF_Direct.12s beside the indirect sum load of the same run, from the same psi at Omega = omega_i +
       ! omega_j, so that the file checks .12s pair by pair. Columns: the 5 keys, then Re Im of D_I2, D_D and P_BODY (11 in
       ! all, qtf_terms = body), or with full of D_I2, D_D, D_FS, P_BODY and P_FS (15 in all, qtf_terms = full)

@@ -118,7 +118,7 @@ CONTAINS
       ! by ZGECON from the LU factors and ||lhs||_1 (ZLANGE '1' before factoring), LAPACK Users' Guide, 3rd ed. (Anderson
       ! et al. 1999), section 4.4 (error bounds for linear equation solving), and the ZGECON reference.
       ! ok = rcond >= RCOND_MIN. When not ok, or when ZGETRF finds an exactly zero pivot (info > 0, rcond = 0), xi is
-      ! zero (R6): a free body with no restoring in some mode at Omega -> 0 has no bounded motion there, and the caller
+      ! zero: a free body with no restoring in some mode at Omega -> 0 has no bounded motion there, and the caller
       ! flags the frequency instead of writing a meaningless value.
       !   lhs(n, n), forces(n, npair), xi(n, npair)
       COMPLEX(8), INTENT(IN) :: lhs(:, :), forces(:, :)

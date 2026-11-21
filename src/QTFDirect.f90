@@ -26,7 +26,7 @@ MODULE QTFDirect
    ! dphi_D/dn = b on S the right side is r_i = int_S G(x_i, xi) b(xi) dS_xi, b = B - dphi_I2/dn (QTFPotential gives B).
    ! The parts of b known at the panels go through ASSB_RHS_FIELD. This module gives the B2 part.
    !
-   ! B2 = -n.[(X.grad)u] contains grad u, which is not known pointwise at a sharp edge. Ruling R7-1: the Stokes form of
+   ! B2 = -n.[(X.grad)u] contains grad u, which is not known pointwise at a sharp edge, so it takes the Stokes form of
    ! QTFPotential (hessian_term_converted) with psi replaced by G(x_i, .):
    !
    !    int_S G n.[(X.grad)u] dS = int_S [ G n.(alpha x u) + (n x grad_xi G).(X x u) ] dS - oint_Gamma G (X x u).t dl
@@ -95,7 +95,7 @@ MODULE QTFDirect
    ! The right sides of all the pairs of one Omega are then one block: ZGETRS with NRHS = number of pairs, per symmetry
    ! block, as RADIATION_SOLVER. For each pair (s1, s2), Omega = omega_1 - omega_2:
    !    b = B1 + B3 - dphi_I2/dn       panel values, through ASSB_RHS_FIELD
-   !      + B2                          through direct_rhs_b2_block (the Stokes form with G, ruling R7-1)
+   !      + B2                          through direct_rhs_b2_block (the Stokes form with G)
    !    T_dir,k = i Omega rho int_S (phi_I2 + phi_D) n_k dS
    ! with B1, B3, phi_I2 and the n_k (generalized normals of the body of mode k) taken as potential_pair takes them, so
    ! that T_dir equals T_pot of potential_pair (qtf_b2 = body) by Green's theorem, to the mesh error. A pair with Omega < 0
@@ -115,7 +115,7 @@ MODULE QTFDirect
    ! free-surface part, which the indirect method has as FS_inner + FS_outer (fs_pair_terms) by Green's theorem: test
    ! direct_fs_equals_indirect_full pins s_D with it. Without fs nothing of this runs.
    !
-   ! Irregular frequency removal (IRSP = 1, Phase 7a Task 3b). HAMS adds rows at the lid points x_l on the interior
+   ! Irregular frequency removal (IRSP = 1, Phase 7a). HAMS adds rows at the lid points x_l on the interior
    ! waterplane, where the same integral equation holds with 0 in place of 2 pi phi (ASSB_LEFT_IRR, ASSB_RBC_IRR): the
    ! system A x = r has nbase + nlid rows and nbase unknowns, and is solved in the least-squares form of HAMS,
    ! (A^T A) x = A^T r, with CMAT = A^T A factored by ASSB_LEFT_IRR (ISOLV = 1) and A^T r formed as ASSB_RBC_IRR forms
