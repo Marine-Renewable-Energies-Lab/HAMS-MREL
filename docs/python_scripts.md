@@ -28,6 +28,7 @@ SecondOrder/
 ├── make_drift_fixtures.py
 ├── drift_convergence.py
 ├── truncated_cylinder_reference.py
+├── linton_evans_reference.py
 ├── qtf_field_plots.py
 └── qtf_compare.py
 ```
@@ -179,7 +180,7 @@ python make_mesh.py box --lx 20 --ly 10 --draft 5 --nx 10 --ny 5 --nz 4 --out Hu
 
 **`SecondOrder/make_drift_fixtures.py`** regenerates all the `test/data/drift_*` inputs, including `ControlFile.in` and `SecondOrder.in`. See `test/data/drift_cyl/README.md`.
 
-**`SecondOrder/drift_convergence.py`** generates and runs the mean drift convergence study of [Second-order validation](second_order_validation.md#mean-drift-convergence-study) (HAMS-MREL, and Nemoh as a separate program), writes Slurm scripts for it, and collects the results into a table. Run it with `list` to see the cases. Its `collect` step needs `scipy`, for the MacCamy-Fuchs value. With `--qtf-potential` it covers the cases of the [QTF potential part](second_order_validation.md#qtf-potential-part):
+**`SecondOrder/drift_convergence.py`** generates and runs the mean drift convergence study of [Second-order validation](second_order_validation.md#mean-drift-convergence-study) (HAMS-MREL, and Nemoh as a separate program), writes Slurm scripts for it, and collects the results into a table. Run it with `list` to see the cases. Its `collect` step needs `scipy`, for the MacCamy-Fuchs value. With `--linton-evans` it covers the [Linton & Evans array](second_order_validation.md#linton--evans-array-four-bottom-mounted-cylinders) (`l_square_diff_m1` to `_m4`: four bottom-mounted cylinders, 256, 1024, 2304 and 4096 panels per cylinder, fixed, `drift_methods = far near`, with 16 field points; `l_square_field_m1` to `_m3`: the same meshes at 1.10 and 1.70 rad/s, heading 45 deg, with 2746 field points on a 1.5 m grid, `le_field_grid`). With `--qtf-potential` it covers the cases of the [QTF potential part](second_order_validation.md#qtf-potential-part):
 
 - `q_sharp_{fixed,free}_src_m1` to `_m4`: the sharp cylinder with `qtf_terms = body`, and `nemoh_sharp_{fixed,free}_m1`, `_m2` with Nemoh's DUOK + HASBO.
 - `q_sharp_free_g2p5_*`, `q_sharp_free_g3_*` (and `q_sharp_free_g2p5w_*`, `q_sharp_free_g3w_*` with `qtf_edge_weights = on`), m1 and m2: rows graded towards the bottom edge by a power law.
@@ -213,6 +214,20 @@ python -I truncated_cylinder_reference.py compare RESULTS --out tc_compare.csv [
 - `check motion_ref_one_dof_limit motion_ref_ab_match` checks the motion solve (under 1 s; part of a bare `check`): heave alone against the one-degree-of-freedom closed form ξ = F/(c − Ω²(m + a) − iΩb) of the unit test `motion_one_dof`, at Ω = 2π/100, ±0.30, 1.40 and 0 rad/s, with surge and pitch zero (1e-12; measured 2.1e-16), and A, B at Ω against the reference's first-order A, B at ω = Ω (1e-12; measured 0).
 - `check fs_forcing_vs_incident fs_radius_invariance fs_outer fs_sign_from_bvp` runs the four checks of the free-surface integral (about 1 min); they are part of a bare `check`.
 - `compare` reads the `a_sharp_*` case folders of the study under `RESULTS` (`output/Wamit_format/`) and prints, per case and frequency, the percentage difference of HAMS from the reference. Folders that are not study cases, or have no output, are skipped with a note. 93 s, nearly all of it the reference rows; `--reference` reads them from a CSV of `reference` instead (under 1 s). The uncertainty shown after each drift percentage is the one the reference rows carry.
+
+**`SecondOrder/linton_evans_reference.py`** computes the exact solution for wave scattering by an array of bottom-mounted vertical circular cylinders (Linton & Evans 1990), without panels: the exciting forces and moments per cylinder, the elevation at any point, the near-field mean drift per cylinder, the far-field mean drift of the array, and the mean drift on a vertical control circle. It needs `numpy` and `scipy` (and `matplotlib` for `plot`). The method, checks and results are in [Second-order validation](second_order_validation.md#linton--evans-array-four-bottom-mounted-cylinders). Run it from its folder:
+
+```
+python -I linton_evans_reference.py check [NAME ...]
+python -I linton_evans_reference.py reference --out le_reference.csv
+python -I linton_evans_reference.py compare RESULTS [--out le_compare.csv] [--reference le_reference.csv]
+python -I linton_evans_reference.py plot [RESULTS] --out FOLDER [--reference le_reference.csv]
+```
+
+- `check` runs the 13 self-checks, or the named ones, and exits with 1 if one fails (3 min 46 s on a laptop, measured once).
+- `reference` writes the rows of the HAMS case (`drift_convergence.py --linton-evans`: four cylinders of radius 5 m, depth 10 m, centres (±10, ±10) m, headings 0 and 45 deg, 17 frequencies, 16 field points) in the conventions of the HAMS files: kind `body` (X_1, X_2, X_4, X_5 as `ExcForce.3` writes them, and the near-field drift per body, moments about the body centre), `array` (far-field F_x, F_y and M_z about the origin) and `field` (the total elevation of `PressureElevation.6p`).
+- `compare` reads the `l_square_*` case folders under `RESULTS` (`output/Wamit_format/`) and prints the largest error of each quantity per case: X forces and moments (complex, over the largest of each kind for that body), near-field F and M (over the largest load of the array at that frequency and heading), far-field F, far-field M_z and the elevation. `--out` writes the rows per frequency, heading and body.
+- `plot` writes PNGs of the reference (the wave field, the loads per cylinder against one cylinder alone, Kim (1993), Fig. 3, and Linton & Evans (1990), Figs. 2 and 3 redrawn with the digitised values of `linton_evans_digitised.csv`, which is not in the repository: set `LINTON_EVANS_DIGITISED` to its path, or these two figures are skipped); with `RESULTS`, also HAMS in those figures and the elevation error at the field points (`plot_field_error`), as maps when the `l_square_field_*` cases are there; with `RESULTS`, also |X_1|, |X_2| and the near-field and far-field drift of HAMS against the reference, per heading, and the largest errors against the panel count.
 
 **`SecondOrder/qtf_compare.py`** compares the QTFs of the `q_*` cases of `drift_convergence.py` with the exact reference of `truncated_cylinder_reference.py` and with Nemoh. The measure is |value − reference| / max |reference| per pair, and the table gives its largest and median over the pairs, per case. Run it from its folder:
 

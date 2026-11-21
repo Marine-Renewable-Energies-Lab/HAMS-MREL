@@ -199,6 +199,7 @@ HULLS = {
     "sharp": dict(depth=100.0, panels=448, lid=192),
     "round": dict(depth=100.0, panels=480, lid=192),
     "bottom": dict(depth=10.0, panels=256),
+    "le_square": dict(depth=10.0, panels=4 * 256, bodies=4),
     "box": dict(depth=50.0, panels=440),
     "round_box": dict(depth=50.0, panels=500),
     "corner_box": dict(depth=50.0, panels=440),
@@ -218,6 +219,37 @@ ROUND_BOX_MESH = dict(lx=20.0, ly=10.0, draft=5.0, corner_radius=2.5, bilge_radi
 CORNER_BOX_MESH = dict(lx=20.0, ly=10.0, draft=5.0, corner_radius=2.5, bilge_radius=0.0, nx=16, ny=6, ncorner=4, nz=4, narc=0)
 BOTTOM_RADIUS = fixtures.BOTTOM_MOUNTED_MESH["radius"]
 BOTTOM_DEPTH = fixtures.BOTTOM_MOUNTED_MESH["draft"]
+# Linton & Evans array (--linton-evans): four bottom-mounted cylinders of the bottom-mounted hull (radius 5 m, wall to the sea
+# bed at 10 m, no bottom panel, uniform rows), centres at the corners of a square of side 20 m (4 radii), counter-clockwise from
+# (10, 10). The exact reference is linton_evans_reference.py, whose layout `square` is this one. Each body has its own LCS at
+# its centre, so its moments are about (x_j, y_j, 0). Headings 0 and 45 deg; the frequencies give k a = 0.19 to 1.84, below the
+# first irregular frequency of a bottom-mounted circle, k a = 2.405 (J_0(ka) = 0), 2.17 rad/s here. 1.75, 1.78, 1.82 and 1.85
+# rad/s resolve the near-trapping peak of heading 45 (the exact mean F_x of cylinder 4 is 10.6 rho g A^2 at 1.79 rad/s, k a =
+# 1.64, against 2.2 for one cylinder alone). Field points at z = 0 in the gaps and around the array, for the wave field
+LE_CENTRES = ((10.0, 10.0), (-10.0, 10.0), (-10.0, -10.0), (10.0, -10.0))
+LE_FREQUENCIES = (0.40, 0.60, 0.80, 0.95, 1.10, 1.20, 1.30, 1.40, 1.50, 1.60, 1.70, 1.75, 1.78, 1.80, 1.82, 1.85, 1.90)
+LE_HEADINGS = (0.0, 45.0)
+LE_FIELD_POINTS = ((0.0, 0.0, 0.0), (10.0, 0.0, 0.0), (0.0, 10.0, 0.0), (-10.0, 0.0, 0.0), (0.0, -10.0, 0.0),
+                   (5.0, 5.0, 0.0), (-5.0, -5.0, 0.0), (25.0, 0.0, 0.0), (-25.0, 0.0, 0.0), (0.0, 25.0, 0.0),
+                   (0.0, -25.0, 0.0), (25.0, 25.0, 0.0), (-25.0, -25.0, 0.0), (40.0, 10.0, 0.0), (-40.0, 10.0, 0.0),
+                   (10.0, 17.0, 0.0))
+# The wave field of the array on a grid (l_square_field_*): z = 0, x and y from -40 to 40 m in steps of 1.5 m, outside a
+# circle of 5.5 m about each centre (0.5 m off the wall), at the two frequencies of the field plots of linton_evans_reference.py
+LE_FIELD_FREQUENCIES = (1.10, 1.70)
+LE_FIELD_STEP = 1.5
+LE_FIELD_CLEARANCE = 0.5
+
+
+def le_field_grid():
+    """The field points of the l_square_field_* cases, (x, y, 0), row by row in y then x."""
+    n = int(round(80.0 / LE_FIELD_STEP))
+    points = []
+    for iy in range(n + 1):
+        for ix in range(n + 1):
+            x, y = -40.0 + ix * LE_FIELD_STEP, -40.0 + iy * LE_FIELD_STEP
+            if all(math.hypot(x - cx, y - cy) > BOTTOM_RADIUS + LE_FIELD_CLEARANCE for cx, cy in LE_CENTRES):
+                points.append((x, y, 0.0))
+    return tuple(points)
 
 
 def scaled(mesh, keys, multiple):
@@ -712,13 +744,33 @@ def qtf_motion_cases(grid):
     return chosen
 
 
+def linton_evans_cases():
+    """The Linton & Evans array (--linton-evans): four bottom-mounted cylinders, fixed, mean drift far and near. Multiples 1, 2,
+    3, 4 of the bottom-mounted hull per body: 256, 1024, 2304, 4096 panels per cylinder. Differencing, the closer velocity method on the
+    single bottom-mounted cylinder (group B)."""
+    cases = []
+    for m in (1, 2, 3, 4):
+        cases.append(Case("l_square_diff_%s" % tag(m), "L", "le", "le_square", m, "fixed", "differencing",
+                          frequencies=LE_FREQUENCIES, headings=LE_HEADINGS))
+    # The wave field on a grid (le_field_grid) at two frequencies, heading 45 deg: the same meshes and settings
+    for m in (1, 2, 3):
+        cases.append(Case("l_square_field_%s" % tag(m), "L", "le-field", "le_square", m, "fixed", "differencing",
+                          frequencies=LE_FIELD_FREQUENCIES, headings=(45.0,)))
+    return cases
+
+
 def qtf_flag(qtf):
     """The command-line flag of a study selected by cases_of's qtf: " --qtf", " --qtf-potential" or empty."""
+    if qtf == "linton-evans":
+        return " --linton-evans"
     return " --qtf-potential" if qtf == "potential" else " --qtf" if qtf else ""
 
 
 def study_of(args):
-    """cases_of's qtf from the parsed arguments: "potential" (--qtf-potential), True (--qtf) or False."""
+    """cases_of's qtf from the parsed arguments: "potential" (--qtf-potential), "linton-evans" (--linton-evans), True (--qtf)
+    or False."""
+    if getattr(args, "linton_evans", False):
+        return "linton-evans"
     return "potential" if getattr(args, "qtf_potential", False) else getattr(args, "qtf", False)
 
 
@@ -727,6 +779,8 @@ def cases_of(control, qtf=False):
     (qtf "potential"); otherwise the first study."""
     if qtf == "potential":
         return qtf_potential_cases()
+    if qtf == "linton-evans":
+        return linton_evans_cases()
     if qtf:
         return qtf_cases()
     return control_cases(control) if control else study_cases()
@@ -916,6 +970,14 @@ def write_hams_hull(case, path):
     elif case.hull == "bottom":
         mesh = make_mesh.write_cylinder(mesh_path, hydro_path,
                                         **scaled(dict(fixtures.BOTTOM_MOUNTED_MESH, ntheta=32, nz=8), ("ntheta", "nz"), m))
+    elif case.hull == "le_square":
+        # One mesh per body, in its LCS (centred on the origin); ControlFile.in places them (write_hams_case)
+        params = scaled(dict(fixtures.BOTTOM_MOUNTED_MESH, ntheta=32, nz=8), ("ntheta", "nz"), m)
+        mesh = make_mesh.Mesh()
+        for b in range(1, len(LE_CENTRES) + 1):
+            body = make_mesh.write_cylinder(os.path.join(path, "HullMesh_%d.pnl" % b),
+                                            os.path.join(path, "Hydrostatic_%d.in" % b), **params)
+            mesh.panels += body.panels
     elif case.hull == "box":
         mesh = make_mesh.write_box(mesh_path, hydro_path, **scaled(fixtures.DRIFT_BOX_MESH, ("nx", "ny", "nz"), m))
     elif case.hull == "round_box":
@@ -956,8 +1018,12 @@ def write_hams_case(case, root, threads):
     path = os.path.join(root, case.name, "input")
     os.makedirs(path, exist_ok=True)
     write_hams_hull(case, path)
+    array = case.hull == "le_square"
     fixtures.write_control(os.path.join(path, "ControlFile.in"), depth=HULLS[case.hull]["depth"], frequencies=case.frequencies,
-                           headings=case.headings, solver=2 if case.isolv == 2 else None, irsp=case.irsp, threads=threads)
+                           headings=case.headings, solver=2 if case.isolv == 2 else None, irsp=case.irsp, threads=threads,
+                           body_origins=list(LE_CENTRES) if array else None,
+                           field_points=(le_field_grid() if case.name.startswith("l_square_field") else LE_FIELD_POINTS)
+                           if array else ())
     options = dict(mean_drift=case.mean_drift, drift_methods="far near", motion_state=case.motion,
                    write_terms=1 if case.mean_drift == 1 else 0, velocity_method=case.velocity,
                    waterline_method=case.waterline)
@@ -1902,6 +1968,7 @@ def main():
 
     control_help = "the control-surface study: all frequencies, or `cheap` with three at the m4 cases of the green route"
     qtf_help = "the QTF study: quadratic QTFs on the Nemoh grid (qtf_cases)"
+    linton_help = "the Linton & Evans array: four bottom-mounted cylinders against linton_evans_reference.py (linton_evans_cases)"
     potential_help = "the QTF potential study: QTF_Indirect.11d with qtf_terms = body or full, and Nemoh DUOK + HASBO (qtf_potential_cases)"
 
     sub.add_parser("check", help="self-checks of the Phase 6b cases (no run)")
@@ -1912,6 +1979,7 @@ def main():
     p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
     p.add_argument("--qtf", action="store_true", help=qtf_help)
     p.add_argument("--qtf-potential", action="store_true", help=potential_help)
+    p.add_argument("--linton-evans", action="store_true", help=linton_help)
     p.add_argument("--only", metavar="PREFIX", nargs="+",
                    help="only the cases whose name starts with one of the PREFIXes (a batch of q_sharp_full_)")
 
@@ -1922,6 +1990,7 @@ def main():
     p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
     p.add_argument("--qtf", action="store_true", help=qtf_help)
     p.add_argument("--qtf-potential", action="store_true", help=potential_help)
+    p.add_argument("--linton-evans", action="store_true", help=linton_help)
 
     for command in ("run", "calibrate"):
         p = sub.add_parser(command)
@@ -1937,6 +2006,7 @@ def main():
             p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
             p.add_argument("--qtf", action="store_true", help=qtf_help)
             p.add_argument("--qtf-potential", action="store_true", help=potential_help)
+            p.add_argument("--linton-evans", action="store_true", help=linton_help)
 
     p = sub.add_parser("slurm")
     p.add_argument("root", help="folder of the study on the cluster")
@@ -1948,6 +2018,7 @@ def main():
     p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
     p.add_argument("--qtf", action="store_true", help=qtf_help)
     p.add_argument("--qtf-potential", action="store_true", help=potential_help)
+    p.add_argument("--linton-evans", action="store_true", help=linton_help)
     p.add_argument("--only", metavar="PREFIX", nargs="+",
                    help="only the cases whose name starts with one of the PREFIXes (a batch of q_sharp_full_)")
     p.add_argument("--cpus", type=int, help="CPUs (and threads) of each run, by default %d" % CPUS)
@@ -1963,6 +2034,7 @@ def main():
     p.add_argument("--control", nargs="?", const="full", choices=("full", "cheap"), help=control_help)
     p.add_argument("--qtf", action="store_true", help=qtf_help)
     p.add_argument("--qtf-potential", action="store_true", help=potential_help)
+    p.add_argument("--linton-evans", action="store_true", help=linton_help)
 
     args = parser.parse_args()
     if args.command == "check":

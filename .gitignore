@@ -366,3 +366,6 @@ FodyWeavers.xsd
 # Planning notes from the superpowers workflow, kept out of the repository
 docs/superpowers/
 .superpowers/
+# Values digitised from published figures, kept out of the repository
+linton_evans_digitised.csv
+roland2026_fig5_fig7.csv
