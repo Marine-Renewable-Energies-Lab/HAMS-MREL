@@ -1261,7 +1261,9 @@ def plot_linton_evans(results, out):
     return [path]
 
 
-DIGITISED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "linton_evans_digitised.csv")
+# The digitised values are not in the repository: set LINTON_EVANS_DIGITISED to the CSV, or put it next to this script.
+DIGITISED = os.environ.get("LINTON_EVANS_DIGITISED",
+                           os.path.join(os.path.dirname(os.path.abspath(__file__)), "linton_evans_digitised.csv"))
 # Linton & Evans number their cylinders clockwise from (-h, h); this module's layout is counter-clockwise from (h, h)
 LE_TO_HERE = {"cylinder 1": 1, "cylinder 2": 0, "cylinder 3": 3, "cylinder 4": 2}
 LE_CITATION = ("Linton, C.M. & Evans, D.V. (1990), The interaction of waves with arrays of vertical circular cylinders, "
@@ -1331,6 +1333,9 @@ def plot_published(results, out):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    if not os.path.exists(DIGITISED):
+        print("skipped the redrawn Linton & Evans figures: no digitised values at %s (LINTON_EVANS_DIGITISED)" % DIGITISED)
+        return []
     os.makedirs(out, exist_ok=True)
     dig = read_digitised()
     kas = np.unique(np.round(np.r_[np.arange(0.05, 3.20, 0.01), np.arange(1.40, 2.06, 0.002)], 4))
