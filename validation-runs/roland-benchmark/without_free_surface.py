@@ -6,7 +6,10 @@ writes .11d - FS_inner - FS_outer row by row (the terms are scaled and conjugate
 beta_1, beta_2 and the index). Diagonal rows have no terms and are copied. The row format is that of .11d
 (4ES14.6, I6, 4ES14.6); the phase column is in degrees.
 
-Usage: python -I without_free_surface.py WAMIT_FORMAT_DIR OUT_FILE
+With --direct it does the same for QTF_Direct.12d: .12d - D_FS, the third part of QTF_DirectTerms.txt (phi_D of the
+free-surface forcing; output_files.md).
+
+Usage: python -I without_free_surface.py WAMIT_FORMAT_DIR OUT_FILE [--direct]
 """
 import cmath
 import math
@@ -18,12 +21,32 @@ sys.path.insert(0, os.path.join(HERE, "..", "..", "pre_postprocessing_python", "
 import qtf_tools  # noqa: E402
 
 
-def main(folder, out):
-    terms = qtf_tools.read_qtf_terms(os.path.join(folder, "QTF_PotentialTerms.txt"))
+def read_direct_terms(path):
+    """{key: [D_I2, D_D, D_FS]} of QTF_DirectTerms.txt, keyed as qtf_tools.read_qtf_terms."""
+    out = {}
+    for line in open(path):
+        if line.lstrip().startswith("#"):
+            continue
+        p = line.split()
+        if len(p) != 11:
+            continue
+        key = (round(float(p[0]), 6), round(float(p[1]), 6), round(float(p[2]), 6), round(float(p[3]), 6), int(p[4]))
+        out[key] = [complex(float(p[5 + 2 * t]), float(p[6 + 2 * t])) for t in range(3)]
+    return out
+
+
+def main(folder, out, direct=False):
+    if direct:
+        raw = read_direct_terms(os.path.join(folder, "QTF_DirectTerms.txt"))
+        terms = {k: [0j] * 5 + [v[2], 0j] for k, v in raw.items()}   # D_FS in the FS_inner slot
+        source = "QTF_Direct.12d"
+    else:
+        terms = qtf_tools.read_qtf_terms(os.path.join(folder, "QTF_PotentialTerms.txt"))
+        source = "QTF_Indirect.11d"
     if not terms or len(next(iter(terms.values()))) != 7:
-        raise ValueError("QTF_PotentialTerms.txt has no free-surface terms (qtf_terms = full needed)")
+        raise ValueError("no free-surface terms in %s (qtf_terms = full needed)" % folder)
     rows, removed = [], 0
-    for line in open(os.path.join(folder, "QTF_Indirect.11d")):
+    for line in open(os.path.join(folder, source)):
         p = line.split()
         if len(p) != 9:
             continue
@@ -42,4 +65,4 @@ def main(folder, out):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    main(sys.argv[1], sys.argv[2], "--direct" in sys.argv[3:])

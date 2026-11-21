@@ -16,6 +16,8 @@ Measure: |HAMS - WAMIT| / max |WAMIT| over the pairs of the HAMS grid with both 
 
 Usage: python -I compare_maps.py HAMS_FILE WAMIT_12D OUT_PNG OUT_TXT TITLE [--range LO HI] [--band A B] [--mode I]
        [--hams-label TEXT] [--ref-label TEXT]   (the panel titles: name each source)
+       [--vmax V]   (top of the magnitude colour bar; default 6e5 N/m^2 for mode 1 as in the paper, else max|WAMIT|)
+Modes 4 to 6 are moments (N m/m^2, ULEN = 1).
 """
 import math
 import textwrap
@@ -51,17 +53,17 @@ def read(path, mode, periods):
 
 
 def main(argv):
-    opts = dict(range=(0.30, 1.90), band=None, mode=1, hams_label="HAMS-MREL", ref_label="WAMIT")
+    opts = dict(range=(0.30, 1.90), band=None, mode=1, hams_label="HAMS-MREL", ref_label="WAMIT", vmax=None)
     for key in ("--hams-label", "--ref-label"):
         if key in argv:
             k = argv.index(key)
             opts[key[2:].replace("-", "_")] = argv[k + 1]
             del argv[k:k + 2]
-    for key, n in (("--range", 2), ("--band", 2), ("--mode", 1)):
+    for key, n in (("--range", 2), ("--band", 2), ("--mode", 1), ("--vmax", 1)):
         if key in argv:
             k = argv.index(key)
             vals = argv[k + 1:k + 1 + n]
-            opts[key[2:]] = tuple(float(v) for v in vals) if n == 2 else int(vals[0])
+            opts[key[2:]] = tuple(float(v) for v in vals) if n == 2 else (float(vals[0]) if key == "--vmax" else int(vals[0]))
             del argv[k:k + 1 + n]
     hams_path, wamit_path, out_png, out_txt, title = argv[1:6]
     lo, hi = opts["range"]
@@ -79,7 +81,7 @@ def main(argv):
                 W[j, i] = w[(a, b)]
     D = np.abs(H - W)
     scale = np.nanmax(np.abs(W))
-    lines = [title, "|HAMS - WAMIT| / max |WAMIT| (max |WAMIT| = %.4g N/m^2), omega in [%.2f, %.2f], largest / median, %%"
+    lines = [title, "|HAMS - WAMIT| / max |WAMIT| (max |WAMIT| = %.4g, N/m^2 or N m/m^2), omega in [%.2f, %.2f], largest / median, %%"
              % (scale, lo, hi)]
     g = np.array(grid)
     dw = g[None, :] - g[:, None]   # [j, i] = omega_i - omega_j
@@ -96,23 +98,28 @@ def main(argv):
             lines.append("  %-15s %-20s %6.2f / %5.2f  (%d pairs)" % (
                 name, "" if band is None else "w/o %.2f-%.2f rad/s" % band, e.max(), np.median(e), mm.sum()))
 
+    i = opts["mode"]
+    unit = "N m/m$^2$" if i >= 4 else "N/m$^2$"
+    q, qw = r"QTF^{-}_{%d}" % i, r"QTF_{%d}^{-,WAMIT}" % i
+    qt = "QTF⁻_%d" % i
+    vmax = opts["vmax"] or (6e5 if i == 1 else float("%.2g" % scale))
     plt.rcParams.update({"font.size": 9, "axes.edgecolor": INK2, "axes.labelcolor": INK, "xtick.color": INK2,
                          "ytick.color": INK2, "figure.facecolor": SURFACE})
     fig, axes = plt.subplots(2, 3, figsize=(13.0, 8.2), layout="constrained")
     ext = (lo - 0.025, hi + 0.025, lo - 0.025, hi + 0.025)
     for col, (name, M) in enumerate(((opts["hams_label"], H), (opts["ref_label"], W))):
-        im = axes[0, col].imshow(np.abs(M), origin="lower", extent=ext, cmap="jet", vmin=0, vmax=6e5)
+        im = axes[0, col].imshow(np.abs(M), origin="lower", extent=ext, cmap="jet", vmin=0, vmax=vmax)
         axes[0, col].set_title(textwrap.fill(name, 36), loc="left", fontsize=8.5)
-        fig.colorbar(im, ax=axes[0, col], label=r"$|QTF^{-}_{1}|$ (N/m$^2$)", extend="max", shrink=0.85)
+        fig.colorbar(im, ax=axes[0, col], label=r"$|%s|$ (%s)" % (q, unit), extend="max", shrink=0.85)
         ip = axes[1, col].imshow(np.angle(M), origin="lower", extent=ext, cmap="jet", vmin=-math.pi, vmax=math.pi)
         axes[1, col].set_title(textwrap.fill(name, 36), loc="left", fontsize=8.5)
-        fig.colorbar(ip, ax=axes[1, col], label=r"arg $QTF^{-}_{1}$ (rad)", shrink=0.85)
+        fig.colorbar(ip, ax=axes[1, col], label=r"arg $%s$ (rad)" % q, shrink=0.85)
     idiff = axes[0, 2].imshow(100 * D / scale, origin="lower", extent=ext, cmap="viridis", vmin=0, vmax=10)
     axes[0, 2].set_title("Difference of the two", loc="left", fontsize=8.5)
-    fig.colorbar(idiff, ax=axes[0, 2], label=r"$|QTF^{-}_{1} - QTF_1^{-,WAMIT}|$ / max$|QTF_1^{-,WAMIT}|$ (%)",
+    fig.colorbar(idiff, ax=axes[0, 2], label=r"$|%s - %s|$ / max$|%s|$ (%%)" % (q, qw, qw),
                  extend="max", shrink=0.85)
     axes[1, 2].axis("off")
-    table = ["|QTF⁻_1 - QTF⁻_1,WAMIT| / max|QTF⁻_1,WAMIT|", "largest / median, %", "max|QTF⁻_1,WAMIT| = %.3g N/m^2" % scale,
+    table = ["|%s - %s,WAMIT| / max|%s,WAMIT|" % (qt, qt, qt), "largest / median, %", "max|%s,WAMIT| = %.3g %s" % (qt, scale, unit.replace("$", "")),
              "omega in [%.2f, %.2f] rad/s" % (lo, hi), ""] + [l.strip() for l in lines[2:]]
     axes[1, 2].text(0.0, 1.0, "\n".join(table), va="top", ha="left", fontsize=7.5,
                     family="monospace", color=INK, transform=axes[1, 2].transAxes)
@@ -122,7 +129,7 @@ def main(argv):
     fig.suptitle(title + "\nStyle and colour range of Roland et al. (2026), J. Phys.: Conf. Ser. 3346, 012006, Figs. 4 "
                  "and 6 (CC BY 4.0)", x=0.01, ha="left", color=INK, fontsize=10)
     fig.savefig(out_png, dpi=150)
-    open(out_txt, "w").write("\n".join(lines) + "\n")
+    open(out_txt, "w", encoding="utf-8").write("\n".join(lines) + "\n")
     print("\n".join(lines))
 
 

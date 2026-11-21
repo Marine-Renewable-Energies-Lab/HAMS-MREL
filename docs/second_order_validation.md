@@ -1427,28 +1427,65 @@ What this does not show:
 - The paper's frequencies above 1.90 rad/s, where its solvers spread most.
 - How HAMS's middle-field-like agreement comes about. Its near-field method uses the source velocity and the control-surface form of B2, and neither was switched off here.
 
-### VolturnUS-S with the free-surface integral: prepared, not run
+### OC4 and VolturnUS-S over the full range of Roland et al. (2026)
 
-The second platform of Roland et al. (2026) is the VolturnUS-S semisubmersible of the IEA Wind 15 MW reference turbine. Its WAMIT result is the second-order run of the IEA Wind Task 37 repository (IEA-15-240-RWT v1.1.18, Apache License 2.0). That run includes a free-surface mesh (Roland et al. 2026, section 3.1). It is thus a public external reference that contains the free-surface term, which the OC4 file does not ([OC4 sum QTF against WAMIT](#oc4-sum-qtf-against-wamit)).
+Two further runs cover the full frequency range of the paper. Each is a full rerun, because a QTF pair needs the first-order states of both its frequencies in one run. Both ran on Snellius (`fat_genoa`, 24 threads) with the binary of the [OC4 runs above](#oc4-against-the-solvers-of-roland-et-al-2026) plus `qtf_fs_circle = panels`.
 
-The WAMIT run, from its log and input files:
+- **OC4** (`q_oc4wfull_sym_free_L1_ext`): the 9208-panel case with the same hull, C, F and matrices, 47 frequencies from 0.25 to 2.55 rad/s, and `qtf_terms = body`. The first irregular frequency of the offset columns is about 1.98 rad/s, so this run removes irregular frequencies (`If_remove_irr_freq = 1`, with a lid of 1674 panels on the seven waterplanes). `velocity_method = source` does not support that, so this run uses `differencing`. Wall time 6 h 13 min, 149 core-hours.
+- **VolturnUS-S** (`q_volturnus_free_full_ext`): the IEA low-order mesh, mirrored, without the lid of the WAMIT run, 5076 panels. 46 frequencies from 0.25 to 2.50 rad/s; lid, `differencing`, `qtf_terms = full`, `qtf_direct = 1`. C has a radius of 70 m, and the inner free-surface mesh is a circle of 72 m with panels of 1.25 m. Mass, damping, mooring and restoring come from the WAMIT run (`make_volturnus_case.py --fmax 2.50 --fs-panel 1.25 --lid`). Wall time 7 h 36 min, 183 core-hours, 11.8 GB.
 
-- WAMIT v6.107S, higher-order panel method, with the hull given as 64 NURBS patches.
+The WAMIT reference for VolturnUS-S is the second-order run of the IEA Wind Task 37 repository (IEA-15-240-RWT v1.1.18, Apache License 2.0). From its log and input files:
+
+- WAMIT v6.107S, higher-order panel method, with the hull as 64 NURBS patches.
 - Direct method for the second-order potential.
-- Free-surface forcing on a mesh of the free surface out to RINNER = 200 m, with NAL = 0 (the run's own comment: to avoid gross errors).
-- External linear damping and mooring stiffness; depth 200 m; heading 0; 46 frequencies from 0.25 to 2.50 rad/s.
-- The WAMIT data are not in this repository.
+- Free-surface forcing out to RINNER = 200 m, with NAL = 0 (the run's comment says this avoids gross errors).
+- External damping and mooring; depth 200 m; heading 0.
 
-The HAMS case `q_volturnus_free_full` (`validation-runs/roland-benchmark/make_volturnus_case.py`):
+The low-order mesh is the one Roland et al. gave to every solver except Nemoh. Its volume is 0.37% and its waterplane area 0.82% below those of the NURBS hull. The mesh does not conform where the columns meet the pontoons; HAMS accepts this (`SurfaceGeometry.f90`). The WAMIT data are not in this repository.
 
-- **Hull.** The IEA low-order mesh, the one Roland et al. gave to every solver but Nemoh. Its 228 interior waterplane panels (the lid of WAMIT's irregular-frequency removal) are removed, and the half mesh is mirrored: 5076 panels. The hull is closed: the projected areas sum to zero to 1e-14 of the waterplane area. Its volume is 0.37% and its waterplane area 0.82% below those of the NURBS hull of the WAMIT run.
-- **Junctions.** The mesh does not conform where the columns meet the pontoons. HAMS accepts such edges and finds the neighbours there by distance (`SurfaceGeometry.f90`).
-- **Matrices.** The mass, the external damping and the mooring of the WAMIT run, scaled by 1000/1025 as for OC4. The hydrostatic and gravitational restoring is that of the WAMIT log, so that of the NURBS hull.
-- **Surfaces.** The control surface C has a radius of 70 m and F lies between the waterlines and C. The inner free surface of `qtf_terms = full` is a circle of 72 m about the centre of the waterline box, 4412 triangles of about 2 m.
-- **Frequencies.** 34, from 0.25 to 1.90 rad/s, below the first irregular frequency of the outer columns, about 1.94 rad/s [derived: k = j_01 / a, a = 6.25 m, ω² = g k coth(kT), T = 20 m]. Roland et al. report a Nemoh spike at 1.95 rad/s.
-- **Settings.** `qtf = 1`, `qtf_terms = full`, `qtf_direct = 1`, `qtf_fs_circle = panels`.
+**Caveat on `QTF_Indirect.11d`.** In both runs, the B2 control-surface fields use deep-water rows from k₀h ≥ 10, which is ω ≥ about 0.70 rad/s at h = 200 m. These rows leave out the seabed image term. Only B2 in `.11d` is affected. `.12d`, `.10d`, the mean drift and the first-order results are not. The 0.25–1.90 rad/s OC4 runs above predate that setting and don't carry the caveat. For VolturnUS-S, `.12d` (direct, as WAMIT) is the main comparison and `.11d` the secondary one.
 
-HAMS's indirect and direct results will be compared with the WAMIT `.12d` file and with the paper's Figs. 6 and 7. The curves of Fig. 7 are already read, and its WAMIT curves match the IEA file. The run waits for approval of its cost.
+Measure: |X − WAMIT| / max|WAMIT| over the plotted range, largest (at ω₁) / median, in %.
+
+**Diagonals** (`compare_diagonals.py`, 0.30 to 2.55 rad/s for OC4 and 0.30 to 2.50 rad/s for VolturnUS-S):
+
+| | OC4 F̄_1 | OC4 0.05 rad/s | VolturnUS-S F̄_1 | VolturnUS-S 0.05 rad/s |
+| :--- | ---: | ---: | ---: | ---: |
+| OrcaWave CS (paper) | 13.96 (2.45) / 1.63 | 11.62 (2.35) / 1.68 | 5.48 (2.35) / 1.11 | 11.81 (2.45) / 2.21 |
+| HydroStar CS (paper) | 17.80 (2.45) / 1.19 | 84.70 (0.30) / 1.29 | 4.65 (2.35) / 1.08 | 12.23 (2.45) / 2.39 |
+| OrcaWave PI (paper) | 96.88 (2.35) / 27.31 | 83.51 (2.35) / 29.91 | 69.64 (1.90) / 25.31 | 65.82 (1.75) / 24.87 |
+| HydroStar PI (paper) | 41.17 (1.40) / 13.92 | 45.60 (1.45) / 15.76 | 8.96 (2.50) / 2.17 | 11.93 (1.75) / 2.93 |
+| Nemoh (paper, own grid) | 30.68 (1.98) / 2.08 | 23.93 (1.98) / 2.44 | 50.17 (2.45) / 3.72 | 42.36 (2.45) / 1.92 |
+| **HAMS-MREL `.11d`, OC4** | 22.76 (2.45) / 1.70 | 17.81 (2.55) / 2.04 | | |
+| **HAMS-MREL `.12d`, with free surface** | | | 8.55 (2.50) / 0.62 | 8.14 (2.30) / 1.25 |
+| **HAMS-MREL `.12d`, without free surface** | | | 8.55 (2.50) / 0.62 | 6.36 (1.80) / 2.28 |
+| **HAMS-MREL `.11d`, with free surface** | | | 8.55 (2.50) / 0.62 | 8.14 (2.30) / 1.26 |
+
+![Difference-frequency QTF⁻_1 (surge) of OC4 on the mean-drift diagonal (F̄_1) and the diagonal of 0.05 rad/s, 0.30 to 2.55 rad/s: the six solver set-ups of Roland et al. (2026), Fig. 5, read from the vector paths of the PDF (WAMIT: OpenFAST r-test `marin_semi.12d`), and HAMS-MREL `QTF_Indirect.11d` at 9208 panels, from the full-range run (differencing, lid) and from the 0.25–1.90 rad/s run (source, no lid)](figures/roland_oc4_full_range.png)
+
+![Difference-frequency QTF⁻_1 (surge) of VolturnUS-S on the mean-drift diagonal (F̄_1) and the diagonal of 0.05 rad/s, 0.30 to 2.50 rad/s: the six solver set-ups of Roland et al. (2026), Fig. 7 (WAMIT: IEA-15-240-RWT-UMaineSemi.12d, IEA Wind Task 37), and HAMS-MREL `QTF_Direct.12d` and `QTF_Indirect.11d`, each with and without the free-surface terms](figures/roland_volturnus_diagonals.png)
+
+- **Mean drift.** Up to 1.90 rad/s, the full-range OC4 run is as close to WAMIT as the source run (largest 7.69 against 7.92%, over 0.30–1.90 rad/s). Above 1.90 rad/s, HAMS lies above WAMIT, by up to 23% at 2.45 rad/s. In that range the paper's middle-field solvers deviate by 14–18%, and Nemoh by 31%. For VolturnUS-S, HAMS has the lowest median of all set-ups (0.62%). Its largest difference, 8.55%, is at the last frequency.
+- **Velocity method.** The far field (momentum) needs no body-surface velocity. Below 1.90 rad/s the near-field drift of the differencing runs stays as close to it as that of the source run: median 1.10% (OC4) and 1.40% (VolturnUS-S), against 0.81%, and largest 2.59% against 7.29%. Above 1.90 rad/s the gap grows to a median of 5% and at most 16% (OC4, 2.50 rad/s), next to the irregular frequencies of the columns. The HAMS excess there is thus mostly near-field error ([figure](figures/roland_full_range_diagnostics.png), left).
+- **0.05 rad/s.** For VolturnUS-S, the free-surface terms bring HAMS closer to WAMIT: the median falls from 2.28% to 1.25% (`.12d`). `.11d` and `.12d` agree to 0.01 percentage points, so the B2 caveat does not show on this diagonal.
+
+**Maps against WAMIT**, by mode (`compare_maps.py`, pairs with 0 < Δω ≤ 0.30 rad/s, both frequencies from 0.30 rad/s up to the top of the range). Here the scale is the largest WAMIT value of those pairs:
+
+| Mode | OC4 `.11d` | VolturnUS-S `.12d` | VolturnUS-S `.12d` without free surface |
+| :--- | ---: | ---: | ---: |
+| QTF⁻_1 | 24.71 (2.20, 2.40) / 1.78 | 78.72 (2.05, 2.35) / 3.40 | 79.23 (2.15, 2.45) / 3.22 |
+| QTF⁻_3 | 34.48 (2.50, 2.50) / 4.92 | 63.07 (2.15, 2.35) / 15.84 | 67.13 (2.00, 2.20) / 13.94 |
+| QTF⁻_5 | 15.13 (0.35, 0.65) / 2.87 | 18.57 (2.20, 2.50) / 1.87 | 28.38 (1.70, 2.00) / 4.03 |
+
+![Difference-frequency QTF⁻_1 (surge) of VolturnUS-S, magnitude and phase, 0.30 to 2.50 rad/s: HAMS-MREL `QTF_Direct.12d` with the free-surface integral, and WAMIT v6.107S, IEA-15-240-RWT-UMaineSemi.12d (IEA Wind Task 37), with the modulus of the difference; jet colour scale from 0 to 6e5 N/m² as in the paper's Fig. 6](figures/roland_volturnus_maps.png)
+
+![Left: mean drift F̄_1 by pressure integration against momentum in the same run, for the OC4 runs with velocity_method = source and differencing, and for VolturnUS-S. Right: median |QTF⁻_1| of VolturnUS-S per band of ω₁ − ω₂, for WAMIT (IEA-15-240-RWT-UMaineSemi.12d, IEA Wind Task 37) and for HAMS-MREL `.12d` with and without its free-surface part, and that part alone](figures/roland_full_range_diagnostics.png)
+
+- **Away from the diagonal (VolturnUS-S).** WAMIT is much larger than HAMS once Δω exceeds about 0.3 rad/s. The median |QTF⁻_1| peaks at 7.3e5 N/m² near Δω = 1 rad/s, against 1.2e5 for HAMS. The WAMIT map also alternates from pair to pair there. Roland et al. ascribe these values to the free-surface discretisation of the WAMIT files (section 4.3.2). HAMS's free-surface part grows with Δω, to about 1.5e5 N/m² at Δω = 1.35 rad/s, but it stays well below the WAMIT excess. Which of the two is right is not settled here. Near the diagonal, where the slow-drift loads come from, the two agree.
+- **Heave** (QTF⁻_3) has the largest near-diagonal medians, at 4.9% (OC4) and 15.8% (VolturnUS-S). In both, the largest differences are above 2 rad/s.
+- **`.11d` corner.** In `QTF_Indirect.11d` of VolturnUS-S, FS_outer diverges (up to 1e16 times the file scale) for pairs with one frequency of 0.30 rad/s or below and the other of 2.25 rad/s or above. These pairs have Δω ≥ 1.95 rad/s, far from the diagonals of interest. `.12d` is not affected. This is an open defect of the partial-wave sum of FS_outer.
+
+Outputs, figures and scripts: `validation-runs/roland-benchmark` (scripts in the repository; outputs outside it). `without_free_surface.py` writes `.11d` or, with `--direct`, `.12d` without the free-surface terms. `full_range_diagnostics.py` makes the last figure.
 
 <a id="unit-and-integration-tests"></a>
 ## 9. Unit and integration tests

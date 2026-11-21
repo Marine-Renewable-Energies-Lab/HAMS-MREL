@@ -2,7 +2,7 @@
 
 HAMS against the second-order benchmark of Roland, Pribadi, Al-Ghuwaidi and Lataire (2026), J. Phys.: Conf. Ser. 3346,
 012006, doi:10.1088/1742-6596/3346/1/012006 (open access, CC BY 4.0). Results: `docs/second_order_validation.md`, sections
-"OC4 against the solvers of Roland et al. (2026)" and "VolturnUS-S with the free-surface integral".
+"OC4 against the solvers of Roland et al. (2026)" and "OC4 and VolturnUS-S over the full range of Roland et al. (2026)".
 
 Not in the repository: the paper's PDF, the WAMIT files (OpenFAST r-test `marin_semi.12d`; IEA-15-240-RWT v1.1.18
 HydroData, Apache-2.0) and the case inputs derived from the IEA mesh. Run Python on them with `-I`.
@@ -15,6 +15,8 @@ HydroData, Apache-2.0) and the case inputs derived from the IEA mesh. Run Python
 | `compare_diagonals.py CSV FIG OUT_PNG OUT_TXT LABEL=HAMS_FILE ...` | HAMS on the two diagonals against the six solver set-ups of the paper |
 | `compare_maps.py HAMS_FILE WAMIT_12D OUT_PNG OUT_TXT TITLE` | The whole QTF, magnitude and phase, in the style of Figs. 4 and 6 |
 | `make_volturnus_case.py IEA_HYDRODATA_DIR OUT_CASE_DIR` | The VolturnUS-S HAMS case with the free-surface integral |
+| `without_free_surface.py WAMIT_FORMAT_DIR OUT [--direct]` | `.11d` (or `.12d` with `--direct`) without the free-surface terms, same format |
+| `full_range_diagnostics.py` | Near- against far-field mean drift per velocity method, and the VolturnUS-S QTF away from the diagonal |
 | `plot_volturnus_case.py`, `plot_cost.py` | Figures of the case meshes and of the run cost |
 | `snellius/` | Job file, input checksums, cost and the cluster steps |
 

@@ -59,7 +59,7 @@ def main(argv):
         title = argv[k + 1]
         del argv[k:k + 2]
     curves, fig, out_png, out_txt = argv[1:5]
-    hams = [(spec.split("=", 1)[0], read_hams(spec.split("=", 1)[1])) for spec in argv[5:]]
+    hams = [(spec.rsplit("=", 1)[0], read_hams(spec.rsplit("=", 1)[1])) for spec in argv[5:]]   # the label may hold "="
     rows = [r for r in csv.DictReader(open(curves)) if r["figure"] == fig]
     paper = {}
     for r in rows:
