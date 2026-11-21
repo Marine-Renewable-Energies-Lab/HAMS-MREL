@@ -59,7 +59,7 @@ This page shows how far each second-order output of HAMS-MREL has been checked, 
 | [3.4](#oc4-sum-qtf) OC4 sum | `.11s` | Nemoh v3.0.3; WAMIT | open: HAMS and Nemoh differ by 82 / 33 / 27 % |
 | [4](#partial-second-order-field) Field at points | pressure and elevation | Stokes | tiny hull: 3.6e-5 to 6.2e-5 of the Stokes value; no reference for the complete field |
 | [5](#second-order-motion) Second-order motion | ξ_1, ξ_3, ξ_5 | semi-analytical motion | the motion error is the force error; the transfer part is at most 1.7 % (m1) and 0.03 % (m2) |
-| [6](#field-pass-speed-ups) Field-pass speed-ups | defaults `field_deep_kh`, `qtf_fs_circle` | semi-analytical | 126 gate rows, 0 fail; OC4 sum run 3.5 times faster |
+| [6](#field-pass-speed-ups) Field-pass speed-ups | defaults `field_deep_kh`, `qtf_fs_circle` | semi-analytical | 126 gate rows, 0 fail; OC4 sum run 3.5 times faster; deep-water rows off below 10 drafts (QTF⁺_3 error 0.74 to 2.96 % at 5 drafts) |
 | [7](#multi-body-arrays) Multi-body arrays | X_i^(k), F̄_i^(k), η | exact array solution | four cylinders: largest error 1.4e-2 (X, F̄) and 3.9e-2 (η) at 9216 panels, second-order convergence |
 | [8](#benchmark-against-other-codes) Benchmark | QTF⁻_1 (OC4) | WAMIT and four solvers, Roland et al. (2026) | OC4 at 9208 panels: F̄_1 diagonal 7.9 % max / 0.73 % median of the largest WAMIT value |
 
@@ -1269,6 +1269,30 @@ The OC4 WAMIT model (5022 hull panels), sum QTF with the indirect method, free b
 
 **Conclusion.** The two new defaults (`field_deep_kh = 10`, `qtf_fs_circle = panels`) pass the accuracy gate (126 rows, 0 fail); `qtf_fs_inner = source` fails it and stays off. On OC4 the sum run is 3.5 times faster. Its body-term change came from the deep-water rows on C and F, which are no longer used there; the remaining change, in `FS_inner` from 1.35 rad/s, is open, and so are the 16 % gap between the direct and indirect routes and the HAMS-Nemoh gap of the free-surface part.
 
+<a id="threshold-and-depth-of-the-deep-water-rows"></a>
+### 6.7 Threshold and depth of the deep-water rows
+
+Two questions about `field_deep_kh`: can the threshold come down from k0 h = 10, and does k0 h alone decide where the deep-water rows are safe when the water is shallow relative to the draft? On the default `qtf_fs_circle = panels` the key acts on the inner free-surface points only, so only `FS_inner` (indirect route) can move. The direct route (`D_FS`) does not use the key. Rule: the G1 gate of [6.5](#snellius-gate-sharp-and-round-cylinder-at-m2) where there is a semi-analytical reference; on OC4, which has none, a change of at most 0.5 % of max |QTF⁺_i| per mode. Sources: `validation-runs/fs-speedups/deep_inner/findings.md` (sections 7, 9, 10) and `validation-runs/fs-speedups/results/` (`g1_kh5_cmp/`, `oc4_kh5/`, `shallow_h25_cmp/`, `shallow_h50_cmp/`).
+
+| Case | Depth / draft | Setting against | Reference | Largest change of the error | Verdict |
+| :--- | ---: | :--- | :--- | ---: | :--- |
+| sharp cylinder m2, fixed and free | 10 (h = 100 m) | `field_deep_kh = 5` against 10 | semi-analytical | 0.14 pp (126 rows) | pass |
+| OC4 WAMIT model, free | 10 (h = 200 m) | `field_deep_kh = 5` against 10 | none: change of QTF⁺_i | QTF⁺_1 0.73 %, QTF⁺_3 0.30 %, QTF⁺_5 0.47 % | **fail** (QTF⁺_1) |
+| sharp cylinder m2, fixed | 5 (h = 50 m) | default 10 against 0 | semi-analytical at h = 50 m | P_FS QTF⁺_3 0.74 to 2.96 % | **fail** |
+| sharp cylinder m2, fixed | 2.5 (h = 25 m) | default 10 against 0 | semi-analytical at h = 25 m | P_FS QTF⁺_3 0.72 to 7.29 % | **fail** |
+
+- **Threshold k0 h = 5.** On the cylinder it saves 11 % of the wall time (7815 s to 6942 s) and passes the gate; the first-order, drift and quadratic files stay byte-identical. On OC4 (24 CPUs, 3.0 h) every term except `FS_inner` is identical to the digit, but QTF⁺_1 changes by 0.73 % at the pair (0.60, 0.60) rad/s and by about 0.5 % at (0.55, 0.60) and (0.45, 0.60). Every pair above the bar has ω_j = 0.60 rad/s (k0 h ≈ 7.3); those pairs move by 1.8 to 2.8 % of their own value. The medians are 0.016 / 0.006 / 0.005 % (QTF⁺_1 / QTF⁺_3 / QTF⁺_5). It saves about 2400 s (18 %) [inferred: the run at 10 also carried the direct-route passes, whose time is estimated]. **The default stays at 10.**
+- **Shallow water.** At 2.5 drafts the error of P_FS QTF⁺_3 jumps from 0.23 % to 3.78 % at Ω = 2.0 rad/s, the first sum frequency on deep-water rows, and reaches 7.3 % at 2.8 rad/s. At 5 drafts it grows from 0.39 % at 1.45 rad/s to 2.99 % at 2.8 rad/s (k0 h = 40). With finite-depth rows it stays at 0.2 to 0.74 % at both depths. QTF⁺_1 and QTF⁺_5 pass at both depths, and the difference kernel, the body terms and `D_FS` are identical. The semi-analytical reference at these depths is the same script with the depth changed; its stated uncertainties are for h = 100 m only, and at h = 25 m its rows change by at most 2.1e-6 against 128000 modes and order 20.
+- **Depth guard.** So k0 h alone is not enough: the deep-water rows need the depth to be large against the draft too. `field_deep` now keeps the finite-depth rows when the depth is below `field_deep_draft` times the draft of the hull (default 10, the shallowest depth measured to pass; 5 to 10 drafts is not measured). The draft is the deepest node of the mesh, and the log says once when the guard keeps finite-depth rows. OC4 (h = 200 m, draft 20 m) is at 10 drafts and keeps its deep-water rows. `field_deep_draft = 0` turns the guard off. Tests: `field_deep_draft_guard`, `field_deep_draft_key` and `field_deep_draft_negative_stops`. Of the stored references none moved: `qtf_psi_reuse`, which exists to exercise the deep rows at 4 drafts, sets `field_deep_draft = 0`.
+
+![OC4 WAMIT model (5022 panels, h = 200 m), HAMS sum QTF, heading 0: change of QTF⁺_1, QTF⁺_3 and QTF⁺_5 and of FS_inner with field_deep_kh = 5 against the default 10, per sum frequency, against the 0.5 % bar. No reference solution; the size of FS_inner is shown for scale](figures/fs_deep_oc4_kh5.png)
+
+![Sharp cylinder m2, fixed body, h = 25 m (2.5 drafts): error of the HAMS free-surface part of the sum QTF (indirect P_FS with field_deep_kh = 0 and with the default 10, direct D_FS) against the semi-analytical reference at h = 25 m (truncated_cylinder_reference.py), for QTF⁺_1, QTF⁺_3 and QTF⁺_5](figures/fs_deep_shallow_h25.png)
+
+![Sharp cylinder m2, fixed body, h = 50 m (5 drafts): as above, against the semi-analytical reference at h = 50 m (truncated_cylinder_reference.py)](figures/fs_deep_shallow_h50.png)
+
+**Conclusion.** The default `field_deep_kh = 10` stays: k0 h = 5 passes on the cylinder but moves the OC4 QTF⁺_1 by 0.73 % at three pairs. In water shallower than 10 drafts the deep-water rows fail the gate at the default threshold, so they are now off there (`field_deep_draft = 10`).
+
 <a id="multi-body-arrays"></a>
 ## 7. Multi-body arrays
 
@@ -1594,6 +1618,7 @@ The speed-up fixtures add about 4 minutes to the integration suite (the ψ-reuse
 - Field-pass speed-ups, OC4: the run with the new defaults took deep-water rows on C and F, which are 2e-3 to 9e-3 off per row below z = 0. A re-run with the control-surface passes on finite-depth rows is pending; until then the cause of the OC4 change (from 1.35 rad/s, and the B2 jump above 1.6 rad/s) is open, and it has no reference solution ([OC4 with the new defaults](#oc4-with-the-new-defaults)).
 - Deep-water rows below z = 0: on the OC4-like cases of `field_row_deep_seabed` the seabed images explain only part of the gap above k0 h = 10; the rest, which grows with k0 h, is not explained.
 - `qtf_fs_inner = source` (off by default): it failed the gate on semi-analytical data (sum integral 3.58 % against 2.05 %, ∇φ at 0.1 m 5.84 % against 4.92 %) and moves with the hull mesh (16 to 25 % between 220 and 960 panels, against 0.3 to 1 % for the stencil). Whether a better treatment of the hull error would pass was not tried.
+- Depth guard of the deep-water rows (`field_deep_draft = 10`): 5 drafts fails and 10 drafts passes on one hull, the sharp cylinder; 5 to 10 drafts and other hulls are not measured ([6.7](#threshold-and-depth-of-the-deep-water-rows)).
 - `qtf_fs_circle = panels` ignores `field_deep_kh` for the partial waves (finite-depth field); at a small `field_deep_kh` this moves a result by 1.2e-2 of the largest value (`qtf_psi_reuse`). At the default 10 the OC4 `FS_outer` moves by at most 2e-4. The panels route was gated on the sharp and round cylinder at m2 only (126 rows), not on OC4 against the semi-analytical reference.
 
 <a id="run-details"></a>

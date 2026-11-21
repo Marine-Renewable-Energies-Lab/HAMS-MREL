@@ -47,6 +47,8 @@ subroutine collect_second_order_input(testsuite)
     new_unittest("field_deep_kh_default", test_field_deep_kh_default), &
     new_unittest("field_deep_kh_read", test_field_deep_kh_read), &
     new_unittest("field_deep_kh_negative_stops", test_field_deep_kh_negative_stops), &
+    new_unittest("field_deep_draft_key", test_field_deep_draft_key), &
+    new_unittest("field_deep_draft_negative_stops", test_field_deep_draft_negative_stops), &
     new_unittest("qtf_fs_circle_key", test_qtf_fs_circle_key), &
     new_unittest("qtf_fs_inner_key", test_qtf_fs_inner_key), &
     new_unittest("qtf_fs_defaults", test_qtf_fs_defaults), &
@@ -1009,6 +1011,49 @@ subroutine test_field_deep_kh_negative_stops(error)
                            "field_deep_kh must not be negative in SecondOrder.in.")
   call remove_directory(root)
 end subroutine test_field_deep_kh_negative_stops
+
+!> field_deep_draft (the depth guard of the deep-water field rows): absent gives 10 (drafts), the key is read with its value,
+!> 0 included (0 = no guard)
+subroutine test_field_deep_draft_key(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_field_deep_draft"
+  type(so_options) :: opts
+  logical :: ok
+  character(len=200) :: msg
+
+  call remove_directory(root)
+  call make_directory(root)
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "read failed: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%field_deep_draft == 10d0, "field_deep_draft default")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "field_deep_draft = 0"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "0 rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%field_deep_draft == 0d0, "field_deep_draft = 0")
+  if (allocated(error)) return
+  call write_input(root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "field_deep_draft = 7.5"])
+  call read_second_order_options(root, opts, ok, msg)
+  call check(error, ok, "7.5 rejected: "//trim(msg))
+  if (allocated(error)) return
+  call check(error, opts%field_deep_draft == 7.5d0, "field_deep_draft = 7.5")
+  call remove_directory(root)
+end subroutine test_field_deep_draft_key
+
+!> A negative field_deep_draft stops with its message
+subroutine test_field_deep_draft_negative_stops(error)
+  type(error_type), allocatable, intent(out) :: error
+  character(len=*), parameter :: root = "hams_test_so_field_deep_draft_neg"
+
+  call remove_directory(root)
+  call make_directory(root)
+  call expect_read_message(error, root, [character(len=40) :: "mean_drift = 1", "qtf = 1", "field_deep_draft = -1"], &
+                           "field_deep_draft must not be negative in SecondOrder.in.")
+  call remove_directory(root)
+end subroutine test_field_deep_draft_negative_stops
 
 !> qtf_fs_circle (item 3 of the field-pass speed-ups): absent gives panels (2, the partial waves from the hull
 !> integral; the default since the accuracy gate), samples gives 1 (the circle samples and their fit),

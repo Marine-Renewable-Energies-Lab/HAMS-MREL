@@ -12,6 +12,8 @@ qtf_edge_weights = off
 qtf_fs_radius = 10.0
 qtf_max_dw = 0.2
 field_deep_kh = 0.25
+! The depth is 4 drafts here (20 m, draft 5 m): field_deep_draft = 0 lifts the depth guard so the deep rows above stay on
+field_deep_draft = 0
 ! The deep-water field rows (field_deep_kh above) apply on the samples route only: the panels route, the default
 ! since the accuracy gate (validation-runs/fs-speedups/gate/G1_table.md), uses the finite-depth field, so this fixture pins the route it was stored with.
 qtf_fs_circle = samples

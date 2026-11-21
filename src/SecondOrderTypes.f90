@@ -80,6 +80,13 @@ MODULE SecondOrderTypes
       ! Field-pass rows (psi, grad psi at the hull, free-surface and field points): the deep-water Green function is used
       ! where k0 h >= field_deep_kh (k0 the wave number of the frequency, h the depth); 0 switches it off
       REAL(8) :: field_deep_kh = 10D0
+      ! The deep-water rows of field_deep_kh only where the depth is at least field_deep_draft times the draft of the hull
+      ! (its deepest node); below it the rows keep the finite-depth Green function at every frequency. 0 switches the guard
+      ! off. On the sharp cylinder (fixed body) the deep rows at k0 h >= 10 moved the free-surface part of the sum QTF (F_z)
+      ! from 0.72 % to 7.29 % of the exact maximum at 2.5 drafts (h = 25 m) and from 0.74 % to 2.96 % at 5 drafts (h = 50 m);
+      ! at 10 drafts (h = 100 m) they passed the accuracy gate (validation-runs/fs-speedups/deep_inner/findings.md). So the
+      ! default is 10 drafts, the shallowest depth measured to pass
+      REAL(8) :: field_deep_draft = 10D0
       ! Panel weights of the B2 hull term at sharp edges (SharpEdge), with qtf_b2 = control; edges where the normals differ
       ! by more than qtf_edge_angle degrees. Off by default: on the sharp-cylinder fixture they moved B2 F_x and F_z away
       ! from the exact reference (15.1% to 17.2%, 30.0% to 37.4%) for an M_y gain of 11.9% to 11.1%
