@@ -16,6 +16,8 @@ HydroData, Apache-2.0) and the case inputs derived from the IEA mesh. Run Python
 | `compare_maps.py HAMS_FILE WAMIT_12D OUT_PNG OUT_TXT TITLE` | The whole QTF, magnitude and phase, in the style of Figs. 4 and 6 |
 | `make_volturnus_case.py IEA_HYDRODATA_DIR OUT_CASE_DIR` | The VolturnUS-S HAMS case with the free-surface integral |
 | `without_free_surface.py WAMIT_FORMAT_DIR OUT [--direct]` | `.11d` (or `.12d` with `--direct`) without the free-surface terms, same format |
+| `make_volturnus_r200.py IEA_HYDRODATA_DIR OUT_CASE_DIR` | The 200 m cut-off case: inner free surface to 200 m (10 m panels), indirect only |
+| `volturnus_cut200.py WAMIT_12D FULL_DIR R200_DIR OUT_PNG OUT_TXT` | HAMS `.11d` minus the free surface beyond 200 m against WAMIT, off the diagonal |
 | `full_range_diagnostics.py` | Near- against far-field mean drift per velocity method, and the VolturnUS-S QTF away from the diagonal |
 | `plot_volturnus_case.py`, `plot_cost.py` | Figures of the case meshes and of the run cost |
 | `snellius/` | Job file, input checksums, cost and the cluster steps |

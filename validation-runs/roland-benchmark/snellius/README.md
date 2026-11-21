@@ -82,3 +82,9 @@ MSYS_NO_PATHCONV=1 ssh -o BatchMode=yes -o PasswordAuthentication=no <user>@<log
 
 Submit (only after the approval): `cd <run_root>/run_roland && sbatch run_oc4_ext.sbatch && sbatch
 run_volturnus_ext.sbatch`.
+
+## The 200 m cut-off check
+
+Inputs from `make_volturnus_r200.py <IEA_HYDRODATA_DIR> <work_dir>/validation-runs/roland-benchmark/cases/q_volturnus_r200`,
+checksums `md5sums_q_volturnus_r200.txt`, job `run_volturnus_r200.sbatch`. Upload, check and fetch as for
+`q_volturnus_free_full_ext` above, with the case name `q_volturnus_r200`.
