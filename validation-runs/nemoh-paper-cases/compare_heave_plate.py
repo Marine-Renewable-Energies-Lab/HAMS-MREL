@@ -85,9 +85,10 @@ def main(fig8, res, out):
     for r in csv.DictReader(open(fig8)):
         ref[(r["quantity"], r["solver"])].append((float(r["omega_rad_s"]), float(r["value"])))
     h1, h2, nm = hams(os.path.join(res, "hp_m1")), hams(os.path.join(res, "hp_m2")), nemoh(os.path.join(res, "nemoh_hp_m1"))
+    h3 = hams(os.path.join(res, "hp_m3"))
     fig, ax = plt.subplots(3, 3, figsize=(15, 11))
     lines = ["Error |ours - ref| / max|ref| over 0.2-4.0 rad/s, max / median in %%; ref: the curves of %s" % PAPER]
-    lines.append("%-5s %-22s %-16s %-16s %-16s" % ("", "reference", "HAMS m1", "HAMS m2", "Nemoh v3.0.3 m1"))
+    lines.append("%-5s %-22s %-16s %-16s %-16s %-16s" % ("", "reference", "HAMS m1", "HAMS m2", "HAMS m3", "Nemoh v3.0.3 m1"))
     for k, q in enumerate(QUANT):
         a = ax[k % 3][k // 3]
         for s, st in STYLE.items():
@@ -95,7 +96,8 @@ def main(fig8, res, out):
             a.plot([x for x, _ in p], [y for _, y in p], label="%s (Kurnia & Ducrozet 2023, Fig. 8)" % s, **st)
         for lab, d, st in (("Nemoh v3.0.3 on our mesh m1 (this work)", nm, dict(color="tab:orange", lw=1.6)),
                            ("HAMS-MREL m1, 3096 panels (this work)", h1, dict(color="tab:red", lw=1.8)),
-                           ("HAMS-MREL m2, 5632 panels (this work)", h2, dict(color="tab:blue", lw=1.3))):
+                           ("HAMS-MREL m2, 5632 panels (this work)", h2, dict(color="tab:blue", lw=1.3)),
+                           ("HAMS-MREL m3, 11400 panels, fine plate (this work)", h3, dict(color="tab:green", lw=1.6))):
             a.plot(d[q][0], d[q][1], label=lab, **st)
         a.set_title(SYM[q], fontsize=10)
         a.set_xlim(0, 4)
@@ -106,7 +108,7 @@ def main(fig8, res, out):
             p = sorted(ref[(q, s)])
             wr, vr = [x for x, _ in p], [y for _, y in p]
             row = "%-5s %-22s" % (q, s)
-            for d in (h1, h2, nm):
+            for d in (h1, h2, h3, nm):
                 e = err(np.asarray(d[q][0]), np.asarray(d[q][1]), wr, vr)
                 row += " %6.2f / %5.2f   " % e
             lines.append(row)
