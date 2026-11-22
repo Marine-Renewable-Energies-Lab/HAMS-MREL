@@ -222,10 +222,43 @@ def refine(tc, root):
     return facts
 
 
+def irr8a(tc, root):
+    """D4: the irregular-frequency removal of HAMS-MREL on Nemoh's test case 8a (cylinder R 6 m, T 14 m, deep water, 502
+    hull panels; HydroStar with IRR to 6.28 rad/s), 100 frequencies 0.0628-6.28 rad/s: with the test case's own lid (132
+    panels), with our ring lid, and without a lid. A, B and X only; the mass and restoring are placeholders (rho V, the
+    hull's hydrostatics) and enter only the motions."""
+    import nemoh_mesh as N
+    path = os.path.join(tc, "8a_Cylinder_irregfreq", "mesh634", "OC5_cylinder634_Nem.dat")
+    _, nodes, panels = N.read_nemoh(path)
+    hull, lid_n = N.split(nodes, panels)
+    s, _, _ = N.summary(path)
+    lid_o, _ = C.lid_for(hull, s["wl_row"])
+    freqs = C.grid(100)
+    vol, zb, awp = s["vol"], s["zb"], s["awp"]
+    m = [[0.0] * 6 for _ in range(6)]
+    for i in range(3):
+        m[i][i] = C.RHO_H * vol
+    m[3][3] = m[4][4] = m[5][5] = C.RHO_H * vol * 25.0
+    k = [[0.0] * 6 for _ in range(6)]
+    k[2][2] = C.RHO_H * C.G_H * awp
+    k[3][3] = k[4][4] = C.RHO_H * C.G_H * (math.pi * 6.0 ** 4 / 4.0 + vol * zb)
+    hydro = dict(cg=(0.0, 0.0, 0.0), mass=m, restoring=k)
+    facts = {}
+    for name, lidm, irsp, note in (("d4_lid_nemoh", lid_n, 1, "test case 8a with its own lid"),
+                                   ("d4_lid_ours", lid_o, 1, "test case 8a with our ring lid"),
+                                   ("d4_nolid", None, 0, "test case 8a without a lid")):
+        C.write_hams_case(root, name, hull, lidm, 0, dict(depth=-1.0, freqs=freqs, headings=[0.0], centre=(0.0, 0.0, 0.0),
+                                                       irsp=irsp, note="D4: " + note + "."), hydro)
+        facts[name] = dict(hull=len(hull.panels), lid=len(lidm.panels) if lidm else 0, nfreq=len(freqs))
+        if lidm:
+            facts[name]["lid_clearance_rows"] = round(N.waterline_clearance(hull, lidm)[0] / s["wl_row"], 3)
+    return facts
+
+
 def main():
     tc, root, what = sys.argv[1], sys.argv[2], sys.argv[3]
     os.makedirs(root, exist_ok=True)
-    facts = {"d3": d3, "paper": paper, "refine": refine}[what](tc, root)
+    facts = {"d3": d3, "paper": paper, "refine": refine, "irr8a": irr8a}[what](tc, root)
     path = os.path.join(root, "mesh_study_%s.json" % what)
     with open(path, "w") as f:
         json.dump(facts, f, indent=1)
