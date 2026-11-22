@@ -20,7 +20,7 @@ run_hams() {
   local c=$1 n=$2 start end code
   cd $RUN/$c || return 1
   export OMP_NUM_THREADS=$n
-  sed -i "s/^    Number of threads .*/    Number of threads       $n/" input/ControlFile.in
+  sed -i "s/^    Number of threads *[0-9]*/    Number of threads       $n/" input/ControlFile.in
   start=$(date +%s)
   /usr/bin/time -v -o time.txt $BIN $RUN/$c/input/ $RUN/$c/output/ > log.txt 2>&1
   code=$?
