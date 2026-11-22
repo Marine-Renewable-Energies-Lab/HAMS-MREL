@@ -208,16 +208,32 @@ def paper(tc, root):
     return facts
 
 
+LID_ONLY = {"p_lid": (0.375, "lid halved to 0.375 m (2265 lid rows)"),
+            "p_lid2": (2.2, "lid of 2.2 m (few lid rows: the weight of the lid rows in the least-squares solve)")}
+
+
 def refine(tc, root):
-    """The one-part-at-a-time refinements of p0, for HAMS and Nemoh (written for the cost table; staged only after the
-    approval)."""
+    """J9, the one-part-at-a-time refinements of p0. D3 and D4: HAMS's lid (least-squares hull + lid rows) adds an error on
+    this body that grows with the lid rows, while the lid works on a plain cylinder; so every refinement of the hull runs in
+    HAMS with the paper's lid and without a lid (<name>_nolid, IRSP = 0), and p0 without a lid too; the lid variants run
+    with HAMS only (p_lid2) or HAMS and Nemoh (p_lid). Nemoh runs every hull refinement with the lid, as in the paper."""
     facts = {}
+    hull0 = plate_body(H0)
+    facts["p0_nolid"] = write_case(root, "p0_nolid", hull0, None, FREQS, "Heave plate p0 without a lid.", irsp=0)
+    for name, (hl, what) in LID_ONLY.items():
+        facts[name] = write_case(root, name, hull0, lid(hl), FREQS, "Heave plate p0, %s." % what)
+        facts[name]["what"] = what
+        if name == "p_lid":
+            with_nemoh(root, tc, name, hull0, lid(hl), facts)
     for name, (kw, hl, what) in VARIANTS.items():
-        if name == "p0":
+        if name in ("p0", "p_lid"):
             continue
         hull, lidm = plate_body(H0, **kw), lid(hl)
         facts[name] = write_case(root, name, hull, lidm, FREQS, "Heave plate, %s." % what)
         facts[name]["what"] = what
+        if name != "p_plate":   # p_plate without a lid would take 2 h of the 10 h limit; the other no-lid runs answer that
+            facts[name + "_nolid"] = write_case(root, name + "_nolid", hull, None, FREQS, "Heave plate, %s, no lid." % what,
+                                                irsp=0)
         with_nemoh(root, tc, name, hull, lidm, facts)
     return facts
 
