@@ -55,13 +55,12 @@ def estimate(c):
     # J1: small cases in one job (HAMS on 23 threads, Nemoh on 1 thread beside it)
     hp1 = fo(c["hp_m1"]["hull"] + c["hp_m1"]["lid"]["panels"], 20)
     hp2 = fo(c["hp_m2"]["hull"] + c["hp_m2"]["lid"]["panels"], 20)
-    tow = fo(c["tow_oc4"]["hull"], c["tow_oc4"]["nfreq"]) * 1.2
     swfo = fo(2 * c["sw_fo"]["hull"] + 2 * c["sw_fo"]["lid"]["panels"], 100, half=True)
     cy = c["cyl8b_diff"]
     cyl = fo(cy["hull"] + cy["lid"]["panels"], 50) + passes(cy["hull"], cy["cs"]["points"], grid(50), -1.0, 14.0)
-    ham = hp1 + hp2 + tow + swfo + cyl
+    ham = hp1 + hp2 + swfo + cyl
     nem = 2.33 * 3600 / 21 * (c["nemoh_hp_m1"]["panels"] / 5022.0) ** 2.5 * 20
-    rows.append(("J1 small", "hp_m1, hp_m2 (heave plate), tow_oc4, cyl8b_diff, sw_fo; Nemoh nemoh_hp_m1 beside",
+    rows.append(("J1 small", "hp_m1, hp_m2 (heave plate), cyl8b_diff, sw_fo; Nemoh nemoh_hp_m1 beside",
                  max(ham, nem) + 600))
     # J2: SOFTWIND difference, no FS
     s = c["sw_diff"]

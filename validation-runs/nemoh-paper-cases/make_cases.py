@@ -1,5 +1,5 @@
-"""Write the HAMS-MREL (and Nemoh v3.0.3) inputs of the validation cases of Kurnia and Ducrozet (2023) and of the towing
-check of Pribadi et al. (2026) / Ramachandran et al. (2024).
+"""Write the HAMS-MREL (and Nemoh v3.0.3) inputs of the validation cases of Kurnia and Ducrozet (2023), and of the OC3
+Hywind and cylinder test cases (11 and 8b) of Nemoh v3.0.3.
 
 Usage: python -I make_cases.py NEMOH_TESTCASES OUT_DIR
 
@@ -379,9 +379,6 @@ def main(tc, root):
     facts["cyl8b_diff"] = dict(hull=len(hull.panels), lid=lidinfo, nfreq=50, depth=depth8, draft=14.0,
                                cs=generated_cs_points(hull, depth8 if depth8 > 0 else 1e9), vol=round(s["vol"], 2))
 
-    # E. OC4 at the towing draught of 10 m (Ramachandran et al. 2024): the OC4 columns raised by 10 m, mean drift only
-    facts["tow_oc4"] = write_towing(root)
-
     with open(os.path.join(root, "cases.json"), "w") as f:
         json.dump(facts, f, indent=1)
     for k, v in facts.items():
@@ -412,48 +409,6 @@ def oc4_polygons(hull):
         pts.sort(key=lambda q: math.atan2(q[1] - cy, q[0] - cx))
         out.append(pts)
     return out
-
-
-def write_towing(root):
-    saved = (make_mesh.OC4_DRAFT, make_mesh.OC4_BASE_TOP)
-    make_mesh.OC4_DRAFT, make_mesh.OC4_BASE_TOP = 10.0, 4.0
-    try:
-        hull, polygons, inside = make_mesh.oc4_hull(2)
-        make_mesh.check_normals_each(hull, inside)
-    finally:
-        make_mesh.OC4_DRAFT, make_mesh.OC4_BASE_TOP = saved
-    props = make_mesh.mesh_properties(hull)
-    # Ramachandran et al. (2024), Table 1, realised model at full scale: mass 10410.3 t, VCG 12.09 m above the keel
-    # (2.09 m above the waterline at 10 m draught), Ixx 9.71e6, Iyy 1.00e7, Izz 1.01e7 t m^2 about the COG.
-    mass_sea = 10410.3e3
-    zg = 2.09
-    mass = mass_sea * MASS_SCALE
-    ixx, iyy, izz = 9.71e9 * MASS_SCALE, 1.00e10 * MASS_SCALE, 1.01e10 * MASS_SCALE
-    m = [[0.0] * 6 for _ in range(6)]
-    for i in range(3):
-        m[i][i] = mass
-    m[0][4] = m[4][0] = mass * zg
-    m[1][3] = m[3][1] = -mass * zg
-    m[3][3] = ixx + mass * zg * zg
-    m[4][4] = iyy + mass * zg * zg
-    m[5][5] = izz
-    c = [[0.0] * 6 for _ in range(6)]
-    c[2][2] = RHO_H * G_H * props["area"]
-    c[3][3] = RHO_H * G_H * (props["syy"] + props["vol"] * props["zb"]) - mass * G_H * zg
-    c[4][4] = RHO_H * G_H * (props["sxx"] + props["vol"] * props["zb"]) - mass * G_H * zg
-    # the towing spring of the tests (K = 718.23 kN/m, section 2.4) in surge, in HAMS's density
-    ext = [[0.0] * 6 for _ in range(6)]
-    ext[0][0] = 718.23e3 * STIFF_SCALE
-    periods = [6.28, 6.98, 8.38, 10.47, 15.71, 18.00, 20.94]
-    encounter = [5.68, 6.38, 7.77, 9.85, 15.07, 17.36, 20.27]   # Pribadi et al. (2026), Table 3
-    freqs = sorted(set([round(2 * math.pi / t, 4) for t in periods + encounter] + grid(18, 0.05, 0.25)))
-    write_hams_case(root, "tow_oc4", hull, None, 0,
-                    dict(depth=200.0, freqs=freqs, headings=[0.0, 180.0], centre=(0.0, 0.0, 0.0), irsp=0,
-                         note="OC4 columns at the towing draught of 10 m, mean drift."),
-                    dict(cg=(0.0, 0.0, zg), mass=m, restoring=c, external=ext),
-                    ["mean_drift = 1", "drift_methods = far near", "motion_state = free", "write_terms = 1"])
-    return dict(hull=len(hull.panels), nfreq=len(freqs), vol=round(props["vol"], 2), mass_rho_v=round(RHO_N * props["vol"]),
-                c33=c[2][2], c44=c[3][3], c55=c[4][4])
 
 
 def write_nemoh_cal(path, mesh, npoints, npanels, depth, rot, nfreq, wmin, wmax, dirs):

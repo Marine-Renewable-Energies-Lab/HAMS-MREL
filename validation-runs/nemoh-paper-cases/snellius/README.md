@@ -17,7 +17,7 @@ python -I cost_estimate.py <work>/cases/cases.json <work>/snellius/cost.png <wor
 
 ## 2. Staging (copy only)
 
-- `<run_root>/run_nemohpaper/<case>/input/` for hp_m1, hp_m2, tow_oc4, sw_fo, cyl8b_diff, sw_diff, sw_full, oc4_bi,
+- `<run_root>/run_nemohpaper/<case>/input/` for hp_m1, hp_m2, sw_fo, cyl8b_diff, sw_diff, sw_full, oc4_bi,
   oc3_diff, and `<run_root>/run_nemohpaper/nemoh_hp_m1/` (Nemoh's input of the heave-plate m1 mesh).
 - In `<run_root>/run_nemohpaper/`: `common.sh`, the five `run_J*.sbatch`, `mechanics_to_hydrostatic.py`, the
   `md5sums_<case>.txt` lists, and `hamsmrel`, the binary built from `development_2` at 8f27716 (md5 in
