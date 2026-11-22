@@ -2,7 +2,7 @@
 module test_first_order_state
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use SecondOrderTypes, only : panel_mesh, first_order_state
-  use FirstOrderState, only : depth_factor, incident_phi, incident_grad, expand_images, build_state
+  use FirstOrderState, only : depth_factor, incident_phi, incident_grad, expand_images, build_state, join_states
   use second_order_fixtures, only : make_cylinder, set_panel
   implicit none
   private
@@ -28,6 +28,7 @@ subroutine collect_first_order_state(testsuite)
     new_unittest("build_state_all_bodies", test_build_state_all_bodies), &
     new_unittest("build_state_image_index", test_build_state_image_index), &
     new_unittest("expand_images_y", test_expand_images_y), &
+    new_unittest("join_states_copies", test_join_states_copies), &
     new_unittest("expand_images_x", test_expand_images_x), &
     new_unittest("expand_images_single", test_expand_images_single), &
     new_unittest("expand_images_mode_keeps_direction", test_expand_images_mode), &
@@ -594,5 +595,49 @@ subroutine test_build_state_uses_solver_wave(error)
     if (allocated(error)) return
   end do
 end subroutine test_build_state_uses_solver_wave
+
+!> join_states(a, b, out) is [a, b]: sizes, scalars and the allocatable components of every element, which are copies
+!> (changing out leaves a and b as they were). It replaces the array constructor, which crashed under ifx 2024 with
+!> -heap-arrays 0 in fs_frequency.
+subroutine test_join_states_copies(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(first_order_state) :: a(2), b(3)
+  type(first_order_state), allocatable :: out(:)
+  integer :: i
+
+  do i = 1, 2
+    a(i)%omega = 0.5d0*i
+    a(i)%beta = 10d0*i
+    allocate (a(i)%phi_p(4), a(i)%xi(6, 1))
+    a(i)%phi_p = cmplx(i, -i, 8)
+    a(i)%xi = cmplx(0d0, i, 8)
+  end do
+  do i = 1, 3
+    b(i)%omega = 2d0 + i
+    b(i)%amp = 0d0
+    allocate (b(i)%phi_p(4), b(i)%dphi_p_dn(4))
+    b(i)%phi_p = cmplx(100 + i, 0, 8)
+    b(i)%dphi_p_dn = cmplx(0, 100 + i, 8)
+  end do
+  call join_states(a, b, out)
+  call check(error, size(out), 5)
+  if (allocated(error)) return
+  do i = 1, 2
+    call check(error, out(i)%omega == a(i)%omega .and. out(i)%beta == a(i)%beta .and. all(out(i)%phi_p == a(i)%phi_p) &
+               .and. all(out(i)%xi == a(i)%xi) .and. .not. allocated(out(i)%dphi_p_dn), "element from a")
+    if (allocated(error)) return
+  end do
+  do i = 1, 3
+    call check(error, out(2 + i)%omega == b(i)%omega .and. all(out(2 + i)%phi_p == b(i)%phi_p) &
+               .and. all(out(2 + i)%dphi_p_dn == b(i)%dphi_p_dn) .and. .not. allocated(out(2 + i)%xi), "element from b")
+    if (allocated(error)) return
+  end do
+  out(1)%phi_p = (0d0, 0d0)
+  out(3)%phi_p = (0d0, 0d0)
+  call check(error, all(a(1)%phi_p == cmplx(1, -1, 8)) .and. all(b(1)%phi_p == cmplx(101, 0, 8)), "copies, not aliases")
+  if (allocated(error)) return
+  call join_states(a, b(1:0), out)
+  call check(error, size(out) == 2 .and. out(2)%omega == a(2)%omega, "empty second part")
+end subroutine test_join_states_copies
 
 end module test_first_order_state

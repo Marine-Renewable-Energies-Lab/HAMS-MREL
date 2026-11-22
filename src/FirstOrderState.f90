@@ -32,7 +32,7 @@ MODULE FirstOrderState
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: depth_factor, wave_gravity, incident_phi, incident_grad, image_signs, expand_images, build_state, radiation_psi
+   PUBLIC :: depth_factor, wave_gravity, incident_phi, incident_grad, image_signs, expand_images, build_state, radiation_psi, join_states
 
 CONTAINS
 
@@ -256,5 +256,22 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE radiation_psi
+
+   SUBROUTINE join_states(a, b, out)
+      ! out = [a, b], element by element. Not the array constructor [a, b]: under ifx 2024 with -heap-arrays 0 an array
+      ! constructor of a type with allocatable components crashes at run time (developer_documentation.md, as
+      ! far_field_pair); the SOFTWIND free-surface run crashed in fs_frequency on sts = [states, ps].
+      TYPE(first_order_state), INTENT(IN) :: a(:), b(:)
+      TYPE(first_order_state), ALLOCATABLE, INTENT(OUT) :: out(:)
+      INTEGER :: i
+
+      ALLOCATE (out(SIZE(a) + SIZE(b)))
+      DO i = 1, SIZE(a)
+         out(i) = a(i)
+      END DO
+      DO i = 1, SIZE(b)
+         out(SIZE(a) + i) = b(i)
+      END DO
+   END SUBROUTINE join_states
 
 END MODULE FirstOrderState
