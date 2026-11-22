@@ -71,7 +71,7 @@ MODULE SecondOrderDriver
    USE ImplementSubs, ONLY: InputOmega
    USE SecondOrderTypes, ONLY: so_options, panel_mesh, first_order_state, surface_geom, cs_points, cs_fields, CS_WALL, CS_LINE, &
                                CS_FREE, QTF_TERMS_BODY, QTF_TERMS_FULL, QTF_B2_CONTROL
-   USE FirstOrderState, ONLY: expand_images, build_state, radiation_psi
+   USE FirstOrderState, ONLY: expand_images, build_state, radiation_psi, join_states
    USE SurfaceGeometry, ONLY: build_surface_geom, DEFAULT_SHARP_DEG
    USE SurfaceVelocity, ONLY: velocity_differencing, source_operator, build_source_operator, velocity_source
    USE FarFieldDrift, ONLY: far_amplitude, far_field_pair, far_field_pairs
@@ -1442,7 +1442,7 @@ CONTAINS
          ! As keep_fs_psi: the warning is about the finite-depth series, which deep-water rows do not use
          IF (.NOT. deep) CALL warn_second_order_nuh(W1)
          CALL psi_states(W1, psi_main, ps)
-         sts = [states, ps]
+         CALL join_states(states, ps, sts)
       ELSE
          sts = states
       END IF
@@ -1542,7 +1542,7 @@ CONTAINS
       TYPE(so_options), INTENT(IN) :: opts
       TYPE(cs_fields), INTENT(OUT) :: fields(:)
       REAL(8), PARAMETER :: LIMES_NUH = 50D0
-      TYPE(first_order_state), ALLOCATABLE :: ps(:)
+      TYPE(first_order_state), ALLOCATABLE :: ps(:), sts(:)
       TYPE(cs_fields), ALLOCATABLE :: fall(:)
       COMPLEX(8), ALLOCATABLE :: grad(:, :, :)
       INTEGER(8) :: t0, t1, rate
@@ -1570,7 +1570,8 @@ CONTAINS
          CALL psi_states(W1, psi_main, ps)
          npsi = SIZE(ps)
          ALLOCATE (fall(nh + npsi), grad(3, b2_pts%n, npsi))
-         CALL fields_green(mesh, cs_pts, [states, ps], opts%cs_fd_step, multi_arrays, fall)
+         CALL join_states(states, ps, sts)
+         CALL fields_green(mesh, cs_pts, sts, opts%cs_fd_step, multi_arrays, fall)
          fields = fall(1:nh)
          DO k = 1, npsi
             grad(:, :, k) = fall(nh + k)%grad(:, b2_idx)
