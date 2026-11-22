@@ -259,6 +259,80 @@ def heave_plate(radius=10.0, draft=10.0, plate_radius=15.0, thickness=0.1, nthet
     return out
 
 
+def graded(a, b, h0, growth=1.25, hmax=1.0):
+    """Levels from a to b (either order), the first step h0 next to a, each next step growth times larger up to hmax,
+    then scaled so that the last level is b."""
+    d = abs(b - a)
+    steps, h = [], h0
+    while sum(steps) + 0.5 * h < d:
+        steps.append(h)
+        h = min(hmax, h * growth)
+    steps = [x * d / sum(steps) for x in steps]
+    out, x = [a], a
+    for st in steps:
+        x += st if b > a else -st
+        out.append(x)
+    out[-1] = b
+    return out
+
+
+def heave_plate_fine(radius=10.0, draft=10.0, plate_radius=15.0, thickness=0.1, n_plate=320, n_col=160, nz=20, h_edge=0.2,
+                     h_max=0.8):
+    """As heave_plate, refined on the plate: n_plate nodes around the plate edge (arc 0.29 m for 320), rows of h_edge next to
+    the plate edge on its top and bottom and next to the column on the top annulus, growing by 1.25 to h_max. The top
+    annulus halves its count from n_plate to n_col (the column's) half-way in, so the column wall stays conforming; the
+    bottom disc halves inwards as ring_counts decides."""
+    if n_plate != 2 * n_col:
+        raise ValueError("the plate needs twice the nodes of the column")
+    out = make_mesh.Mesh()
+    top = draft - thickness
+    make_mesh._wall(out, 0.0, 0.0, radius, n_col, make_mesh._cosine(0.0, -top, nz))
+    mid = 0.5 * (radius + plate_radius)
+    outer = graded(plate_radius, mid, h_edge, hmax=h_max)
+    inner = [mid] + [r for r in graded(radius, mid, h_edge, hmax=h_max)[::-1][1:]]
+    radii = outer + inner[1:]
+    counts = [n_plate] * len(outer) + [n_col] * (len(inner) - 1)
+    make_mesh._disc(out, 0.0, 0.0, radii, counts, -top, up=False)
+    make_mesh._wall(out, 0.0, 0.0, plate_radius, n_plate, [-top, -draft])
+    radii = graded(plate_radius, 0.0, h_edge, hmax=1.0)
+    make_mesh._disc(out, 0.0, 0.0, radii, make_mesh.ring_counts(radii, n_plate), -draft, up=True)
+    return out
+
+
+def extra_cases(tc, root):
+    """The two checks added after the first results (user's yes through the hub): SOFTWIND first order without a lid
+    (IRSP = 0) at 20 frequencies below the first irregular frequency, and the heave-plate cylinder on a mesh refined on
+    the plate (hp_m3)."""
+    facts = {}
+    sw = os.path.join(tc, "10_QTF_SOFTWIND", "mesh_1872half_QTF_Floating")
+    isym, nodes, panels = nemoh_mesh.read_nemoh(os.path.join(sw, "softwind_half1872_lid_Nem.dat"))
+    hull, _ = nemoh_mesh.split(nodes, panels)
+    hydro = nemoh_hydro(os.path.join(sw, "Mechanics"), (0.0, 0.0, -71.56))
+    write_hams_case(root, "sw_fo_nolid", hull, None, 1,
+                    dict(depth=200.0, freqs=grid(20), headings=[0.0], centre=(0.0, 0.0, -71.56), irsp=0,
+                         note="SOFTWIND first order without a lid, 0.0628-1.256 rad/s (check of the lid)."), hydro)
+    facts["sw_fo_nolid"] = dict(hull=len(hull.panels), isy=1, nfreq=20)
+    hull = heave_plate_fine()
+    props = make_mesh.mesh_properties(hull)
+    lid, lidinfo = lid_for(hull, 1.0)
+    src = os.path.join(root, "hp_m1", "input", "Hydrostatic.in")
+    folder = write_hams_case(root, "hp_m3", hull, lid, 0,
+                             dict(depth=-1.0, freqs=grid(20, 0.2), headings=[0.0], centre=(0.0, 0.0, -7.5), irsp=1,
+                                  note="Heave-plate cylinder, mesh refined on the plate (m3)."), None)
+    shutil.copy(src, os.path.join(folder, "Hydrostatic.in"))
+    sizes = []
+    for p in hull.panels:
+        pts = [hull.nodes[i - 1] for i in p]
+        if min(q[2] for q in pts) < -9.89 and max(math.hypot(q[0], q[1]) for q in pts) > 14.0:
+            sizes.append(max(math.sqrt(sum((pts[a][c] - pts[(a + 1) % len(pts)][c]) ** 2 for c in range(3))) for a in range(len(pts))))
+    facts["hp_m3"] = dict(hull=len(hull.panels), lid=lidinfo, vol=round(props["vol"], 2), nfreq=20,
+                          plate_edge_panel_longest_edge=round(max(sizes), 3) if sizes else None)
+    with open(os.path.join(root, "cases_extra.json"), "w") as f:
+        json.dump(facts, f, indent=1)
+    for k, v in facts.items():
+        print(k, v)
+
+
 def main(tc, root):
     os.makedirs(root, exist_ok=True)
     facts = {}
@@ -443,4 +517,7 @@ def write_mesh_cal(path, name, cg, npanels):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    if len(sys.argv) > 3 and sys.argv[3] == "--extra":
+        extra_cases(sys.argv[1], sys.argv[2])
+    else:
+        main(sys.argv[1], sys.argv[2])
