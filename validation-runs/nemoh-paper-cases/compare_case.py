@@ -31,7 +31,8 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 RG = R.RHO_HS * R.G_HS
 MODES = ((1, "Fx", "QTF{s}_1", "surge"), (3, "Fz", "QTF{s}_3", "heave"), (5, "My", "QTF{s}_5", "pitch"))
-SRC = "HydroStar (reference files of Nemoh v3.0.3 test case %s)"
+SRC = "HydroStar (Nemoh 3.0.3 test case %s)"
+HAMS = "HAMS-MREL (this work)"
 
 
 def errors(h, r, sel):
@@ -64,8 +65,9 @@ def first_order(case, hdir, rdir, tc, out, heading=0.0):
                 if kind == "xi" and unit_rot:
                     vh = vh * 180.0 / np.pi
             ref = a[:, k]
-            ax[r][c].plot(w, ref, "b-", lw=1.6, label=SRC % tc)
-            ax[r][c].plot(wh, vh, "r--", lw=1.3, label="HAMS-MREL")
+            ax[r][c].plot(w, ref, color="0.35", ls="--", marker="o", ms=2.5, lw=1.0, label=SRC % tc)
+            ax[r][c].plot(wh, vh, color="tab:red", ls="-", lw=1.6, label=HAMS)
+            ax[r][c].legend(fontsize=6.5)
             sym = {"A": "A_%d%d" % (i, i), "B": "B_%d%d" % (i, i), "X": "|X_%d|" % i, "xi": "|ξ_%d|" % i}[kind]
             ax[r][c].set_title("%s [%s]" % (sym, unit), fontsize=9)
             ax[r][c].set_xlabel("ω [rad/s]", fontsize=8)
@@ -75,7 +77,6 @@ def first_order(case, hdir, rdir, tc, out, heading=0.0):
             d = abs(vh[m] - ri[m]) / np.nanmax(abs(ref)) * 100
             lines.append("%-6s max %6.2f %%  median %6.2f %% of max|HydroStar| (%d frequencies, %.3f-%.3f rad/s)"
                          % (sym, d.max(), np.median(d), m.sum(), wh[m].min(), wh[m].max()))
-    ax[0][0].legend(fontsize=7)
     fig.suptitle("%s, first order, heading %g°: HAMS-MREL against %s" % (case, heading, SRC % tc), fontsize=10)
     fig.tight_layout()
     fig.savefig(os.path.join(out, "%s_first_order.png" % case), dpi=100)
@@ -110,12 +111,12 @@ def qtf(case, hfile, rdir, tc, out, prefix, kernel, heads, wmax, grid):
         rm, hm = abs(full(ref)), abs(full(ham))
         vmax = np.nanmax(rm)
         ext = [grid[0], grid[-1], grid[0], grid[-1]]
-        for c, (m, title) in enumerate(((rm, "HydroStar"), (hm, "HAMS-MREL"),
+        for c, (m, title) in enumerate(((rm, SRC % tc), (hm, HAMS),
                                         (rm - hm, "HydroStar − HAMS-MREL"))):
             kw = dict(vmin=0, vmax=vmax, cmap="viridis") if c < 2 else dict(vmin=-0.2 * vmax, vmax=0.2 * vmax, cmap="RdBu_r")
             im = ax[r][c].imshow(m, origin="lower", extent=ext, aspect="equal", **kw)
             plt.colorbar(im, ax=ax[r][c], fraction=0.046)
-            ax[r][c].set_title("|%s|/ρg, %s" % (sym.format(s=s), title) + (" (±20 %% scale)" if c == 2 else ""), fontsize=9)
+            ax[r][c].set_title("|%s|/ρg\n%s" % (sym.format(s=s), title) + (" (±20 %% scale)" if c == 2 else ""), fontsize=9)
             ax[r][c].set_xlabel("ω_2 [rad/s]", fontsize=8)
             ax[r][c].set_ylabel("ω_1 [rad/s]", fontsize=8)
             ax[r][c].set_xlim(grid[0], wmax)
@@ -125,15 +126,17 @@ def qtf(case, hfile, rdir, tc, out, prefix, kernel, heads, wmax, grid):
         for c, k in enumerate((off, 0)):
             idx = [(a, a + k) for a in range(len(grid) - k) if sel[a, a + k]]
             w = [grid[a] for a, _ in idx]
-            ax2[r][c].plot(w, [ref[a, b].real for a, b in idx], "b-", label="HydroStar Re")
-            ax2[r][c].plot(w, [ref[a, b].imag for a, b in idx], "b-.", label="HydroStar Im")
-            ax2[r][c].plot(w, [ham[a, b].real for a, b in idx], "r--", label="HAMS-MREL Re")
-            ax2[r][c].plot(w, [ham[a, b].imag for a, b in idx], "r:", label="HAMS-MREL Im")
+            ax2[r][c].plot(w, [ref[a, b].real for a, b in idx], color="k", ls="--", marker="o", ms=2.5, lw=1.0,
+                           label="Re, " + SRC % tc)
+            ax2[r][c].plot(w, [ref[a, b].imag for a, b in idx], color="0.55", ls="--", marker="s", ms=2.5, lw=1.0,
+                           label="Im, " + SRC % tc)
+            ax2[r][c].plot(w, [ham[a, b].real for a, b in idx], color="tab:red", ls="-", lw=1.6, label="Re, " + HAMS)
+            ax2[r][c].plot(w, [ham[a, b].imag for a, b in idx], color="tab:blue", ls="-", lw=1.6, label="Im, " + HAMS)
+            ax2[r][c].legend(fontsize=6.5)
             what = "diagonal (mean drift)" if k == 0 else "off-diagonal %d (ω_2 = ω_1 + %.4f rad/s)" % (k, k * 0.0628)
             ax2[r][c].set_title("%s/ρg, %s" % (sym.format(s=s), what), fontsize=9)
             ax2[r][c].set_xlabel("ω_1 [rad/s]", fontsize=8)
             ax2[r][c].grid(alpha=0.3)
-    ax2[0][0].legend(fontsize=7)
     title = "%s, %s QTF%s, headings (β_1, β_2) = (%g°, %g°): HAMS-MREL (%s) against %s" % (
         case, "difference" if kernel == "diff" else "sum", s, heads[0], heads[1], os.path.basename(hfile), SRC % tc)
     for fg, nm in ((fig, ""), (fig2, "_offdiag")):

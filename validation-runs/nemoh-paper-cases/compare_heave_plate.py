@@ -30,9 +30,10 @@ QUANT = ["A11", "A33", "A55", "B11", "B33", "B55", "X1", "X3", "X5"]
 SYM = {"A11": "A_11 [kg]", "A33": "A_33 [kg]", "A55": "A_55 [kg m²]", "B11": "B_11 [N s/m]", "B33": "B_33 [N s/m]",
        "B55": "B_55 [N m s]", "X1": "|X_1| [N/m]", "X3": "|X_3| [N/m]", "X5": "|X_5| [N m/m]"}
 PAPER = "Kurnia and Ducrozet (2023), Fig. 8"
-STYLE = {"WAMIT": dict(ls="", marker="+", color="k", ms=4), "HydroStar": dict(color="b"),
-         "DIODORE": dict(color="c", ls=":"), "Nemoh v2": dict(color="#e08080", ls="--"),
-         "Nemoh v3": dict(color="g", ls="-.")}
+# References in black and grey (markers and dashed lines); our runs as solid coloured lines
+STYLE = {"WAMIT": dict(ls="", marker="+", color="k", ms=5), "HydroStar": dict(color="k", ls="--", lw=1.0),
+         "DIODORE": dict(color="0.55", ls=":", lw=1.2), "Nemoh v2": dict(color="0.65", ls=(0, (6, 2)), lw=1.0),
+         "Nemoh v3": dict(color="0.35", ls="-.", lw=1.0)}
 
 
 def hams(folder):
@@ -91,15 +92,16 @@ def main(fig8, res, out):
         a = ax[k % 3][k // 3]
         for s, st in STYLE.items():
             p = sorted(ref[(q, s)])
-            a.plot([x for x, _ in p], [y for _, y in p], label="%s (%s)" % (s, PAPER), **st)
-        for lab, d, st in (("Nemoh v3.0.3, our mesh m1 (3096 + 744 lid)", nm, dict(color="orange", lw=1.6)),
-                           ("HAMS-MREL m1 (3096 + 744 lid)", h1, dict(color="r", ls="--", lw=1.6)),
-                           ("HAMS-MREL m2 (5632 + 992 lid)", h2, dict(color="m", ls="-", lw=1.0))):
+            a.plot([x for x, _ in p], [y for _, y in p], label="%s (Kurnia & Ducrozet 2023, Fig. 8)" % s, **st)
+        for lab, d, st in (("Nemoh v3.0.3 on our mesh m1 (this work)", nm, dict(color="tab:orange", lw=1.6)),
+                           ("HAMS-MREL m1, 3096 panels (this work)", h1, dict(color="tab:red", lw=1.8)),
+                           ("HAMS-MREL m2, 5632 panels (this work)", h2, dict(color="tab:blue", lw=1.3))):
             a.plot(d[q][0], d[q][1], label=lab, **st)
         a.set_title(SYM[q], fontsize=10)
         a.set_xlim(0, 4)
         a.set_xlabel("ω [rad/s]", fontsize=8)
         a.grid(alpha=0.3)
+        a.legend(fontsize=5.5, loc="best")
         for s in ("WAMIT", "HydroStar", "Nemoh v3"):
             p = sorted(ref[(q, s)])
             wr, vr = [x for x, _ in p], [y for _, y in p]
@@ -108,7 +110,6 @@ def main(fig8, res, out):
                 e = err(np.asarray(d[q][0]), np.asarray(d[q][1]), wr, vr)
                 row += " %6.2f / %5.2f   " % e
             lines.append(row)
-    ax[0][0].legend(fontsize=6.5, loc="upper right")
     fig.suptitle("Truncated cylinder (R 10 m, T 10 m) with a thin heave plate (R 15 m, 0.1 m), deep water, CG (0, 0, -7.5) m:"
                  " HAMS-MREL and Nemoh v3.0.3 on our meshes against the curves of %s (the paper's 3464-panel mesh)" % PAPER,
                  fontsize=9)
