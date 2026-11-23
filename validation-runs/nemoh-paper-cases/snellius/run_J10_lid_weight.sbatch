@@ -41,7 +41,8 @@ make_weighted() {
   [ "$a" = none ] && return 0
   awk -v a="$a" '{print} /^ *Number of threads/ {cr = ($0 ~ /\r$/) ? "\r" : ""; printf "    Lid_row_weight          %s%s\n", a, cr}' \
     $RUN/$base/input/ControlFile.in > $RUN/$new/input/ControlFile.in || return 1
-  [ $(grep -c "^ *Lid_row_weight *$a\r\?$" $RUN/$new/input/ControlFile.in) -eq 1 ] \
+  # grep has no \r escape: the CR is passed as a real character ($'\r'), the dot of the weight escaped
+  [ $(grep -cE "^ *Lid_row_weight +${a//./\\.}"$'\r?$' $RUN/$new/input/ControlFile.in) -eq 1 ] \
     || { echo "$new: the Lid_row_weight line was not added once"; return 1; }
   [ $(grep -c $'\r$' $RUN/$new/input/ControlFile.in) -eq $(grep -c '' $RUN/$new/input/ControlFile.in) ] \
     || { echo "$new: mixed line ends after the edit"; return 1; }
