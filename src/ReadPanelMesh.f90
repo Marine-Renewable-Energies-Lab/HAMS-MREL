@@ -40,6 +40,8 @@ MODULE ReadPanelMesh
    PUBLIC :: DIPOLE_CHECK_OPTIONS
    PUBLIC :: DIPOLE_CHECK_GEOMETRY
    PUBLIC :: DIPOLE_RELEASE
+   PUBLIC :: DIPOLE_CHECK_CLEARANCE
+   PUBLIC :: DIPOLE_CHECK_COPLANAR
 
 CONTAINS
 !=======================================================================
@@ -286,6 +288,14 @@ CONTAINS
        CALL DIPOLE_CHECK_GEOMETRY(DPXYZ,DNTND,DPXYZ_C,DPNSZ,DNELEM,DPXYZ_C,0,OK,MSG)        ! no hull panels to compare
       ENDIF
       IF (.NOT.OK) RETURN
+      CALL DIPOLE_CHECK_CLEARANCE(DPXYZ,DNCN,DNCON,DPNSZ,DNELEM,OK,MSG)
+      IF (.NOT.OK) RETURN
+      ! Lid panels (IRSP = 1) lie on z = 0, which the clearance check keeps every sheet away from.
+      IF (ALLOCATED(XYZ_P).AND.ALLOCATED(GEONRM_P).AND.ALLOCATED(NCON)) THEN
+       CALL DIPOLE_CHECK_COPLANAR(DPXYZ,DNCN,DNCON,DPXYZ_C,DNRM(:,1:3),DPNSZ,DNELEM,                               &
+                                  XYZ,NCN,NCON,XYZ_P,GEONRM_P,PNSZ,MIN(NELEM,SIZE(XYZ_P,1)),OK,MSG)
+       IF (.NOT.OK) RETURN
+      ENDIF
 
       PRINT *,' Dipole panels read from DipoleMesh.pnl:',DNELEM
       RETURN
@@ -352,6 +362,101 @@ CONTAINS
 
       RETURN
       END SUBROUTINE DIPOLE_CHECK_GEOMETRY
+
+!=======================================================================
+!SUBROUTINE DIPOLE_CHECK_CLEARANCE
+!   !   Every node of a dipole panel at least one panel size below z = 0. The wave part of the dipole rows is tested only
+!   !   for deeper sheets (design note Sec. 3.2); next to the free surface the image Hessian and the logarithmic part of
+!   !   G_w are not. OK false and MSG naming the first panel otherwise.
+      SUBROUTINE DIPOLE_CHECK_CLEARANCE(PXYZ,PNCN,PNCON,PSZ,ND,OK,MSG)
+      IMPLICIT   NONE
+      INTEGER,INTENT(IN):: ND,PNCN(:),PNCON(:,:)
+      REAL*8,INTENT(IN):: PXYZ(:,:),PSZ(:)
+      LOGICAL,INTENT(OUT):: OK
+      CHARACTER(LEN=*),INTENT(OUT):: MSG
+      INTEGER:: I,K
+
+      OK=.TRUE.
+      MSG=''
+      DO I=1,ND
+       DO K=1,PNCN(I)
+        IF (PXYZ(PNCON(I,K),3).GT.-PSZ(I)) THEN
+         OK=.FALSE.
+         WRITE(MSG,'(A,I0,A)') ' Error: dipole panel ',I,' has a node less than one panel size below z = 0;'// &
+                               ' sheets this close to the free surface are not supported.'
+         RETURN
+        ENDIF
+       ENDDO
+      ENDDO
+
+      RETURN
+      END SUBROUTINE DIPOLE_CHECK_CLEARANCE
+
+!=======================================================================
+!SUBROUTINE DIPOLE_CHECK_COPLANAR
+!   !   No dipole panel may overlap a coplanar hull panel: a sheet cannot close a body or lie on its surface (design
+!   !   note Sec. 6). Coplanar: parallel normals (|n_D x n_H| < 1e-6, either direction) and the other centroid within
+!   !   1e-6 panel sizes of the plane. Overlapping: the centroid of either panel inside the other's outline, projected
+!   !   on the plane (edges included, to 1e-9 panel sizes). The centroid test does not see every partial overlap.
+      SUBROUTINE DIPOLE_CHECK_COPLANAR(PXYZ,PNCN,PNCON,PC,PN,PSZ,ND,HXYZ,HNCN,HNCON,HC,HN,HSZ,NH,OK,MSG)
+      IMPLICIT   NONE
+      INTEGER,INTENT(IN):: ND,NH,PNCN(:),PNCON(:,:),HNCN(:),HNCON(:,:)
+      REAL*8,INTENT(IN):: PXYZ(:,:),PC(:,:),PN(:,:),PSZ(:),HXYZ(:,:),HC(:,:),HN(:,:),HSZ(:)
+      LOGICAL,INTENT(OUT):: OK
+      CHARACTER(LEN=*),INTENT(OUT):: MSG
+      INTEGER:: I,J
+      REAL*8:: CR(3),SZ
+
+      OK=.TRUE.
+      MSG=''
+      DO I=1,ND
+       DO J=1,NH
+        CR(1)=PN(I,2)*HN(J,3)-PN(I,3)*HN(J,2)
+        CR(2)=PN(I,3)*HN(J,1)-PN(I,1)*HN(J,3)
+        CR(3)=PN(I,1)*HN(J,2)-PN(I,2)*HN(J,1)
+        IF (SQRT(CR(1)**2+CR(2)**2+CR(3)**2).GE.1.D-6) CYCLE
+        SZ=MAX(PSZ(I),HSZ(J))
+        IF (ABS(DOT_PRODUCT(HC(J,:)-PC(I,:),PN(I,:))).GE.1.D-6*SZ) CYCLE
+        IF (INSIDE_PANEL(HC(J,:),PXYZ,PNCON(I,:),PNCN(I),PN(I,:),SZ).OR.                                          &
+            INSIDE_PANEL(PC(I,:),HXYZ,HNCON(J,:),HNCN(J),PN(I,:),SZ)) THEN
+         OK=.FALSE.
+         WRITE(MSG,'(A,I0,A,I0,A)') ' Error: dipole panel ',I,' overlaps hull panel ',J,                         &
+                                   ' in the same plane; a sheet cannot close a body or lie on it.'
+         RETURN
+        ENDIF
+       ENDDO
+      ENDDO
+
+      RETURN
+      END SUBROUTINE DIPOLE_CHECK_COPLANAR
+
+!=======================================================================
+!FUNCTION INSIDE_PANEL
+!   !   Whether X, in the plane of the panel with nodes XYZ(NCON(1:NN),:) and normal N, lies inside its outline or on it
+!   !   (to 1e-9 SZ): on the same side of every edge, for either node order.
+      LOGICAL FUNCTION INSIDE_PANEL(X,XYZ,NCON,NN,N,SZ)
+      IMPLICIT   NONE
+      INTEGER,INTENT(IN):: NN,NCON(:)
+      REAL*8,INTENT(IN):: X(3),XYZ(:,:),N(3),SZ
+      INTEGER:: K,KN
+      REAL*8:: E(3),W(3),S
+      LOGICAL:: POS,NEG
+
+      POS=.FALSE.
+      NEG=.FALSE.
+      DO K=1,NN
+       KN=MOD(K,NN)+1
+       E(:)=XYZ(NCON(KN),:)-XYZ(NCON(K),:)
+       W(:)=X(:)-XYZ(NCON(K),:)
+       S=((E(2)*W(3)-E(3)*W(2))*N(1)+(E(3)*W(1)-E(1)*W(3))*N(2)+(E(1)*W(2)-E(2)*W(1))*N(3))
+       S=S/MAX(SQRT(E(1)**2+E(2)**2+E(3)**2),1.D-300)
+       IF (S.GT.1.D-9*SZ) POS=.TRUE.
+       IF (S.LT.-1.D-9*SZ) NEG=.TRUE.
+      ENDDO
+      INSIDE_PANEL=.NOT.(POS.AND.NEG)
+
+      RETURN
+      END FUNCTION INSIDE_PANEL
 
 !=======================================================================
 !SUBROUTINE DIPOLE_RELEASE

@@ -222,7 +222,8 @@ Thin plates, such as heave plates and fins, can be given as sheets of zero thick
 
 The run stops at input if:
 
-- any node is not below z = 0 (sheets must be fully submerged);
+- any node of a dipole panel is less than one panel size below z = 0. Sheets must be fully submerged, and the wave part of the dipole equations is tested only for sheets deeper than their panel size;
+- a dipole panel lies in the plane of a hull panel and overlaps it (the centroid of either inside the other). A sheet cannot close a body or lie on its surface. For a heave plate, the column's bottom disc is part of the hull, and the sheet is only the annulus outside it, in the same plane;
 - a dipole centroid lies within 1e-6 panel sizes of a hull centroid (a sheet must not coincide with hull panels);
 - the symmetry flags of `DipoleMesh.pnl` or of the hull are not 0, `ISOLV` is not 1, there is more than one body, or `SecondOrder.in` is active. Version 1 supports one body, no symmetry, the direct solver and first order only.
 
