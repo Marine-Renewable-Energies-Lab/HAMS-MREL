@@ -63,7 +63,7 @@ This page shows how far each second-order output of HAMS-MREL has been checked, 
 | [6](#field-pass-speed-ups) Field-pass speed-ups | defaults `field_deep_kh`, `qtf_fs_circle` | semi-analytical | 126 gate rows, 0 fail; OC4 sum run 3.5 times faster; deep-water rows off below 10 drafts (QTF⁺_3 error 0.74 to 2.96 % at 5 drafts) |
 | [7](#multi-body-arrays) Multi-body arrays | X_i^(k), F̄_i^(k), η | exact array solution | four cylinders: largest error 1.4e-2 (X, F̄) and 3.9e-2 (η) at 9216 panels, second-order convergence |
 | [8](#benchmark-against-other-codes) Benchmark | QTF⁻_1 (OC4) | WAMIT and four solvers, Roland et al. (2026) | OC4 at 9208 panels: F̄_1 diagonal 7.9 % max / 0.73 % median of the largest WAMIT value |
-| [8](#nemoh-test-cases-against-hydrostar) Cases of Kurnia and Ducrozet (2023) | first order; QTF⁻ of SOFTWIND, OC4, OC3 and a cylinder; QTF± of SOFTWIND with the free-surface integral | HydroStar; WAMIT (heave plate) | SOFTWIND QTF⁻ medians 0.53 / 0.71 / 0.59 %; heave plate within 1–2 % of WAMIT below 3.2 rad/s on a mesh of the paper's coarseness; open: OC3 rows ω_1 ≤ 0.188 rad/s (up to 103 %) and the lidded heave plate above 3.3 rad/s |
+| [8](#nemoh-test-cases-against-hydrostar) Cases of Kurnia and Ducrozet (2023) | first order; QTF⁻ of SOFTWIND, OC4, OC3 and a cylinder; QTF± of SOFTWIND with the free-surface integral | HydroStar; WAMIT (heave plate) | SOFTWIND QTF⁻ medians 0.53 / 0.71 / 0.59 %; heave plate within 1–2 % of WAMIT below 3.2 rad/s on a mesh of the paper's coarseness; open: OC3 surge and heave rows ω_1 ≤ 0.188 rad/s (up to 103 %; pitch is the moment origin) and the lidded heave plate above 3.3 rad/s |
 
 Three numbers in a cell are QTF_1 / QTF_3 / QTF_5 (surge, heave, pitch) of the case's kernel. Tests: [9](#unit-and-integration-tests). Limits and open items: [10](#open-items).
 
@@ -1672,9 +1672,47 @@ The band: one frequency at most 0.44 rad/s and the other at least 1.5 rad/s. (0�
 - From the fourth row on (ω_1 ≥ 0.251 rad/s), HAMS follows HydroStar to 3.14 rad/s. The direct sum removes the scatter above 1.256 rad/s. What is left grows smoothly towards ω_2 = 3.14 rad/s in the rows 0.25 to 0.38 rad/s.
 - The rows ω_1 = 0.063, 0.126 and 0.188 rad/s differ by up to 103 % (surge). Below 1.256 rad/s they are the same to the last digit with and without the direct sum, so they are not a Limes effect. The motions there agree with HydroStar to 0.1 to 0.3 % (surge 2.74 m/m at 0.063 rad/s; heave resonance at 0.188 rad/s, |ξ_3| = 3.74 m/m). The largest error of each surge row follows 2.2 |ξ_1(ω_1)| + 4.5 |ξ_3(ω_1)| ρg within about 30 %: a term linear in the motion at the low frequency.
 - The hydrostatic and rotation terms are not the cause: z_G = 0 makes the first zero, and the second is at most 0.11 ρg in surge. In the surge rows the error is as large as the largest terms (displacement, Froude–Krylov of φ_I2, incident diffraction and B2, 3 to 10 ρg each), which nearly cancel to a QTF of 0.1 to 2 ρg; no single term fits the error with a plausible factor. On the diagonal, the heave mean drift at 0.188 rad/s is 0.289 ρg in HAMS and 0.097 in HydroStar. HAMS's value is velocity −1.02 + displacement +1.54 + flare −0.20 ρg, so a 13 % change in the displacement term would close the gap.
-- Open. HydroStar gives no split by term. Two runs are prepared to settle it: Nemoh v3.0.3 on this test case, whose DUOK and HASBO parts separate the quadratic from the potential part; and HAMS on three meshes refined only at the bottom edge, where the body velocity used by the velocity and displacement terms is singular (`oc3_edge_study.py`).
+- HydroStar gives no split by term. Two further runs, below, find the pitch error (the moment origin) and rule out the bottom edge. The surge and heave rows stay open.
 
 ![OC3, rows ω_1 ≤ 0.188 rad/s: |HydroStar − HAMS-MREL| (black) beside the terms of HAMS-MREL larger than 2 % of it, along ω_2, for the surge rows 0.063, 0.126 and 0.188 and the heave and pitch rows 0.188; and the heave mean drift at 0.126 to 0.314 rad/s by term, against HydroStar (Nemoh 3.0.3 test case 11)](figures/nemoh_paper_oc3_lowrows.png)
+
+**Nemoh v3.0.3 on the same test case.** Test case 11 as it ships: mesh `OC3_hywind-4842_Nem.dat` with its own 132-panel lid, Nemoh's mass and hydrostatics (ρ = 1025 kg/m³), no mooring, heading 0, QTF on 20 frequencies 0.0628 to 1.256 rad/s, DUOK + HASBO (`Contrib = 2`, no free-surface integral). Nemoh writes a pair as (ω_big, ω_small), and the value it lists there is the HydroStar and HAMS-MREL value at (ω_small, ω_big). Read that way, its rows ω_1 ≥ 0.314 rad/s agree with HydroStar to medians of 0.25 / 2.0 / 0.08 %, and DUOK + HASBO equal its total to 1e-6. The first-order motions of the three codes agree within 1 % (heave 3.73 m/m at 0.188 rad/s in all three).
+
+Rows ω_1 ≤ 0.188 rad/s, ω_2 ≤ 1.256 rad/s, largest difference in % of max |HydroStar|:
+
+| | Nemoh against HydroStar | HAMS-MREL against HydroStar | Nemoh against HAMS-MREL |
+| :--- | ---: | ---: | ---: |
+| QTF⁻_1 | 39 | 89 | 50 |
+| QTF⁻_3 | 110 | 33 | 102 |
+| QTF⁻_5 | 20 | 83 | 69 |
+
+- Pitch: Nemoh agrees with HydroStar, so the error is HAMS-MREL's. It sits in the quadratic part: Nemoh's DUOK minus HAMS-MREL's `.10d` follows c m (ω_2² − ω_1²) [ξ(ω_1) × ξ*(ω_2)]_y / ρg with a fitted c = 0.226 and a residual of 5.7 %. That is P(ξ × F⁽¹⁾) with F⁽¹⁾ = −ω² m ξ, c = 1/4: the change of the moment point from `XR` at its mean position to `XR` moving with the body (below).
+- Surge and heave: the quadratic parts agree to 2.5 % and 11 % of max |HydroStar|; the potential parts (Nemoh's HASBO against HAMS-MREL's `.11d` minus `.10d`) differ by up to 52 % and 102 %. No code agrees with another in these rows.
+- Heave mean drift at 0.188 rad/s: Nemoh 0.295 ρg, HAMS-MREL 0.289, HydroStar 0.097. Two codes agree from the same motions.
+
+**Bottom-edge meshes.** The same hull on three structured meshes, made with `oc3_edge_study.py`: e0 uniform (5138 hull panels, first wall row 1.5 m), e1 with bottom-edge rows of 0.375 m (5306 panels) and e2 with rows of 0.094 m (5866 panels). 20 frequencies 0.0628 to 1.256 rad/s, otherwise the settings of the run on the Nemoh mesh; moments about the space-fixed `XR`.
+
+- From e0 to e1 to e2 the rows ω_1 ≤ 0.188 rad/s change by at most 0.27 / 0.21 % (surge), 0.84 / 1.79 % (heave) and 2.94 / 2.24 % (pitch) of max |HydroStar|, while the gap to HydroStar stays 89 / 34 / 83 %. The bottom edge is not the cause.
+- Check, rows ω_1 ≥ 0.314 rad/s against the Nemoh mesh: medians of 0.02 to 0.03 % (surge) and 0.09 to 0.12 % (pitch). Heave differs by 1.9 to 2.3 %, so in heave the structured meshes are not equivalent to the Nemoh mesh.
+- Heave mean drift at 0.188 rad/s: 0.500 / 0.440 / 0.310 ρg on e0 / e1 / e2, against 0.289 on the Nemoh mesh. It moves with the edge, towards Nemoh and not towards HydroStar, and has not settled.
+
+![OC3, difference QTF at (0°, 0°), rows ω_1 = 0.063, 0.126 and 0.188 rad/s and the largest error of each row: HydroStar (Nemoh 3.0.3 test case 11, black), Nemoh 3.0.3 (blue dotted), HAMS-MREL on the Nemoh mesh (red dashed) and on the bottom-edge meshes e0, e1, e2 (green, orange, purple); moments about the space-fixed XR](figures/nemoh_paper_oc3_edge.png)
+
+**Moment origin.** HAMS-MREL takes the second-order moments about `XR` at its mean, space-fixed position, as WAMIT writes i = 4, 5, 6. Nemoh and HydroStar take them about `XR` moving with the body, as WAMIT writes i = −4, −5, −6 (WAMIT v7.6 manual, sec. 5.2). The two differ by P(ξ × F⁽¹⁾), with F⁽¹⁾ the first-order fluid force. This is zero on the diagonal but not off it. The input key `moment_origin = fixed | moving` (default `fixed`) is on the branch `fix/moment-moving-reference`, not yet merged.
+
+The numbers below are not a solver run. They are an offline transfer applied to the output of the run on the Nemoh mesh: moving = fixed − P(ξ × F⁽¹⁾), with F⁽¹⁾ built from that run's exciting, radiation and hydrostatic forces and motions. It equals −ω² M ξ to 7e-7, as the body is free with its CG at `XR`. In % of max |HydroStar|, median / largest:
+
+| QTF⁻_5 | rows ω_1 ≤ 0.188 | rows ω_1 ≥ 0.314 |
+| :--- | ---: | ---: |
+| HAMS-MREL, `fixed` (as run) | 27.9 / 83.4 | 1.03 / 5.6 |
+| HAMS-MREL, `moving` (offline) | 5.7 / 44.7 | 0.61 / 1.95 |
+| Nemoh 3.0.3 | 3.0 / 19.9 | 0.08 / 0.79 |
+
+- The moving point removes most of the pitch error. What is left, up to 45 %, is in the rows 0.126 and 0.188 rad/s at high ω_2, the same pattern as the surge rows.
+- Surge, heave and all mean drifts are the same for both settings. The largest error of the mean drift against HydroStar is 4.6 / 38 / 24 % in HAMS-MREL and 3.0 / 39 / 11 % in Nemoh (surge / heave / pitch), all at 0.188 rad/s.
+- At 0.188 rad/s the pitch mean drift is −0.104 ρg in HydroStar, +0.114 in Nemoh and +0.374 in HAMS-MREL: HydroStar has the opposite sign to both.
+
+![OC3, difference QTF at (0°, 0°): QTF⁻_1, QTF⁻_3 and QTF⁻_5 in the rows ω_1 = 0.063 and 0.126 rad/s, the mean drift, and the largest error of each row; HydroStar (Nemoh 3.0.3 test case 11, black), Nemoh 3.0.3 (blue dotted), HAMS-MREL on the Nemoh mesh with moment_origin = fixed as run (red) and moving applied offline (orange dashed)](figures/nemoh_paper_oc3_moment_origin.png)
 
 <a id="unit-and-integration-tests"></a>
 ## 9. Unit and integration tests
@@ -1709,7 +1747,7 @@ The speed-up fixtures add about 4 minutes to the integration suite (the ψ-reuse
 - QTF potential part, `qtf_b2 = control`: run on the free cylinder at 448, 1792 and 4032 panels with the default C, and at 1792 and 4032 panels with C fixed; not at 7168 panels. The damped free body was run at 448 and 1792 panels.
 - OC4 semisubmersible: HAMS against Nemoh at 1224 and 4608 panels, with no reference solution and without the pontoons and braces. The free QTF⁻_5 difference (4.08% and 4.15%) does not fall with the mesh, and the free QTF⁻_3 difference is still 10.12% at 4608 panels; neither was traced to a cause.
 - OC4 against WAMIT: the pairs with a frequency in 0.25 to 0.35 rad/s differ by over 100% in the largest value at both meshes, and the largest values away from them (15.43 / 8.92 / 4.88% at 1224 panels, 24.11 / 18.13 / 5.51% at 4608) do not fall with the mesh. Whether this is the hull model (pontoons and braces), the restoring and damping, or the resonance was not separated.
-- OC3 Hywind against HydroStar: the rows ω_1 ≤ 0.188 rad/s differ by up to 103 / 60 / 83 % (QTF⁻_1 / QTF⁻_3 / QTF⁻_5), while the later rows agree to medians of 0.25 to 1.7 %. Not a Limes effect; the term at fault is not found. Nemoh on the test case and a bottom-edge mesh study are prepared, not run ([OC3](#oc3-hywind-spar-difference-qtf)).
+- OC3 Hywind against HydroStar: the rows ω_1 ≤ 0.188 rad/s, near the heave resonance at 0.188 rad/s, differ by up to 103 / 60 / 83 % (QTF⁻_1 / QTF⁻_3 / QTF⁻_5), while the later rows agree to medians of 0.25 to 1.7 %. Not a Limes effect and not the bottom edge. Pitch is the moment origin: with `moving` (offline) the largest pitch error falls to 45 %. Surge and heave stay open; there Nemoh and HAMS-MREL differ in the potential part, and neither agrees with HydroStar. At 0.188 rad/s HydroStar's heave mean drift is a third of Nemoh's and HAMS-MREL's (0.097 against 0.29 ρg), and its pitch mean drift has the opposite sign ([OC3](#oc3-hywind-spar-difference-qtf)).
 - SOFTWIND with the free-surface integral: the free-surface part adds 1 to 10 % against the run without it, growing with frequency. Not traced.
 - The direct eigenfunction sum for the field rows above ν h = 50 is on the branch `fix/field-limes-lid-weight`, not merged; OC4 has not been rerun with it.
 - First order, heave-plate cylinder: with a lid, A_33, A_55 and B_55 fall off above 3.3 rad/s, more with more lid panels; the cause is open ([heave plate](#truncated-cylinder-with-a-thin-heave-plate-first-order)).
