@@ -31,6 +31,7 @@ This page shows how far each second-order output of HAMS-MREL has been checked, 
 | Stokes | the second-order Stokes wave (Dean and Dalrymple 1991), for the field without a body |
 | Nemoh v3.0.3 | open-source panel code (Kurnia and Ducrozet 2023) on the same mesh; DUOK, + HASBO, + HASFS + ASYMP where stated; see [below](#comparison-with-nemoh) |
 | WAMIT | WAMIT run of the OpenFAST r-test, `marin_semi.12d` and `.12s` (Robertson et al. 2014; Al-Ghuwaidi 2025); a different OC4 model, see [below](#wamit-oc4-openfast-r-test) |
+| HydroStar | the HydroStar result files that ship with the Nemoh v3.0.3 test cases (`TestCases/<case>/reference/hydrostar/`), on the same meshes; a code comparison, see [below](#nemoh-test-cases-against-hydrostar) |
 | in-run indirect | the indirect method in the same run, for the direct method: equal by Green's theorem, so a consistency check, not a truth |
 | Linton & Evans | exact array solution (Linton and Evans 1990), section [7](#multi-body-arrays) |
 
@@ -62,6 +63,7 @@ This page shows how far each second-order output of HAMS-MREL has been checked, 
 | [6](#field-pass-speed-ups) Field-pass speed-ups | defaults `field_deep_kh`, `qtf_fs_circle` | semi-analytical | 126 gate rows, 0 fail; OC4 sum run 3.5 times faster; deep-water rows off below 10 drafts (QTF⁺_3 error 0.74 to 2.96 % at 5 drafts) |
 | [7](#multi-body-arrays) Multi-body arrays | X_i^(k), F̄_i^(k), η | exact array solution | four cylinders: largest error 1.4e-2 (X, F̄) and 3.9e-2 (η) at 9216 panels, second-order convergence |
 | [8](#benchmark-against-other-codes) Benchmark | QTF⁻_1 (OC4) | WAMIT and four solvers, Roland et al. (2026) | OC4 at 9208 panels: F̄_1 diagonal 7.9 % max / 0.73 % median of the largest WAMIT value |
+| [8](#nemoh-test-cases-against-hydrostar) Cases of Kurnia and Ducrozet (2023) | first order; QTF⁻ of SOFTWIND, OC4, OC3 and a cylinder; QTF± of SOFTWIND with the free-surface integral | HydroStar; WAMIT (heave plate) | SOFTWIND QTF⁻ medians 0.53 / 0.71 / 0.59 %; heave plate within 1–2 % of WAMIT below 3.2 rad/s on a mesh of the paper's coarseness; open: OC3 rows ω_1 ≤ 0.188 rad/s (up to 103 %) and the lidded heave plate above 3.3 rad/s |
 
 Three numbers in a cell are QTF_1 / QTF_3 / QTF_5 (surge, heave, pitch) of the case's kernel. Tests: [9](#unit-and-integration-tests). Limits and open items: [10](#open-items).
 
@@ -1526,6 +1528,154 @@ So the excess is not a missing or dropped far field: removing everything HAMS fi
 
 Outputs, figures and scripts: `validation-runs/roland-benchmark` (scripts in the repository; outputs outside it). `without_free_surface.py` writes `.11d` or, with `--direct`, `.12d` without the free-surface terms. `full_range_diagnostics.py` makes the figure of the drift by velocity method and the off-diagonal medians; `volturnus_cut200.py` makes the cut-off figure.
 
+<a id="nemoh-test-cases-against-hydrostar"></a>
+### The cases of Kurnia and Ducrozet (2023) and the Nemoh v3.0.3 test cases
+
+Kurnia and Ducrozet (2023, section 4) validate Nemoh v3 on four hulls: a truncated cylinder with a thin heave plate (first order), the SOFTWIND spar (first order, and the difference and sum QTF), and the OC4 semisubmersible (first order, and the bi-directional difference QTF). Their references are HydroStar for the QTFs and WAMIT, HydroStar and DIODORE for first order. HAMS-MREL was run on the same cases, plus the OC3 Hywind spar and the cylinder of the Nemoh test cases 11 and 8b, which ship with Nemoh v3.0.3 but are not in the paper.
+
+**Reference.** For SOFTWIND, OC4, OC3 and the cylinder: the HydroStar result files that ship with the Nemoh v3.0.3 test cases (`TestCases/<case>/reference/hydrostar/`), computed on the same meshes ("HydroStar (Nemoh 3.0.3 test case N)" in the figures). HydroStar is a code comparison, not a truth. The files were read as data; no Nemoh source was used. Their layout, as read from the headers: one row per ω_1, then (Re, Im) per Δω = ω_2 − ω_1 ≥ 0, in N/m² per m² of amplitude; one block per heading pair. `MQTF*.rao` is the difference QTF without the free-surface integral, `QTF*.rao` in the `_FS_dir0` folder the difference QTF with it, and `SPG*.rao` the sum QTF with it (`#QTFMODE Sum`, ω up to 2.01 rad/s). For the heave plate, whose mesh does not ship with Nemoh: the curves of the paper's Fig. 8, read from the vector paths of the PDF (`extract_kurnia_fig8.py`; the five solvers' polylines and the WAMIT markers, the axes calibrated from the tick marks).
+
+**Conventions** (checked on OC4, all four heading pairs; `readers.py`). The HAMS row (ω_i, ω_j, β_1, β_2) of `QTF_Indirect.11d` equals the HydroStar block "Heading1 = β_1, Heading2 = β_2", row ω_i, column ω_j − ω_i, with no conjugation: the four ways to pair them give median differences of 2.7 %, 19 %, 22 % and 28 % on QTF⁻_1 of (30°, 0°), only the first fits. HydroStar uses ρ = 1025 kg/m³ and g = 9.81 m/s², HAMS ρ = 1000 and g = 9.80665: the mass, inertia and stiffness of each case were scaled by 1000/1025 and (1000 × 9.80665)/(1025 × 9.81) (`make_cases.py`), so the non-dimensional problems are the same, and HydroStar is divided by its own ρg. The wave number differs by 3.4e-4 at a given ω [derived].
+
+**Set-up** (`make_cases.py`). The Nemoh meshes as they ship, read and written with their vertex order (Nemoh's normal into the fluid is HAMS's into the body). Nemoh's lids put the lid centroids 0.07 to 0.18 waterline rows from the wall, against the 0.3 to 0.5 of the [lid rule](input_files.md#lid-mesh-requirements), so every case got a HAMS lid of rings on the waterline circle (0.39 to 0.57 rows), and `IRSP = 1`. Rotation centre, mass and stiffness as in the test case (`Mechanics/`); cases 8b and 11 have none, so Nemoh's `hydrosCal` computed them on Snellius (`mechanics_to_hydrostatic.py`). Frequencies: the HydroStar grid, step 2π/100 = 0.0628 rad/s. Free body, `qtf_terms = body` (`full` for the sum), `qtf_b2 = control`, `velocity_method = differencing`. All runs on Snellius (`fat_genoa`, 24 threads). First order, the heave plate, OC4 and the cylinder: HAMS-MREL at 8f27716 (`development_2`). The SOFTWIND QTF without the free-surface integral: 1515e89, the fix of `join_states`, which crashed the first runs after their last frequency. SOFTWIND with the free-surface integral, and OC3: the branch `fix/field-limes-lid-weight` at 62e46e2 and 50fc55e. That branch adds the direct eigenfunction sum for the field rows above ν h = 50 (below) and, at 50fc55e, `qtf_quad_terms`; it is not merged yet.
+
+**Measure.** |HAMS − HydroStar| / max |HydroStar| over the pairs ω_1 ≤ ω_2 ≤ 3.14 rad/s (the paper's range) where both have a value, largest and median, in percent; also for Δω ≤ 0.6 rad/s. First order: the same over the frequencies, with HAMS made dimensional with ρ = 1025, g = 9.81. `compare_case.py`.
+
+#### Truncated cylinder with a thin heave plate (first order)
+
+**Set-up.** Column radius 10 m, draft 10 m, plate radius 15 m, 0.1 m thick, CG (0, 0, −7.5) m, deep water, heading 0, 20 frequencies 0.2 to 4.0 rad/s. The paper gives no plate position; its Fig. 3 shows the plate at the bottom, so the plate runs from −9.9 to −10 m. Its 3464-panel mesh (262 in the lid) is not available, so three meshes of ours: m1 3096, m2 5632 and m3 11400 hull panels; m3 has rows of 0.2 m and arcs of 0.29 m at the plate edge, 2 and 2.9 plate thicknesses. Nemoh v3.0.3 also ran on m1 (with its lid), as a same-mesh comparison.
+
+**Result.** Median errors, percent of the largest reference value, 0.2 to 4.0 rad/s (`compare_heave_plate.py`):
+
+| Quantity | Reference (paper, Fig. 8) | HAMS m1 | HAMS m2 | HAMS m3 | Nemoh v3.0.3 on m1 |
+| :--- | :--- | ---: | ---: | ---: | ---: |
+| A_11 | WAMIT | 2.39 | 1.76 | 0.31 | 0.66 |
+| A_33 | WAMIT / HydroStar | 11.1 / 13.2 | 5.67 / 7.85 | 0.77 / 1.81 | 16.1 / 14.1 |
+| A_55 | WAMIT / HydroStar | 3.94 / 9.23 | 2.10 / 7.31 | 1.48 / 6.64 | 11.5 / 6.67 |
+| B_11 | WAMIT | 1.04 | 0.85 | 0.48 | 0.80 |
+| B_33 | WAMIT / HydroStar | 4.72 / 8.51 | 1.88 / 6.64 | 0.70 / 6.21 | 11.5 / 7.63 |
+| B_55 | WAMIT / HydroStar | 3.99 / 19.0 | 4.42 / 14.1 | 5.88 / 11.6 | 6.58 / 6.49 |
+| \|X_1\| | WAMIT | 0.42 | 0.33 | 0.24 | 0.41 |
+| \|X_3\| | WAMIT / HydroStar | 1.73 / 1.28 | 1.38 / 0.97 | 0.45 / 0.35 | 1.08 / 0.46 |
+| \|X_5\| | WAMIT / HydroStar | 12.3 / 6.90 | 9.41 / 7.50 | 5.91 / 8.81 | 12.5 / 6.15 |
+
+![Heave-plate cylinder, first order: A_ii, B_ii and |X_i| (i = 1, 3, 5) of HAMS-MREL on our meshes m1, m2 and m3 (solid coloured lines) and Nemoh v3.0.3 on m1 (orange), against WAMIT (+), HydroStar, DIODORE, Nemoh v2 and Nemoh v3 on the paper's mesh, read from Kurnia and Ducrozet (2023), Fig. 8 (black and grey)](figures/nemoh_paper_heave_plate.png)
+
+- The plate needs fine panels. At m1 HAMS's A_33 is 11 % above WAMIT and 13 % above HydroStar; at m3 0.8 % and 1.8 %. |X_3| near 1 rad/s and A_55 converge the same way. The plate panels of m1 are 5 to 7 thicknesses long.
+- The paper's solvers form two groups on B_33, X_5 and A_55: WAMIT, and HydroStar, DIODORE and Nemoh. HAMS falls with WAMIT on B_33 (0.70 % at m3, against 6.2 % from HydroStar), and between the two on A_55.
+- Nemoh v3.0.3 on our m1 mesh is 14 to 16 % off both groups in A_33, the other way from HAMS. The paper reports that Nemoh is sensitive to the panels near a thin plate (its section 4.2.3).
+- m1 to m3 have graded rings on the plate, and the top and bottom panels of the plate do not lie over each other. That, not the panel count, is what fails (next paragraph).
+
+**A mesh of the paper's coarseness.** The paper's mesh has 3202 hull panels of about 0.735 m (1731 m² over 3202 panels) and a lid of 262 panels of about 1.09 m. Our p0 copies that with rings of near-square 0.75 m panels (3233 hull and 262 lid panels), with the plate's top and bottom panels aligned (`mesh_study.py`). Each refinement then changes one part, and HAMS-MREL and Nemoh v3.0.3 run on each mesh. Against WAMIT over 0.2 to 3.2 rad/s, median (largest), percent of max |WAMIT|:
+
+- HAMS-MREL on p0: A_33 1.0 (4.3), A_55 1.6 (2.9), A_11 0.4, B_33 0.6, |X_3| 0.4, |X_5| 5.4 (25). On m1 the same measure gives A_33 11.1 and |X_5| 10.6. |X_5| on p0 follows WAMIT's minimum near 1.1 rad/s; m3 does not.
+- Top and bottom plate panels offset by half a panel: A_33 9.7 % (HAMS) and 15.6 % (Nemoh). A 0.1 m plate needs aligned panels on its two faces.
+- Rows graded to 0.1 m at the plate edge: A_55 1.6 to 0.3 %. Halving the plate panels (9051 hull panels): A_55 1.0 %, B_55 1.7 %, |X_5| 1.5 %. Halving or grading the wall gains nothing below 3.2 rad/s.
+- Nemoh v3.0.3 is 8 to 10 % below WAMIT in A_33 and 6 to 9 % in A_55 on every aligned mesh, and refinement does not move it.
+
+**Above 3.3 rad/s: the lid.** HAMS-MREL falls off there on every mesh with a lid, and the fall-off grows with the number of lid panels. The mean of A_33 over 3.3 to 4.0 rad/s, over that of the paper's Nemoh v3, is 1.02 without a lid, 0.92 with a lid of 75 panels, 0.85 with 262 and 0.55 with 2265. Without a lid HAMS is flat to 4 rad/s; its only defect is the spike at the column's first irregular frequency, 1.55 rad/s (B_33). Nemoh gives the same curves with the 262- and the 2265-panel lid. On the plain cylinder of test case 8a the same HAMS lids remove the irregular frequency and follow HydroStar to 6.28 rad/s (medians 0.02 to 3.4 %), so the problem is specific to this body.
+- Ruled out: the accuracy of the wave Green function, the one-point wave part in the lid rows (integrating it over every panel moves the fall-off by under 1 point), and the assembly of the lid rows (code review).
+- Lid points within 1 to 2 m of the waterline cause the low-frequency B_55 failure of the finest lid, and part of the fall-off.
+- An optional weight on the lid rows (`Lid_row_weight`, on the branch above, off by default) removes the dependence on the lid size below 3.2 rad/s (finest lid: B_55 median from 73 % to 2 to 3 %) and keeps the irregular frequency removed. It leaves the fall-off above 3.3 rad/s, which is open.
+
+![Heave-plate cylinder, first order: A_ii, B_ii and |X_i| (i = 1, 3, 5) of HAMS-MREL (solid) and Nemoh v3.0.3 (dotted; same colour, same mesh) on p0 with lids of 2.2, 1.09 and 0.375 m and without a lid, and HAMS-MREL on m3, against WAMIT (+), HydroStar and Nemoh v3 read from Kurnia and Ducrozet (2023), Fig. 8](figures/nemoh_paper_heave_plate_lid.png)
+
+#### SOFTWIND spar (first order)
+
+**Set-up.** Test case 10, mesh `softwind_half1872`: a half mesh (`ISY = 1`) of 1830 hull panels, draft 91.4 m, radii 5.6 and 9 m, CG (0, 0, −71.56) m, depth 200 m, no mooring, headings 0 and 30, 100 frequencies 0.0628 to 6.28 rad/s.
+
+**Result.** Largest / median, percent: A_11 3.65 / 2.55, A_33 1.84 / 0.14, A_55 3.34 / 2.19; B_11 5.76 / 1.10, B_33 2.97 / 0.04, B_55 7.67 / 1.39; |X_1| 1.39 / 0.17, |X_3| 0.33 / 0.04, |X_5| 1.33 / 0.22; |ξ_1| 2.53 / 0.00, |ξ_3| 0.08 / 0.00, |ξ_5| 6.39 / 0.00.
+
+![SOFTWIND, first order, heading 0: A_ii, B_ii, |X_i| and |ξ_i| (i = 1, 3, 5) of HAMS-MREL (solid red) against HydroStar (Nemoh 3.0.3 test case 10; black dashed with markers)](figures/nemoh_paper_softwind_first_order.png)
+
+- A_11 and A_55 are 2.3 to 2.8 % below HydroStar at every frequency up to 1 rad/s, A_33 within 0.2 %. A run without a lid (`IRSP = 0`, 20 frequencies to 1.256 rad/s) changes A by at most 3.7e-4 and B by at most 3.3e-3 relative, and leaves A_11 2.5 to 2.8 % low. The full meshes show the same: A_11 is 2.7 to 2.9 % below HydroStar on the 8b cylinder and 3.3 to 4.2 % on OC4. So it is neither the lid nor the half mesh; it is the size of the difference of constant-panel solutions on meshes of 1000 to 2000 panels, which fell with the mesh in [1.7](#mean-drift-against-nemoh) (A within 1.5 to 4 % of Nemoh at 480 to 4320 panels).
+- Above 3 rad/s A_11 and A_55 drift further down, and A_33 above 4.5 rad/s. The median panel is 1.17 m: λ/6 at 3 rad/s and λ/2.6 at 4.5 rad/s.
+
+#### OC4 semisubmersible, bi-directional (30°, 0°)
+
+**Set-up.** Test case 9, mesh `OC5_config_main_Dist50_NP2200`: columns only, 2068 hull panels, CG at the origin (as the test case: its pitch and roll stiffness are negative, −3.7e8 N m), no mooring, depth 200 m, headings 0 and 30 with every heading pair (`mean_drift = 2`), 50 frequencies 0.0628 to 3.14 rad/s; C and F from `make_mesh.py` (`cs_shape = file`). Bi-directional QTFs need no new code: `mean_drift = 2` computes every heading pair.
+
+**Result.** QTF⁻ of (β_1, β_2) = (30°, 0°), the pair of the paper's Figs. 16 and 17, largest / median, percent:
+
+| | All pairs to 3.14 rad/s | Without the band | The band (189 pairs), median | Diagonal |
+| :--- | ---: | ---: | ---: | ---: |
+| QTF⁻_1 | 1016 / 1.78 | 158 / 1.44 | 71.1 | 1.5 / 0.60 |
+| QTF⁻_3 | 96.1 / 1.94 | 28.8 / 1.60 | 16.1 | 4.0 / 0.11 |
+| QTF⁻_5 | 183 / 2.24 | 52.5 / 1.75 | 25.7 | 1.6 / 0.16 |
+
+The band: one frequency at most 0.44 rad/s and the other at least 1.5 rad/s. (0°, 0°) is the same: medians 1.54 / 2.70 / 2.39 %, diagonals 0.44 / 0.15 / 0.28 %. First order: medians of A, B and X within 3.2 % (A_33 3.13 %, A_11 1.26 %), of the motions within 0.03 %.
+
+![OC4, difference-frequency QTF⁻_1, QTF⁻_3, QTF⁻_5 for (β_1, β_2) = (30°, 0°): |QTF|/ρg of HydroStar (Nemoh 3.0.3 test case 9), of HAMS-MREL, and their difference](figures/nemoh_paper_oc4_qtf_30_0_maps.png)
+
+![OC4, (30°, 0°): Re and Im of QTF⁻_1 and QTF⁻_3 on the first off-diagonal (Δω = 0.0628 rad/s) and of QTF⁻_5 on the third (0.1884 rad/s), and the diagonals (mean drift); HAMS-MREL solid, HydroStar (Nemoh 3.0.3 test case 9) dashed with markers](figures/nemoh_paper_oc4_qtf_30_0_offdiag.png)
+
+- Away from the band HAMS follows HydroStar over the whole map, with medians of 1.4 to 1.8 % and the off-diagonals of the paper's Fig. 17 on top of each other.
+- The band is the B2 term of the body forcing: at (0.063, 3.14) rad/s it is 745 ρg against 35 for the next term, at (0.25, 2.57) 102 against 6. It starts where the finite-depth Green function on C changes to the series with the Limes acceleration (ν h > 50, ω > 1.57 rad/s at 200 m; the log warns 26 times), whose field values may scatter ([cs_velocity](input_files.md#secondorderin-optional)). B2 multiplies those fields by the first-order motion at the other frequency, which is large below 0.44 rad/s for this unmoored, statically unstable hull. `cs_velocity = source` avoids the series but cannot be used with `IRSP = 1`. The direct eigenfunction sum for these rows removes the same band on SOFTWIND and OC3 (below); OC4 has not been rerun with it.
+- The pitch-moment drift peak, QTF⁻_5 on the diagonal at 0.8 rad/s, is 12 % below HydroStar's, while the pitch motion there is within 2 % (0.2977 against 0.2919 deg/m): the difference is in the near-field moment, the weaker method for M_y on hulls with sharp edges ([1.6](#vertical-force-and-roll-and-pitch-moments-f_z-m_x-and-m_y)). Im QTF⁻_5 on the third off-diagonal differs below 0.4 rad/s, at the heave resonance, where HydroStar's own diagonal spikes (0.38 rad/s).
+
+#### Cylinder of test case 8b
+
+**Set-up.** Mesh `OC5_cylinder634`: radius 6 m, draft 14 m, 502 hull panels, deep water, CG at the origin (mass from `hydrosCal`), heading 0, 50 frequencies 0.0628 to 3.14 rad/s.
+
+**Result.** QTF⁻_1 / QTF⁻_3 / QTF⁻_5, medians 0.76 / 0.11 / 0.92 %; largest 90 / 63 / 79 %, at pairs with a frequency at 0.754 rad/s, the undamped heave resonance (|ξ_3| there differs by 5.2 % of its peak). First order within 3.2 % (largest), medians below 1.1 %.
+
+![Cylinder of Nemoh test case 8b, difference-frequency QTF⁻_1, QTF⁻_3, QTF⁻_5: HydroStar (Nemoh 3.0.3 test case 8b), HAMS-MREL and their difference](figures/nemoh_paper_cyl8b_qtf_maps.png)
+
+#### SOFTWIND spar, difference QTF without the free-surface integral
+
+**Set-up.** As for first order; heading 0, 50 frequencies 0.0628 to 3.14 rad/s, `qtf_terms = body`. Reference: HydroStar `MQTF*.rao`.
+
+**Result.** QTF⁻ (0°, 0°), 1275 pairs to 3.14 rad/s: medians 0.53 / 0.71 / 0.59 % (QTF⁻_1 / QTF⁻_3 / QTF⁻_5). Within Δω ≤ 0.6 rad/s the largest surge and pitch errors are 8.6 and 11.6 %. The diagonals agree within a few percent to 3 rad/s, with HAMS slightly low above 2.5 rad/s.
+
+![SOFTWIND, difference QTF at (0°, 0°): Re and Im of QTF⁻_1 and QTF⁻_3 on the first off-diagonal and of QTF⁻_5 on the third, and the diagonals; HAMS-MREL solid, HydroStar (Nemoh 3.0.3 test case 10) dashed with markers](figures/nemoh_paper_softwind_qtf_offdiag.png)
+
+- The one outlier is heave at the pitch resonance, 0.314 rad/s: the diagonal is +8.0 ρg in HAMS and −8.3 ρg in HydroStar. The difference is the hydrostatic term of the near-field drift (term 6 of `MeanDriftTerms.txt`). Over all 50 frequencies HydroStar − HAMS = −1.14 × that term, with a largest residual of 0.39 of 16.4 ρg; the rotation term does not fit.
+- HydroStar leaves that term out. The Nemoh v3.0.3 documentation (`doc/source/input-output.rst`, the QTF option for the hydrostatic terms of the quadratic first-order motion, −[K] ξ̃⁽²⁾ with ξ̃⁽²⁾_3 = z_G (θ_1² + θ_2²)/2) says that HydroStar does not include it, and the test case runs Nemoh with it off. For heave it equals HAMS's hydrostatic term, −¼ |ξ_5|² A_wp z_G, checked by hand: A_wp z_G = −7005 m³ (A_wp = 97.9 m², z_G = −71.56 m), residual 4e-7.
+- HAMS without the hydrostatic term matches HydroStar: median |difference| 0.003 ρg, largest 3.0 ρg, at the resonance itself, where HydroStar's pitch RAO is 7 % above HAMS's (5.35 against 5.01 deg/m). The term is physical: pitch about the centre of gravity lowers the waterplane by α² |z_G| / 2 [derived]. Leave it out only to compare with a reference that omits it.
+
+![SOFTWIND, heave mean drift near the pitch resonance: HydroStar (Nemoh 3.0.3 test case 10), HAMS-MREL in total and by term, and HAMS-MREL without the hydrostatic term (left); HydroStar − HAMS-MREL against the rotation and hydrostatic terms (right)](figures/nemoh_paper_softwind_heave_drift_terms.png)
+
+#### SOFTWIND spar, difference and sum QTF with the free-surface integral
+
+**Set-up.** As above with `qtf = 3` and `qtf_terms = full`, 32 frequencies 0.0628 to 2.01 rad/s (HydroStar's `QTF*.rao` and `SPG*.rao` stop there). The depth of 200 m is 2.2 drafts, below `field_deep_draft` = 10, so the free-surface field rows keep the finite-depth Green function.
+
+**Result.** The first run broke down for every pair with a frequency at or above 1.57 rad/s (100 to 600 % of max |HydroStar|). ν h = 50 there; above it the field rows of the finite-depth Green function used the series with the Limes acceleration, whose values scatter at small R/h. The direct eigenfunction sum for those rows (horizontal distances 0.0005 h to 0.05 h; 8.4 µs per pair against 26 µs for the series) removes the breakdown. Median / largest, percent of max |HydroStar|, pairs ω_1 ≤ ω_2:
+
+| | max(ω_1, ω_2) ≤ 1.51 rad/s | 1.57 to 2.01 rad/s, direct sum | 1.57 to 2.01 rad/s, Limes |
+| :--- | ---: | ---: | ---: |
+| QTF⁻_1 | 0.97 / 35 | 1.6 / 23 | 106 / 529 |
+| QTF⁻_3 | 3.1 / 197 | 5.4 / 37 | 192 / 666 |
+| QTF⁻_5 | 3.0 / 40 | 4.5 / 32 | 125 / 646 |
+| QTF⁺_1 | 4.0 / 41 | 8.8 / 35 | 138 / 522 |
+| QTF⁺_3 | 1.6 / 69 | 1.4 / 11 | 29 / 112 |
+| QTF⁺_5 | 4.6 / 46 | 10.5 / 41 | 161 / 622 |
+
+![SOFTWIND QTFs at (0°, 0°): median error against HydroStar (Nemoh 3.0.3 test case 10) over the pairs with max(ω_1, ω_2) = ω; HAMS-MREL with the free-surface integral, with the direct sum (solid) and with Limes (dotted) above ν h = 50, and without the free-surface integral (grey dashed)](figures/nemoh_paper_softwind_fs_direct_sum.png)
+
+- The largest heave values below 1.51 rad/s are the hydrostatic term at the pitch resonance, as without the free surface.
+- The free-surface part adds error: without it the medians on the same grid are 0.27 / 1.8 / 0.31 %. The extra error grows from about 1 % at 0.6 rad/s to 5 to 10 % (QTF⁺_1, QTF⁺_5) at 2 rad/s. Not traced.
+
+#### OC3 Hywind spar, difference QTF
+
+**Set-up.** Test case 11, mesh `OC3_hywind-4842`: 4710 hull panels (the test case's 132-panel lid replaced by ours, 96 panels), radius 4.7 m (3.25 m at the waterline), draft 120 m, depth 320 m, CG at the origin (mass from `hydrosCal`), no mooring, heading 0, 50 frequencies 0.0628 to 3.14 rad/s, `qtf_terms = body`. Run at 50fc55e: direct sum above ν h = 50 (from 1.256 rad/s here), and `qtf_quad_terms = 1` for the split by term.
+
+**Result.** First order: A_11 and A_55 3.3 % median (the offset seen on SOFTWIND), A_33 0.14 %, B within 0.8 %, X within 0.4 %, the motions within 0.07 %. QTF⁻ at (0°, 0°), percent of max |HydroStar|, pairs ω_1 < ω_2, median / 95th percentile / largest:
+
+| | ω_1 ≥ 0.251, both below 1.256 rad/s | ω_1 ≥ 0.251, one at or above 1.256 | the same, with Limes | rows ω_1 ≤ 0.188 |
+| :--- | ---: | ---: | ---: | ---: |
+| QTF⁻_1 | 0.25 / 1.9 / 3.3 | 0.53 / 3.9 / 16 | 0.59 / 5.7 / 20 | 21 / 87 / 103 |
+| QTF⁻_3 | 0.42 / 2.5 / 3.0 | 0.60 / 3.8 / 6.7 | 0.63 / 5.2 / 14 | 13 / 57 / 60 |
+| QTF⁻_5 | 1.7 / 5.5 / 5.6 | 0.68 / 2.2 / 5.4 | 0.70 / 3.0 / 5.5 | 23 / 77 / 83 |
+
+![OC3, difference QTF at (0°, 0°): error against HydroStar (Nemoh 3.0.3 test case 11) over the pairs with max(ω_1, ω_2) = ω; HAMS-MREL with the direct sum (red) and with Limes (grey dotted) above ν h = 50; thick lines the median of the rows ω_1 ≥ 0.251, thin lines the largest error of the rows ω_1 ≤ 0.188](figures/nemoh_paper_oc3_bands.png)
+
+- From the fourth row on (ω_1 ≥ 0.251 rad/s), HAMS follows HydroStar to 3.14 rad/s. The direct sum removes the scatter above 1.256 rad/s. What is left grows smoothly towards ω_2 = 3.14 rad/s in the rows 0.25 to 0.38 rad/s.
+- The rows ω_1 = 0.063, 0.126 and 0.188 rad/s differ by up to 103 % (surge). Below 1.256 rad/s they are the same to the last digit with and without the direct sum, so they are not a Limes effect. The motions there agree with HydroStar to 0.1 to 0.3 % (surge 2.74 m/m at 0.063 rad/s; heave resonance at 0.188 rad/s, |ξ_3| = 3.74 m/m). The largest error of each surge row follows 2.2 |ξ_1(ω_1)| + 4.5 |ξ_3(ω_1)| ρg within about 30 %: a term linear in the motion at the low frequency.
+- The hydrostatic and rotation terms are not the cause: z_G = 0 makes the first zero, and the second is at most 0.11 ρg in surge. In the surge rows the error is as large as the largest terms (displacement, Froude–Krylov of φ_I2, incident diffraction and B2, 3 to 10 ρg each), which nearly cancel to a QTF of 0.1 to 2 ρg; no single term fits the error with a plausible factor. On the diagonal, the heave mean drift at 0.188 rad/s is 0.289 ρg in HAMS and 0.097 in HydroStar. HAMS's value is velocity −1.02 + displacement +1.54 + flare −0.20 ρg, so a 13 % change in the displacement term would close the gap.
+- Open. HydroStar gives no split by term. Two runs are prepared to settle it: Nemoh v3.0.3 on this test case, whose DUOK and HASBO parts separate the quadratic from the potential part; and HAMS on three meshes refined only at the bottom edge, where the body velocity used by the velocity and displacement terms is singular (`oc3_edge_study.py`).
+
+![OC3, rows ω_1 ≤ 0.188 rad/s: |HydroStar − HAMS-MREL| (black) beside the terms of HAMS-MREL larger than 2 % of it, along ω_2, for the surge rows 0.063, 0.126 and 0.188 and the heave and pitch rows 0.188; and the heave mean drift at 0.126 to 0.314 rad/s by term, against HydroStar (Nemoh 3.0.3 test case 11)](figures/nemoh_paper_oc3_lowrows.png)
+
 <a id="unit-and-integration-tests"></a>
 ## 9. Unit and integration tests
 
@@ -1559,6 +1709,10 @@ The speed-up fixtures add about 4 minutes to the integration suite (the ψ-reuse
 - QTF potential part, `qtf_b2 = control`: run on the free cylinder at 448, 1792 and 4032 panels with the default C, and at 1792 and 4032 panels with C fixed; not at 7168 panels. The damped free body was run at 448 and 1792 panels.
 - OC4 semisubmersible: HAMS against Nemoh at 1224 and 4608 panels, with no reference solution and without the pontoons and braces. The free QTF⁻_5 difference (4.08% and 4.15%) does not fall with the mesh, and the free QTF⁻_3 difference is still 10.12% at 4608 panels; neither was traced to a cause.
 - OC4 against WAMIT: the pairs with a frequency in 0.25 to 0.35 rad/s differ by over 100% in the largest value at both meshes, and the largest values away from them (15.43 / 8.92 / 4.88% at 1224 panels, 24.11 / 18.13 / 5.51% at 4608) do not fall with the mesh. Whether this is the hull model (pontoons and braces), the restoring and damping, or the resonance was not separated.
+- OC3 Hywind against HydroStar: the rows ω_1 ≤ 0.188 rad/s differ by up to 103 / 60 / 83 % (QTF⁻_1 / QTF⁻_3 / QTF⁻_5), while the later rows agree to medians of 0.25 to 1.7 %. Not a Limes effect; the term at fault is not found. Nemoh on the test case and a bottom-edge mesh study are prepared, not run ([OC3](#oc3-hywind-spar-difference-qtf)).
+- SOFTWIND with the free-surface integral: the free-surface part adds 1 to 10 % against the run without it, growing with frequency. Not traced.
+- The direct eigenfunction sum for the field rows above ν h = 50 is on the branch `fix/field-limes-lid-weight`, not merged; OC4 has not been rerun with it.
+- First order, heave-plate cylinder: with a lid, A_33, A_55 and B_55 fall off above 3.3 rad/s, more with more lid panels; the cause is open ([heave plate](#truncated-cylinder-with-a-thin-heave-plate-first-order)).
 - Nemoh's HASBO: whether it contains a term like B3 was not checked, and the sharp-cylinder Nemoh maps were made with the hull form of B2 only.
 - The free-surface integral (`qtf_terms = full`) is validated on one hull, single body, heading 0, finite depth; deep water is not supported. At m1 its error is not monotone in the inner mesh, and the cause is not found ([QTF free-surface integral](#qtf-free-surface-integral)). The indirect sum-frequency potential part (`.11s`) is [validated here](#indirect-method-at-the-sum-frequency) on the sharp cylinder and against Nemoh on OC4; the direct sum is [validated here](#direct-method-at-the-sum-frequency).
 - Direct method (`QTF_Direct.12d`): validated on a smooth hull to 0.23% / 0.35% (forces / moments) against the indirect method at 4320 panels, and on the sharp cylinder only against the semi-analytical potential part (13 / 13 / 28% at 4032 panels, resonance pairs included). The cause of its smaller QTF⁻_3 error than the hull-form indirect result is not tested, and the IRSP case ran at one mesh (448 panels).
