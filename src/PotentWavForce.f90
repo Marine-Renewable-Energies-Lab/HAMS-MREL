@@ -30,6 +30,8 @@ MODULE PotentWavForce
 
    USE PatcVelct
    USE Potentials_mod
+   USE DipoleMesh_mod, ONLY: DNELEM
+   USE DipoleAssb, ONLY: DIPOLE_FORCE_SUM
    IMPLICIT NONE
 
       ! ..... Public Subroutines ...................................................................................................
@@ -50,7 +52,7 @@ CONTAINS
       INTEGER IEL,IP,MD
       REAL*8:: XP,YP,ZP,AMFJ(6)
       REAL*8:: MOD,PHS(6),REL,IMG,NREL,NIMG
-      COMPLEX*16 PHI,FORCE(6,4)
+      COMPLEX*16 PHI,FORCE(6,4),FDIP(6)
 
       MD=7
       FORCE=CMPLX(0.0D0, 0.0D0)
@@ -95,6 +97,11 @@ CONTAINS
 
 100   CONTINUE
 !!$OMP END PARALLEL DO
+!     Dipole panels: the sheet adds sum (-mu) n_D dS (design note Sec. 4); the incident potential has no jump.
+      IF (DNELEM.GT.0) THEN
+       CALL DIPOLE_FORCE_SUM(7,FDIP)
+       FORCE(:,1)=FORCE(:,1)+FDIP(:)
+      ENDIF
 ! -------------------------------------------------
 !
       DO 200 MD=1, 6
@@ -142,7 +149,7 @@ CONTAINS
       
       INTEGER IEL,MD,MD1,MD2,IP
       REAL*8:: AMFJ(6),NAMAS(6,6),NBDMP(6,6)
-      COMPLEX*16 RPHI,IPHI
+      COMPLEX*16 RPHI,IPHI,FDIP(6)
 
       AMAS(:,:)=0.D0
       BDMP(:,:)=0.D0
@@ -193,6 +200,17 @@ CONTAINS
 100   CONTINUE
       
 !!$OMP END PARALLEL DO
+
+!     Dipole panels: the sheet adds sum (-mu) n_D dS to the sums above (design note Sec. 4).
+      IF (DNELEM.GT.0) THEN
+       DO MD=1,6
+        CALL DIPOLE_FORCE_SUM(MD,FDIP)
+        DO MD1=1,6
+         AMAS(MD1,MD)=AMAS(MD1,MD)+IMAG(CI*RHO*FDIP(MD1))
+         BDMP(MD1,MD)=BDMP(MD1,MD)-DBLE(CI*RHO*W1*FDIP(MD1))
+        ENDDO
+       ENDDO
+      ENDIF
 
        DO MD1=1,6
         WRITE(30+MD1,1000) WK,W1,(AMAS(MD1,MD2),MD2=1,6)
