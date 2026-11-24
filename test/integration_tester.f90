@@ -18,6 +18,7 @@ program integration_tester
 
     implicit none
     integer :: stat, is
+    character(len=64) :: only_suite
     type(testsuite_type), allocatable :: testsuites(:)
     character(len=*), parameter :: fmt = '("#", *(1x, a))'
     integer :: major, minor, patch
@@ -49,8 +50,17 @@ program integration_tester
         new_testsuite("test_dipole",   collect_tests_dipole)  &
     ]
 
+    ! An optional second argument (after the executable) runs only the suites whose name ends with it, for example
+    ! "dipole" for setup_dipole and test_dipole (while iterating); without it every suite runs.
+    only_suite = ''
+    if (command_argument_count() >= 2) call get_command_argument(2, only_suite)
     stat = 0
     do is = 1, size(testsuites)
+        if (len_trim(only_suite) > 0) then
+            if (index(testsuites(is)%name, trim(only_suite), back=.true.) == 0 .or. &
+                index(testsuites(is)%name, trim(only_suite), back=.true.) + len_trim(only_suite) - 1 &
+                /= len_trim(testsuites(is)%name)) cycle
+        end if
         write(error_unit, fmt) "Testing:", testsuites(is)%name
         call run_testsuite(testsuites(is)%collect, error_unit, stat)
     end do

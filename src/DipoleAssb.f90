@@ -41,6 +41,8 @@ MODULE DipoleAssb
    USE DipoleMesh_mod
    USE DipoleIntgr
    USE BodyIntgr, ONLY: BODINT_LEFT, RBC_RIGHT, DBC_RIGHT
+   USE BodyIntgr_irr, ONLY: BODINT_LEFT_IRR, RBC_IRR, DBC_IRR
+   USE Inerfs_mod, ONLY: iXYZ_P
    USE SingularIntgr, ONLY: SGLINTBD_TRI2, SGLINTBD_QUAD2
    USE PatcVelct, ONLY: DINP
    USE omp_lib
@@ -53,9 +55,14 @@ MODULE DipoleAssb
    PUBLIC :: DIPOLE_SOLVE
    PUBLIC :: DIPOLE_FORCE_SUM
    PUBLIC :: DIPOLE_RELEASE_ASSB
+   PUBLIC :: DIPOLE_ASSB_LEFT_IRR
+   PUBLIC :: DIPOLE_ASSB_RHS_IRR
+   PUBLIC :: DIPOLE_LID_RESIDUAL
+   PUBLIC :: DIPOLE_ROW_WEIGHTS
 
    COMPLEX*16,ALLOCATABLE:: FDIP(:,:)          ! F_ij (DNELEM, NELEM) of the last DIPOLE_ASSB_LEFT
    REAL*8,PARAMETER:: FOURPI=12.566370614359172D0
+   REAL*8,ALLOCATABLE:: DIPOLE_ROW_WEIGHTS(:)  ! W of the lid least squares, rows 1..NTOT+NLID (design note Sec. 5)
 
 CONTAINS
 
@@ -120,13 +127,34 @@ CONTAINS
       INTEGER,INTENT(IN):: NTOT
       COMPLEX*16,INTENT(OUT):: AMAT(NTOT,NTOT)
       INTEGER,INTENT(OUT):: IPIV(NTOT)
-      INTEGER:: IEL,JEL,FLAG,INFO,NN,ID
+      INTEGER:: INFO
+
+      CALL FILL_SQUARE(AMAT,NTOT,NTOT,.FALSE.)
+      CALL ZGETRF(NTOT,NTOT,AMAT,NTOT,IPIV,INFO)
+      IF (INFO.NE.0) THEN
+       PRINT *,' Error: the matrix with dipole panels is singular, ZGETRF INFO =',INFO
+       STOP 1
+      ENDIF
+
+      RETURN
+      END SUBROUTINE DIPOLE_ASSB_LEFT
+
+!-------------------------------------------------------------------------------
+!     Rows 1 to NTOT of the matrix (hull rows, then dipole rows) into AMAT(1:NTOT, 1:NTOT), AMAT dimensioned (LDA, NTOT),
+!     and F_ij. IRRP: the hull block from CALGREEN_IRR (BODINT_LEFT_IRR, IRR = 1) instead of CALGREEN (BODINT_LEFT).
+!-------------------------------------------------------------------------------
+      SUBROUTINE FILL_SQUARE(AMAT,LDA,NTOT,IRRP)
+      IMPLICIT NONE
+      INTEGER,INTENT(IN):: LDA,NTOT
+      LOGICAL,INTENT(IN):: IRRP
+      COMPLEX*16,INTENT(INOUT):: AMAT(LDA,NTOT)
+      INTEGER:: IEL,JEL,FLAG,NN,ID
       REAL*8:: DIST,SV,XF(3),XI(3),NF(3),A(4,3),ENN,RK(4),RKI(4)
       COMPLEX*16:: TINDP(4),GNN,GW(4)
 
       IF (ALLOCATED(FDIP)) DEALLOCATE(FDIP)
       ALLOCATE(FDIP(DNELEM,NELEM))
-      AMAT=CMPLX(0.D0,0.D0)
+      AMAT(1:NTOT,:)=CMPLX(0.D0,0.D0)
       SV=IMAGE_SIGN()
 
 !$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(IEL,JEL,FLAG,DIST,TINDP,XF) SCHEDULE(DYNAMIC,16)
@@ -141,7 +169,11 @@ CONTAINS
          FLAG=0
         ENDIF
         TINDP=CMPLX(0.D0,0.D0)
-        CALL BODINT_LEFT(1,IEL,JEL,TINDP,FLAG)
+        IF (IRRP) THEN
+         CALL BODINT_LEFT_IRR(1,IEL,JEL,TINDP,1,FLAG)
+        ELSE
+         CALL BODINT_LEFT(1,IEL,JEL,TINDP,FLAG)
+        ENDIF
         AMAT(IEL,JEL)=AMAT(IEL,JEL)+RXY(1,1)*TINDP(1)
        ENDDO
        ! dipole columns
@@ -187,14 +219,8 @@ CONTAINS
       ENDDO
 !$OMP END PARALLEL DO
 
-      CALL ZGETRF(NTOT,NTOT,AMAT,NTOT,IPIV,INFO)
-      IF (INFO.NE.0) THEN
-       PRINT *,' Error: the matrix with dipole panels is singular, ZGETRF INFO =',INFO
-       STOP 1
-      ENDIF
-
       RETURN
-      END SUBROUTINE DIPOLE_ASSB_LEFT
+      END SUBROUTINE FILL_SQUARE
 
 !-------------------------------------------------------------------------------
 !     Radiation right sides, modes 1-6: hull rows as ASSB_RBC (NSYS = 1); dipole rows (6), times DPNSZ.
@@ -225,18 +251,32 @@ CONTAINS
        BRMAT(IEL,:)=RXY(1,1)*BTMP(:)
       ENDDO
 !$OMP END PARALLEL DO
+      CALL DIPOLE_ROWS_RBC(BRMAT)
+
+      RETURN
+      END SUBROUTINE DIPOLE_ASSB_RBC
+
+!-------------------------------------------------------------------------------
+!     The dipole rows NELEM+1..NELEM+DNELEM of the radiation right sides, (6) times DPNSZ, from FDIP.
+!-------------------------------------------------------------------------------
+      SUBROUTINE DIPOLE_ROWS_RBC(BRMAT)
+      IMPLICIT NONE
+      COMPLEX*16,INTENT(INOUT):: BRMAT(NELEM+DNELEM,6)
+      INTEGER:: ID,JEL,MD
+      COMPLEX*16:: BTMP
+
       DO ID=1,DNELEM
        DO MD=1,6
-        BTMP(MD)=CMPLX(0.D0,0.D0)
+        BTMP=CMPLX(0.D0,0.D0)
         DO JEL=1,NELEM
-         BTMP(MD)=BTMP(MD)+FDIP(ID,JEL)*DXYZ_P(JEL,MD)
+         BTMP=BTMP+FDIP(ID,JEL)*DXYZ_P(JEL,MD)
         ENDDO
-        BRMAT(NELEM+ID,MD)=DPNSZ(ID)*(BTMP(MD)-FOURPI*DNRM(ID,MD))
+        BRMAT(NELEM+ID,MD)=DPNSZ(ID)*(BTMP-FOURPI*DNRM(ID,MD))
        ENDDO
       ENDDO
 
       RETURN
-      END SUBROUTINE DIPOLE_ASSB_RBC
+      END SUBROUTINE DIPOLE_ROWS_RBC
 
 !-------------------------------------------------------------------------------
 !     Diffraction right side (scattered potential): hull rows as ASSB_DBC (NSYS = 1); dipole rows (6) with
@@ -268,6 +308,20 @@ CONTAINS
        BDMAT(IEL)=RXY(1,1)*BTMP
       ENDDO
 !$OMP END PARALLEL DO
+      CALL DIPOLE_ROWS_DBC(BDMAT)
+
+      RETURN
+      END SUBROUTINE DIPOLE_ASSB_DBC
+
+!-------------------------------------------------------------------------------
+!     The dipole rows of the diffraction right side, (6) with v = -dphi_I/dn, times DPNSZ, from FDIP.
+!-------------------------------------------------------------------------------
+      SUBROUTINE DIPOLE_ROWS_DBC(BDMAT)
+      IMPLICIT NONE
+      COMPLEX*16,INTENT(INOUT):: BDMAT(NELEM+DNELEM)
+      INTEGER:: ID,JEL
+      COMPLEX*16:: BTMP,DPOX,DPOY,DPOZ,VH,VD
+
       DO ID=1,DNELEM
        BTMP=CMPLX(0.D0,0.D0)
        DO JEL=1,NELEM
@@ -281,7 +335,7 @@ CONTAINS
       ENDDO
 
       RETURN
-      END SUBROUTINE DIPOLE_ASSB_DBC
+      END SUBROUTINE DIPOLE_ROWS_DBC
 
 !-------------------------------------------------------------------------------
 !     Solve with the LU factors of DIPOLE_ASSB_LEFT: radiation (6 right sides) into MXPOT(1:NTOT, 1:6, 1), diffraction
@@ -323,8 +377,193 @@ CONTAINS
       RETURN
       END SUBROUTINE DIPOLE_FORCE_SUM
 
+!-------------------------------------------------------------------------------
+!     Weights of the rows of the lid least squares A^H W A x = A^H W b (design note Sec. 5): hull, dipole and lid rows,
+!     length NTOT + NLID. On development_2 the IRSP = 1 solve without dipoles has no row weights, so W = 1 everywhere:
+!     a dipole row, scaled by DPNSZ, then weighs like a hull row. (With the row weights of fix/field-limes-lid-weight
+!     the dipole rows would take DDS/S on the scaled row.)
+!-------------------------------------------------------------------------------
+      SUBROUTINE SET_DIPOLE_ROW_WEIGHTS(NROW)
+      INTEGER,INTENT(IN):: NROW
+      IF (ALLOCATED(DIPOLE_ROW_WEIGHTS)) DEALLOCATE(DIPOLE_ROW_WEIGHTS)
+      ALLOCATE(DIPOLE_ROW_WEIGHTS(NROW))
+      DIPOLE_ROW_WEIGHTS=1.D0
+      END SUBROUTINE SET_DIPOLE_ROW_WEIGHTS
+
+      SUBROUTINE CHECK_DIPOLE_ROW_WEIGHTS(NROW)
+      INTEGER,INTENT(IN):: NROW
+      IF (.NOT.ALLOCATED(DIPOLE_ROW_WEIGHTS)) THEN
+       PRINT *,' Error: the dipole row weights are not set.'
+       STOP 1
+      ENDIF
+      IF (SIZE(DIPOLE_ROW_WEIGHTS).NE.NROW) THEN
+       PRINT *,' Error: the dipole row weights have length',SIZE(DIPOLE_ROW_WEIGHTS),', not NTOT + NLID =',NROW
+       STOP 1
+      ENDIF
+      END SUBROUTINE CHECK_DIPOLE_ROW_WEIGHTS
+
+!-------------------------------------------------------------------------------
+!     IRSP = 1 with dipole panels: the NTOT + NL rows (hull, dipole, then lid) into AFULL, and the normal matrix
+!     C = A^H W A with its LU factors. The lid rows are those of ASSB_LEFT_IRR (BODINT_LEFT_IRR, IRR = 3) plus -W_lj (5)
+!     in the dipole columns (design note Sec. 5). Needs CALGREEN_IRR at this frequency.
+!-------------------------------------------------------------------------------
+      SUBROUTINE DIPOLE_ASSB_LEFT_IRR(AFULL,CMAT,IPIV,NTOT,NL)
+      IMPLICIT NONE
+      INTEGER,INTENT(IN):: NTOT,NL
+      COMPLEX*16,INTENT(OUT):: AFULL(NTOT+NL,NTOT),CMAT(NTOT,NTOT)
+      INTEGER,INTENT(OUT):: IPIV(NTOT)
+      INTEGER:: L,JEL,FLAG,INFO,I,J,K
+      REAL*8:: DIST,XF(3)
+      COMPLEX*16:: TINDP(4),S
+
+      CALL FILL_SQUARE(AFULL,NTOT+NL,NTOT,.TRUE.)
+!$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(L,JEL,FLAG,DIST,TINDP,XF) SCHEDULE(DYNAMIC,16)
+      DO L=1,NL
+       XF(:)=iXYZ_P(L,:)
+       DO JEL=1,NELEM
+        DIST=SQRT((XF(1)-XYZ_P(JEL,1))**2+(XF(2)-XYZ_P(JEL,2))**2+(XF(3)-XYZ_P(JEL,3))**2)
+        IF (DIST.LE.50.D0*PNSZ(JEL)) THEN
+         FLAG=1
+        ELSE
+         FLAG=0
+        ENDIF
+        TINDP=CMPLX(0.D0,0.D0)
+        CALL BODINT_LEFT_IRR(1,L,JEL,TINDP,3,FLAG)
+        AFULL(NTOT+L,JEL)=RXY(1,1)*TINDP(1)
+       ENDDO
+       DO JEL=1,DNELEM
+        AFULL(NTOT+L,NELEM+JEL)=-SHEET_COLUMN(XF,JEL)
+       ENDDO
+      ENDDO
+!$OMP END PARALLEL DO
+
+      CALL SET_DIPOLE_ROW_WEIGHTS(NTOT+NL)
+      CALL CHECK_DIPOLE_ROW_WEIGHTS(NTOT+NL)
+!$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(I,J,K,S)
+      DO I=1,NTOT
+       DO J=1,NTOT
+        S=CMPLX(0.D0,0.D0)
+        DO K=1,NTOT+NL
+         S=S+CONJG(AFULL(K,I))*DIPOLE_ROW_WEIGHTS(K)*AFULL(K,J)
+        ENDDO
+        CMAT(I,J)=S
+       ENDDO
+      ENDDO
+!$OMP END PARALLEL DO
+      CALL ZGETRF(NTOT,NTOT,CMAT,NTOT,IPIV,INFO)
+      IF (INFO.NE.0) THEN
+       PRINT *,' Error: the normal matrix with dipole panels is singular, ZGETRF INFO =',INFO
+       STOP 1
+      ENDIF
+
+      RETURN
+      END SUBROUTINE DIPOLE_ASSB_LEFT_IRR
+
+!-------------------------------------------------------------------------------
+!     IRSP = 1 right sides B(1:NTOT+NL, NRHS): radiation (KIND = 1, NRHS = 6) or diffraction (KIND = 2, NRHS = 1).
+!     Hull rows as RBC_IRR / DBC_IRR (IRR = 1), dipole rows as DIPOLE_ROWS_RBC / DBC, lid rows as RBC_IRR / DBC_IRR
+!     (IRR = 3); then D = A^H W B. B stays with the caller for DIPOLE_LID_RESIDUAL.
+!-------------------------------------------------------------------------------
+      SUBROUTINE DIPOLE_ASSB_RHS_IRR(AFULL,B,D,NTOT,NL,NRHS,KIND)
+      IMPLICIT NONE
+      INTEGER,INTENT(IN):: NTOT,NL,NRHS,KIND
+      COMPLEX*16,INTENT(IN):: AFULL(NTOT+NL,NTOT)
+      COMPLEX*16,INTENT(OUT):: B(NTOT+NL,NRHS),D(NTOT,NRHS)
+      INTEGER:: IEL,JEL,FLAG,IRR,IROW,I,K,MD
+      REAL*8:: DIST,XF(3)
+      COMPLEX*16:: TINRD(4,6,4),TINRDD(4,4),BTMP(6)
+      COMPLEX*16,ALLOCATABLE:: BSQ(:,:)
+
+      B=CMPLX(0.D0,0.D0)
+!$OMP PARALLEL DO NUM_THREADS(NTHREAD) PRIVATE(IROW,IEL,JEL,FLAG,IRR,DIST,XF,TINRD,TINRDD,BTMP) SCHEDULE(DYNAMIC,16)
+      DO IROW=1,NELEM+NL
+       IF (IROW.LE.NELEM) THEN
+        IEL=IROW
+        IRR=1
+        XF(:)=XYZ_P(IEL,:)
+       ELSE
+        IEL=IROW-NELEM
+        IRR=3
+        XF(:)=iXYZ_P(IEL,:)
+       ENDIF
+       BTMP=CMPLX(0.D0,0.D0)
+       DO JEL=1,NELEM
+        DIST=SQRT((XF(1)-XYZ_P(JEL,1))**2+(XF(2)-XYZ_P(JEL,2))**2+(XF(3)-XYZ_P(JEL,3))**2)
+        IF (DIST.LE.50.D0*PNSZ(JEL)) THEN
+         FLAG=1
+        ELSE
+         FLAG=0
+        ENDIF
+        IF (KIND.EQ.1) THEN
+         TINRD=CMPLX(0.D0,0.D0)
+         CALL RBC_IRR(1,IEL,JEL,TINRD,IRR,FLAG)
+         BTMP(:)=BTMP(:)+TINRD(1,:,1)
+        ELSE
+         TINRDD=CMPLX(0.D0,0.D0)
+         CALL DBC_IRR(1,IEL,JEL,TINRDD,IRR,FLAG)
+         BTMP(1)=BTMP(1)+TINRDD(1,1)
+        ENDIF
+       ENDDO
+       IF (IROW.LE.NELEM) THEN
+        B(IEL,1:NRHS)=RXY(1,1)*BTMP(1:NRHS)
+       ELSE
+        B(NTOT+IEL,1:NRHS)=RXY(1,1)*BTMP(1:NRHS)
+       ENDIF
+      ENDDO
+!$OMP END PARALLEL DO
+      ALLOCATE(BSQ(NTOT,NRHS))
+      BSQ=CMPLX(0.D0,0.D0)
+      IF (KIND.EQ.1) THEN
+       CALL DIPOLE_ROWS_RBC(BSQ)
+      ELSE
+       CALL DIPOLE_ROWS_DBC(BSQ(:,1))
+      ENDIF
+      B(NELEM+1:NTOT,:)=BSQ(NELEM+1:NTOT,:)
+      DEALLOCATE(BSQ)
+
+      CALL CHECK_DIPOLE_ROW_WEIGHTS(NTOT+NL)
+      DO MD=1,NRHS
+       DO I=1,NTOT
+        D(I,MD)=CMPLX(0.D0,0.D0)
+        DO K=1,NTOT+NL
+         D(I,MD)=D(I,MD)+CONJG(AFULL(K,I))*DIPOLE_ROW_WEIGHTS(K)*B(K,MD)
+        ENDDO
+       ENDDO
+      ENDDO
+
+      RETURN
+      END SUBROUTINE DIPOLE_ASSB_RHS_IRR
+
+!-------------------------------------------------------------------------------
+!     How well the least-squares solution X satisfies the lid rows (as the hub's J13 diagnostic): the rms over the lid
+!     points of |sum_j A_lj X_j - b_l| / (sum_j |A_lj X_j| + |b_l|).
+!-------------------------------------------------------------------------------
+      REAL*8 FUNCTION DIPOLE_LID_RESIDUAL(AFULL,B,X,NTOT,NL)
+      IMPLICIT NONE
+      INTEGER,INTENT(IN):: NTOT,NL
+      COMPLEX*16,INTENT(IN):: AFULL(NTOT+NL,NTOT),B(NTOT+NL),X(NTOT)
+      INTEGER:: L,J
+      COMPLEX*16:: R
+      REAL*8:: T,S
+
+      S=0.D0
+      DO L=1,NL
+       R=-B(NTOT+L)
+       T=ABS(B(NTOT+L))
+       DO J=1,NTOT
+        R=R+AFULL(NTOT+L,J)*X(J)
+        T=T+ABS(AFULL(NTOT+L,J)*X(J))
+       ENDDO
+       S=S+(ABS(R)/MAX(T,1.D-300))**2
+      ENDDO
+      DIPOLE_LID_RESIDUAL=SQRT(S/MAX(NL,1))
+
+      RETURN
+      END FUNCTION DIPOLE_LID_RESIDUAL
+
       SUBROUTINE DIPOLE_RELEASE_ASSB
       IF (ALLOCATED(FDIP)) DEALLOCATE(FDIP)
+      IF (ALLOCATED(DIPOLE_ROW_WEIGHTS)) DEALLOCATE(DIPOLE_ROW_WEIGHTS)
       END SUBROUTINE DIPOLE_RELEASE_ASSB
 !-------------------------------------------------------------------------------
 END MODULE DipoleAssb

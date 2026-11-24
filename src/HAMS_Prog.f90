@@ -110,6 +110,7 @@ program HAMS_MREL
     character(len=200) :: so_msg
     integer :: gen_body, gen_dof
     integer :: ntot_dip                    ! NELEM + DNELEM with dipole panels (DipoleMesh.pnl)
+    complex(8), allocatable :: dip_af(:,:), dip_c(:,:), dip_b(:,:), dip_d(:,:)   ! dipole panels with IRSP = 1
 
     print*
     write(*,'(80A)') ' ------------------------HAMS-MREL (Hydrodynamic Analysis of Marine Structures - Marine Renewable Energies Lab)---------------------'
@@ -294,10 +295,6 @@ program HAMS_MREL
         IF (DNELEM.GT.0) THEN
             ! Dipole panels (notes/specs/2026-11-24-dipole-panels-design.md): the unknowns are the hull potentials and the
             ! sheet jumps, NTOT = NELEM + DNELEM, solved by DipoleAssb; the arrays above are resized for them.
-            IF (IRSP.NE.0) THEN
-                PRINT*, ' Error: dipole panels with irregular-frequency removal (IRSP = 1) are not implemented yet.'
-                STOP 1
-            ENDIF
             IF (NFP.GT.0) THEN
                 PRINT*, ' Error: field-point pressures and elevations are not supported with dipole panels (v1).'
                 STOP 1
@@ -306,6 +303,10 @@ program HAMS_MREL
             DEALLOCATE(AMAT,BRMAT,BDMAT,IPIV,MXPOT)
             ALLOCATE(AMAT(ntot_dip,ntot_dip,1),BRMAT(ntot_dip,6,1),BDMAT(ntot_dip,1),IPIV(ntot_dip,1))
             ALLOCATE(MXPOT(ntot_dip,7,1))
+            IF (IRSP.EQ.1) THEN
+                ALLOCATE(dip_af(ntot_dip+INELEM,ntot_dip),dip_c(ntot_dip,ntot_dip))
+                ALLOCATE(dip_b(ntot_dip+INELEM,6),dip_d(ntot_dip,6))
+            ENDIF
             write(*,*) ' Number of dipole panels:        ',DNELEM
         ENDIF
 
@@ -349,7 +350,10 @@ program HAMS_MREL
                 BETA=WVHD(II)*PI/180.0D0
                 WRITE(6,3000) WVHD(II)
          
-                IF (DNELEM.GT.0) THEN
+                IF (DNELEM.GT.0.AND.IRSP.EQ.1) THEN
+                    CALL DIPOLE_ASSB_RHS_IRR(dip_af,dip_b(:,1:1),dip_d(:,1:1),ntot_dip,INELEM,1,2)
+                    CALL DIPOLE_SOLVE(dip_c,IPIV(:,1),dip_d(:,1:1),ntot_dip,1,7)
+                ELSEIF (DNELEM.GT.0) THEN
                     CALL DIPOLE_ASSB_DBC(BDMAT(:,1),ntot_dip)
                     CALL DIPOLE_SOLVE(AMAT(:,:,1),IPIV(:,1),BDMAT,ntot_dip,1,7)
                 ELSEIF (IRSP.EQ.0) THEN
@@ -814,7 +818,12 @@ contains
 
     ! The radiation problem of the single body at the wave of CalWaveProperts or SetWaveFromOmega: MXPOT(:,1:6,:)
     subroutine SolveRadiation()
-        IF (DNELEM.GT.0) THEN
+        IF (DNELEM.GT.0.AND.IRSP.EQ.1) THEN
+            CALL CALGREEN_IRR
+            CALL DIPOLE_ASSB_LEFT_IRR(dip_af,dip_c,IPIV(:,1),ntot_dip,INELEM)
+            CALL DIPOLE_ASSB_RHS_IRR(dip_af,dip_b,dip_d,ntot_dip,INELEM,6,1)
+            CALL DIPOLE_SOLVE(dip_c,IPIV(:,1),dip_d,ntot_dip,6,1)
+        ELSEIF (DNELEM.GT.0) THEN
             CALL CALGREEN
             CALL DIPOLE_ASSB_LEFT(AMAT(:,:,1),IPIV(:,1),ntot_dip)
             CALL DIPOLE_ASSB_RBC(BRMAT(:,:,1),ntot_dip)
