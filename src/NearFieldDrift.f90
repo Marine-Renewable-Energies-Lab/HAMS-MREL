@@ -29,6 +29,19 @@ MODULE NearFieldDrift
    ! quadratic part of the difference-frequency (KERNEL_DIFF, pair_minus) or sum-frequency (KERNEL_SUM, pair_plus) QTF.
    ! Terms with products inside an integral are evaluated panel by panel; only term IV multiplies integrated quantities,
    ! because G and H are themselves factors.
+   !
+   ! Moment origin. By default the second-order moments are about the space-fixed xr, the mean position of the body
+   ! reference point: WAMIT v7.6 eqs. 15.53 to 15.57 and its output options 7 and 9 for i = 1 to 6 (WAMIT v7.6 manual,
+   ! sec. 5.2). With moving_point they are about the point that moves with the body, xr + xi, which WAMIT writes as
+   ! i = -4, -5, -6 ("the moment about the moving origin", sec. 5.2) and which Nemoh v3.0.3 and HydroStar give (checked
+   ! on the OC3 Hywind test case of Kurnia and Ducrozet 2023). The two differ by P(xi x F^(1)), the moment_transfer of
+   ! this module, with F^(1) = G + F_hs the first-order force of the fluid: G the dynamic pressure force and
+   ! F_hs = -rho g A (xi_3 + y_f alpha_1 - x_f alpha_2) k the hydrostatic one. In the terms, xi x G is part of term IV
+   ! (eq. 15.55) and xi x F_hs part of term V (eq. 15.57); moving_point leaves both out.
+   ! For a free body with its centre of gravity at xr and no external stiffness or damping, F^(1) = -omega^2 m xi, so the
+   ! difference is -(1/4) m (omega_2^2 - omega_1^2) xi_1 x conj(xi_2) under KERNEL_DIFF: zero for the mean drift, but not
+   ! for the difference QTF. With the centre of gravity away from xr, external stiffness or damping, or several bodies,
+   ! the mean drift moments differ as well.
 
    USE SecondOrderTypes, ONLY: panel_mesh, first_order_state, surface_geom
    USE FirstOrderState, ONLY: incident_phi, wave_gravity
@@ -37,7 +50,7 @@ MODULE NearFieldDrift
 
    PUBLIC :: pair_minus, pair_plus, pair_product, pair_cross, KERNEL_DIFF, KERNEL_SUM
    PUBLIC :: waterline_point, waterline_extrapolate, near_field_pair, elevation, force_and_moment
-   PUBLIC :: vertical_motion, rigid_displacement, add_hydrostatic_term
+   PUBLIC :: vertical_motion, rigid_displacement, add_hydrostatic_term, moment_transfer
    PUBLIC :: T_WATERLINE, T_FLARE, T_VELOCITY, T_DISPLACEMENT, T_ROTATION, T_HYDROSTATIC
 
    ! Term index of near_field_pair
@@ -97,28 +110,34 @@ CONTAINS
       END DO
    END SUBROUTINE waterline_extrapolate
 
-   SUBROUTINE near_field_pair(mesh, geom, s1, s2, phi_wl1, phi_wl2, terms, kernel)
+   SUBROUTINE near_field_pair(mesh, geom, s1, s2, phi_wl1, phi_wl2, terms, kernel, moving_point)
       ! Near-field load of the state pair (s1, s2), which may be the same state, under kernel (default KERNEL_DIFF).
       !   phi_wl1, phi_wl2   total potential at the waterline segments (nwl)
       !   terms(6, 6, nbody) (component, term, body). Components: force, then moment about xr of the body. Terms: 1 I
       !                      waterline, 2 Ia flare, 3 II velocity, 4 III displacement, 5 IV rotation, 6 V hydrostatic.
+      !   moving_point       moments about xr moving with the body instead of the space-fixed xr (module header);
+      !                      default .FALSE.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       TYPE(first_order_state), INTENT(IN) :: s1, s2
       COMPLEX(8), INTENT(IN) :: phi_wl1(:), phi_wl2(:)
       COMPLEX(8), INTENT(OUT) :: terms(:,:,:)
       INTEGER, INTENT(IN), OPTIONAL :: kernel
+      LOGICAL, INTENT(IN), OPTIONAL :: moving_point
       INTEGER :: kn
+      LOGICAL :: mv
 
       kn = KERNEL_DIFF
       IF (PRESENT(kernel)) kn = kernel
+      mv = .FALSE.
+      IF (PRESENT(moving_point)) mv = moving_point
       terms = (0D0, 0D0)
       CALL add_waterline_term(mesh, geom, s1, s2, phi_wl1, phi_wl2, terms, kn)
       CALL add_flare_term(mesh, geom, s1, s2, phi_wl1, phi_wl2, terms, kn)
       CALL add_velocity_term(mesh, s1, s2, terms, kn)
       CALL add_displacement_term(mesh, s1, s2, terms, kn)
-      CALL add_rotation_term(mesh, s1, s2, terms, kn)
-      CALL add_hydrostatic_term(mesh, geom, s1, s2, terms, kn)
+      CALL add_rotation_term(mesh, s1, s2, terms, kn, mv)
+      CALL add_hydrostatic_term(mesh, geom, s1, s2, terms, kn, mv)
    END SUBROUTINE near_field_pair
 
    SUBROUTINE add_waterline_term(mesh, geom, s1, s2, phi_wl1, phi_wl2, terms, kernel)
@@ -218,13 +237,15 @@ CONTAINS
       END DO
    END SUBROUTINE add_displacement_term
 
-   SUBROUTINE add_rotation_term(mesh, s1, s2, terms, kernel)
-      ! IV force: alpha x G. IV moment: alpha x H + xi x G. Each cross product goes through P. On the panels of each
+   SUBROUTINE add_rotation_term(mesh, s1, s2, terms, kernel, moving)
+      ! IV force: alpha x G. IV moment: alpha x H + xi x G about the space-fixed xr (eq. 15.55), alpha x H alone about
+      ! the moving reference point (moving; module header). Each cross product goes through P. On the panels of each
       ! body: G = -rho int n phi_t dS, H = -rho int (x x n) phi_t dS.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(first_order_state), INTENT(IN) :: s1, s2
       COMPLEX(8), INTENT(INOUT) :: terms(:,:,:)
       INTEGER, INTENT(IN) :: kernel
+      LOGICAL, INTENT(IN) :: moving
       COMPLEX(8) :: load1(6, mesh%nbody), load2(6, mesh%nbody)
       INTEGER :: b
 
@@ -232,10 +253,51 @@ CONTAINS
       CALL dynamic_pressure_load(mesh, s2, load2)
       DO b = 1, mesh%nbody
          terms(1:3, T_ROTATION, b) = pair_cross(kernel, s1%xi(4:6, b), load1(1:3, b), s2%xi(4:6, b), load2(1:3, b))
-         terms(4:6, T_ROTATION, b) = pair_cross(kernel, s1%xi(4:6, b), load1(4:6, b), s2%xi(4:6, b), load2(4:6, b)) &
-                                     + pair_cross(kernel, s1%xi(1:3, b), load1(1:3, b), s2%xi(1:3, b), load2(1:3, b))
+         IF (moving) THEN
+            terms(4:6, T_ROTATION, b) = pair_cross(kernel, s1%xi(4:6, b), load1(4:6, b), s2%xi(4:6, b), load2(4:6, b))
+         ELSE
+            terms(4:6, T_ROTATION, b) = pair_cross(kernel, s1%xi(4:6, b), load1(4:6, b), s2%xi(4:6, b), load2(4:6, b)) &
+                                        + pair_cross(kernel, s1%xi(1:3, b), load1(1:3, b), s2%xi(1:3, b), load2(1:3, b))
+         END IF
       END DO
    END SUBROUTINE add_rotation_term
+
+   SUBROUTINE moment_transfer(mesh, s1, s2, tr, kernel, geom)
+      ! tr(:, b) = P(xi x F^(1)) of each body under kernel (default KERNEL_DIFF): the moment about the space-fixed xr minus
+      ! the moment about the moving reference point (module header). F^(1) = G + F_hs; F_hs only with geom. F_hs is
+      ! vertical, so tr(3, :) needs no geom, and without geom tr(1:2, :) holds the xi x G part only.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(first_order_state), INTENT(IN) :: s1, s2
+      COMPLEX(8), INTENT(OUT) :: tr(:, :)
+      INTEGER, INTENT(IN), OPTIONAL :: kernel
+      TYPE(surface_geom), INTENT(IN), OPTIONAL :: geom
+      COMPLEX(8) :: load1(6, mesh%nbody), load2(6, mesh%nbody)
+      INTEGER :: b, kn
+
+      kn = KERNEL_DIFF
+      IF (PRESENT(kernel)) kn = kernel
+      CALL dynamic_pressure_load(mesh, s1, load1)
+      CALL dynamic_pressure_load(mesh, s2, load2)
+      IF (PRESENT(geom)) THEN
+         DO b = 1, mesh%nbody
+            load1(3, b) = load1(3, b) + hydrostatic_force(geom, b, s1%rho*s1%g, s1%xi(:, b))
+            load2(3, b) = load2(3, b) + hydrostatic_force(geom, b, s2%rho*s2%g, s2%xi(:, b))
+         END DO
+      END IF
+      DO b = 1, mesh%nbody
+         tr(:, b) = pair_cross(kn, s1%xi(1:3, b), load1(1:3, b), s2%xi(1:3, b), load2(1:3, b))
+      END DO
+   END SUBROUTINE moment_transfer
+
+   PURE COMPLEX(8) FUNCTION hydrostatic_force(geom, b, rg, q)
+      ! F_hs,3 = -rho g A (xi_3 + y_f alpha_1 - x_f alpha_2), the first-order hydrostatic force of body b (it is vertical)
+      TYPE(surface_geom), INTENT(IN) :: geom
+      INTEGER, INTENT(IN) :: b
+      REAL(8), INTENT(IN) :: rg
+      COMPLEX(8), INTENT(IN) :: q(:)
+
+      hydrostatic_force = -rg*geom%awp(b)*(q(3) + geom%yf(b)*q(4) - geom%xf(b)*q(5))
+   END FUNCTION hydrostatic_force
 
    SUBROUTINE dynamic_pressure_load(mesh, s, load)
       ! load(1:3, b) = G and load(4:6, b) = H of body b.
@@ -252,15 +314,20 @@ CONTAINS
       END DO
    END SUBROUTINE dynamic_pressure_load
 
-   SUBROUTINE add_hydrostatic_term(mesh, geom, s1, s2, terms, kernel)
+   SUBROUTINE add_hydrostatic_term(mesh, geom, s1, s2, terms, kernel, moving_point)
       ! V: F_S and M_S of eq. 15.56 and 15.57, with waterplane and volume properties about xr and Z_o = xr(3). Fills
       ! terms(3:5, T_HYDROSTATIC, :) only. The same rows as Lee (2006) eqs. 16 and 21, term by term [derived]; the
-      ! control-surface method uses them too (ControlSurfaceDrift).
+      ! control-surface method uses them too (ControlSurfaceDrift). M_S is about the space-fixed xr. With moving_point
+      ! (default .FALSE.) it is about the moving reference point: eq. 15.57 less
+      !    rho g (p(X2, A2) A x_f - p(X2, A1) A y_f - p(X2, X3) A)     in M_1, which is P(xi_2, F_hs,3)
+      !    rho g (-p(X1, A2) A x_f + p(X1, A1) A y_f + p(X1, X3) A)    in M_2, which is -P(xi_1, F_hs,3)
+      ! that is less P(xi x F_hs) (module header).
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       TYPE(first_order_state), INTENT(IN) :: s1, s2
       COMPLEX(8), INTENT(INOUT) :: terms(:,:,:)
       INTEGER, INTENT(IN), OPTIONAL :: kernel   ! default KERNEL_DIFF
+      LOGICAL, INTENT(IN), OPTIONAL :: moving_point
       INTEGER, PARAMETER :: X1 = 1, X2 = 2, X3 = 3, A1 = 4, A2 = 5, A3 = 6
       REAL(8) :: rg, a, axf, ayf, zo, l1m2, l12, vxb, vyb
       INTEGER :: b, kn
@@ -287,6 +354,12 @@ CONTAINS
                                           + (0.5D0*p(A1, A1) + 1.5D0*p(A2, A2))*axf*zo - p(A1, A2)*ayf*zo &
                                           + p(X1, X3)*a - p(X3, A2)*a*zo &
                                           + p(A1, A3)*l1m2 + 2D0*p(A2, A3)*l12 + 0.5D0*(p(A2, A2) + p(A3, A3))*vxb)
+         IF (PRESENT(moving_point)) THEN
+            IF (moving_point) THEN
+               terms(4, T_HYDROSTATIC, b) = terms(4, T_HYDROSTATIC, b) - rg*(p(X2, A2)*axf - p(X2, A1)*ayf - p(X2, X3)*a)
+               terms(5, T_HYDROSTATIC, b) = terms(5, T_HYDROSTATIC, b) - rg*(-p(X1, A2)*axf + p(X1, A1)*ayf + p(X1, X3)*a)
+            END IF
+         END IF
       END DO
 
    CONTAINS

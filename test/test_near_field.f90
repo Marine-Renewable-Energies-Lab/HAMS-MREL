@@ -6,6 +6,7 @@ module test_near_field
   use SurfaceGeometry, only : build_surface_geom, DEFAULT_SHARP_DEG
   use FarFieldDrift, only : group_ratio
   use NearFieldDrift, only : pair_minus, pair_plus, KERNEL_DIFF, KERNEL_SUM, waterline_extrapolate, near_field_pair, &
+                             moment_transfer, &
                              T_I => T_WATERLINE, T_IA => T_FLARE, &
                              T_II => T_VELOCITY, T_III => T_DISPLACEMENT, T_IV => T_ROTATION, T_V => T_HYDROSTATIC
   use second_order_fixtures, only : make_cylinder, set_panel, maccamy_fuchs_state, maccamy_fuchs_phi, maccamy_fuchs_drift
@@ -54,6 +55,8 @@ subroutine collect_near_field(testsuite)
     new_unittest("pair_symmetry", test_pair_symmetry), &
     new_unittest("pair_superposition", test_pair_superposition), &
     new_unittest("reference_point", test_reference_point), &
+    new_unittest("moment_transfer_free_body", test_moment_transfer_free_body), &
+    new_unittest("moving_point_moments", test_moving_point_moments), &
     new_unittest("two_bodies_independent", test_two_bodies_independent), &
     new_unittest("qtf_time_series", test_qtf_time_series), &
     new_unittest("qtf_pair_symmetry", test_qtf_pair_symmetry), &
@@ -820,6 +823,114 @@ subroutine test_reference_point(error)
     if (allocated(error)) return
   end do
 end subroutine test_reference_point
+
+!> The part of the moment between the space-fixed and the moving reference point, P(xi x F^(1)) (moment_transfer), for a
+!> free body with its centre of gravity at xr and no external stiffness or damping: F^(1) = G + F_hs = -omega^2 m xi, so
+!> it is -(1/4) m (omega_2^2 - omega_1^2) xi_1 x conj(xi_2) under KERNEL_DIFF (zero for the mean drift) and
+!> -(1/4) m (omega_2^2 - omega_1^2) xi_1 x xi_2 under KERNEL_SUM. The motions are solved from the force equation of the
+!> given fields (alpha = 0, which the force does not need).
+subroutine test_moment_transfer_free_body(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: omega2 = 1.3d0
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: s1, s2
+  complex(8), allocatable :: w1(:), w2(:)
+  complex(8) :: tr(3, 1), expected(3)
+  real(8) :: m
+
+  call free_cylinder([0d0, 0d0, 0d0], 0d0, mesh, geom, s1, w1, error)
+  if (allocated(error)) return
+  call free_cylinder([0d0, 0d0, 0d0], 0.7d0, mesh, geom, s2, w2, error)
+  if (allocated(error)) return
+  s2%omega = omega2
+  m = rho * geom%vol(1)
+  call free_body_motion(s1)
+  call free_body_motion(s2)
+
+  call moment_transfer(mesh, s1, s2, tr, KERNEL_DIFF, geom)
+  expected = -0.25d0 * m * (omega2**2 - omega**2) * cross_c(s1%xi(1:3, 1), conjg(s2%xi(1:3, 1)))
+  call check(error, maxval(abs(expected)) > 0d0 .and. maxval(abs(tr(:, 1) - expected)) <= 1d-10 * maxval(abs(expected)), &
+             "difference-frequency moment transfer is not -(m/4)(w2^2 - w1^2) xi_1 x conj(xi_2)")
+  if (allocated(error)) return
+
+  call moment_transfer(mesh, s1, s2, tr, KERNEL_SUM, geom)
+  expected = -0.25d0 * m * (omega2**2 - omega**2) * cross_c(s1%xi(1:3, 1), s2%xi(1:3, 1))
+  call check(error, maxval(abs(tr(:, 1) - expected)) <= 1d-10 * maxval(abs(expected)), &
+             "sum-frequency moment transfer is not -(m/4)(w2^2 - w1^2) xi_1 x xi_2")
+  if (allocated(error)) return
+
+  call moment_transfer(mesh, s1, s1, tr, KERNEL_DIFF, geom)
+  call check(error, maxval(abs(tr)) <= 1d-10 * m * omega**2 * maxval(abs(s1%xi(1:3, 1)))**2, &
+             "the moment transfer of the mean drift of a free body is not zero")
+
+contains
+
+  !> xi from G + F_hs = -omega^2 m xi, F_hs = -rho g A xi_3 k (alpha = 0)
+  subroutine free_body_motion(s)
+    type(first_order_state), intent(inout) :: s
+    complex(8) :: gg(3)
+    integer :: i
+
+    gg = (0d0, 0d0)
+    do i = 1, mesh%n
+      gg = gg - rho * mesh%nrm(:, i) * mesh%area(i) * (-ci * s%omega) * (s%phi_i(i) + s%phi_p(i))
+    end do
+    s%xi(:, 1) = (0d0, 0d0)
+    s%xi(1:2, 1) = -gg(1:2) / (s%omega**2 * m)
+    s%xi(3, 1) = gg(3) / (rho * g * geom%awp(1) - s%omega**2 * m)
+  end subroutine free_body_motion
+end subroutine test_moment_transfer_free_body
+
+!> near_field_pair with moving_point: the forces and every term but IV and V as without it, the IV and V moments less
+!> xi x G and xi x F_hs, so that the total moment is the space-fixed one less moment_transfer, for both kernels and the
+!> mean drift, on a body with an offset reference point and all six motions.
+subroutine test_moving_point_moments(error)
+  type(error_type), allocatable, intent(out) :: error
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  type(first_order_state) :: s1, s2
+  complex(8), allocatable :: w1(:), w2(:), tf(:,:,:), tm(:,:,:)
+  complex(8) :: tr(3, 1), trg(3, 1)
+  real(8) :: scale_m
+  integer :: kn, ipair
+
+  call free_cylinder([1d0, -0.5d0, 0.3d0], 0d0, mesh, geom, s1, w1, error)
+  if (allocated(error)) return
+  call free_cylinder([1d0, -0.5d0, 0.3d0], 0.7d0, mesh, geom, s2, w2, error)
+  if (allocated(error)) return
+  s2%xi(:, 1) = (0.7d0, -0.4d0) * s2%xi(:, 1)
+  allocate(tf(6, 6, 1), tm(6, 6, 1))
+  do kn = KERNEL_DIFF, KERNEL_SUM
+    do ipair = 1, 2
+      if (ipair == 1) then
+        call near_field_pair(mesh, geom, s1, s2, w1, w2, tf, kn)
+        call near_field_pair(mesh, geom, s1, s2, w1, w2, tm, kn, moving_point=.true.)
+        call moment_transfer(mesh, s1, s2, tr, kn, geom)
+        call moment_transfer(mesh, s1, s2, trg, kn)
+      else
+        call near_field_pair(mesh, geom, s1, s1, w1, w1, tf, kn)
+        call near_field_pair(mesh, geom, s1, s1, w1, w1, tm, kn, moving_point=.true.)
+        call moment_transfer(mesh, s1, s1, tr, kn, geom)
+        call moment_transfer(mesh, s1, s1, trg, kn)
+      end if
+      scale_m = maxval(abs(tf(4:6, :, 1)))
+      call check(error, maxval(abs(tm(1:3, :, 1) - tf(1:3, :, 1))) == 0d0, "moving_point changed a force")
+      if (allocated(error)) return
+      call check(error, maxval(abs(tm(4:6, T_I:T_III, 1) - tf(4:6, T_I:T_III, 1))) == 0d0, &
+                 "moving_point changed a moment term other than IV and V")
+      if (allocated(error)) return
+      call check(error, maxval(abs(tr(:, 1) - trg(:, 1))) > 0d0, "degenerate test: F_hs gives no moment transfer")
+      if (allocated(error)) return
+      call check(error, maxval(abs(tm(4:6, T_IV, 1) - (tf(4:6, T_IV, 1) - trg(:, 1)))) <= 1d-12 * scale_m, &
+                 "term IV with moving_point is not term IV less P(xi x G)")
+      if (allocated(error)) return
+      call check(error, maxval(abs(sum(tm(4:6, :, 1), dim=2) - (sum(tf(4:6, :, 1), dim=2) - tr(:, 1)))) <= 1d-12 * scale_m, &
+                 "the moment with moving_point is not the space-fixed one less P(xi x F^(1))")
+      if (allocated(error)) return
+    end do
+  end do
+end subroutine test_moving_point_moments
 
 subroutine test_two_bodies_independent(error)
   type(error_type), allocatable, intent(out) :: error

@@ -42,6 +42,9 @@ MODULE SecondOrderTypes
       LOGICAL :: do_far = .FALSE., do_near = .FALSE.
       INTEGER :: velocity_method = 1     ! 1 differencing, 2 source
       INTEGER :: waterline_method = 1    ! 1 extrapolate, 2 field
+      ! 1 fixed: second-order moments about the space-fixed XR (WAMIT i = 4..6); 2 moving: about XR moving with the body
+      ! (WAMIT i = -4..-6, Nemoh, HydroStar). NearFieldDrift module header. QTF_Motion uses moving whatever it is.
+      INTEGER :: moment_origin = 1
       REAL(8) :: waterline_offset = 0.01D0
       LOGICAL :: motion_fixed = .FALSE.
       INTEGER :: n_azimuth = 360
