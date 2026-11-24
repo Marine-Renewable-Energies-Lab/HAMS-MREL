@@ -75,7 +75,7 @@ MODULE SecondOrderDriver
    USE SurfaceGeometry, ONLY: build_surface_geom, DEFAULT_SHARP_DEG
    USE SurfaceVelocity, ONLY: velocity_differencing, source_operator, build_source_operator, velocity_source
    USE FarFieldDrift, ONLY: far_amplitude, far_field_pair, far_field_pairs
-   USE NearFieldDrift, ONLY: waterline_extrapolate, near_field_pair, T_WATERLINE, T_HYDROSTATIC
+   USE NearFieldDrift, ONLY: waterline_extrapolate, near_field_pair, moment_transfer, T_WATERLINE, T_HYDROSTATIC
    USE WaterlineField, ONLY: waterline_rows, waterline_field, field_point_inside_body, deep_rows_allowed, deep_rows_guarded
    USE ControlSurfaceMesh, ONLY: build_control_surface, check_control_surface, write_control_surface, build_fs_inner, &
                                  hull_radius
@@ -108,6 +108,7 @@ MODULE SecondOrderDriver
 
    TYPE(panel_mesh) :: mesh
    TYPE(surface_geom) :: geom
+   LOGICAL :: moment_moving = .FALSE.                  ! moment_origin = moving: moments about XR moving with the body
    TYPE(first_order_state), ALLOCATABLE :: states(:)   ! one per heading for mean_drift = 2 or control, otherwise the current
    COMPLEX(8), ALLOCATABLE :: phi_wl(:,:)              ! (nwl, size(states)), total potential on the waterline segments; allocated
                                                        ! for the near-field method and for the Phase B control-surface loads
@@ -211,6 +212,14 @@ CONTAINS
       END IF
 
       b2_control = uses_b2_control(opts)
+      moment_moving = opts%moment_origin == 2
+      IF (moment_moving) THEN
+         WRITE (*, '(a)') ' Second-order moments: moment_origin = moving, about XR moving with each body (as WAMIT'// &
+            ' i = -4 to -6, Nemoh and HydroStar)'
+      ELSE
+         WRITE (*, '(a)') ' Second-order moments: moment_origin = fixed, about the space-fixed XR of each body (as WAMIT'// &
+            ' i = 4 to 6)'
+      END IF
       deep_logged = .FALSE.
       guard_logged = .FALSE.
       hull_draft = -1D0
@@ -1612,13 +1621,15 @@ CONTAINS
    SUBROUTINE control_output(fields, i1, i2, beta1_deg, beta2_deg, far)
       ! Writes the control-surface load of the state pair (i1, i2), per body, about XR of each body: I = 1, 2, 6 (Phase A),
       ! and I = 3, 4, 5 (Phase B) for the bodies of cs_vertical. The terms file has terms 11 to 13 for I = 1, 2, 6, which
-      ! the Phase B terms do not change, and 11 to 16 for I = 3, 4, 5. With far, logs the difference from it, with M_z moved
-      ! to the origin as in near_field_output.
+      ! the Phase B terms do not change, and 11 to 16 for I = 3, 4, 5. The terms are about the space-fixed xr
+      ! (ControlSurfaceDrift); with moment_origin = moving, term 17 (I = 4, 5, 6) is -P(xi x F^(1)) of moment_transfer,
+      ! which moves the moment to xr moving with the body. With far, logs the difference from it, with M_z moved to the
+      ! origin as in near_field_output.
       TYPE(cs_fields), INTENT(IN) :: fields(:)
       INTEGER, INTENT(IN) :: i1, i2
       REAL(8), INTENT(IN) :: beta1_deg, beta2_deg
       COMPLEX(8), INTENT(IN), OPTIONAL :: far(3)
-      COMPLEX(8) :: terms(6, 6, mesh%nbody), total(6), control(3)
+      COMPLEX(8) :: terms(6, 6, mesh%nbody), total(6), control(3), tr(3, mesh%nbody)
       INTEGER :: b, i, term, last
 
       IF (have_free) THEN
@@ -1627,9 +1638,11 @@ CONTAINS
       ELSE
          CALL control_surface_pair(cs_pts, mesh%xr, states(i1), states(i2), fields(i1), fields(i2), terms)
       END IF
+      IF (moment_moving) CALL moment_transfer(mesh, states(i1), states(i2), tr, geom=geom)
       control = (0D0, 0D0)
       DO b = 1, mesh%nbody
          total = SUM(terms(:, :, b), DIM=2)
+         IF (moment_moving) total(4:6) = total(4:6) - tr(:, b)
          DO i = 1, 6
             IF (i >= 3 .AND. i <= 5 .AND. .NOT. cs_vertical(b)) CYCLE
             CALL write_drift_row(unit_control, OUFR, beta1_deg, beta2_deg, 6*(b - 1) + i, total(i), REFL, i > 3)
@@ -1638,6 +1651,8 @@ CONTAINS
             DO term = CS_T_LINE, last
                CALL write_terms_row(unit_terms, OUFR, beta1_deg, beta2_deg, b, i, 10 + term, terms(i, term, b), REFL, i > 3)
             END DO
+            IF (moment_moving .AND. i >= 4) &
+               CALL write_terms_row(unit_terms, OUFR, beta1_deg, beta2_deg, b, i, 17, -tr(i - 3, b), REFL, .TRUE.)
          END DO
          control(1:2) = control(1:2) + total(1:2)
          control(3) = control(3) + total(6) + mesh%xr(1, b)*total(2) - mesh%xr(2, b)*total(1)
@@ -1681,7 +1696,8 @@ CONTAINS
       COMPLEX(8) :: terms(6, 6, mesh%nbody), total(6), near(3)
       INTEGER :: b, i, term
 
-      CALL near_field_pair(mesh, geom, states(i1), states(i2), phi_wl(:, i1), phi_wl(:, i2), terms)
+      CALL near_field_pair(mesh, geom, states(i1), states(i2), phi_wl(:, i1), phi_wl(:, i2), terms, &
+                           moving_point=moment_moving)
       near = (0D0, 0D0)
       DO b = 1, mesh%nbody
          total = SUM(terms(:, :, b), DIM=2)

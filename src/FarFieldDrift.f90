@@ -28,6 +28,7 @@ MODULE FarFieldDrift
 
    USE SecondOrderTypes, ONLY: panel_mesh, first_order_state, so_options
    USE FirstOrderState, ONLY: depth_factor
+   USE NearFieldDrift, ONLY: moment_transfer
    IMPLICIT NONE
    PRIVATE
 
@@ -106,6 +107,8 @@ CONTAINS
    SUBROUTINE far_field_pair(mesh, s1, s2, opts, f)
       ! Mean load F_12 = (F_x, F_y, M_z) from two states of the same frequency, per unit amplitude pair, with M_z about
       ! the global origin. For s1 = s2 this is the mean drift of one heading. See pair_core for the integration.
+      ! The momentum balance gives M_z about the space-fixed origin; with opts%moment_origin = 2 (moving) it is moved to the
+      ! sum of the moments about each body's moving reference point (to_moving_point).
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(first_order_state), INTENT(IN) :: s1, s2
       TYPE(so_options), INTENT(IN) :: opts
@@ -119,7 +122,20 @@ CONTAINS
       pair(2) = s2
       CALL pair_core(mesh, pair, [1], [2], opts, fp)
       f = fp(:, 1)
+      IF (opts%moment_origin == 2) f(3) = f(3) - to_moving_point(mesh, s1, s2)
    END SUBROUTINE far_field_pair
+
+   COMPLEX(8) FUNCTION to_moving_point(mesh, s1, s2)
+      ! The sum over the bodies of P(xi x F^(1))_z (NearFieldDrift moment_transfer): M_z about the space-fixed origin less
+      ! this is the sum of the moments about each body's moving reference point, moved to the origin with xr x F. F_hs is
+      ! vertical, so the z component needs no surface geometry.
+      TYPE(panel_mesh), INTENT(IN) :: mesh
+      TYPE(first_order_state), INTENT(IN) :: s1, s2
+      COMPLEX(8) :: tr(3, mesh%nbody)
+
+      CALL moment_transfer(mesh, s1, s2, tr)
+      to_moving_point = SUM(tr(3, :))
+   END FUNCTION to_moving_point
 
    SUBROUTINE far_field_pairs(mesh, states, opts, f)
       ! Mean loads of all pairs of states (one per heading, same frequency): f(:, i, j) = F_ij. Each state's a(theta)
@@ -143,6 +159,11 @@ CONTAINS
          END DO
       END DO
       CALL pair_core(mesh, states, ip, jp, opts, fp)
+      IF (opts%moment_origin == 2) THEN
+         DO p = 1, ns*ns
+            fp(3, p) = fp(3, p) - to_moving_point(mesh, states(ip(p)), states(jp(p)))
+         END DO
+      END IF
       f = RESHAPE(fp, [3, ns, ns])
    END SUBROUTINE far_field_pairs
 

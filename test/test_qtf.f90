@@ -95,6 +95,7 @@ subroutine collect_qtf(testsuite)
     new_unittest("qtf3_diff_unchanged", test_qtf3_diff_unchanged), &
     new_unittest("motion_rows_follow_force", test_motion_rows_follow_force), &
     new_unittest("motion_equals_h_times_f", test_motion_equals_h_times_f), &
+    new_unittest("moment_origin_files", test_moment_origin_files), &
     new_unittest("motion_scaling", test_motion_scaling), &
     new_unittest("motion_sum_symmetric", test_motion_sum_symmetric), &
     new_unittest("motion_sum_cutoff_rows", test_motion_sum_cutoff_rows), &
@@ -1173,7 +1174,8 @@ end subroutine test_stored_mb_indirect_sum
 !> mean_drift = 2, qtf = 2, qtf_terms = body, qtf_direct = 1, write_terms = 1. States: the incident wave and rigid motions
 !> (make_state). At every frequency of the list the radiation solve (radiation_at), psi into the store, and
 !> qtf_direct_at_omega, as RadiationOnlySolves and so_after_radiation_only do it. max_sw is qtf_max_sw.
-subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid, indirect_only, motion, fixed, irsp0, field)
+subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid, indirect_only, motion, fixed, irsp0, field, &
+                        moving)
   type(error_type), allocatable, intent(out) :: error
   real(8), intent(in) :: max_sw
   type(panel_mesh), intent(out) :: mesh
@@ -1190,6 +1192,7 @@ subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid, 
   ! qtf_field = 1 at these points (3, npt), z = 0 an elevation point, with zero first-order fields there (Phase 6c Task 5:
   ! only the direct columns of QTF_Field.txt are read); qfield_finish after qtf_finish writes the file
   real(8), intent(in), optional :: field(:, :)
+  logical, intent(in), optional :: moving   ! moment_origin = moving
   real(8) :: mass(6, 6), c_hyd(6, 6), k_ext(6, 6), b_ext(6, 6)
   integer :: rf, kq, nl, kd, kmot
   real(8), parameter :: hb(2) = [0d0, 30d0], h10 = 10d0
@@ -1244,6 +1247,9 @@ subroutine sum_pipeline(error, max_sw, mesh, geom, refine, kind_qtf, grid, lid, 
   if (present(motion)) kmot = motion
   opts%qtf_motion = merge(1, 0, kmot > 0)
   if (present(fixed)) opts%motion_fixed = fixed
+  if (present(moving)) then
+    if (moving) opts%moment_origin = 2
+  end if
   use_irsp0 = .false.
   if (present(irsp0)) use_irsp0 = irsp0
   if (kmot > 0 .and. .not. opts%motion_fixed) call cylinder_body(kmot == 1, mass, c_hyd, k_ext, b_ext)
@@ -2003,7 +2009,8 @@ subroutine test_motion_equals_h_times_f(error)
   integer :: p, md, n, kk
   character(len=250) :: line
 
-  call sum_pipeline(error, 0d0, mesh, geom, kind_qtf=3, indirect_only=.true., motion=2)
+  ! The motion takes its moments about the moving XR (pair_force), so the file rows it is checked against must too
+  call sum_pipeline(error, 0d0, mesh, geom, kind_qtf=3, indirect_only=.true., motion=2, moving=.true.)
   if (allocated(error)) return
   call cylinder_body(.false., mass, c_hyd, k_ext, b_ext)
   zero = 0d0
@@ -2089,6 +2096,74 @@ subroutine test_motion_equals_h_times_f(error)
   call check(error, worst <= 1d-13 .and. worst_file <= 1d-5, line)
   call remove_files()
 end subroutine test_motion_equals_h_times_f
+
+!> moment_origin = fixed and moving on the moored cylinder: QTF_Quadratic.10d and .10s have the same rows and the same
+!> forces, and moments that differ (the change on the difference diagonal, the mean drift, is printed: it is zero only
+!> for a free body with its centre of gravity at XR); the second-order motion does not depend on it (pair_force takes the
+!> moving point always).
+subroutine test_moment_origin_files(error)
+  type(error_type), allocatable, intent(out) :: error
+  real(8), parameter :: refl = 2d0
+  character(len=*), parameter :: files(2) = [character(len=40) :: "/Wamit_format/QTF_Quadratic.10d", &
+                                                                   "/Wamit_format/QTF_Quadratic.10s"]
+  type(panel_mesh) :: mesh
+  type(surface_geom) :: geom
+  real(8), allocatable :: r(:, :), fr1(:, :), fr2(:, :), fr(:, :)
+  complex(8) :: xi(6, 2), f(6, 2)
+  real(8) :: dmom, scale_f, dforce, ddiag
+  logical :: ok
+  integer :: run, k, n
+
+  do run = 1, 2
+    call sum_pipeline(error, 0d0, mesh, geom, kind_qtf=3, indirect_only=.true., motion=2, moving=(run == 2))
+    if (allocated(error)) return
+    call potential_part(mesh, geom, refl)
+    call potential_part_sum(mesh, geom, refl)
+    call qtf_motion_part(mesh, geom)
+    call qtf_motion_load(mesh, geom, KERNEL_DIFF, 1, 2, 1, 1, 2, xi(:, run), f(:, run), ok)
+    call check(error, ok, "a pair of a regular Omega is flagged")
+    if (allocated(error)) return
+    call qtf_finish(mesh, geom, refl)
+    if (run == 1) then
+      call read_qtf_rows(root//trim(files(1)), fr1)
+      call read_qtf_rows(root//trim(files(2)), fr2)
+    end if
+  end do
+  call check(error, maxval(abs(xi(:, 2) - xi(:, 1))) == 0d0 .and. maxval(abs(f(:, 2) - f(:, 1))) == 0d0, &
+             "the second-order motion or its force depends on moment_origin")
+  if (allocated(error)) return
+  do k = 1, 2
+    call read_qtf_rows(root//trim(files(k)), r)
+    if (k == 1) then
+      fr = fr1
+    else
+      fr = fr2
+    end if
+    call check(error, size(r, 2) > 0 .and. all(shape(r) == shape(fr)) .and. all(r(1:5, :) == fr(1:5, :)), &
+               "moment_origin changed the rows of "//trim(files(k)))
+    if (allocated(error)) return
+    dforce = 0d0
+    dmom = 0d0
+    ddiag = 0d0
+    scale_f = maxval(abs(r(8:9, :)))
+    do n = 1, size(r, 2)
+      if (nint(r(5, n)) <= 3) then
+        dforce = max(dforce, maxval(abs(r(8:9, n) - fr(8:9, n))))
+      else if (k == 1 .and. r(1, n) == r(2, n) .and. r(3, n) == r(4, n)) then
+        ddiag = max(ddiag, maxval(abs(r(8:9, n) - fr(8:9, n))))
+      else
+        dmom = max(dmom, maxval(abs(r(8:9, n) - fr(8:9, n))))
+      end if
+    end do
+    print '(4x,a,a,3es11.3)', trim(files(k)), ": largest change of a force, a moment off the diagonal, on it", &
+      dforce, dmom, ddiag
+    call check(error, dforce == 0d0, "moment_origin changed a force of "//trim(files(k)))
+    if (allocated(error)) return
+    call check(error, dmom > 1d-4 * scale_f, "moment_origin did not change the moments of "//trim(files(k)))
+    if (allocated(error)) return
+  end do
+  call remove_files()
+end subroutine test_moment_origin_files
 
 !> Phase 6c, R4: write_motion_row scales a translation by refl (xi over A^2/L) and a rotation by refl^2 (over A^2/L^2), and
 !> conjugates as write_qtf_row; checked against a row scaled by hand, with refl = 2

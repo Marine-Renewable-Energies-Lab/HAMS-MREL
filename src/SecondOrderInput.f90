@@ -190,6 +190,8 @@ CONTAINS
          CALL choose(value, 'differencing', 'source', opts%velocity_method, ios)
       CASE ('waterline_method')
          CALL choose(value, 'extrapolate', 'field', opts%waterline_method, ios)
+      CASE ('moment_origin')
+         CALL choose(value, 'fixed', 'moving', opts%moment_origin, ios)
       CASE ('waterline_offset')
          READ(value, *, IOSTAT=ios) opts%waterline_offset
       CASE ('motion_state')
