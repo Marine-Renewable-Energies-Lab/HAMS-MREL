@@ -87,6 +87,8 @@ program HAMS_MREL
     use PressureElevation
     use PressureElevationMulti
     use FieldOutput_mod
+    use DipoleMesh_mod, only: DNELEM
+    use DipoleAssb
     use HAMS_mod
     use SecondOrderTypes
     use SecondOrderInput
@@ -107,6 +109,8 @@ program HAMS_MREL
     character(len=16) :: body_str, dof_str
     character(len=200) :: so_msg
     integer :: gen_body, gen_dof
+    integer :: ntot_dip                    ! NELEM + DNELEM with dipole panels (DipoleMesh.pnl)
+    complex(8), allocatable :: dip_af(:,:), dip_c(:,:), dip_b(:,:), dip_d(:,:)   ! dipole panels with IRSP = 1
 
     print*
     write(*,'(80A)') ' ------------------------HAMS-MREL (Hydrodynamic Analysis of Marine Structures - Marine Renewable Energies Lab)---------------------'
@@ -199,6 +203,13 @@ program HAMS_MREL
     end if
     write(*,*)
 
+    ! Dipole panels (DipoleMesh.pnl) are single-body only; DIPOLE_SETUP checks the other limits once the hull is read
+    inquire(file=trim(inputdir)//'/DipoleMesh.pnl', exist=gen_file_exists)
+    if (gen_file_exists .and. NBODY /= 1) then
+        print*, ' Error: dipole panels (DipoleMesh.pnl) support one body only.'
+        stop 1
+    end if
+
     if (NBODY == 1) then
         ! Reading the mesh, hydrostatic and water plane mesh files
         open(2, file=trim(inputdir)//"/HullMesh.pnl", status="old", action="read")
@@ -276,6 +287,29 @@ program HAMS_MREL
        
         CALL CalNormals(IRSP,TRIM(inputdir))
 
+        CALL DIPOLE_SETUP(TRIM(inputdir),NSYS,ISOLV,NBODY,so_opts%active,success,so_msg)
+        IF (.NOT.success) THEN
+            PRINT*, TRIM(so_msg)
+            STOP 1
+        ENDIF
+        IF (DNELEM.GT.0) THEN
+            ! Dipole panels (notes/specs/2026-11-24-dipole-panels-design.md): the unknowns are the hull potentials and the
+            ! sheet jumps, NTOT = NELEM + DNELEM, solved by DipoleAssb; the arrays above are resized for them.
+            IF (NFP.GT.0) THEN
+                PRINT*, ' Error: field-point pressures and elevations are not supported with dipole panels (v1).'
+                STOP 1
+            ENDIF
+            ntot_dip=NELEM+DNELEM
+            DEALLOCATE(AMAT,BRMAT,BDMAT,IPIV,MXPOT)
+            ALLOCATE(AMAT(ntot_dip,ntot_dip,1),BRMAT(ntot_dip,6,1),BDMAT(ntot_dip,1),IPIV(ntot_dip,1))
+            ALLOCATE(MXPOT(ntot_dip,7,1))
+            IF (IRSP.EQ.1) THEN
+                ALLOCATE(dip_af(ntot_dip+INELEM,ntot_dip),dip_c(ntot_dip,ntot_dip))
+                ALLOCATE(dip_b(ntot_dip+INELEM,6),dip_d(ntot_dip,6))
+            ENDIF
+            write(*,*) ' Number of dipole panels:        ',DNELEM
+        ENDIF
+
         IF (so_opts%active) CALL so_setup_single(so_opts, trim(inputdir), trim(outputdir))
 
         DO MD1=1,5
@@ -316,7 +350,13 @@ program HAMS_MREL
                 BETA=WVHD(II)*PI/180.0D0
                 WRITE(6,3000) WVHD(II)
          
-                IF (IRSP.EQ.0) THEN
+                IF (DNELEM.GT.0.AND.IRSP.EQ.1) THEN
+                    CALL DIPOLE_ASSB_RHS_IRR(dip_af,dip_b(:,1:1),dip_d(:,1:1),ntot_dip,INELEM,1,2)
+                    CALL DIPOLE_SOLVE(dip_c,IPIV(:,1),dip_d(:,1:1),ntot_dip,1,7)
+                ELSEIF (DNELEM.GT.0) THEN
+                    CALL DIPOLE_ASSB_DBC(BDMAT(:,1),ntot_dip)
+                    CALL DIPOLE_SOLVE(AMAT(:,:,1),IPIV(:,1),BDMAT,ntot_dip,1,7)
+                ELSEIF (IRSP.EQ.0) THEN
                     CALL ASSB_DBC(BDMAT,NELEM,NSYS)
                     CALL DIFFRACTION_SOLVER(AMAT,BDMAT,IPIV,MXPOT,NELEM,NSYS)
                 ELSEIF (IRSP.EQ.1) THEN
@@ -778,7 +818,17 @@ contains
 
     ! The radiation problem of the single body at the wave of CalWaveProperts or SetWaveFromOmega: MXPOT(:,1:6,:)
     subroutine SolveRadiation()
-        IF (IRSP.EQ.0) THEN
+        IF (DNELEM.GT.0.AND.IRSP.EQ.1) THEN
+            CALL CALGREEN_IRR
+            CALL DIPOLE_ASSB_LEFT_IRR(dip_af,dip_c,IPIV(:,1),ntot_dip,INELEM)
+            CALL DIPOLE_ASSB_RHS_IRR(dip_af,dip_b,dip_d,ntot_dip,INELEM,6,1)
+            CALL DIPOLE_SOLVE(dip_c,IPIV(:,1),dip_d,ntot_dip,6,1)
+        ELSEIF (DNELEM.GT.0) THEN
+            CALL CALGREEN
+            CALL DIPOLE_ASSB_LEFT(AMAT(:,:,1),IPIV(:,1),ntot_dip)
+            CALL DIPOLE_ASSB_RBC(BRMAT(:,:,1),ntot_dip)
+            CALL DIPOLE_SOLVE(AMAT(:,:,1),IPIV(:,1),BRMAT(:,:,1),ntot_dip,6,1)
+        ELSEIF (IRSP.EQ.0) THEN
             CALL CALGREEN
             CALL ASSB_LEFT(AMAT,IPIV,NELEM,NSYS)
             CALL ASSB_RBC(BRMAT,NELEM,NSYS)
