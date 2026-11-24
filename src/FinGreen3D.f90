@@ -169,13 +169,13 @@
         REAL*8,INTENT(IN),OPTIONAL:: RR_DECIDE
         LOGICAL,INTENT(IN),OPTIONAL:: FIELD
         LOGICAL PLAIN
-        REAL*8 R,R1,RR,ZPQ,PI4,G,RHP,WK
+        REAL*8 R,R1,RR,ZPQ,PI4,RHP,WK
         REAL*8,INTENT(IN)::ZF,ZP,V,WVN(1:NK),H
         COMPLEX*16,INTENT(OUT):: GRN(3)
         COMPLEX*16 FG(3)
         REAL*8,PARAMETER:: RLIN=0.02D0                                           ! Limit of R/h for LINTON (nu*h: VHLIN), see below
 
-        DATA  G,PI4 /9.807D0,12.56637061435917D0/
+        DATA  PI4 /12.56637061435917D0/
          
 ! Initialize parameters based on the inputs
 !     

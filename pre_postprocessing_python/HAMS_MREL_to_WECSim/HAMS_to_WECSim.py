@@ -57,7 +57,7 @@ class HAMS_to_WAMIT():
         self.n_bodies = int([line[1] for line in lines if 'Number_of_bodies' in line][0])
         f.close()
 
-    def obtain_wavenumber_shallow_water(self, period, depth, g = 9.81):
+    def obtain_wavenumber_shallow_water(self, period, depth, g = 9.80665):
         """
         This function calculates the wave length of regular waves in shallow water
 
@@ -88,7 +88,7 @@ class HAMS_to_WAMIT():
             error = abs(error)
         return k
 
-    def get_frequency_information(self, g = 9.81):
+    def get_frequency_information(self, g = 9.80665):
         f = open(self.hams_input_folder + '/ControlFile.in')
         lines = [line.strip().split() for line in f]
         self.period_print = []
@@ -321,7 +321,7 @@ class HAMS_to_WAMIT():
         self.output.write(f' Logarithmic singularity index:              ILOG =     1\n')
         self.output.write(f' Global Symmetries: none\n')
 
-    def add_hydrostatic_data(self, volumes, hydrostatic, center_of_gravity, center_of_bouyancy, g = 9.81):
+    def add_hydrostatic_data(self, volumes, hydrostatic, center_of_gravity, center_of_bouyancy, g = 9.80665):
         self.output.write(f'\n')
         self.output.write(f' BODY PARAMETERS:\n')
         self.output.write(f'\n')
@@ -423,7 +423,7 @@ class HAMS_to_WAMIT():
         self.output.write(f'\n')
         self.output.write(f'\n')
 
-    def add_excitation_forces_per_frequency(self, omega_number, g = 9.81):
+    def add_excitation_forces_per_frequency(self, omega_number, g = 9.80665):
         results_full_dir = 'Results_frequency_HAMS'
         f = open(results_full_dir + f'/Excitation_frequency_{omega_number - 1}', 'r')
         data = [line.strip().split() for line in f]

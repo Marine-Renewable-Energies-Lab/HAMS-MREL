@@ -24,7 +24,7 @@ dof_2 = 3
 result_folder = r'PB_no_waterplane_results\Hams_format'
 
 rho = 1025 # Density of water
-g = 9.81 # Acceleration due to gravity
+g = 9.80665 # Acceleration due to gravity
 S = 28.27 # Submerged area of Bouy
 c_33 = rho * g * S # Restoring coefficient (Bouyancy force) in heaving. This can also be obtained from the KH.dat file
 # (Hydrostatic stiffness matrix)

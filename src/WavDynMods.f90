@@ -163,7 +163,7 @@
 !
         COMPLEX*16,PUBLIC:: CI
 !
-        DATA G,PI,RHO/9.80665D0,3.141592653589793D0, 1000.D0/                  !G is mostly acceleration due to gravity, PI is the mathematical pi, RHO/9.81 is conversion to N, Actual pi value, 1025 - Default density of sea water 
+        DATA G,PI,RHO/9.80665D0,3.141592653589793D0, 1000.D0/                  !G is the acceleration due to gravity (standard value, the only one used in the code), PI is the mathematical pi, RHO is the water density
         DATA CI/(0.0D0, 1.0D0)/
         DATA RXY  /  1.D0,  1.D0,  1.D0, -1.D0  /
         DATA RX   /  1.D0, -1.D0,  1.D0,  1.D0  /

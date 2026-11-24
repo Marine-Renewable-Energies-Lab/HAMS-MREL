@@ -47,15 +47,16 @@
 !   ii) -w*w/g = Um tan ( Umh ) - The first root is complex representing the pulsating wave with other roots representing evanescent modes of the eigenfunction expansion
 !
 
+      USE Const_mod, ONLY: G                           ! Gravitational acceleration, one value for the whole code
       IMPLICIT NONE
       INTEGER,INTENT(IN):: NRT
       REAL*8,INTENT(IN):: W,H
       REAL*8,INTENT(OUT):: WVN(1:NRT)
       INTEGER I, M
-      REAL*8 T,X,U,Y,DNM,G,PI
+      REAL*8 T,X,U,Y,DNM,PI
       REAL*8 FUN,DFUN,D2FUN,TRIAL,EXX
 
-      DATA G,PI/9.807d0,3.141592653589793d0/
+      DATA PI/3.141592653589793d0/
 
 !------------------------------------------------------------------
 ! I. Calculation of wave number (root of Eq. (i))
