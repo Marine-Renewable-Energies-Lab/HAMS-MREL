@@ -87,6 +87,7 @@ program HAMS_MREL
     use PressureElevation
     use PressureElevationMulti
     use FieldOutput_mod
+    use DipoleMesh_mod, only: DNELEM
     use HAMS_mod
     use SecondOrderTypes
     use SecondOrderInput
@@ -199,6 +200,13 @@ program HAMS_MREL
     end if
     write(*,*)
 
+    ! Dipole panels (DipoleMesh.pnl) are single-body only; DIPOLE_SETUP checks the other limits once the hull is read
+    inquire(file=trim(inputdir)//'/DipoleMesh.pnl', exist=gen_file_exists)
+    if (gen_file_exists .and. NBODY /= 1) then
+        print*, ' Error: dipole panels (DipoleMesh.pnl) support one body only.'
+        stop 1
+    end if
+
     if (NBODY == 1) then
         ! Reading the mesh, hydrostatic and water plane mesh files
         open(2, file=trim(inputdir)//"/HullMesh.pnl", status="old", action="read")
@@ -275,6 +283,16 @@ program HAMS_MREL
         call CreateErrorCheckFile(trim(outputdir), NBODY)
        
         CALL CalNormals(IRSP,TRIM(inputdir))
+
+        CALL DIPOLE_SETUP(TRIM(inputdir),NSYS,ISOLV,NBODY,so_opts%active,success,so_msg)
+        IF (.NOT.success) THEN
+            PRINT*, TRIM(so_msg)
+            STOP 1
+        ENDIF
+        IF (DNELEM.GT.0) THEN
+            PRINT*, ' Error: dipole panels are read and checked, but their solution is not implemented yet.'
+            STOP 1
+        ENDIF
 
         IF (so_opts%active) CALL so_setup_single(so_opts, trim(inputdir), trim(outputdir))
 

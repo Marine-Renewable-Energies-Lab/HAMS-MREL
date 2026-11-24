@@ -133,6 +133,23 @@
         
 !
         END MODULE PanelMesh_mod
+
+!---------------------------------------------------------------------------------------------
+!        Data module for dipole (zero-thickness) panels, read from the optional DipoleMesh.pnl
+!        (notes/specs/2026-11-24-dipole-panels-design.md). DNELEM = 0 and nothing allocated without it.
+!---------------------------------------------------------------------------------------------
+!
+        MODULE DipoleMesh_mod
+!
+        INTEGER,PUBLIC:: DNELEM=0,DNTND=0
+!
+        INTEGER,ALLOCATABLE,PUBLIC:: DNCN(:),DNCON(:,:)                     ! nodes per panel (3 or 4), node numbers
+        REAL*8,ALLOCATABLE,PUBLIC:: DPXYZ(:,:)                               ! node coordinates
+        REAL*8,ALLOCATABLE,PUBLIC:: DPXYZ_C(:,:)                             ! panel centroids
+        REAL*8,ALLOCATABLE,PUBLIC:: DNRM(:,:)                                ! generalised normals nu_D (1:3) and (x - XR) x nu_D (4:6)
+        REAL*8,ALLOCATABLE,PUBLIC:: DDS(:),DPNSZ(:)                          ! panel areas and sizes
+!
+        END MODULE DipoleMesh_mod
         
 !---------------------------------------------------------------------------------------------
 !        Data module for declaring variables of general computation

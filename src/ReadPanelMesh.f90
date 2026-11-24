@@ -26,6 +26,7 @@ MODULE ReadPanelMesh
    USE PanelMesh_mod
    USE Inerfs_mod
    USE NormalProcess
+   USE DipoleMesh_mod
    
    IMPLICIT NONE
 
@@ -35,6 +36,10 @@ MODULE ReadPanelMesh
    PUBLIC :: ReadWTPLMesh
    
    PUBLIC :: CalNormals
+   PUBLIC :: DIPOLE_SETUP
+   PUBLIC :: DIPOLE_CHECK_OPTIONS
+   PUBLIC :: DIPOLE_CHECK_GEOMETRY
+   PUBLIC :: DIPOLE_RELEASE
 
 CONTAINS
 !=======================================================================
@@ -198,6 +203,174 @@ CONTAINS
 
       RETURN
       END SUBROUTINE CalNormals
+
+!=======================================================================
+!SUBROUTINE DIPOLE_SETUP
+!   !   Reads the optional dipole (zero-thickness) panel mesh INPUTDIR/DipoleMesh.pnl, in the format of HullMesh.pnl,
+!   !   and sets its geometry in DipoleMesh_mod (notes/specs/2026-11-24-dipole-panels-design.md, Sec. 6). Call it after
+!   !   CalNormals. Without the file DNELEM stays 0, nothing is allocated and OK is true. With it, the v1 limits
+!   !   (DIPOLE_CHECK_OPTIONS) and the geometry (DIPOLE_CHECK_GEOMETRY) are checked; OK false and MSG say why.
+!   !   The panel normal follows the node order as for hull panels (CalTransNormals); rotations about XR.
+      SUBROUTINE DIPOLE_SETUP(INPUTDIR,NSYS_IN,ISOLV_IN,NBODY_IN,SO_ACTIVE,OK,MSG)
+      IMPLICIT   NONE
+      CHARACTER(LEN=*),INTENT(IN):: INPUTDIR
+      INTEGER,INTENT(IN):: NSYS_IN,ISOLV_IN,NBODY_IN
+      LOGICAL,INTENT(IN):: SO_ACTIVE
+      LOGICAL,INTENT(OUT):: OK
+      CHARACTER(LEN=*),INTENT(OUT):: MSG
+      CHARACTER(LEN=1024):: FNAME
+      LOGICAL:: EXISTS
+      INTEGER:: U,J,IND,IEL,M,KSX,KSY,IOS
+
+      OK=.TRUE.
+      MSG=''
+      FNAME=TRIM(INPUTDIR)//'/DipoleMesh.pnl'
+      INQUIRE(FILE=TRIM(FNAME),EXIST=EXISTS)
+      IF (.NOT.EXISTS) RETURN
+
+      CALL DIPOLE_CHECK_OPTIONS(NSYS_IN,ISOLV_IN,NBODY_IN,SO_ACTIVE,OK,MSG)
+      IF (.NOT.OK) RETURN
+
+      OPEN(NEWUNIT=U,FILE=TRIM(FNAME),STATUS='OLD',ACTION='READ',IOSTAT=IOS)
+      IF (IOS.NE.0) THEN
+       OK=.FALSE.
+       MSG=' Error: cannot open '//TRIM(FNAME)
+       RETURN
+      ENDIF
+      DO J=1,3
+       READ(U,*)
+      ENDDO
+      READ(U,*,IOSTAT=IOS) DNELEM,DNTND,KSX,KSY
+      IF (IOS.NE.0.OR.DNELEM.LE.0.OR.DNTND.LE.0) THEN
+       OK=.FALSE.
+       MSG=' Error: DipoleMesh.pnl: cannot read the numbers of panels and nodes.'
+       DNELEM=0
+       DNTND=0
+       CLOSE(U)
+       RETURN
+      ENDIF
+      IF (KSX.NE.0.OR.KSY.NE.0) THEN
+       OK=.FALSE.
+       MSG=' Error: dipole panels do not support symmetry: set both symmetry flags of DipoleMesh.pnl to 0.'
+       DNELEM=0
+       DNTND=0
+       CLOSE(U)
+       RETURN
+      ENDIF
+      DO J=1,2
+       READ(U,*)
+      ENDDO
+      ALLOCATE(DPXYZ(DNTND,3),DNCN(DNELEM),DNCON(DNELEM,4))
+      ALLOCATE(DPXYZ_C(DNELEM,3),DNRM(DNELEM,6),DDS(DNELEM),DPNSZ(DNELEM))
+      DNCON=0
+      DO IND=1,DNTND
+       READ(U,*) M,DPXYZ(IND,1),DPXYZ(IND,2),DPXYZ(IND,3)
+      ENDDO
+      DO J=1,3
+       READ(U,*)
+      ENDDO
+      DO IEL=1,DNELEM
+       READ(U,*) M,DNCN(IEL),(DNCON(IEL,J),J=1,DNCN(IEL))
+      ENDDO
+      CLOSE(U)
+
+      CALL CalPanelCentre(DPXYZ,DNTND,DNELEM,DNCN,DNCON,DPXYZ_C)
+      CALL CalPanelArea(DPXYZ,DNTND,DNELEM,DNCN,DNCON,DDS)
+      CALL CalPanelChartLength(DPXYZ,DNTND,DNELEM,DNCN,DNCON,DPNSZ)
+      CALL CalTransNormals(DPXYZ,DNTND,DNELEM,DNCN,DNCON,DNRM)
+      CALL CalRotNormals(XR,DPXYZ_C,DNRM,DNELEM)
+
+      IF (ALLOCATED(XYZ_P)) THEN
+       CALL DIPOLE_CHECK_GEOMETRY(DPXYZ,DNTND,DPXYZ_C,DPNSZ,DNELEM,XYZ_P,MIN(NELEM,SIZE(XYZ_P,1)),OK,MSG)
+      ELSE
+       CALL DIPOLE_CHECK_GEOMETRY(DPXYZ,DNTND,DPXYZ_C,DPNSZ,DNELEM,DPXYZ_C,0,OK,MSG)        ! no hull panels to compare
+      ENDIF
+      IF (.NOT.OK) RETURN
+
+      PRINT *,' Dipole panels read from DipoleMesh.pnl:',DNELEM
+      RETURN
+      END SUBROUTINE DIPOLE_SETUP
+
+!=======================================================================
+!SUBROUTINE DIPOLE_CHECK_OPTIONS
+!   !   The v1 limits of dipole panels (plan 2026-11-24-dipole-panels-first-order, Global Constraints): one body, no
+!   !   symmetry, direct LU, first order only. OK false and a one-line MSG naming the option otherwise.
+      SUBROUTINE DIPOLE_CHECK_OPTIONS(NSYS_IN,ISOLV_IN,NBODY_IN,SO_ACTIVE,OK,MSG)
+      IMPLICIT   NONE
+      INTEGER,INTENT(IN):: NSYS_IN,ISOLV_IN,NBODY_IN
+      LOGICAL,INTENT(IN):: SO_ACTIVE
+      LOGICAL,INTENT(OUT):: OK
+      CHARACTER(LEN=*),INTENT(OUT):: MSG
+
+      OK=.FALSE.
+      IF (NBODY_IN.NE.1) THEN
+       MSG=' Error: dipole panels (DipoleMesh.pnl) support one body only.'
+      ELSEIF (NSYS_IN.NE.1) THEN
+       MSG=' Error: dipole panels (DipoleMesh.pnl) do not support symmetry: set the hull symmetry flags to 0.'
+      ELSEIF (ISOLV_IN.NE.1) THEN
+       MSG=' Error: dipole panels (DipoleMesh.pnl) need the direct solver, ISOLV = 1.'
+      ELSEIF (SO_ACTIVE) THEN
+       MSG=' Error: dipole panels (DipoleMesh.pnl) are first order only: remove SecondOrder.in or switch it off.'
+      ELSE
+       OK=.TRUE.
+       MSG=''
+      ENDIF
+
+      RETURN
+      END SUBROUTINE DIPOLE_CHECK_OPTIONS
+
+!=======================================================================
+!SUBROUTINE DIPOLE_CHECK_GEOMETRY
+!   !   Every dipole node below z = 0, and no dipole centroid within 1e-6 panel sizes of a hull centroid (a sheet must
+!   !   not coincide with hull panels). OK false and MSG naming the first offender otherwise.
+      SUBROUTINE DIPOLE_CHECK_GEOMETRY(PXYZ,NND,PC,PSZ,ND,HC,NH,OK,MSG)
+      IMPLICIT   NONE
+      INTEGER,INTENT(IN):: NND,ND,NH
+      REAL*8,INTENT(IN):: PXYZ(:,:),PC(:,:),PSZ(:),HC(:,:)              ! assumed shape: HC may have more rows than NH
+      LOGICAL,INTENT(OUT):: OK
+      CHARACTER(LEN=*),INTENT(OUT):: MSG
+      INTEGER:: I,J
+
+      OK=.TRUE.
+      MSG=''
+      DO I=1,NND
+       IF (PXYZ(I,3).GE.0.D0) THEN
+        OK=.FALSE.
+        WRITE(MSG,'(A,I0,A)') ' Error: dipole node ',I,' is not below z = 0; dipole panels must be fully submerged.'
+        RETURN
+       ENDIF
+      ENDDO
+      DO I=1,ND
+       DO J=1,NH
+        IF (SQRT((PC(I,1)-HC(J,1))**2+(PC(I,2)-HC(J,2))**2+(PC(I,3)-HC(J,3))**2).LT.1.D-6*PSZ(I)) THEN
+         OK=.FALSE.
+         WRITE(MSG,'(A,I0,A,I0,A)') ' Error: dipole panel ',I,' coincides with hull panel ',J,'.'
+         RETURN
+        ENDIF
+       ENDDO
+      ENDDO
+
+      RETURN
+      END SUBROUTINE DIPOLE_CHECK_GEOMETRY
+
+!=======================================================================
+!SUBROUTINE DIPOLE_RELEASE
+!   !   Frees the dipole arrays and sets DNELEM = 0 (end of run, and between tests).
+      SUBROUTINE DIPOLE_RELEASE
+      IMPLICIT   NONE
+
+      IF (ALLOCATED(DPXYZ)) DEALLOCATE(DPXYZ)
+      IF (ALLOCATED(DNCN)) DEALLOCATE(DNCN)
+      IF (ALLOCATED(DNCON)) DEALLOCATE(DNCON)
+      IF (ALLOCATED(DPXYZ_C)) DEALLOCATE(DPXYZ_C)
+      IF (ALLOCATED(DNRM)) DEALLOCATE(DNRM)
+      IF (ALLOCATED(DDS)) DEALLOCATE(DDS)
+      IF (ALLOCATED(DPNSZ)) DEALLOCATE(DPNSZ)
+      DNELEM=0
+      DNTND=0
+
+      RETURN
+      END SUBROUTINE DIPOLE_RELEASE
       
 !-------------------------------------------------------------------------------
     END MODULE ReadPanelMesh
