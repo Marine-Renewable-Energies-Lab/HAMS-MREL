@@ -35,12 +35,17 @@
 !-------------------------------------------------------------------------------
 MODULE DipoleIntgr
 
+   USE INFG3D_Open, ONLY: INFGREEN3D
+   USE FinGreen3D_Open, ONLY: FINGREEN3D
    IMPLICIT NONE
    PRIVATE
 
    PUBLIC :: DIPOLE_SOLID_ANGLE
    PUBLIC :: DIPOLE_GRAD_OMEGA
    PUBLIC :: DIPOLE_RANKINE_NN
+   PUBLIC :: GREEN_WAVE_GRAD
+   PUBLIC :: GREEN_WAVE_FIELD_GRAD
+   PUBLIC :: GREEN_WAVE_NN
 
    REAL*8,PARAMETER:: TOL_PLANE=1.D-12          ! |triple product| / size^3 below which the point is in the triangle's plane
    REAL*8,PARAMETER:: TOL_EDGE=1.D-9            ! distance to an edge line / size below which the edge is skipped
@@ -187,6 +192,94 @@ CONTAINS
       RETURN
       END SUBROUTINE DIPOLE_RANKINE_NN
 
+!-------------------------------------------------------------------------------
+!     The wave part G_w of the Green function and its gradient with respect to the source point XQ, at the field point
+!     XF: G = 1/r + 1/r1 + G_w (design note Sec. 1.2). INFGREEN3D (H < 0) or FINGREEN3D with FLAG = 1 return G_w + 1/r1
+!     (-1/r1 at V = -1); the image is removed here as IMAGE_TERM_EXACT removes it. At V = 0 and V = -1, G_w = 0.
+!     RRD and FIELD are passed to FINGREEN3D (the series choice of a difference stencil, see FINGREEN3D_R).
+!-------------------------------------------------------------------------------
+      SUBROUTINE GREEN_WAVE_GRAD(XF,XQ,V,WVN,NK,H,GW,RRD,FIELD)
+      IMPLICIT NONE
+      INTEGER,INTENT(IN):: NK
+      REAL*8,INTENT(IN):: XF(3),XQ(3),V,WVN(NK),H
+      COMPLEX*16,INTENT(OUT):: GW(4)
+      REAL*8,INTENT(IN),OPTIONAL:: RRD
+      LOGICAL,INTENT(IN),OPTIONAL:: FIELD
+      REAL*8:: R1,SGN
+
+      IF (ABS(V).LT.1.E-8.OR.ABS(V+1.D0).LT.1.E-8) THEN
+       GW=CMPLX(0.D0,0.D0)
+       RETURN
+      ENDIF
+      IF (H.LT.0.D0) THEN
+       CALL INFGREEN3D(XQ(1),XF(1),XQ(2),XF(2),XQ(3),XF(3),V,GW,1)
+      ELSE
+       CALL FINGREEN3D(XQ(1),XF(1),XQ(2),XF(2),XQ(3),XF(3),V,WVN,NK,H,GW,1,RR_DECIDE=RRD,FIELD=FIELD)
+      ENDIF
+      SGN=1.D0
+      R1=SQRT((XQ(1)-XF(1))**2+(XQ(2)-XF(2))**2+(XQ(3)+XF(3))**2)
+      GW(1)=GW(1)-SGN/R1
+      GW(2)=GW(2)+SGN*(XQ(1)-XF(1))/R1**3
+      GW(3)=GW(3)+SGN*(XQ(2)-XF(2))/R1**3
+      GW(4)=GW(4)+SGN*(XQ(3)+XF(3))/R1**3
+
+      RETURN
+      END SUBROUTINE GREEN_WAVE_GRAD
+
+!-------------------------------------------------------------------------------
+!     G_w and its gradient with respect to the field point XF: by the symmetry G(x, xi) = G(xi, x) (Wehausen and Laitone
+!     1960, Sec. 13) this is the source gradient with the two points swapped.
+!-------------------------------------------------------------------------------
+      SUBROUTINE GREEN_WAVE_FIELD_GRAD(XF,XQ,V,WVN,NK,H,GW)
+      IMPLICIT NONE
+      INTEGER,INTENT(IN):: NK
+      REAL*8,INTENT(IN):: XF(3),XQ(3),V,WVN(NK),H
+      COMPLEX*16,INTENT(OUT):: GW(4)
+
+      CALL GREEN_WAVE_GRAD(XQ,XF,V,WVN,NK,H,GW)
+
+      RETURN
+      END SUBROUTINE GREEN_WAVE_FIELD_GRAD
+
+!-------------------------------------------------------------------------------
+!     GNN = d2 G_w / dn_F dn_Q, the mixed second derivative of the wave part along the field normal NF at XF and the
+!     source normal NQ at XQ (design note Sec. 3.2, plan Task 2): central differences in XF along NF of NQ . grad_Q G_w,
+!     step DELTA = 1e-4 min(R1, 1/k0), at least 1e-5 m (R1 the image distance, k0 = V in deep water, WVN(1) otherwise).
+!     In finite depth the stencil takes the series of its centre (RR_DECIDE) and the series without Limes (FIELD).
+!-------------------------------------------------------------------------------
+      SUBROUTINE GREEN_WAVE_NN(XF,NF,XQ,NQ,V,WVN,NK,H,GNN)
+      IMPLICIT NONE
+      INTEGER,INTENT(IN):: NK
+      REAL*8,INTENT(IN):: XF(3),NF(3),XQ(3),NQ(3),V,WVN(NK),H
+      COMPLEX*16,INTENT(OUT):: GNN
+      REAL*8:: R1,RR,K0,DELTA,XP(3),XM(3)
+      COMPLEX*16:: GP(4),GM(4)
+
+      IF (ABS(V).LT.1.E-8.OR.ABS(V+1.D0).LT.1.E-8) THEN
+       GNN=CMPLX(0.D0,0.D0)
+       RETURN
+      ENDIF
+      R1=SQRT((XQ(1)-XF(1))**2+(XQ(2)-XF(2))**2+(XQ(3)+XF(3))**2)
+      RR=SQRT((XQ(1)-XF(1))**2+(XQ(2)-XF(2))**2)
+      IF (H.LT.0.D0) THEN
+       K0=V
+      ELSE
+       K0=WVN(1)
+      ENDIF
+      DELTA=MAX(1.D-4*MIN(R1,1.D0/K0),1.D-5)
+      XP(:)=XF(:)+DELTA*NF(:)
+      XM(:)=XF(:)-DELTA*NF(:)
+      IF (H.LT.0.D0) THEN
+       CALL GREEN_WAVE_GRAD(XP,XQ,V,WVN,NK,H,GP)
+       CALL GREEN_WAVE_GRAD(XM,XQ,V,WVN,NK,H,GM)
+      ELSE
+       CALL GREEN_WAVE_GRAD(XP,XQ,V,WVN,NK,H,GP,RRD=RR,FIELD=.TRUE.)
+       CALL GREEN_WAVE_GRAD(XM,XQ,V,WVN,NK,H,GM,RRD=RR,FIELD=.TRUE.)
+      ENDIF
+      GNN=((GP(2)-GM(2))*NQ(1)+(GP(3)-GM(3))*NQ(2)+(GP(4)-GM(4))*NQ(3))/(2.D0*DELTA)
+
+      RETURN
+      END SUBROUTINE GREEN_WAVE_NN
 !-------------------------------------------------------------------------------
 END MODULE DipoleIntgr
 !*******************************************************************************
