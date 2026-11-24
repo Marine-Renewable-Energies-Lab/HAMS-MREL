@@ -1700,12 +1700,12 @@ Rows ω_1 ≤ 0.188 rad/s, ω_2 ≤ 1.256 rad/s, largest difference in % of max 
 
 **Moment origin.** HAMS-MREL takes the second-order moments about `XR` at its mean, space-fixed position, as WAMIT writes i = 4, 5, 6. Nemoh and HydroStar take them about `XR` moving with the body, as WAMIT writes i = −4, −5, −6 (WAMIT v7.6 manual, sec. 5.2). The two differ by P(ξ × F⁽¹⁾), with F⁽¹⁾ the first-order fluid force. This is zero on the diagonal but not off it. The input key `moment_origin = fixed | moving` (default `fixed`) is on `development_2`.
 
-The numbers below are not a solver run. They are an offline transfer applied to the output of the run on the Nemoh mesh: moving = fixed − P(ξ × F⁽¹⁾), with F⁽¹⁾ built from that run's exciting, radiation and hydrostatic forces and motions. It equals −ω² M ξ to 7e-7, as the body is free with its CG at `XR`. In % of max |HydroStar|, median / largest:
+The `moving` numbers below are an offline transfer applied to the output of the run on the Nemoh mesh: moving = fixed − P(ξ × F⁽¹⁾), with F⁽¹⁾ built from that run's exciting, radiation and hydrostatic forces and motions. It equals −ω² M ξ to 7e-7, as the body is free with its CG at `XR`. A solver run with `moment_origin = moving`, described after the table, gives the same values. In % of max |HydroStar|, median / largest:
 
 | QTF⁻_5 | rows ω_1 ≤ 0.188 | rows ω_1 ≥ 0.314 |
 | :--- | ---: | ---: |
 | HAMS-MREL, `fixed` (as run) | 27.9 / 83.4 | 1.03 / 5.6 |
-| HAMS-MREL, `moving` (offline) | 5.7 / 44.7 | 0.61 / 1.95 |
+| HAMS-MREL, `moving` (offline transfer, confirmed by a solver run) | 5.7 / 44.7 | 0.61 / 1.95 |
 | Nemoh 3.0.3 | 3.0 / 19.9 | 0.08 / 0.79 |
 
 - The moving point removes most of the pitch error. What is left, up to 45 %, is in the rows 0.126 and 0.188 rad/s at high ω_2, the same pattern as the surge rows.
@@ -1713,6 +1713,18 @@ The numbers below are not a solver run. They are an offline transfer applied to 
 - At 0.188 rad/s the pitch mean drift is −0.104 ρg in HydroStar, +0.114 in Nemoh and +0.374 in HAMS-MREL: HydroStar has the opposite sign to both.
 
 ![OC3, difference QTF at (0°, 0°): QTF⁻_1, QTF⁻_3 and QTF⁻_5 in the rows ω_1 = 0.063 and 0.126 rad/s, the mean drift, and the largest error of each row; HydroStar (Nemoh 3.0.3 test case 11, black), Nemoh 3.0.3 (blue dotted), HAMS-MREL on the Nemoh mesh with moment_origin = fixed as run (red) and moving applied offline (orange dashed)](figures/nemoh_paper_oc3_moment_origin.png)
+
+**Solver run with `moment_origin = moving`.** The same case on the Nemoh mesh, run with the code of `development_2` at the merge of `moment_origin`. It has the inputs and control surface of the run on the Nemoh mesh, with three changes:
+- `moment_origin = moving`;
+- 20 frequencies from 0.0628 to 1.256 rad/s;
+- no `qtf_quad_terms` key, which that code does not have.
+
+At and above ν h = 50 (1.256 rad/s here) that code uses Limes for the field values, while the fixed run used the direct eigenfunction sum. The comparison therefore covers the pairs with both frequencies below 1.256 rad/s. Against the offline transfer (fixed − P(ξ × F⁽¹⁾)), in % of max |fixed|:
+- The first-order motions, QTF⁻_1, QTF⁻_3 and their mean drifts are identical to the fixed run.
+- QTF⁻_5 off the diagonal: largest 3.2e-3 % (row ω_1 = 0.063 rad/s) and median 2.7e-5 %, falling to 1e-5 % by row 1.1 rad/s. The transfer itself changes QTF⁻_5 by up to 91 %.
+- The pitch mean drift differs from the fixed run by 2.2e-3 ρg at 0.063 rad/s, decaying to 7e-6 at 1.19 rad/s. This is 0.13 % of the largest mean drift, but 20 % of the small value at 0.063 rad/s (0.0115 → 0.0093 ρg). In absolute size it matches the off-diagonal residual of the same rows, and it is largest where the unmoored surge response is largest. The likely cause is the limited precision of the first-order output files used by the offline transfer; this is not proven.
+
+![OC3, difference QTF⁻_5 at (0°, 0°) in the rows ω_1 = 0.063, 0.126 and 0.188 rad/s, and the largest difference of each row: HAMS-MREL on the Nemoh mesh with moment_origin = fixed as run (red), fixed − P(ξ × F⁽¹⁾) applied offline (orange), and the solver run with moment_origin = moving (black dotted)](figures/nemoh_paper_oc3_moving_run.png)
 
 <a id="unit-and-integration-tests"></a>
 ## 9. Unit and integration tests
@@ -1747,7 +1759,7 @@ The speed-up fixtures add about 4 minutes to the integration suite (the ψ-reuse
 - QTF potential part, `qtf_b2 = control`: run on the free cylinder at 448, 1792 and 4032 panels with the default C, and at 1792 and 4032 panels with C fixed; not at 7168 panels. The damped free body was run at 448 and 1792 panels.
 - OC4 semisubmersible: HAMS against Nemoh at 1224 and 4608 panels, with no reference solution and without the pontoons and braces. The free QTF⁻_5 difference (4.08% and 4.15%) does not fall with the mesh, and the free QTF⁻_3 difference is still 10.12% at 4608 panels; neither was traced to a cause.
 - OC4 against WAMIT: the pairs with a frequency in 0.25 to 0.35 rad/s differ by over 100% in the largest value at both meshes, and the largest values away from them (15.43 / 8.92 / 4.88% at 1224 panels, 24.11 / 18.13 / 5.51% at 4608) do not fall with the mesh. Whether this is the hull model (pontoons and braces), the restoring and damping, or the resonance was not separated.
-- OC3 Hywind against HydroStar: the rows ω_1 ≤ 0.188 rad/s, near the heave resonance at 0.188 rad/s, differ by up to 103 / 60 / 83 % (QTF⁻_1 / QTF⁻_3 / QTF⁻_5), while the later rows agree to medians of 0.25 to 1.7 %. Not a Limes effect and not the bottom edge. Pitch is the moment origin: with `moving` (offline) the largest pitch error falls to 45 %. Surge and heave stay open; there Nemoh and HAMS-MREL differ in the potential part, and neither agrees with HydroStar. At 0.188 rad/s HydroStar's heave mean drift is a third of Nemoh's and HAMS-MREL's (0.097 against 0.29 ρg), and its pitch mean drift has the opposite sign ([OC3](#oc3-hywind-spar-difference-qtf)).
+- OC3 Hywind against HydroStar: the rows ω_1 ≤ 0.188 rad/s, near the heave resonance at 0.188 rad/s, differ by up to 103 / 60 / 83 % (QTF⁻_1 / QTF⁻_3 / QTF⁻_5), while the later rows agree to medians of 0.25 to 1.7 %. Not a Limes effect and not the bottom edge. Pitch is the moment origin: with `moving` (offline transfer, confirmed by a solver run) the largest pitch error falls to 45 %. Surge and heave stay open; there Nemoh and HAMS-MREL differ in the potential part, and neither agrees with HydroStar. At 0.188 rad/s HydroStar's heave mean drift is a third of Nemoh's and HAMS-MREL's (0.097 against 0.29 ρg), and its pitch mean drift has the opposite sign ([OC3](#oc3-hywind-spar-difference-qtf)).
 - SOFTWIND with the free-surface integral: the free-surface part adds 1 to 10 % against the run without it, growing with frequency. Not traced.
 - The direct eigenfunction sum for the field rows above ν h = 50 is on the branch `fix/field-limes-lid-weight`, not merged; OC4 has not been rerun with it.
 - First order, heave-plate cylinder: with a lid, A_33, A_55 and B_55 fall off above 3.3 rad/s, more with more lid panels; the cause is open ([heave plate](#truncated-cylinder-with-a-thin-heave-plate-first-order)).
