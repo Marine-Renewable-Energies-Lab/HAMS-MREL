@@ -40,9 +40,11 @@ program unit_tester
     use test_normal_equations, only : collect_normal_equations
     use test_wamit_scaling, only : collect_wamit_scaling
     use test_qtf_motion, only : collect_qtf_motion
+    use test_dipole_kernel, only : collect_dipole_kernel
 
     implicit none
     integer :: stat, is
+    character(len=64) :: only_suite
     type(testsuite_type), allocatable :: testsuites(:)
     character(len=*), parameter :: fmt = '("#", *(1x, a))'
     integer :: major, minor, patch
@@ -88,12 +90,17 @@ program unit_tester
         new_testsuite("lid_wave_part", collect_lid_wave_part), &
         new_testsuite("normal_equations", collect_normal_equations), &
         new_testsuite("wamit_scaling", collect_wamit_scaling), &
-        new_testsuite("qtf_motion", collect_qtf_motion) &
+        new_testsuite("qtf_motion", collect_qtf_motion), &
+        new_testsuite("dipole_kernel", collect_dipole_kernel) &
     ]
 
     stat = 0
 
+    ! An optional first argument names the one suite to run (while iterating); without it every suite runs.
+    only_suite = ''
+    if (command_argument_count() >= 1) call get_command_argument(1, only_suite)
     do is = 1, size(testsuites)
+        if (len_trim(only_suite) > 0 .and. testsuites(is)%name /= trim(only_suite)) cycle
         write(error_unit, fmt) "Testing:", testsuites(is)%name
         ! These suites share module state (HMAT_READY, the preconditioner, the mesh arrays, WaveDyn_mod globals, the QTF store),
         ! so they can't run in parallel.
