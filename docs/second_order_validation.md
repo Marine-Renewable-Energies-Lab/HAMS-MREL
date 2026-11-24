@@ -1698,7 +1698,7 @@ Rows ω_1 ≤ 0.188 rad/s, ω_2 ≤ 1.256 rad/s, largest difference in % of max 
 
 ![OC3, difference QTF at (0°, 0°), rows ω_1 = 0.063, 0.126 and 0.188 rad/s and the largest error of each row: HydroStar (Nemoh 3.0.3 test case 11, black), Nemoh 3.0.3 (blue dotted), HAMS-MREL on the Nemoh mesh (red dashed) and on the bottom-edge meshes e0, e1, e2 (green, orange, purple); moments about the space-fixed XR](figures/nemoh_paper_oc3_edge.png)
 
-**Moment origin.** HAMS-MREL takes the second-order moments about `XR` at its mean, space-fixed position, as WAMIT writes i = 4, 5, 6. Nemoh and HydroStar take them about `XR` moving with the body, as WAMIT writes i = −4, −5, −6 (WAMIT v7.6 manual, sec. 5.2). The two differ by P(ξ × F⁽¹⁾), with F⁽¹⁾ the first-order fluid force. This is zero on the diagonal but not off it. The input key `moment_origin = fixed | moving` (default `fixed`) is on the branch `fix/moment-moving-reference`, not yet merged.
+**Moment origin.** HAMS-MREL takes the second-order moments about `XR` at its mean, space-fixed position, as WAMIT writes i = 4, 5, 6. Nemoh and HydroStar take them about `XR` moving with the body, as WAMIT writes i = −4, −5, −6 (WAMIT v7.6 manual, sec. 5.2). The two differ by P(ξ × F⁽¹⁾), with F⁽¹⁾ the first-order fluid force. This is zero on the diagonal but not off it. The input key `moment_origin = fixed | moving` (default `fixed`) is on `development_2`.
 
 The numbers below are not a solver run. They are an offline transfer applied to the output of the run on the Nemoh mesh: moving = fixed − P(ξ × F⁽¹⁾), with F⁽¹⁾ built from that run's exciting, radiation and hydrostatic forces and motions. It equals −ω² M ξ to 7e-7, as the body is free with its CG at `XR`. In % of max |HydroStar|, median / largest:
 
