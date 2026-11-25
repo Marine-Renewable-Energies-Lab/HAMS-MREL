@@ -1,0 +1,7 @@
+! Mean drift and difference-frequency QTF of two freely floating cylinders, 30 m apart
+mean_drift = 1
+drift_methods = far near
+motion_state = free
+qtf = 1
+qtf_terms = body
+write_terms = 1

@@ -1,0 +1,12 @@
+! Difference- and sum-frequency QTFs of a freely floating vertical cylinder in finite depth,
+! by the indirect and the direct method, with the second-order motion and the field at two points
+mean_drift = 1
+drift_methods = far near
+motion_state = free
+qtf = 3
+qtf_terms = full
+qtf_direct = 1
+qtf_motion = 1
+moment_origin = moving
+qtf_field = 1
+write_terms = 1
