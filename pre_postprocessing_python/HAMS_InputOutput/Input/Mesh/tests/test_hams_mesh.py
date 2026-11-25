@@ -156,15 +156,30 @@ def _area(points):
     return 0.5 * np.linalg.norm(s)
 
 
-def test_disc_and_plate(tmp_path):
-    body = hm.disc(1.0, 50.0, ntheta=32, nrings=12, rim_grading=1.0)
-    h, _, _ = write_and_read(body, tmp_path / "disc")
-    assert len(body.mesh.dipoles) == 384 and not body.mesh.panels
-    assert sum(_area(body.mesh.points(p)) for p in body.mesh.dipoles) == pytest.approx(polygon_area(32, 1.0), rel=1e-10)
-    assert h["volume"] == 0.0 and abs(h["mass_matrix"]).max() == 0.0
-    body = hm.plate(4.0, 2.0, 10.0, panel_size=0.25, rim_grading=0.5)
-    write_and_read(body, tmp_path / "plate")
-    assert sum(_area(body.mesh.points(p)) for p in body.mesh.dipoles) == pytest.approx(8.0, rel=1e-12)
+def test_disc_and_plate_on_a_hull(tmp_path):
+    """Sheets are added to a hull body; they add no volume, so the hydrostatics stay those of the hull."""
+    hull = hm.cylinder(3.0, 6.0, panel_size=0.5)
+    alone, _, _ = write_and_read(hull, tmp_path / "hull")
+    sheet_disc = hm.disc(2.0, 12.0, ntheta=32, nrings=12, rim_grading=1.0)
+    sheet_plate = hm.plate(4.0, 2.0, 10.0, panel_size=0.25, rim_grading=0.5, centre=(8.0, 0.0))
+    assert sum(_area(sheet_disc.mesh.points(p)) for p in sheet_disc.mesh.dipoles) == pytest.approx(
+        polygon_area(32, 2.0), rel=1e-10)
+    assert sum(_area(sheet_plate.mesh.points(p)) for p in sheet_plate.mesh.dipoles) == pytest.approx(8.0, rel=1e-12)
+    body = hm.add_sheets(hm.cylinder(3.0, 6.0, panel_size=0.5), sheet_disc, sheet_plate)
+    assert len(body.mesh.dipoles) == 384 + 16 * 8 and len(body.mesh.panels) == len(hull.mesh.panels)
+    h, _, _ = write_and_read(body, tmp_path / "both")
+    assert np.allclose(h["mass_matrix"], alone["mass_matrix"]) and np.allclose(h["restoring"], alone["restoring"])
+    xs = [body.mesh.nodes[i - 1][0] for p in body.mesh.dipoles[384:] for i in p]
+    assert min(xs) == pytest.approx(6.0) and max(xs) == pytest.approx(10.0)
+    h, _, _ = write_and_read(body, tmp_path / "mass", mass=5e4, cog=(0.0, 0.0, -4.0), gyration=(2.0, 2.0, 1.0))
+    assert h["mass"] == 5e4 and h["restoring"][2, 2] == pytest.approx(alone["restoring"][2, 2])
+
+
+def test_sheet_alone_is_refused(tmp_path):
+    for sheet in (hm.disc(1.0, 50.0, panel_size=0.2), hm.plate(4.0, 2.0, 10.0, panel_size=0.5)):
+        with pytest.raises(ValueError, match="NELEM = 0"):
+            hm.write_input(sheet, str(tmp_path))
+        assert not os.listdir(str(tmp_path))
 
 
 def test_dipole_checks():
@@ -254,3 +269,9 @@ def test_command_line(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "dipole panels" in out and "ISOLV = 1" in out
     assert os.path.exists(os.path.join(str(tmp_path), "HullMesh.pnl"))
+    hm.main(["cylinder", "--radius", "3", "--draft", "6", "--panel-size", "0.5", "--disc", "2", "12",
+             "--plate", "4", "2", "10", "8", "0", "--out-dir", str(tmp_path / "sheets")])
+    _, panels, dipoles, _ = hm.read_pnl(os.path.join(str(tmp_path / "sheets"), "HullMesh.pnl"))
+    assert panels and len(dipoles) > 0
+    with pytest.raises(SystemExit):
+        hm.main(["disc", "--radius", "1", "--depth", "50"])

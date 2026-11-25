@@ -1,7 +1,7 @@
 """
 Simple geometric meshes for HAMS-MREL: single bodies, arrays of bodies, and dipole (zero-thickness) sheets.
 
-Shapes (each is a function returning a Body, and a subcommand of the command line):
+Hull shapes (each is a function returning a Body, and a subcommand of the command line):
     cylinder      vertical surface-piercing cylinder (wall and flat bottom)
     box           rectangular surface-piercing box
     hemisphere    lower half of a sphere, cut by the free surface
@@ -9,8 +9,11 @@ Shapes (each is a function returning a Body, and a subcommand of the command lin
     spar          surface of revolution of a polyline profile: a truncated cone, a stepped or tapered spar
     cone          shortcut of spar: a truncated cone from a top radius to a bottom radius
     heave-plate   cylinder column with a dipole sheet: the annulus of a plate at the column bottom
-    disc          free circular dipole sheet (no hull)
-    plate         free rectangular dipole sheet (no hull)
+Dipole sheets, added to a hull body (add_sheets, or --disc and --plate on any subcommand, repeatable):
+    disc          circular dipole sheet
+    plate         rectangular dipole sheet
+A sheet cannot be written alone: HAMS stops at input when HullMesh.pnl has no hull panels (NELEM = 0). The sheets add no
+volume, so Hydrostatic.in comes from the hull, or from --mass, --cog and --gyration.
 
 Fineness: set --panel-size (a target panel edge, from which the panel counts follow) or the counts of each shape
 (--ntheta, --nz, --nr, ...). Counts override the panel size. Two gradings move the nodes towards the edges, between
@@ -49,6 +52,7 @@ Examples:
     python hams_mesh.py spar --profile 3.25 0 3.25 -4 4.7 -12 4.7 -120 --panel-size 1.5 --edge-grading 0.5
     python hams_mesh.py heave-plate --column-radius 10 --draft 9.9 --plate-radius 15 --panel-size 0.75 --edge-grading 1
     python hams_mesh.py cylinder --radius 2 --draft 4 --panel-size 0.4 --at 0 0 --at 20 0 --at 10 15 30 --lid
+    python hams_mesh.py cylinder --radius 3 --draft 6 --panel-size 0.5 --disc 2 12 --plate 4 2 10 8 0 --edge-grading 1
 
 Constants as Const_mod in src/WavDynMods.f90: rho = 1000 kg/m^3, g = 9.80665 m/s^2.
 """
@@ -337,30 +341,43 @@ def heave_plate(column_radius, draft, plate_radius, panel_size=None, ntheta=None
     return body
 
 
-def disc(radius, depth, panel_size=None, ntheta=None, nrings=None, rim_grading=0.0):
-    """Free circular dipole sheet of the given radius at z = -depth, rings graded towards the rim, triangles at the
-    centre. No hull."""
+def disc(radius, depth, panel_size=None, ntheta=None, nrings=None, rim_grading=0.0, centre=(0.0, 0.0)):
+    """Circular dipole sheet of the given radius at z = -depth, centred on (x, y) = centre, rings graded towards the rim,
+    triangles at the centre. A sheet alone cannot be written: add it to a hull body with add_sheets."""
     nt = count_around(radius, panel_size, ntheta)
     n = count(radius, panel_size, nrings)
     mesh = Mesh()
     revolve(mesh, [(radius * u, -depth) for u in spacing(n, 0.0, rim_grading)][::-1], nt, dipole=True)
+    mesh.nodes = [(x + centre[0], y + centre[1], z) for x, y, z in mesh.nodes]
     body = Body(mesh, "disc", None, None, nt)
-    body.exact = {"volume": 0.0, "waterplane": 0.0, "sheet_area": math.pi * radius ** 2,
+    body.exact = {"sheet_area": math.pi * radius ** 2,
                   "sheet_area_polygon": 0.5 * nt * radius ** 2 * math.sin(2.0 * math.pi / nt)}
     return body
 
 
-def plate(length, width, depth, panel_size=None, nx=None, ny=None, rim_grading=0.0):
-    """Free rectangular dipole sheet at z = -depth, graded towards its four edges. No hull."""
-    xs = [-length / 2 + length * u for u in spacing(count(length, panel_size, nx), rim_grading, rim_grading)]
-    ys = [-width / 2 + width * u for u in spacing(count(width, panel_size, ny), rim_grading, rim_grading)]
+def plate(length, width, depth, panel_size=None, nx=None, ny=None, rim_grading=0.0, centre=(0.0, 0.0)):
+    """Rectangular dipole sheet at z = -depth, centred on (x, y) = centre, graded towards its four edges. A sheet alone
+    cannot be written: add it to a hull body with add_sheets."""
+    xs = [centre[0] - length / 2 + length * u for u in spacing(count(length, panel_size, nx), rim_grading, rim_grading)]
+    ys = [centre[1] - width / 2 + width * u for u in spacing(count(width, panel_size, ny), rim_grading, rim_grading)]
     mesh = Mesh()
     for ix in range(len(xs) - 1):
         for iy in range(len(ys) - 1):
             mesh.add([(xs[ix], ys[iy], -depth), (xs[ix + 1], ys[iy], -depth), (xs[ix + 1], ys[iy + 1], -depth),
                       (xs[ix], ys[iy + 1], -depth)], dipole=True)
     body = Body(mesh, "plate", None, None)
-    body.exact = {"volume": 0.0, "waterplane": 0.0, "sheet_area": length * width, "sheet_area_polygon": length * width}
+    body.exact = {"sheet_area": length * width, "sheet_area_polygon": length * width}
+    return body
+
+
+def add_sheets(body, *sheets):
+    """Add the dipole panels of the sheets (disc, plate, or another body's dipoles) to the body, in its frame. Nodes that
+    coincide with the body's nodes are shared. The sheets add no volume, so the hydrostatics stay those of the hull.
+    Returns the body."""
+    for sheet in sheets:
+        for panel in sheet.mesh.dipoles:
+            body.mesh.add(sheet.mesh.points(panel), dipole=True)
+        body.name += " + " + sheet.name
     return body
 
 
@@ -809,6 +826,10 @@ def write_input(body, out_dir=".", positions=((0.0, 0.0, 0.0),), irsp=False, cen
     Returns the hydrostatics of each body, the ControlFile.in lines and the warnings."""
     mesh = body.mesh
     positions = [(round(x, 3), round(y, 3), round(a, 3)) for x, y, a in positions]
+    if not mesh.panels:
+        raise ValueError("the %s has no hull panels: HAMS stops at input when HullMesh.pnl has NELEM = 0, so a dipole "
+                         "sheet cannot be written alone. Add it to a hull body (add_sheets, or --disc / --plate on a "
+                         "hull subcommand)" % body.name)
     if mesh.dipoles and len(positions) > 1:
         raise ValueError("dipole panels support one body only")
     boundary = check_hull(mesh)
@@ -900,6 +921,23 @@ def plot(bodies, path, titles=None):
 
 
 def build(args):
+    """The hull of the subcommand, with the sheets of --disc and --plate added."""
+    body = build_hull(args)
+    sheets = []
+    for values in args.disc or []:
+        if len(values) not in (2, 4):
+            raise SystemExit("--disc takes RADIUS DEPTH or RADIUS DEPTH X Y")
+        sheets.append(disc(values[0], values[1], args.panel_size, rim_grading=args.edge_grading,
+                           centre=tuple(values[2:4]) or (0.0, 0.0)))
+    for values in args.plate or []:
+        if len(values) not in (3, 5):
+            raise SystemExit("--plate takes LENGTH WIDTH DEPTH or LENGTH WIDTH DEPTH X Y")
+        sheets.append(plate(values[0], values[1], values[2], args.panel_size, rim_grading=args.edge_grading,
+                            centre=tuple(values[3:5]) or (0.0, 0.0)))
+    return add_sheets(body, *sheets)
+
+
+def build_hull(args):
     common = dict(panel_size=args.panel_size)
     wl, edge = args.waterline_grading, args.edge_grading
     if args.shape == "cylinder":
@@ -920,12 +958,8 @@ def build(args):
     if args.shape == "cone":
         return cone(args.top_radius, args.bottom_radius, args.draft, ntheta=args.ntheta, nz=args.nz, nr=args.nr,
                     waterline_grading=wl, edge_grading=edge, **common)
-    if args.shape == "heave-plate":
-        return heave_plate(args.column_radius, args.draft, args.plate_radius, ntheta=args.ntheta, nz=args.nz,
-                           nr=args.nr, nplate=args.nplate, waterline_grading=wl, edge_grading=edge, **common)
-    if args.shape == "disc":
-        return disc(args.radius, args.depth, ntheta=args.ntheta, nrings=args.nrings, rim_grading=edge, **common)
-    return plate(args.length, args.width, args.depth, nx=args.nx, ny=args.ny, rim_grading=edge, **common)
+    return heave_plate(args.column_radius, args.draft, args.plate_radius, ntheta=args.ntheta, nz=args.nz,
+                       nr=args.nr, nplate=args.nplate, waterline_grading=wl, edge_grading=edge, **common)
 
 
 def parser():
@@ -955,6 +989,11 @@ def parser():
         s.add_argument("--gyration", type=float, nargs=3, metavar=("RX", "RY", "RZ"),
                        help="radii of gyration about the centre of gravity [m]")
         s.add_argument("--plot", metavar="PNG", help="write a picture of the mesh")
+        s.add_argument("--disc", nargs="+", type=float, action="append", metavar="R DEPTH [X Y]",
+                       help="add a circular dipole sheet of radius R at z = -DEPTH, centred on (X, Y) (default the "
+                            "axis), at the panel size, graded to its rim by --edge-grading; repeat for more")
+        s.add_argument("--plate", nargs="+", type=float, action="append", metavar="L W DEPTH [X Y]",
+                       help="add a rectangular dipole sheet L x W at z = -DEPTH, centred on (X, Y); repeat for more")
         return s
 
     s = shape("cylinder", "vertical surface-piercing cylinder")
@@ -998,17 +1037,6 @@ def parser():
     s.add_argument("--nz", type=int)
     s.add_argument("--nr", type=int)
     s.add_argument("--nplate", type=int, help="rings on the annulus")
-    s = shape("disc", "free circular dipole sheet", waterline=False)
-    s.add_argument("--radius", type=float, required=True)
-    s.add_argument("--depth", type=float, required=True)
-    s.add_argument("--ntheta", type=int)
-    s.add_argument("--nrings", type=int)
-    s = shape("plate", "free rectangular dipole sheet", waterline=False)
-    s.add_argument("--length", type=float, required=True)
-    s.add_argument("--width", type=float, required=True)
-    s.add_argument("--depth", type=float, required=True)
-    s.add_argument("--nx", type=int)
-    s.add_argument("--ny", type=int)
     return p
 
 
