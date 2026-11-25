@@ -12,13 +12,14 @@ module test_green_hessian
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use DipoleIntgr, only : GREEN_WAVE_GRAD, GREEN_WAVE_FIELD_GRAD, GREEN_WAVE_NN
   use FinGrnExtSubs, only : IK01A, JY01B
+  use Const_mod, only : GRAV => G   ! the g of DISPERSION
 
   implicit none
   private
   public :: collect_green_hessian
 
   integer, parameter :: NK = 200
-  real(8), parameter :: GRAV = 9.807d0, PI = 3.141592653589793d0
+  real(8), parameter :: PI = 3.141592653589793d0
   complex(8), parameter :: CI = (0d0, 1d0)
 
 contains
@@ -246,7 +247,7 @@ contains
     c = c - [g, gr, grr, grz, grq, gzq]
   end subroutine finite_reference
 
-  !> The roots of the dispersion relation from HAMS's DISPERSION (g = 9.807 there, as in test_fingreen3d).
+  !> The roots of the dispersion relation from HAMS's DISPERSION (Const_mod's G, as in test_fingreen3d).
   subroutine DISPERSION_LOCAL(wvn, nu, hh)
     real(8), intent(out) :: wvn(NK)
     real(8), intent(in) :: nu, hh

@@ -8,6 +8,7 @@ module test_partial_waves
   use SecondOrderTypes, only : panel_mesh, first_order_state, cs_points, cs_fields, CS_WALL, CS_LINE, CS_FREE
   use FirstOrderState, only : wave_gravity
   use FieldVelocity, only : fields_green
+  use Const_mod, only : g_dispersion => G   ! the g of DISPERSION (WavDynSubs.f90), which fills WVN
   use PartialWaves, only : pw_set, pw_radial, pw_sample_points, pw_decompose, pw_eval_surface, pw_eval_point, pw_radial_at, &
                            pw_bessel_k, pw_evanescent_from_wvn, pw_bessel_k_scaled, pw_bessel_k_scaled_c, pw_hankel_scaled, &
                            pw_green_modes, pw_green_mmax, pw_source_modes
@@ -22,8 +23,6 @@ module test_partial_waves
 
   real(8), parameter :: pi = 3.14159265358979323846d0
   complex(8), parameter :: ci = (0d0, 1d0)
-  ! The g of DISPERSION (WavDynSubs.f90), which fills WVN
-  real(8), parameter :: g_dispersion = 9.807d0
 
   ! K_m(x), m = 0..10 (rows), x = 0.1, 1, 10 (columns). Generated with mpmath 1.2.1 at 30 digits:
   !   python -I -c "import mpmath as mp; mp.mp.dps=30; [print([mp.nstr(mp.besselk(m, mp.mpf(x)), 17) for m in range(11)])

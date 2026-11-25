@@ -9,3 +9,7 @@ largest number on its line. A case without `DipoleMesh.pnl` must not be changed 
 
 If a later change of the solver changes these outputs on purpose, regenerate them from a build of that change, and say
 so in its commit.
+
+Regenerated at the merge of main's single g into `development_2` (DISPERSION from g = 9.807 to `Const_mod`'s 9.80665):
+the values moved by 2e-5 to 5e-5 of the largest value of each kind (forces or moments; AmssDamp.1 and
+PressureElevation.6p 2.2e-5 and 2.5e-5), the size of the change of g (3.5e-5).

@@ -123,14 +123,14 @@ contains
     real(8), intent(in) :: r_over_h
     type(error_type), allocatable, intent(out) :: error
     integer, parameter :: nk_local = 200
-    real(8), parameter :: depth = 50d0, om = 0.4d0, g_disp = 9.807d0, delta = 1d-3, zq = -3d0, zs = -8d0
+    real(8), parameter :: depth = 50d0, om = 0.4d0, delta = 1d-3, zq = -3d0, zs = -8d0
     real(8), parameter :: series_limit = 1d-3
     real(8) :: wvn_local(nk_local), nu, r0, rel_one, rel_free
     complex(8) :: g0(4), gp(4), gm(4), one, free
     character(len=160) :: info
     external :: DISPERSION
 
-    nu = om**2/g_disp
+    nu = om**2/grav
     call DISPERSION(wvn_local, nk_local, om, depth)
     r0 = r_over_h*depth
     call FINGREEN3D(r0, 0d0, 0d0, 0d0, zq, zs, nu, wvn_local, nk_local, depth, g0, 1, FIELD=.true.)
@@ -163,7 +163,7 @@ contains
   subroutine test_green_smooth_in_z(error)
     type(error_type), allocatable, intent(out) :: error
     integer, parameter :: nk_local = 200, nscan = 2000
-    real(8), parameter :: depth = 50d0, om = 0.4d0, g_disp = 9.807d0, half_width = 0.01d0, smooth_limit = 1d-8
+    real(8), parameter :: depth = 50d0, om = 0.4d0, half_width = 0.01d0, smooth_limit = 1d-8
     real(8), parameter :: q(3) = [-4.5d0, 0.5d0, -5d0], p0(3) = [-1.702359704562689d0, -0.7631552924796104d0, -10d0]
     real(8) :: wvn_local(nk_local), nu, rr, z, worst_field, worst_default
     complex(8) :: g(4), gz_field(0:nscan), gz_default(0:nscan)
@@ -171,7 +171,7 @@ contains
     character(len=160) :: info
     external :: DISPERSION
 
-    nu = om**2/g_disp
+    nu = om**2/grav
     call DISPERSION(wvn_local, nk_local, om, depth)
     rr = sqrt((q(1) - p0(1))**2 + (q(2) - p0(2))**2)
     do k = 0, nscan
@@ -204,7 +204,9 @@ contains
     real(8), parameter :: depth = 50d0
     ! Panel q and field point p of each sample, and Re, Im of GRN(1:4) from the code before FIELD, built with the fpm flags.
     ! Samples 1, 4 and 5 were regenerated after the merge of main (LINTON in units of the depth, 18a3e9c, and the large-kh
-    ! fix, d2e1066), which changed them by round-off only (at most 1.4e-17, 1.5e-16 relative).
+    ! fix, d2e1066), which changed them by round-off only (at most 1.4e-17, 1.5e-16 relative). All five were printed again
+    ! at the merge of main's single g (DISPERSION from g = 9.807 to Const_mod's 9.80665; nu and WVN follow it): samples
+    ! 1, 2, 4, 5 moved by 1.3e-5 to 2.1e-5 of their largest value, sample 3, on the Limes spike, by 1.4e-2.
     ! The values come from ifort on Windows. Another compiler rounds differently (ifx on Linux moved sample 1 by 1.4e-17,
     ! one ulp), so each sample is compared to 1e-12 of its largest value, which still catches any change of the route.
     ! Sample 3 sits on a Limes spike, which amplifies a 1-ulp change of the input, so it gets 1e-8.
@@ -213,16 +215,16 @@ contains
     real(8), parameter :: p(3, 5) = reshape([0d0, 0d0, -8d0, 0d0, 0d0, -8d0, &
       -1.702359704562689d0, -0.7631552924796104d0, -10.00422d0, 0d0, 0d0, -8d0, 0d0, 0d0, -8d0], [3, 5])
     real(8), parameter :: before(8, 5) = reshape([ &
-      9.25266101066841012d-002, 9.29525227078842192d-002, -4.56357227742748713d-004, -1.01637852617775684d-005, &
-      0.00000000000000000d+000, 0.00000000000000000d+000, 1.12007766434191365d-002, 1.46638253745496705d-003, &
-      9.16220409919376588d-002, 9.29321962493177972d-002, -1.33919685829752091d-003, -3.04880218954885826d-005, &
-      0.00000000000000000d+000, 0.00000000000000000d+000, 1.09740218534911289d-002, 1.46606187521771065d-003, &
-      5.69473667994984528d-002, 8.74261263947343076d-002, 1.03443110685737553d-003, 5.35149698859913403d-005, &
-      -4.67053298261200503d-004, -2.41624048483368242d-005, 7.36706485289481683d-003, 1.34518738883298498d-003, &
-      4.30195128038764821d-002, 9.06822078938584741d-002, -3.54496613176616838d-003, -3.01182276470973818d-004, &
-      0.00000000000000000d+000, 0.00000000000000000d+000, 3.26219296111452273d-003, 1.43056694148373112d-003, &
-      -1.51596673435841420d-002, 7.73903715617725030d-002, -1.55335636902876207d-003, -7.44031633373910860d-004, &
-      0.00000000000000000d+000, 0.00000000000000000d+000, 2.90773069836218977d-004, 1.22088014525407779d-003 &
+      9.25264366394718263d-002, 9.29538344952605539d-002, -4.56360399173397788d-004, -1.01644045555832653d-005, &
+      0.00000000000000000d+000, 0.00000000000000000d+000, 1.12008816639683709d-002, 1.46645683568046720d-003, &
+      9.16218612532993526d-002, 9.29335067982263174d-002, -1.33920586229733921d-003, -3.04898794176775877d-005, &
+      0.00000000000000000d+000, 0.00000000000000000d+000, 1.09741257878621240d-002, 1.46613614218319126d-003, &
+      5.69468088384112586d-002, 8.74271580519864755d-002, 1.03442937857891183d-003, 5.35181081478406024d-005, &
+      -4.67052517930686972d-004, -2.41638217967810318d-005, 6.12226915489909318d-003, 1.34525322817440540d-003, &
+      4.30188572943009731d-002, 9.06833820012506592d-002, -3.54501271587411362d-003, -3.01200453947132816d-004, &
+      0.00000000000000000d+000, 0.00000000000000000d+000, 3.26223975689597222d-003, 1.43063775841476980d-003, &
+      -1.51613020232162360d-002, 7.73907671433062688d-002, -1.55338333519347907d-003, -7.44073828590884750d-004, &
+      0.00000000000000000d+000, 0.00000000000000000d+000, 2.90752925694489619d-004, 1.22093101497220444d-003 &
       ], [8, 5])
     complex(8) :: g(4)
     real(8) :: now(8), tol
@@ -234,6 +236,7 @@ contains
       now = [(real(g(m), 8), aimag(g(m)), m = 1, 4)]
       write (info, '(a,i0,a,8es9.1)') "default route changed at sample ", k, ": ", now - before(:, k)
       tol = merge(1d-8, 1d-12, k == 3)*maxval(abs(before(:, k)))
+      if (.not. all(abs(now - before(:, k)) <= tol)) print '(4x,a,i0,a,4(/,4x,2es25.17e3))', "sample ", k, " now:", now
       call check(error, all(abs(now - before(:, k)) <= tol), trim(info))
       if (allocated(error)) return
     end do
@@ -755,15 +758,14 @@ contains
 
   ! ---------------------------------------------------------------------------------------------- deep-water rows
 
-  !> Sets the wave of k0 h = k0h at depth: omega from k0 tanh(k0 h) = omega^2/g with the g of DISPERSION, then V, WVN and
-  !> WK as the solver sets them (set_wave).
+  !> Sets the wave of k0 h = k0h at depth: omega from k0 tanh(k0 h) = omega^2/g with the g of DISPERSION (Const_mod's G),
+  !> then V, WVN and WK as the solver sets them (set_wave).
   subroutine set_k0h(k0h, depth)
     real(8), intent(in) :: k0h, depth
-    real(8), parameter :: g_disp = 9.807d0   ! as DISPERSION (WavDynSubs.f90)
     external :: DISPERSION
 
     call set_wave(depth)
-    W1 = sqrt(g_disp*k0h/depth*tanh(k0h))
+    W1 = sqrt(grav*k0h/depth*tanh(k0h))
     TP = 2d0*pi/W1
     V = W1**2/grav
     call DISPERSION(WVN, NK, W1, H)
@@ -1031,14 +1033,14 @@ contains
   subroutine test_deep_beats_limes(error)
     type(error_type), allocatable, intent(out) :: error
     integer, parameter :: nk_local = 200
-    real(8), parameter :: depth = 200d0, om = 1.6d0, g_disp = 9.807d0
+    real(8), parameter :: depth = 200d0, om = 1.6d0
     real(8), parameter :: xq(3) = [6.6751964129d0, 12.9243372398d0, -0.9820344548d0]
     real(8), parameter :: xf(3) = [6.4684960951d0, 13.1331966846d0, 0d0]
     real(8) :: wvn_local(nk_local), nu, e_fin, e_inf
     character(len=160) :: info
     external :: DISPERSION
 
-    nu = om**2/g_disp
+    nu = om**2/grav
     call DISPERSION(wvn_local, nk_local, om, depth)
     call pair_errors(xq, xf, nu, wvn_local, nk_local, depth, e_fin, e_inf)
     print '(4x,a,f7.5,a,f6.2,a,es10.3,a,es10.3)', "against the direct sum at R/h = ", &

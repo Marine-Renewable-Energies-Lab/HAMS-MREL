@@ -553,7 +553,8 @@ subroutine test_matches_hams_vinp_dinp(error)
   end do
 end subroutine test_matches_hams_vinp_dinp
 
-!> With k from the dispersion relation at g = 9.807, as DISPERSION gives it, the incident field of the state is still
+!> With k from the dispersion relation at another g (9.807, the g DISPERSION had before it took Const_mod's G), the
+!> incident field of the state is still
 !> exactly that of VINP and DINP, and state%g stays the given g.
 subroutine test_build_state_uses_solver_wave(error)
   use WaveDyn_mod, only : H, AMP, V, W1, WK
