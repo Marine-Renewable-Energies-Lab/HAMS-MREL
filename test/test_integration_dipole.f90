@@ -34,7 +34,8 @@ contains
                      new_unittest("ndipole_zero_bit_identical", test_ndipole_zero), &
                      new_unittest("column_plate_end_to_end", test_plate), &
                      new_unittest("column_plate_one_file_layout", test_layouts), &
-                     new_unittest("multibody_ndipole_stops", test_multibody)]
+                     new_unittest("multibody_ndipole_stops", test_multibody), &
+                     new_unittest("sheet_only_stops", test_sheet_only)]
     end subroutine collect_tests_dipole
 
     function out_dir(name) result(d)
@@ -165,15 +166,29 @@ contains
     !> (test/data/dipole/multibody_ndipole): the run stops while reading the meshes, with the one-body message.
     subroutine test_multibody(error)
         type(error_type), allocatable, intent(out) :: error
+        call run_expecting_stop("multibody_ndipole", "HullMesh_2.pnl has dipole panels", "one body only", error)
+    end subroutine test_multibody
+
+    !> A HullMesh.pnl with dipole panels only (NELEM = 0, the disc of test/data/dipole/disc_deep;
+    !> test/data/dipole/sheet_only): the run stops after reading line 4, with the no-hull-panels message.
+    subroutine test_sheet_only(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_expecting_stop("sheet_only", "has no hull panels (NELEM = 0", "not supported", error)
+    end subroutine test_sheet_only
+
+    !> Runs test/data/dipole/NAME/input, which must stop (non-zero exit) with a log line holding both A and B.
+    subroutine run_expecting_stop(name, a, b, error)
+        character(len=*), intent(in) :: name, a, b
+        type(error_type), allocatable, intent(out) :: error
         character(:), allocatable :: command, logf
         character(len=1024) :: line
         integer :: exitcode, u, ios
         logical :: found
-        logf = get_running_exe_path()//"multibody_ndipole.log"
-        command = native_path(hamsexe_path//" "//get_repo_root_path()//"test/data/dipole/multibody_ndipole/input/ " &
-                              //get_running_exe_path()//"output_multibody_ndipole/ > "//logf)//" 2>&1"
+        logf = get_running_exe_path()//name//".log"
+        command = native_path(hamsexe_path//" "//get_repo_root_path()//"test/data/dipole/"//name//"/input/ " &
+                              //get_running_exe_path()//"output_"//name//"/ > "//logf)//" 2>&1"
         call execute_command_line(command, exitstat=exitcode, wait=.true.)
-        call check(error, exitcode /= 0, "multibody_ndipole: the run did not stop")
+        call check(error, exitcode /= 0, name//": the run did not stop")
         if (allocated(error)) return
         found = .false.
         open(newunit=u, file=native_path(logf), status="old", action="read", iostat=ios)
@@ -181,12 +196,12 @@ contains
             do
                 read(u, '(a)', iostat=ios) line
                 if (ios /= 0) exit
-                if (index(line, "HullMesh_2.pnl has dipole panels") > 0 .and. index(line, "one body only") > 0) found = .true.
+                if (index(line, a) > 0 .and. index(line, b) > 0) found = .true.
             end do
             close(u)
         end if
-        call check(error, found, "multibody_ndipole: no one-body message for HullMesh_2.pnl in "//logf)
-    end subroutine test_multibody
+        call check(error, found, name//": no line with '"//a//"' and '"//b//"' in "//logf)
+    end subroutine run_expecting_stop
 
     !> Every line of the five WAMIT-format files in DB equal to the one in DA, as text or, where the text differs, number
     !> by number to 1e-5 of the largest number on the line; the files have the same length.

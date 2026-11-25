@@ -229,6 +229,10 @@ program HAMS_MREL
         IF (.NOT.header_ok) THEN
             PRINT*, ' Error: HullMesh.pnl, line 4: cannot read NELEM NTND ISX ISY [NDIPOLE].'
             STOP 1
+        ELSEIF (NELEM.LE.0) THEN
+            WRITE(*,'(A)') ' Error: HullMesh.pnl has no hull panels (NELEM = 0 on line 4); a body of dipole panels'// &
+                           ' only is not supported.'
+            STOP 1
         ENDIF
         DNELEM = ndip_in                   ! dipole panels, read by ReadBodyMesh after the hull panels
 
