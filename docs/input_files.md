@@ -3,10 +3,9 @@
 HAMS-MREL requires a set of input files to run. The number files depend on whether you are analyzing a single body or multiple bodies:
 - `ControlFile.in`
 - `Hydrostatic[_i].in`
-- `HullMesh[_i].pnl`
+- `HullMesh[_i].pnl` (for a single body, optionally with dipole panels for zero-thickness plates)
 - `WaterPlaneMesh[_i].pnl` (only if analyzing irregular frequencies)
 - `gen_mod_[i]_[dof].txt` (optional, for generalized modes)
-- `DipoleMesh.pnl` (optional, single body only, for zero-thickness plates)
 
 For multi-body cases, `_i` denotes the body number (`i = 1 … numberofbodies`). For a single body, no index is used (`HullMesh.pnl`, `Hydrostatic.in` and `WaterPlaneMesh.pnl`).
 
@@ -163,12 +162,46 @@ A few notes:
 | Line(s) | Format | Variable | Description |
 | :------ | :------ | :-------- | :----------- |
 | 1–3 | free | — | Comment or blank lines (ignored) |
-| 4 | free | `NELEM, NTND, ISX, ISY` | Number of panels, number of nodes, X-symmetry flag, Y-symmetry flag |
+| 4 | free | `NELEM, NTND, ISX, ISY[, NDIPOLE]` | Number of hull panels, number of nodes, X-symmetry flag, Y-symmetry flag and, optionally, the number of dipole panels `NDIPOLE` (single body only, see [Dipole panels](#dipole-panels-optional-single-body)). Without the fifth field `NDIPOLE` is 0 and the file is read as before |
 | 5-6 | free | — | Comment or blank lines (ignored) |
 | next `NTND` | free | `M` and `XYZ_LOCAL_MULTI(bodyID,nodeID,1:3)` | Node coordinates. Each line contains: `node_ID  x_local  y_local  z_local` |
 | next 3 lines | free | — | Comment or blank (ignored) |
-| next `NTND` lines | free | `M`, `NCN_MULTI(bodyID,nodeID)` and `NCON_MULTI(bodyID,nodeID,1:numvertices)`| Panel definitions. Each line contains: panel number, number of vertices and (vertex1, vertex2, ...)
+| next `NELEM` lines | free | `M`, `NCN_MULTI(bodyID,nodeID)` and `NCON_MULTI(bodyID,nodeID,1:numvertices)`| Panel definitions. Each line contains: panel number, number of vertices and (vertex1, vertex2, ...) |
+| next line (only if `NDIPOLE` > 0) | free | — | Comment line, `# Start Definition of Dipole Panels` (ignored) |
+| next `NDIPOLE` lines (only if `NDIPOLE` > 0) | free | `M`, `DNCN(panelID)` and `DNCON(panelID,1:numvertices)` | Dipole panel definitions, in the same format as the hull panels. The vertex numbers refer to the same node list as the hull panels |
 
+### Dipole panels (optional, single body)
+
+Thin plates, such as heave plates and fins, can be given as sheets of zero thickness instead of closed bodies. Each dipole panel carries the jump of the potential across the sheet, μ = φ(+n side) − φ(−n side), instead of a potential. This is a normal-dipole sheet (Hess and Smith 1964, Sec. 4.2; the dipole panels of the WAMIT User Manual). A sheet has no interior and no faces close together. A thin closed plate has both: its two faces lie a thickness apart, which needs very small panels to resolve, and its interior adds irregular frequencies and makes the irregular-frequency lid (`IRSP = 1`) hard to use.
+
+The dipole panels go in `HullMesh.pnl`, after the hull panels: give their number as the fifth field `NDIPOLE` of line 4, then, after the last hull panel, one comment line and the `NDIPOLE` dipole panel lines (see the table above). Hull and dipole panels share one node list, so a node may be used by both. The first number of each panel line is not used; the dipole panels are numbered from 1 by convention. Lines 1 to 3 are skipped whatever they hold, so the comment on line 3 may mention the dipole panels. `NELEM` must be at least 1: a body made of dipole panels only (a free disc or plate, `NELEM = 0`) is not supported, and the run stops at input. Example of the panel part of a file with 192 hull panels and 96 dipole panels:
+
+```
+  # Start Definition of Node Relations   ! panel_number  number_of_vertices   Vertex1_ID   Vertex2_ID   Vertex3_ID   (Vertex4_ID)
+     1     4       1       2       3       4
+   ...
+   192     4     741     742     743     744
+    # Start Definition of Dipole Panels
+     1     4     745     746     747     748
+   ...
+    96     4    1125    1126    1127    1128
+    # End Definition of Node Relations
+```
+
+The block is read by `ReadBodyMesh` and set up by `DIPOLE_SETUP`, both in [ReadPanelMesh.f90](../src/ReadPanelMesh.f90). The panel normal follows the node order, as for hull panels. Either direction is allowed: flipping it changes the sign of μ and nothing else. Without the fifth field, or with `NDIPOLE = 0`, nothing changes.
+
+The run stops at input if:
+
+- any node of a dipole panel is less than one panel size below z = 0. Sheets must be fully submerged, and the wave part of the dipole equations is tested only for sheets deeper than their panel size;
+- a dipole panel lies in the plane of a hull panel and overlaps it (the centroid of either inside the other). A sheet cannot close a body or lie on its surface. For a heave plate, the column's bottom disc is part of the hull, and the sheet is only the annulus outside it, in the same plane;
+- a dipole centroid lies within 1e-6 panel sizes of a hull centroid (a sheet must not coincide with hull panels);
+- the symmetry flags of the hull are not 0, `ISOLV` is not 1, there is more than one body (a fifth field above 0 in a `HullMesh_i.pnl` stops the run), or `SecondOrder.in` is active. Version 1 supports one body, no symmetry, the direct solver and first order only.
+
+A sheet may meet the hull along an edge, for example a heave-plate annulus at the bottom of a column. Nothing is added at the junction. For a column of radius R with a heave plate of radius R_p at its bottom, z = −d: the hull panels of `HullMesh.pnl` are the column wall down to z = −d and the column's bottom disc (r < R) at z = −d; its dipole panels are only the annulus R ≤ r ≤ R_p at z = −d. The bottom disc and the annulus lie in one plane and do not overlap.
+
+At a free edge μ goes to zero like the square root of the distance to the edge (Lamb 1932, Sec. 108, for a disc). Constant panels, collocated at their centroids, converge only as O(h) there, so the sheet mesh matters more than a hull mesh of the same size. Grade the panels toward the free rim, for example rings at r_i = R + (R_p − R) sin(π i / 2N), use fine sheet meshes, and check the result on a refined mesh. Where one number is needed, extrapolate: 2 A(fine) − A(coarse), with the fine sheet refined twice in each direction. See the [developer documentation](developer_documentation.md#dipole-zero-thickness-panels) for the method.
+
+The fixture `test/data/dipole/column_plate/nolid/input/HullMesh.pnl` is a column with a heave-plate annulus in this layout.
 
 ## CSMesh.pnl (only with `cs_shape = file`)
 
@@ -213,23 +246,6 @@ With `IRSP = 1`, the waterplane mesh (the "lid") only supplies extra collocation
 
 Why the distance matters: on a column with a heave plate (waterline rows 0.68 m high, 832 hull panels), a lid made by clipping a square grid to the waterline circle left thin triangles at the wall, with centroids 2 to 5 cm from it. With that lid, heave damping and heave excitation between 2 and 4 s were off from an independent reference solution by 68% and 30% on average. Without a lid they were off by 12% and 9%, because of the irregular frequency in that band. A lid of three rings on the 32 waterline nodes, with outer centroids 0.38 m from the wall, brought them to 5% and 0.7%. At the zero- and infinite-frequency limits both lids gave the no-lid added mass to within 0.04%, and between 5 and 30 s to within 0.3% on added mass and 1.1% on damping.
 
-
-## DipoleMesh.pnl (optional, single body)
-
-Thin plates, such as heave plates and fins, can be given as sheets of zero thickness instead of closed bodies. Each panel of `DipoleMesh.pnl` carries the jump of the potential across the sheet, μ = φ(+n side) − φ(−n side), instead of a potential. This is a normal-dipole sheet (Hess and Smith 1964, Sec. 4.2; the dipole panels of the WAMIT User Manual). A sheet has no interior, and there are no faces close together. Close faces matter: in the heave-plate lid study of 2026-11-24 (IRSP = 1, panels 0.75 m wide), the lid moved the heave added mass above 3.3 rad/s by 27 % for a closed plate 0.1 m thick, by 2 % for one 0.5 m thick, and by 0.0 % for the column alone.
-
-`DIPOLE_SETUP` in [ReadPanelMesh.f90](../src/ReadPanelMesh.f90) reads the file when it exists in the input folder. It has the same format as `HullMesh.pnl` above. The panel normal follows the node order, as for hull panels. Either direction is allowed: flipping it changes the sign of μ and nothing else. Without the file nothing changes.
-
-The run stops at input if:
-
-- any node of a dipole panel is less than one panel size below z = 0. Sheets must be fully submerged, and the wave part of the dipole equations is tested only for sheets deeper than their panel size;
-- a dipole panel lies in the plane of a hull panel and overlaps it (the centroid of either inside the other). A sheet cannot close a body or lie on its surface. For a heave plate, the column's bottom disc is part of the hull, and the sheet is only the annulus outside it, in the same plane;
-- a dipole centroid lies within 1e-6 panel sizes of a hull centroid (a sheet must not coincide with hull panels);
-- the symmetry flags of `DipoleMesh.pnl` or of the hull are not 0, `ISOLV` is not 1, there is more than one body, or `SecondOrder.in` is active. Version 1 supports one body, no symmetry, the direct solver and first order only.
-
-A sheet may meet the hull along an edge, for example a heave-plate annulus at the bottom of a column. Nothing is added at the junction. Example, the heave plate of Kurnia and Ducrozet (2023, Sec. 4.2.3), a column of radius 10 m and draft 9.9 m with a plate of radius 15 m: `HullMesh.pnl` holds the column wall down to z = −9.9 m and the column's bottom disc (r < 10 m) at z = −9.9 m; `DipoleMesh.pnl` holds only the annulus 10 m ≤ r ≤ 15 m at z = −9.9 m. The bottom disc and the annulus lie in one plane and do not overlap. Grade the annulus toward its free outer rim. On this plate, with 0.75 m panels around, the added mass in heave fell by 3.5 % of the peak of the WAMIT curve from 7 to 28 radial rows (7, 14, 28 rows with radii r = 10 + 5 sin(π i / 2N) m), and by about 1 % from 14 to 28; outer rows 1:95 (7.9 mm by 0.75 m) were fine. The sheet replaces a closed plate 0.1 m thick; without the lid the two agree within 1.2 % in A11, A33, A55, B33 and B55 on the same panel size (see the [developer documentation](developer_documentation.md#dipole-zero-thickness-panels)). At a free edge μ goes to zero like the square root of the distance to the edge (Lamb 1932, Sec. 108, for a disc). Constant panels, collocated at their centroids, converge only as O(h) there. For a disc of radius a, A33 is 13 % above the exact (8/3) ρ a³ with 96 panels, 8.2 % above with 384, 4.4 % with 1536 and 2.7 % with 3072 (6, 12, 24 and 48 rings). Grading the rings toward the rim (r_i = a sin(π i / 2N)) changes this little. So use fine sheet meshes, check a refined mesh, and, where one number is needed, extrapolate: 2 A(fine) − A(coarse), with the fine mesh refined twice in each direction, was within 0.7 % for the disc. See the [developer documentation](developer_documentation.md#dipole-zero-thickness-panels).
-
-The fixture `test/data/dipole/disc_deep/input/DipoleMesh.pnl` is a disc of radius 1 m at z = −50 m, with 12 rings graded this way and 32 sectors (384 panels).
 
 ## gen_mod (Optional)
 

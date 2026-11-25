@@ -1,10 +1,12 @@
-!> Dipole panels (DipoleMesh.pnl) change nothing when absent: two single-body cases of test/data/image_term, without and
-!> with the lid (IRSP = 0 and 1), give the outputs of the base commit 8f27716 of development_2, stored in
-!> test/data/dipole/no_dipole_ref (see its README). Built with the same compiler (ifort on Windows) the files are equal
+!> Dipole panels (the dipole block of HullMesh.pnl) change nothing when absent: two single-body cases of
+!> test/data/image_term, without and with the lid (IRSP = 0 and 1), whose HullMesh.pnl has four fields on line 4, give
+!> the stored outputs of test/data/dipole/no_dipole_ref (see its README); so does image_cos with an explicit fifth field
+!> NDIPOLE = 0 (test/data/dipole/ndipole_zero). Built with the same compiler (ifort on Windows) the files are equal
 !> line by line; other compilers (ifx in CI) may differ in the last printed digit, so each line is compared as text and,
 !> where the text differs, number by number to 1e-5 of the largest number on the line (outputs print 6 or 7 digits).
 !> A trailing carriage return is dropped, so git's line-ending conversion of the stored files does not matter.
-!> Also the column with a dipole plate (test/data/dipole/column_plate) through the whole program.
+!> Also the column with a dipole plate (test/data/dipole/column_plate) through the whole program, and its outputs
+!> against those of the earlier layout with the sheet in a second mesh file (test/data/dipole/two_file_ref).
 module test_integration_dipole
 
     use testdrive, only : new_unittest, unittest_type, error_type, check, test_failed
@@ -29,7 +31,11 @@ contains
     subroutine collect_tests_dipole(testsuite)
         type(unittest_type), allocatable, intent(out) :: testsuite(:)
         testsuite = [new_unittest("no_dipole_bit_identical", test_identical), &
-                     new_unittest("column_plate_end_to_end", test_plate)]
+                     new_unittest("ndipole_zero_bit_identical", test_ndipole_zero), &
+                     new_unittest("column_plate_end_to_end", test_plate), &
+                     new_unittest("column_plate_one_file_layout", test_layouts), &
+                     new_unittest("multibody_ndipole_stops", test_multibody), &
+                     new_unittest("sheet_only_stops", test_sheet_only)]
     end subroutine collect_tests_dipole
 
     function out_dir(name) result(d)
@@ -54,6 +60,15 @@ contains
                 return
             end if
         end do
+        ! image_cos with the fifth field of line 4 given as 0
+        command = native_path(hamsexe_path//" "//get_repo_root_path()//"test/data/dipole/ndipole_zero/input/ " &
+                              //out_dir("ndipole_zero")//" > "//get_running_exe_path()//"nodipole_ndipole_zero.log") &
+                  //" 2>&1"
+        call execute_command_line(command, exitstat=exitcode, wait=.true.)
+        if (exitcode /= 0) then
+            write (code, '(I0)') exitcode
+            call test_failed(error, "HAMS failed for ndipole_zero with exit code "//trim(code))
+        end if
     end subroutine run_cases
 
     !> The column with a dipole annulus plate (test/data/dipole/column_plate), without and with the lid, deep water,
@@ -118,38 +133,111 @@ contains
     !> Every line of the five WAMIT-format outputs equal to the stored base output (or to its printed precision).
     subroutine test_identical(error)
         type(error_type), allocatable, intent(out) :: error
-        integer :: k, f, ua, ub, ia, ib, line
+        integer :: k
+        do k = 1, size(cases)
+            call compare_outputs(get_repo_root_path()//"test/data/dipole/no_dipole_ref/"//trim(cases(k))//"/", &
+                                 out_dir(cases(k))//"Wamit_format/", trim(cases(k)), error)
+            if (allocated(error)) return
+        end do
+    end subroutine test_identical
+
+    !> A fifth field NDIPOLE = 0 on line 4 reads as the four-field file: the outputs of image_cos, as stored.
+    subroutine test_ndipole_zero(error)
+        type(error_type), allocatable, intent(out) :: error
+        call compare_outputs(get_repo_root_path()//"test/data/dipole/no_dipole_ref/image_cos/", &
+                             out_dir("ndipole_zero")//"Wamit_format/", "ndipole_zero", error)
+    end subroutine test_ndipole_zero
+
+    !> The column plate with hull and dipole panels in one HullMesh.pnl gives the outputs of the earlier layout, where
+    !> the same sheet was a second mesh file with its own node list (test/data/dipole/two_file_ref, see its README).
+    subroutine test_layouts(error)
+        type(error_type), allocatable, intent(out) :: error
+        character(len=5), parameter :: pc(2) = ["nolid", "lid  "]
+        integer :: k
+        do k = 1, 2
+            call compare_outputs(get_repo_root_path()//"test/data/dipole/two_file_ref/"//trim(pc(k))//"/", &
+                                 get_running_exe_path()//"output_column_plate_"//trim(pc(k))//"/Wamit_format/", &
+                                 "column_plate/"//trim(pc(k)), error)
+            if (allocated(error)) return
+        end do
+    end subroutine test_layouts
+
+    !> Three bodies (test/data/config1) with a fifth field NDIPOLE = 4 on line 4 of HullMesh_2.pnl
+    !> (test/data/dipole/multibody_ndipole): the run stops while reading the meshes, with the one-body message.
+    subroutine test_multibody(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_expecting_stop("multibody_ndipole", "HullMesh_2.pnl has dipole panels", "one body only", error)
+    end subroutine test_multibody
+
+    !> A HullMesh.pnl with dipole panels only (NELEM = 0, the disc of test/data/dipole/disc_deep;
+    !> test/data/dipole/sheet_only): the run stops after reading line 4, with the no-hull-panels message.
+    subroutine test_sheet_only(error)
+        type(error_type), allocatable, intent(out) :: error
+        call run_expecting_stop("sheet_only", "has no hull panels (NELEM = 0", "not supported", error)
+    end subroutine test_sheet_only
+
+    !> Runs test/data/dipole/NAME/input, which must stop (non-zero exit) with a log line holding both A and B.
+    subroutine run_expecting_stop(name, a, b, error)
+        character(len=*), intent(in) :: name, a, b
+        type(error_type), allocatable, intent(out) :: error
+        character(:), allocatable :: command, logf
+        character(len=1024) :: line
+        integer :: exitcode, u, ios
+        logical :: found
+        logf = get_running_exe_path()//name//".log"
+        command = native_path(hamsexe_path//" "//get_repo_root_path()//"test/data/dipole/"//name//"/input/ " &
+                              //get_running_exe_path()//"output_"//name//"/ > "//logf)//" 2>&1"
+        call execute_command_line(command, exitstat=exitcode, wait=.true.)
+        call check(error, exitcode /= 0, name//": the run did not stop")
+        if (allocated(error)) return
+        found = .false.
+        open(newunit=u, file=native_path(logf), status="old", action="read", iostat=ios)
+        if (ios == 0) then
+            do
+                read(u, '(a)', iostat=ios) line
+                if (ios /= 0) exit
+                if (index(line, a) > 0 .and. index(line, b) > 0) found = .true.
+            end do
+            close(u)
+        end if
+        call check(error, found, name//": no line with '"//a//"' and '"//b//"' in "//logf)
+    end subroutine run_expecting_stop
+
+    !> Every line of the five WAMIT-format files in DB equal to the one in DA, as text or, where the text differs, number
+    !> by number to 1e-5 of the largest number on the line; the files have the same length.
+    subroutine compare_outputs(da, db, label, error)
+        character(len=*), intent(in) :: da, db, label
+        type(error_type), allocatable, intent(out) :: error
+        integer :: f, ua, ub, ia, ib, line
         character(len=4096) :: la, lb
         character(len=:), allocatable :: pa, pb
-        do k = 1, size(cases)
-            do f = 1, size(files)
-                pa = get_repo_root_path()//"test/data/dipole/no_dipole_ref/"//trim(cases(k))//"/"//trim(files(f))
-                pb = out_dir(cases(k))//"Wamit_format/"//trim(files(f))
-                open(newunit=ua, file=native_path(pa), status="old", action="read", iostat=ia)
-                open(newunit=ub, file=native_path(pb), status="old", action="read", iostat=ib)
-                if (ia /= 0 .or. ib /= 0) then
-                    call test_failed(error, "cannot open "//pa//" or "//pb)
-                    return
-                end if
-                line = 0
-                do
-                    read(ua, '(a)', iostat=ia) la
-                    read(ub, '(a)', iostat=ib) lb
-                    line = line + 1
-                    if (ia /= 0 .or. ib /= 0) exit
-                    if (trim(strip_cr(la)) /= trim(strip_cr(lb))) then
-                        if (.not. lines_close(strip_cr(la), strip_cr(lb))) exit
-                    end if
-                end do
-                close(ua)
-                close(ub)
-                call check(error, ia /= 0 .and. ib /= 0 .and. ia == ib, trim(cases(k))//"/"//trim(files(f)) &
-                           //": differs from the base output (or has a different length)")
-                if (allocated(error)) then
-                    write(*, '(a,i0)') "    first difference at line ", line
-                    return
+        do f = 1, size(files)
+            pa = da//trim(files(f))
+            pb = db//trim(files(f))
+            open(newunit=ua, file=native_path(pa), status="old", action="read", iostat=ia)
+            open(newunit=ub, file=native_path(pb), status="old", action="read", iostat=ib)
+            if (ia /= 0 .or. ib /= 0) then
+                call test_failed(error, "cannot open "//pa//" or "//pb)
+                return
+            end if
+            line = 0
+            do
+                read(ua, '(a)', iostat=ia) la
+                read(ub, '(a)', iostat=ib) lb
+                line = line + 1
+                if (ia /= 0 .or. ib /= 0) exit
+                if (trim(strip_cr(la)) /= trim(strip_cr(lb))) then
+                    if (.not. lines_close(strip_cr(la), strip_cr(lb))) exit
                 end if
             end do
+            close(ua)
+            close(ub)
+            call check(error, ia /= 0 .and. ib /= 0 .and. ia == ib, label//"/"//trim(files(f)) &
+                       //": differs from the stored output (or has a different length)")
+            if (allocated(error)) then
+                write(*, '(a,i0)') "    first difference at line ", line
+                return
+            end if
         end do
     contains
         !> The same tokens, numbers within 1e-5 of the line's largest number, words equal.
@@ -217,6 +305,6 @@ contains
                 if (t(n:n) == achar(13)) t(n:n) = " "
             end if
         end function strip_cr
-    end subroutine test_identical
+    end subroutine compare_outputs
 
 end module test_integration_dipole

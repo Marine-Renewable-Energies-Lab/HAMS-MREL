@@ -109,7 +109,10 @@ program HAMS_MREL
     character(len=16) :: body_str, dof_str
     character(len=200) :: so_msg
     integer :: gen_body, gen_dof
-    integer :: ntot_dip                    ! NELEM + DNELEM with dipole panels (DipoleMesh.pnl)
+    integer :: ntot_dip                    ! NELEM + DNELEM with dipole panels (the dipole block of HullMesh.pnl)
+    character(len=512) :: hdr_line         ! line 4 of a hull mesh file: NELEM NTND ISX ISY [NDIPOLE]
+    integer :: ndip_in                     ! NDIPOLE of that line, 0 when absent
+    logical :: header_ok
     complex(8), allocatable :: dip_af(:,:), dip_c(:,:), dip_b(:,:), dip_d(:,:)   ! dipole panels with IRSP = 1
 
     print*
@@ -203,13 +206,6 @@ program HAMS_MREL
     end if
     write(*,*)
 
-    ! Dipole panels (DipoleMesh.pnl) are single-body only; DIPOLE_SETUP checks the other limits once the hull is read
-    inquire(file=trim(inputdir)//'/DipoleMesh.pnl', exist=gen_file_exists)
-    if (gen_file_exists .and. NBODY /= 1) then
-        print*, ' Error: dipole panels (DipoleMesh.pnl) support one body only.'
-        stop 1
-    end if
-
     if (NBODY == 1) then
         ! Reading the mesh, hydrostatic and water plane mesh files
         open(2, file=trim(inputdir)//"/HullMesh.pnl", status="old", action="read")
@@ -228,7 +224,17 @@ program HAMS_MREL
             end do
         end if
         
-        read(2,*) NELEM, NTND, ISX, ISY
+        read(2,'(a)') hdr_line
+        CALL HULL_HEADER(hdr_line, NELEM, NTND, ISX, ISY, ndip_in, header_ok)
+        IF (.NOT.header_ok) THEN
+            PRINT*, ' Error: HullMesh.pnl, line 4: cannot read NELEM NTND ISX ISY [NDIPOLE].'
+            STOP 1
+        ELSEIF (NELEM.LE.0) THEN
+            WRITE(*,'(A)') ' Error: HullMesh.pnl has no hull panels (NELEM = 0 on line 4); a body of dipole panels'// &
+                           ' only is not supported.'
+            STOP 1
+        ENDIF
+        DNELEM = ndip_in                   ! dipole panels, read by ReadBodyMesh after the hull panels
 
         do II=1,2
             read(2,*)
@@ -287,7 +293,7 @@ program HAMS_MREL
        
         CALL CalNormals(IRSP,TRIM(inputdir))
 
-        CALL DIPOLE_SETUP(TRIM(inputdir),NSYS,ISOLV,NBODY,so_opts%active,success,so_msg)
+        CALL DIPOLE_SETUP(NSYS,ISOLV,NBODY,so_opts%active,success,so_msg)
         IF (.NOT.success) THEN
             PRINT*, TRIM(so_msg)
             STOP 1
@@ -464,7 +470,16 @@ program HAMS_MREL
             DO II=1,3
                 READ(2,*)
             ENDDO
-            READ(2,*) NELEM, NTND, ISX, ISY
+            READ(2,'(A)') hdr_line
+            CALL HULL_HEADER(hdr_line, NELEM, NTND, ISX, ISY, ndip_in, header_ok)
+            IF (.NOT.header_ok) THEN
+                WRITE(*,'(A)') ' Error: '//TRIM(MESH_MULTI)//', line 4: cannot read NELEM NTND ISX ISY [NDIPOLE].'
+                STOP 1
+            ELSEIF (ndip_in.GT.0) THEN
+                WRITE(*,'(A)') ' Error: '//TRIM(MESH_MULTI)//' has dipole panels (NDIPOLE > 0 on line 4);'// &
+                               ' dipole panels support one body only.'
+                STOP 1
+            ENDIF
             NELEM_MULTI(FILE_M)=NELEM
             NTND_MULTI(FILE_M)=NTND
             CLOSE(2)

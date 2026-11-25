@@ -10,7 +10,7 @@ The sections below describes the content and structure of each file format in de
 
 ## Dipole panels
 
-With a `DipoleMesh.pnl` (version 1), the added mass, damping, exciting forces and motions include the dipole sheet: its share is the sum of −μ n ΔS over the sheet panels (μ the jump of the potential across the sheet, see the [developer documentation](developer_documentation.md#dipole-zero-thickness-panels)). Field-point pressures and elevations are not written: a run with field points and a dipole mesh stops at input.
+With dipole panels in `HullMesh.pnl` (version 1), the added mass, damping, exciting forces and motions include the dipole sheet: its share is the sum of −μ n ΔS over the sheet panels (μ the jump of the potential across the sheet, see the [developer documentation](developer_documentation.md#dipole-zero-thickness-panels)). Field-point pressures and elevations are not written: a run with field points and a dipole mesh stops at input.
 
 ## Error Check
 
