@@ -2,7 +2,7 @@
 
 HAMS-MREL (Hydrodynamic Analysis of Marine Structures – Marine Renewable Energies Lab) is an open-source numerical tool for studying wave–structure interactions involving multiple floating bodies. It uses a Boundary Integral Equation Method to compute hydrodynamic coefficients, wave excitation forces, and related quantities for diffraction and radiation problems. The software includes OpenMP-based parallelization to improve computational efficiency and has been validated against WAMIT for a range of multi-body test cases.
 
-HAMS-MREL is developed as an extension of the original [HAMS solver](https://github.com/YingyiLiu/HAMS). While HAMS focuses on single-body hydrodynamic analysis, HAMS-MREL expands the framework to handle interactions among multiple bodies. Other features include free surface elevation and pressure fields, suppression of irregular frequencies, global symmetry, generalized modes, an optional GMRES iterative solver with H-matrix acceleration for large multi-body problems, and integration with WEC-Sim.
+HAMS-MREL is developed as an extension of the original [HAMS solver](https://github.com/YingyiLiu/HAMS). While HAMS focuses on single-body hydrodynamic analysis, HAMS-MREL expands the framework to handle interactions among multiple bodies. Other features include free surface elevation and pressure fields, suppression of irregular frequencies, global symmetry, generalized modes, an optional GMRES iterative solver with H-matrix acceleration for large multi-body problems, and integration with WEC-Sim. With an optional `SecondOrder.in`, HAMS-MREL also computes second-order wave loads: the mean drift by the far-field, near-field and control-surface methods, the difference- and sum-frequency QTFs (quadratic part, and the second-order potential by the indirect and the direct method), the second-order motion and the second-order field at points (see [SecondOrder.in](docs/input_files.md#secondorderin-optional)). Thin plates such as heave plates can be modelled as zero-thickness dipole panels (see [Dipole panels](docs/input_files.md#dipole-panels-optional-single-body)).
 
 Current version: 2.3.4 (The repository has migrated from https://github.com/vaibhavraghavan/HAMS-MREL to keep all open source tools from MREL under one unbrella. For v2.0 to v2.2, got to the old repository.)
 
@@ -31,11 +31,6 @@ It also adds two checks:
 
 - A run with NaN or Inf results says so and exits with code 1.
 - A hull panel with its centroid on z = 0 stops the run with a message.
-
-It also adds mean second-order wave loads, switched on by an optional `SecondOrder.in`. Without the file, results do not change. See [SecondOrder.in](docs/input_files.md#secondorderin-optional).
-
-- **Far-field and near-field drift.** Mean drift force and moment by momentum (far-field: F_x, F_y, M_z) and pressure integration (near-field: all six), for one or all heading pairs.
-- **Control-surface drift.** All six components from the first-order field on a closed surface around each body (Chen 2007). On hulls with sharp edges, use it for F_z, M_x and M_y, where near-field converges slowly.
 
 ## Installation and Usage
 
@@ -78,7 +73,7 @@ hams-mrel.exe <path-to-input-dir> <path-to-output-dir>
 
 ### Input
 
-HAMS-MREL requires a set of input files to run. These files contain the general setting for the simulation (`ControlFile.in`), hydrostatic data (`Hydrostatic[_i].in`) and meshes for the submerged bodies (`HullMesh[_i].pnl`) and inner water plane for each body (`WaterPlaneMesh[_i].pnl`). The exact number of files depends on the number of bodies and on whether irregular frequencies are analyzed.  
+HAMS-MREL requires a set of input files to run. These files contain the general setting for the simulation (`ControlFile.in`), hydrostatic data (`Hydrostatic[_i].in`) and meshes for the submerged bodies (`HullMesh[_i].pnl`) and inner water plane for each body (`WaterPlaneMesh[_i].pnl`), and optionally the second-order settings (`SecondOrder.in`). The exact number of files depends on the number of bodies and on whether irregular frequencies are analyzed.  
 
 **A full description of each inout file is provided in [docs/input_files.md](docs/input_files.md)**.
 
@@ -88,6 +83,20 @@ HAMS-MREL requires a set of input files to run. These files contain the general 
 HAMS-MREL produces output files in multiple established formats to support post-processing and compatibility with external tools. Every simulation outputs data in the HAMS and WAMIT formats (plus Hydrostar for single-body cases), covering added mass, damping, excitation forces, motions, pressure/elevation, and hydrostatics, along with an _ErrorCheck.txt_ file summarizing key system parameters. Output formats are fixed and always generated.
 
 **A full description of each file is provided in [docs/output_files.md](docs/output_files.md)**.
+
+### Examples
+
+The folder [examples](examples) holds input files for typical cases:
+
+- `example1_multi_bodies`: five bodies in finite depth, with the zero- and infinite-frequency added mass.
+- `example2_multi_bodies_wave_fields`: ten bodies, with the pressure and free-surface elevation at field points.
+- `example3_multi_bodies_gen_mod`: two bodies, one with a generalized mode.
+- `example4_multi_bodies_irr_suppression`: two bodies with the irregular frequencies removed by lids.
+- `example5_single_body`: one body, with the irregular frequencies removed by a lid.
+- `example6_single_body_mean_drift`: mean drift of a floating cylinder by the far-field, near-field and control-surface methods.
+- `example7_single_body_qtf`: difference- and sum-frequency QTFs of a floating cylinder, with the second-order motion and the field at points.
+- `example8_multi_bodies_second_order`: mean drift and difference-frequency QTF of two floating cylinders.
+- `example9_single_body_dipole_heave_plate`: a column with a heave plate of dipole panels, and a lid.
 
 ## Developer Documentation
 
