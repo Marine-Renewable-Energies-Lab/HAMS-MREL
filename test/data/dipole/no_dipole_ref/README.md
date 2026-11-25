@@ -5,7 +5,7 @@ The WAMIT-format outputs (`Wamit_format/`) of the cases `image_cos` (IRSP = 0) a
 dipole-panel branch, built with ifort on Windows (`/Qmkl /heap-arrays0 /fpp /Qopenmp`). The integration test
 `no_dipole_bit_identical` (`test/test_integration_dipole.f90`) reruns both cases and requires every line to be
 identical, or, where another compiler prints a different last digit (ifx in CI), every number within 1e-5 of the
-largest number on its line. A case without `DipoleMesh.pnl` must not be changed by the dipole-panel code.
+largest number on its line. A case without dipole panels must not be changed by the dipole-panel code.
 
 If a later change of the solver changes these outputs on purpose, regenerate them from a build of that change, and say
 so in its commit.

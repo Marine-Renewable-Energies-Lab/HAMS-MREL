@@ -36,6 +36,8 @@ MODULE ReadPanelMesh
    PUBLIC :: ReadWTPLMesh
    
    PUBLIC :: CalNormals
+   PUBLIC :: HULL_HEADER
+   PUBLIC :: DIPOLE_READ_PANELS
    PUBLIC :: DIPOLE_SETUP
    PUBLIC :: DIPOLE_CHECK_OPTIONS
    PUBLIC :: DIPOLE_CHECK_GEOMETRY
@@ -68,8 +70,55 @@ CONTAINS
 	    READ(2, *) M, NCN(IEL), (NCON(IEL,J), J=1, NCN(IEL))
 30      CONTINUE
 
+      IF (DNELEM.GT.0) CALL DIPOLE_READ_PANELS(2)
+
       RETURN
       END SUBROUTINE ReadBodyMesh
+
+!=======================================================================
+!SUBROUTINE HULL_HEADER
+!   !   Reads line 4 of HullMesh.pnl: NELEM NTND ISX ISY and the optional fifth field NDIPOLE, the number of dipole
+!   !   panels (0 when absent; the four fields are read as by a list-directed READ). OK false when the four numbers
+!   !   cannot be read or NDIPOLE is negative.
+      SUBROUTINE HULL_HEADER(LINE,NE,NT,KSX,KSY,NDIP,OK)
+      IMPLICIT   NONE
+      CHARACTER(LEN=*),INTENT(IN):: LINE
+      INTEGER,INTENT(OUT):: NE,NT,KSX,KSY,NDIP
+      LOGICAL,INTENT(OUT):: OK
+      INTEGER:: IOS
+
+      NDIP=0
+      READ(LINE,*,IOSTAT=IOS) NE,NT,KSX,KSY,NDIP
+      IF (IOS.NE.0) THEN
+       NDIP=0
+       READ(LINE,*,IOSTAT=IOS) NE,NT,KSX,KSY
+      ENDIF
+      OK=(IOS.EQ.0.AND.NDIP.GE.0)
+
+      RETURN
+      END SUBROUTINE HULL_HEADER
+
+!=======================================================================
+!SUBROUTINE DIPOLE_READ_PANELS
+!   !   Reads the dipole block of HullMesh.pnl from unit U, placed right after the NELEM hull panels: one comment line
+!   !   (# Start Definition of Dipole Panels), then DNELEM panel lines in the hull panel format. The node numbers refer
+!   !   to the shared node list of the file; DIPOLE_SETUP takes the nodes the sheet uses out of it.
+      SUBROUTINE DIPOLE_READ_PANELS(U)
+      IMPLICIT   NONE
+      INTEGER,INTENT(IN):: U
+      INTEGER:: IEL,J,M
+
+      IF (ALLOCATED(DNCN)) DEALLOCATE(DNCN)
+      IF (ALLOCATED(DNCON)) DEALLOCATE(DNCON)
+      ALLOCATE(DNCN(DNELEM),DNCON(DNELEM,4))
+      DNCON=0
+      READ(U,*)
+      DO IEL=1,DNELEM
+       READ(U,*) M,DNCN(IEL),(DNCON(IEL,J),J=1,DNCN(IEL))
+      ENDDO
+
+      RETURN
+      END SUBROUTINE DIPOLE_READ_PANELS
 
 !=======================================================================
 !SUBROUTINE ReadWTPLMesh
@@ -208,73 +257,69 @@ CONTAINS
 
 !=======================================================================
 !SUBROUTINE DIPOLE_SETUP
-!   !   Reads the optional dipole (zero-thickness) panel mesh INPUTDIR/DipoleMesh.pnl, in the format of HullMesh.pnl,
-!   !   and sets its geometry in DipoleMesh_mod (notes/specs/2026-11-24-dipole-panels-design.md, Sec. 6). Call it after
-!   !   CalNormals. Without the file DNELEM stays 0, nothing is allocated and OK is true. With it, the v1 limits
-!   !   (DIPOLE_CHECK_OPTIONS) and the geometry (DIPOLE_CHECK_GEOMETRY) are checked; OK false and MSG say why.
-!   !   The panel normal follows the node order as for hull panels (CalTransNormals); rotations about XR.
-      SUBROUTINE DIPOLE_SETUP(INPUTDIR,NSYS_IN,ISOLV_IN,NBODY_IN,SO_ACTIVE,OK,MSG)
+!   !   Sets the geometry of the dipole (zero-thickness) panels in DipoleMesh_mod (notes/specs/2026-11-24-dipole-panels-
+!   !   design.md, Sec. 6) from the dipole block of HullMesh.pnl, which ReadBodyMesh read into DNCN and DNCON (node
+!   !   numbers of the shared node list XYZ). Call it after CalNormals. Without the block (DNELEM = 0) nothing is
+!   !   allocated and OK is true. With it, the v1 limits (DIPOLE_CHECK_OPTIONS) and the geometry (DIPOLE_CHECK_GEOMETRY,
+!   !   _CLEARANCE, _COPLANAR) are checked; OK false and MSG say why. The nodes the sheet uses are copied out of XYZ, in
+!   !   the order of the node list, into DPXYZ and DNCON is renumbered to them. The panel normal follows the node order as
+!   !   for hull panels (CalTransNormals); rotations about XR.
+      SUBROUTINE DIPOLE_SETUP(NSYS_IN,ISOLV_IN,NBODY_IN,SO_ACTIVE,OK,MSG)
       IMPLICIT   NONE
-      CHARACTER(LEN=*),INTENT(IN):: INPUTDIR
       INTEGER,INTENT(IN):: NSYS_IN,ISOLV_IN,NBODY_IN
       LOGICAL,INTENT(IN):: SO_ACTIVE
       LOGICAL,INTENT(OUT):: OK
       CHARACTER(LEN=*),INTENT(OUT):: MSG
-      CHARACTER(LEN=1024):: FNAME
-      LOGICAL:: EXISTS
-      INTEGER:: U,J,IND,IEL,M,KSX,KSY,IOS
+      INTEGER,ALLOCATABLE:: NEWNUM(:)
+      INTEGER:: J,IND,IEL
 
       OK=.TRUE.
       MSG=''
-      FNAME=TRIM(INPUTDIR)//'/DipoleMesh.pnl'
-      INQUIRE(FILE=TRIM(FNAME),EXIST=EXISTS)
-      IF (.NOT.EXISTS) RETURN
+      IF (DNELEM.LE.0) RETURN
 
       CALL DIPOLE_CHECK_OPTIONS(NSYS_IN,ISOLV_IN,NBODY_IN,SO_ACTIVE,OK,MSG)
-      IF (.NOT.OK) RETURN
+      IF (.NOT.OK) THEN
+       CALL DIPOLE_RELEASE
+       RETURN
+      ENDIF
 
-      OPEN(NEWUNIT=U,FILE=TRIM(FNAME),STATUS='OLD',ACTION='READ',IOSTAT=IOS)
-      IF (IOS.NE.0) THEN
-       OK=.FALSE.
-       MSG=' Error: cannot open '//TRIM(FNAME)
-       RETURN
-      ENDIF
-      DO J=1,3
-       READ(U,*)
+      ALLOCATE(NEWNUM(NTND))
+      NEWNUM=0
+      DO IEL=1,DNELEM
+       IF (DNCN(IEL).NE.3.AND.DNCN(IEL).NE.4) THEN
+        OK=.FALSE.
+        WRITE(MSG,'(A,I0,A)') ' Error: dipole panel ',IEL,' of HullMesh.pnl does not have 3 or 4 nodes.'
+        CALL DIPOLE_RELEASE
+        RETURN
+       ENDIF
+       DO J=1,DNCN(IEL)
+        IF (DNCON(IEL,J).LT.1.OR.DNCON(IEL,J).GT.NTND) THEN
+         OK=.FALSE.
+         WRITE(MSG,'(A,I0,A)') ' Error: dipole panel ',IEL,' of HullMesh.pnl refers to a node outside the node list.'
+         CALL DIPOLE_RELEASE
+         RETURN
+        ENDIF
+        NEWNUM(DNCON(IEL,J))=1
+       ENDDO
       ENDDO
-      READ(U,*,IOSTAT=IOS) DNELEM,DNTND,KSX,KSY
-      IF (IOS.NE.0.OR.DNELEM.LE.0.OR.DNTND.LE.0) THEN
-       OK=.FALSE.
-       MSG=' Error: DipoleMesh.pnl: cannot read the numbers of panels and nodes.'
-       DNELEM=0
-       DNTND=0
-       CLOSE(U)
-       RETURN
-      ENDIF
-      IF (KSX.NE.0.OR.KSY.NE.0) THEN
-       OK=.FALSE.
-       MSG=' Error: dipole panels do not support symmetry: set both symmetry flags of DipoleMesh.pnl to 0.'
-       DNELEM=0
-       DNTND=0
-       CLOSE(U)
-       RETURN
-      ENDIF
-      DO J=1,2
-       READ(U,*)
+      DNTND=0
+      DO IND=1,NTND
+       IF (NEWNUM(IND).GT.0) THEN
+        DNTND=DNTND+1
+        NEWNUM(IND)=DNTND
+       ENDIF
       ENDDO
-      ALLOCATE(DPXYZ(DNTND,3),DNCN(DNELEM),DNCON(DNELEM,4))
-      ALLOCATE(DPXYZ_C(DNELEM,3),DNRM(DNELEM,6),DDS(DNELEM),DPNSZ(DNELEM))
-      DNCON=0
-      DO IND=1,DNTND
-       READ(U,*) M,DPXYZ(IND,1),DPXYZ(IND,2),DPXYZ(IND,3)
-      ENDDO
-      DO J=1,3
-       READ(U,*)
+      ALLOCATE(DPXYZ(DNTND,3))
+      DO IND=1,NTND
+       IF (NEWNUM(IND).GT.0) DPXYZ(NEWNUM(IND),1:3)=XYZ(IND,1:3)
       ENDDO
       DO IEL=1,DNELEM
-       READ(U,*) M,DNCN(IEL),(DNCON(IEL,J),J=1,DNCN(IEL))
+       DO J=1,DNCN(IEL)
+        DNCON(IEL,J)=NEWNUM(DNCON(IEL,J))
+       ENDDO
       ENDDO
-      CLOSE(U)
+      DEALLOCATE(NEWNUM)
+      ALLOCATE(DPXYZ_C(DNELEM,3),DNRM(DNELEM,6),DDS(DNELEM),DPNSZ(DNELEM))
 
       CALL CalPanelCentre(DPXYZ,DNTND,DNELEM,DNCN,DNCON,DPXYZ_C)
       CALL CalPanelArea(DPXYZ,DNTND,DNELEM,DNCN,DNCON,DDS)
@@ -297,7 +342,7 @@ CONTAINS
        IF (.NOT.OK) RETURN
       ENDIF
 
-      PRINT *,' Dipole panels read from DipoleMesh.pnl:',DNELEM
+      PRINT *,' Dipole panels read from HullMesh.pnl:',DNELEM
       RETURN
       END SUBROUTINE DIPOLE_SETUP
 
@@ -314,13 +359,13 @@ CONTAINS
 
       OK=.FALSE.
       IF (NBODY_IN.NE.1) THEN
-       MSG=' Error: dipole panels (DipoleMesh.pnl) support one body only.'
+       MSG=' Error: dipole panels support one body only.'
       ELSEIF (NSYS_IN.NE.1) THEN
-       MSG=' Error: dipole panels (DipoleMesh.pnl) do not support symmetry: set the hull symmetry flags to 0.'
+       MSG=' Error: dipole panels do not support symmetry: set the hull symmetry flags to 0.'
       ELSEIF (ISOLV_IN.NE.1) THEN
-       MSG=' Error: dipole panels (DipoleMesh.pnl) need the direct solver, ISOLV = 1.'
+       MSG=' Error: dipole panels need the direct solver, ISOLV = 1.'
       ELSEIF (SO_ACTIVE) THEN
-       MSG=' Error: dipole panels (DipoleMesh.pnl) are first order only: remove SecondOrder.in or switch it off.'
+       MSG=' Error: dipole panels are first order only: remove SecondOrder.in or switch it off.'
       ELSE
        OK=.TRUE.
        MSG=''

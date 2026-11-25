@@ -135,8 +135,8 @@
         END MODULE PanelMesh_mod
 
 !---------------------------------------------------------------------------------------------
-!        Data module for dipole (zero-thickness) panels, read from the optional DipoleMesh.pnl
-!        (notes/specs/2026-11-24-dipole-panels-design.md). DNELEM = 0 and nothing allocated without it.
+!        Data module for dipole (zero-thickness) panels, read from the optional dipole block of HullMesh.pnl
+!        (NDIPOLE, the fifth field of its line 4). DNELEM = 0 and nothing allocated without it.
 !---------------------------------------------------------------------------------------------
 !
         MODULE DipoleMesh_mod
