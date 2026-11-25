@@ -1,0 +1,5 @@
+! Mean wave drift of a freely floating vertical cylinder by the three methods
+mean_drift = 1
+drift_methods = far near control
+motion_state = free
+write_terms = 1
