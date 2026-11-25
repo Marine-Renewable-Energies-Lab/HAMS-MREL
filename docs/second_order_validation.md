@@ -2,6 +2,8 @@
 
 This page shows how far each second-order output of HAMS-MREL has been checked, against what, and how well. Each case below names its reference and gives one headline accuracy. The run logs (wall times, core-hours, job lists) are in [Run details](#run-details), and the measured values of the unit and integration tests are in [the fixture README](../test/data/drift_cyl/README.md#second-order-qtf-tests). All values are measured unless marked [inferred] or [derived].
 
+The validation passages that the user documentation (developer documentation, input and output files, Python scripts, readme) carried before the finalization, when that text was cut to method and input guidance, are kept verbatim in [Validation passages of the user documentation](validation_notes_user_docs.md).
+
 <a id="notation"></a>
 ## Notation and references
 
