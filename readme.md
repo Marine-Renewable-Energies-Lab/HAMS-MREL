@@ -35,7 +35,7 @@ It also adds two checks:
 It also adds mean second-order wave loads, switched on by an optional `SecondOrder.in`. Without the file, results do not change. See [SecondOrder.in](docs/input_files.md#secondorderin-optional).
 
 - **Far-field and near-field drift.** Mean drift force and moment by momentum (far-field: F_x, F_y, M_z) and pressure integration (near-field: all six), for one or all heading pairs.
-- **Control-surface drift.** All six components from the first-order field on a closed surface around each body (Chen 2007). On hulls with sharp edges, use it for F_z, M_x and M_y: on a truncated cylinder at 7168 panels its F_z is within 1.5% of a semi-analytical reference, where near-field is 12% to 506% off.
+- **Control-surface drift.** All six components from the first-order field on a closed surface around each body (Chen 2007). On hulls with sharp edges, use it for F_z, M_x and M_y, where near-field converges slowly.
 
 ## Installation and Usage
 

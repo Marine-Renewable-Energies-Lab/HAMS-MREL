@@ -1,7 +1,8 @@
 """Semi-analytical reference for a truncated vertical cylinder, by eigenfunction matching, to validate HAMS-MREL's mean drift.
 
 Problem (the method of Garrett 1971 and Yeung 1981, with a corner basis; see Sources at the end, and the section
-"Semi-analytical reference: sharp truncated cylinder" of docs/second_order_validation.md for the results). A vertical
+"Semi-analytical reference: sharp truncated cylinder" of docs/second_order_validation.md, on the additional-validation
+branch, for the results). A vertical
 cylinder of radius a and draft d, sharp bilge, in water of depth h, with the gap g = h - d below it. Linear potential flow,
 time factor exp(-i omega t), nu = omega**2/G. G and RHO are make_mesh.G and make_mesh.RHO, the values of src/WavDynMods.f90.
 z is up, z = 0 is the still waterline, z = -h the sea bed. Each azimuthal order m is solved on its own.
@@ -459,7 +460,7 @@ POTENTIAL_QUADRATURE. These are measurements at two pairs, not a stated uncertai
 depth T_pot does not tend to 0 as Omega -> 0 (the set-down: phi_I2 ~ 1/Omega, so FK stays finite; measured F_z FK
 -0.83 at (0.70, 0.71) rad/s, a downward load, as a set-down under the wave group gives), so it is discontinuous at
 the diagonal, where it is 0. psi_1 and psi_5 stay bounded as Omega -> 0 and psi_3 grows slowly (waterline maxima at
-LIGHT_RESOLUTION, Omega = 0.1 ... 0.01 rad/s: 6.66 ... 6.61, 17.0 ... 16.9, 2.86 ... 3.91). qtf_compare.py --potential and qtf_plots.py --potential read
+LIGHT_RESOLUTION, Omega = 0.1 ... 0.01 rad/s: 6.66 ... 6.61, 17.0 ... 16.9, 2.86 ... 3.91). qtf_compare.py --potential reads
 the CSV.
 
 QTF free-surface integral (Phase 6a). qtf-potential ... --free-surface [--fs-radius R] [--fs-check] adds the columns
@@ -2562,7 +2563,8 @@ def qtf_table(cyl, frequencies, motion, n_modes, p_max, orders, xr=(0.0, 0.0, 0.
 def check_qtf_diagonal():
     """The diagonal of qtf_table (kernel diff) is the mean drift of near_field, fixed and free at 0.70 and 0.95 rad/s,
     LIGHT_RESOLUTION, to 1e-12. Both go through near_field_terms_states, so this checks the table's bookkeeping only; the
-    sign of its sum rows is checked against HAMS-MREL and Nemoh by qtf_compare.py (docs/second_order_validation.md)."""
+    sign of its sum rows is checked against HAMS-MREL and Nemoh by qtf_compare.py (docs/second_order_validation.md on the
+    additional-validation branch)."""
     cyl, res = Cylinder(), LIGHT_RESOLUTION
     quad = body_quadrature(cyl, NEAR_QUADRATURE["n_corner"], NEAR_QUADRATURE["n_far"])
     worst = 0.0

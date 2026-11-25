@@ -731,7 +731,7 @@ def qtf_motion_cases(grid):
     chosen = []
     # The grid per mesh is for the cost: an off-grid frequency adds 12 difference and 22 sum
     # frequencies, each a radiation and a psi solve, so m2 would grow from 59 to about 86 core-hours on 22 frequencies
-    # (cost_model.py of validation-runs/snellius-qtf-motion, from the 7c-2 logs). m1 carries the slow-drift peak, m2 the
+    # (cost_model.py of validation-runs/snellius-qtf-motion on the additional-validation branch, from the 7c-2 logs). m1 carries the slow-drift peak, m2 the
     # mesh convergence of the rest and, with the springs, the static diagonal
     grids = {1: QTF_MOTION_FREQUENCIES, 2: QTF_SUM_FREQUENCIES}
     for m in (1, 2):

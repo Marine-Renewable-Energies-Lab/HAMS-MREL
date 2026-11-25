@@ -92,7 +92,8 @@ Layouts (LAYOUTS). `square`: the HAMS validation case, four cylinders of radius 
 (+-10, +-10) m (centre spacing 20 m = 4a), depth 10 m, headings 0 and 45 deg, the frequencies of FREQUENCIES (k a from about
 0.19 to 1.9, below the first irregular frequency of a bottom-mounted circle, k a = j_0,1 = 2.405, the first zero of J_0).
 
-Published values (docs/second_order_validation.md, "Linton & Evans array"). Linton & Evans (1990), Table 1: two cylinders in
+Published values (docs/second_order_validation.md on the additional-validation branch, "Linton & Evans
+array"). Linton & Evans (1990), Table 1: two cylinders in
 the long-wave limit, eight values (check linton_evans_table1, LE_TABLE1). Linton & Evans (1990), Fig. 3: the total drift of the
 square of their Fig. 2, the HAMS case scaled by 1/5, digitised (check linton_evans_fig3, LE_FIG3_TOTAL), compared outside the
 near-trapping band 1.38 < k a < 2.07, where the published curves are smoother and lower than this reference (its boundary
