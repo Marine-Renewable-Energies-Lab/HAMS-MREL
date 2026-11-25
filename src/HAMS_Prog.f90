@@ -87,7 +87,7 @@ program HAMS_MREL
     use PressureElevation
     use PressureElevationMulti
     use FieldOutput_mod
-    use DipoleMesh_mod, only: DNELEM
+    use DipolePanel_mod, only: DNELEM
     use DipoleAssb
     use HAMS_mod
     use SecondOrderTypes
@@ -299,7 +299,7 @@ program HAMS_MREL
             STOP 1
         ENDIF
         IF (DNELEM.GT.0) THEN
-            ! Dipole panels (notes/specs/2026-11-24-dipole-panels-design.md): the unknowns are the hull potentials and the
+            ! Dipole panels (docs/developer_documentation.md): the unknowns are the hull potentials and the
             ! sheet jumps, NTOT = NELEM + DNELEM, solved by DipoleAssb; the arrays above are resized for them.
             IF (NFP.GT.0) THEN
                 PRINT*, ' Error: field-point pressures and elevations are not supported with dipole panels (v1).'

@@ -8,7 +8,7 @@ module test_dipole_bodies
   use PanelMesh_mod, only : NELEM, IPIV, DS, DXYZ_P
   use Inerfs_mod, only : iNELEM
   use Potentials_mod, only : MXPOT
-  use DipoleMesh_mod, only : DNELEM
+  use DipolePanel_mod, only : DNELEM
   use WaveDyn_mod, only : V, H, WVN, WK, W1
   use HAMS_mod, only : NTHREAD, ISOLV
   use CalGreenFunc, only : CALGREEN, CALGREEN_IRR
@@ -229,7 +229,7 @@ contains
 
   subroutine haskind_pair(kind, th, xd, xh)
     use PanelMesh_mod, only : XYZ_P, GEONRM_P
-    use DipoleMesh_mod, only : DPXYZ_C, DNRM, DDS
+    use DipolePanel_mod, only : DPXYZ_C, DNRM, DDS
     use WaveDyn_mod, only : AMP, BETA
     use Body_mod, only : XW
     use PatcVelct, only : VINP, DINP

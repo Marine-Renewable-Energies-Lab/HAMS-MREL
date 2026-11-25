@@ -26,7 +26,7 @@ MODULE ReadPanelMesh
    USE PanelMesh_mod
    USE Inerfs_mod
    USE NormalProcess
-   USE DipoleMesh_mod
+   USE DipolePanel_mod
    
    IMPLICIT NONE
 
@@ -257,8 +257,8 @@ CONTAINS
 
 !=======================================================================
 !SUBROUTINE DIPOLE_SETUP
-!   !   Sets the geometry of the dipole (zero-thickness) panels in DipoleMesh_mod (notes/specs/2026-11-24-dipole-panels-
-!   !   design.md, Sec. 6) from the dipole block of HullMesh.pnl, which ReadBodyMesh read into DNCN and DNCON (node
+!   !   Sets the geometry of the dipole (zero-thickness) panels in DipolePanel_mod (docs/input_files.md, "Dipole panels")
+!   !   from the dipole block of HullMesh.pnl, which ReadBodyMesh read into DNCN and DNCON (node
 !   !   numbers of the shared node list XYZ). Call it after CalNormals. Without the block (DNELEM = 0) nothing is
 !   !   allocated and OK is true. With it, the v1 limits (DIPOLE_CHECK_OPTIONS) and the geometry (DIPOLE_CHECK_GEOMETRY,
 !   !   _CLEARANCE, _COPLANAR) are checked; OK false and MSG say why. The nodes the sheet uses are copied out of XYZ, in

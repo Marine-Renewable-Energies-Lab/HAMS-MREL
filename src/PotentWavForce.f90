@@ -30,7 +30,7 @@ MODULE PotentWavForce
 
    USE PatcVelct
    USE Potentials_mod
-   USE DipoleMesh_mod, ONLY: DNELEM
+   USE DipolePanel_mod, ONLY: DNELEM
    USE DipoleAssb, ONLY: DIPOLE_FORCE_SUM
    IMPLICIT NONE
 

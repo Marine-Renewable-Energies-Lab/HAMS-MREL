@@ -18,7 +18,7 @@
 !  ------------------------------------------------------------------------------------------------------
 !
 !  Rankine integrals of a flat panel with a constant normal dipole density (zero-thickness panels, first order).
-!  Design and sources: notes/specs/2026-11-24-dipole-panels-design.md, Sec. 3.
+!  Design and sources: docs/developer_documentation.md, "Dipole (zero-thickness) panels".
 !
 !  The panel is given by its nodes A(1:NNODE,3), NNODE = 3 or 4, and a unit normal NQ. Both routines are oriented about
 !  NQ, whatever the node order: a panel whose node-order normal (right-hand rule) points against NQ is traversed backwards.

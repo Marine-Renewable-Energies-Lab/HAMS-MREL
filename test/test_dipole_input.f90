@@ -8,7 +8,7 @@ module test_dipole_input
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use ReadPanelMesh, only : DIPOLE_SETUP, DIPOLE_CHECK_OPTIONS, DIPOLE_CHECK_GEOMETRY, DIPOLE_RELEASE, &
                             DIPOLE_CHECK_CLEARANCE, DIPOLE_CHECK_COPLANAR, HULL_HEADER, ReadBodyMesh, CalNormals
-  use DipoleMesh_mod, only : DNELEM, DNTND, DPXYZ, DPXYZ_C, DNRM, DDS, DPNSZ, DNCN, DNCON
+  use DipolePanel_mod, only : DNELEM, DNTND, DPXYZ, DPXYZ_C, DNRM, DDS, DPNSZ, DNCN, DNCON
   use PanelMesh_mod, only : NELEM, NTND, ISX, ISY, XYZ, DS, PNSZ, NCN, NCON, XYZ_P, DXYZ_P, GEONRM_P
   use Body_mod, only : XR
 

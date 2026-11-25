@@ -18,8 +18,8 @@
 !  ------------------------------------------------------------------------------------------------------
 !
 !  Assembly and solve with dipole (zero-thickness) panels, first order, one body, no symmetry, direct LU
-!  (notes/specs/2026-11-24-dipole-panels-design.md, Sec. 3 and 4). Used only when DipoleMesh.pnl gives DNELEM > 0; the
-!  path without dipole panels (AssbMatx, AssbMatx_irr) is not touched.
+!  (docs/developer_documentation.md, "Dipole (zero-thickness) panels"). Used only when HullMesh.pnl has dipole panels
+!  (DNELEM > 0); the path without dipole panels (AssbMatx, AssbMatx_irr) is not touched.
 !
 !  Unknowns: [phi on the N = NELEM hull panels; mu = phi(+n) - phi(-n) on the M = DNELEM dipole panels], NTOT = N + M.
 !    Hull row i, hull columns: as ASSB_LEFT (2 pi + BODINT_LEFT from RKBN and CGRN of CALGREEN).
@@ -38,7 +38,7 @@ MODULE DipoleAssb
    USE WaveDyn_mod
    USE PanelMesh_mod
    USE Potentials_mod
-   USE DipoleMesh_mod
+   USE DipolePanel_mod
    USE DipoleIntgr
    USE BodyIntgr, ONLY: BODINT_LEFT, RBC_RIGHT, DBC_RIGHT
    USE BodyIntgr_irr, ONLY: BODINT_LEFT_IRR, RBC_IRR, DBC_IRR

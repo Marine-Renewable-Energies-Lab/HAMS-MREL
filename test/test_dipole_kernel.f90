@@ -1,5 +1,5 @@
 !> Rankine integrals of a constant normal-dipole panel (DipoleIntgr): the solid angle Omega and the finite-part integral
-!> of d2(1/r)/dn_F dn_Q, which is n_F . grad Omega (notes/specs/2026-11-24-dipole-panels-design.md, Sec. 3).
+!> of d2(1/r)/dn_F dn_Q, which is n_F . grad Omega (docs/developer_documentation.md).
 !> The references here are independent of the module: Gauss quadrature of the analytic kernels, the closed form of the
 !> finite part on a square from polar coordinates, central differences of Omega, and the solid angle of a closed cube.
 module test_dipole_kernel

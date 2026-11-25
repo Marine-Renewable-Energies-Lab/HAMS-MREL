@@ -139,7 +139,7 @@
 !        (NDIPOLE, the fifth field of its line 4). DNELEM = 0 and nothing allocated without it.
 !---------------------------------------------------------------------------------------------
 !
-        MODULE DipoleMesh_mod
+        MODULE DipolePanel_mod
 !
         INTEGER,PUBLIC:: DNELEM=0,DNTND=0
 !
@@ -149,7 +149,7 @@
         REAL*8,ALLOCATABLE,PUBLIC:: DNRM(:,:)                                ! generalised normals nu_D (1:3) and (x - XR) x nu_D (4:6)
         REAL*8,ALLOCATABLE,PUBLIC:: DDS(:),DPNSZ(:)                          ! panel areas and sizes
 !
-        END MODULE DipoleMesh_mod
+        END MODULE DipolePanel_mod
         
 !---------------------------------------------------------------------------------------------
 !        Data module for declaring variables of general computation

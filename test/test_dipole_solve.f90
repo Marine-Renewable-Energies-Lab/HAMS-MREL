@@ -1,4 +1,4 @@
-!> Solve with dipole (zero-thickness) panels (DipoleAssb; notes/specs/2026-11-24-dipole-panels-design.md, Sec. 3-4).
+!> Solve with dipole (zero-thickness) panels (DipoleAssb; docs/developer_documentation.md).
 !> A disc of radius a, broadside, deep under the free surface, with no hull: the added mass in an infinite fluid is
 !> (8/3) rho a^3 (Lamb 1932, Sec. 108). HAMS has no infinite-fluid G; its two frequency limits (V = 0: G = 1/r + 1/r1,
 !> V = -1: G = 1/r - 1/r1) bracket that value and close in on it with depth (design note Sec. 4). The suite sets the
@@ -8,7 +8,7 @@ module test_dipole_solve
   use testdrive, only : new_unittest, unittest_type, error_type, check
   use PanelMesh_mod, only : NELEM, XYZ, NCN, NCON, XYZ_P, DS, PNSZ, DXYZ_P, GEONRM_P
   use Potentials_mod, only : MXPOT
-  use DipoleMesh_mod, only : DNELEM, DNTND, DPXYZ, DNCN, DNCON, DPXYZ_C, DNRM, DDS, DPNSZ
+  use DipolePanel_mod, only : DNELEM, DNTND, DPXYZ, DNCN, DNCON, DPXYZ_C, DNRM, DDS, DPNSZ
   use WaveDyn_mod, only : V, H, WVN, WK, W1, AMP, BETA
   use Body_mod, only : XR, XW
   use HAMS_mod, only : NTHREAD
@@ -34,7 +34,7 @@ contains
   end subroutine collect_dipole_solve
 
   !> A disc of radius a at depth d, NR rings with radii a sin(pi i / 2 NR) (graded toward the rim, design note Sec. 6)
-  !> and NT sectors, into DipoleMesh_mod; FLIP reverses the node order (HAMS normal -z instead of +z). No hull panels.
+  !> and NT sectors, into DipolePanel_mod; FLIP reverses the node order (HAMS normal -z instead of +z). No hull panels.
   subroutine make_disc(a, d, nr, nt, flip)
     real(8), intent(in) :: a, d
     integer, intent(in) :: nr, nt

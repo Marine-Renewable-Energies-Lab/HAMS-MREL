@@ -13,7 +13,7 @@ module dipole_bodies
   use PanelMesh_mod, only : NELEM, NTND, NSYS, ISX, ISY, XYZ, NCN, NCON, XYZ_P, DS, PNSZ, DXYZ_P, GEONRM_P
   use Inerfs_mod, only : iNELEM, iNTND, iXYZ, iNCN, iNCON, iXYZ_P, iDXYZ_P, iDS, iPNSZ
   use Potentials_mod, only : RKBN, CGRN, PKBN, DGRN, MXPOT
-  use DipoleMesh_mod, only : DNELEM, DNTND, DPXYZ, DNCN, DNCON, DPXYZ_C, DNRM, DDS, DPNSZ
+  use DipolePanel_mod, only : DNELEM, DNTND, DPXYZ, DNCN, DNCON, DPXYZ_C, DNRM, DDS, DPNSZ
   use Body_mod, only : XR
   use ReadPanelMesh, only : DIPOLE_RELEASE
   use NormalProcess, only : CalPanelCentre, CalPanelArea, CalPanelChartLength, CalTransNormals, CalRotNormals
