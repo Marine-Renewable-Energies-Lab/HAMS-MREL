@@ -8,9 +8,12 @@ HAMS_InputOutput/
 │   ├── Single_body/
 │   │   ├── HAMSInput.py
 │   │   └── HAMS_single_bodies.py
-│   └── Multi-body/
-│       ├── HAMSMultiInput.py
-│       └── HAMS_multi_bodies.py
+│   ├── Multi-body/
+│   │   ├── HAMSMultiInput.py
+│   │   └── HAMS_multi_bodies.py
+│   └── Mesh/
+│       ├── hams_mesh.py
+│       └── tests/test_hams_mesh.py
 └── Output/
     ├── Single_body/
     │   ├── Example_single_body.py
@@ -57,7 +60,48 @@ Where a script takes the gravitational acceleration `g`, its default is 9.80665 
 - `add_body_info()` — writes the number of bodies and the LCS (Local Coordinate System) coordinates and orientation for each body.
 - Per-body rotation centers (`Reference_body_center_i`) in the solver options section.
 
-**`HAMSMultiInput.py`** is an example script that demonstrates how to use `HAMS_multi_bodies.py`. It sets up a 10-body simulation with LCS coordinates and rotation centers per body. Note that the `Hydrostatic[_i].in` files must be created separately for multi-body cases.
+**`HAMSMultiInput.py`** is an example script that demonstrates how to use `HAMS_multi_bodies.py`. It sets up a 10-body simulation with LCS coordinates and rotation centers per body. Note that the `Hydrostatic[_i].in` files must be created separately for multi-body cases. `Mesh/hams_mesh.py` (below) writes them together with the meshes.
+
+### Meshes
+
+**`Mesh/hams_mesh.py`** builds simple geometric meshes and writes the mesh and hydrostatic input files for one body, an array of identical bodies, or a body with dipole (zero-thickness) sheets. It needs `numpy`, and `matplotlib` for `--plot`. Each shape is a function that returns a `Body` and a subcommand:
+
+| Subcommand | Function | Shape |
+| :--- | :--- | :--- |
+| `cylinder` | `cylinder(radius, draft, ...)` | vertical surface-piercing cylinder, wall and flat bottom |
+| `box` | `box(length, width, draft, ...)` | rectangular surface-piercing box, length along x |
+| `hemisphere` | `hemisphere(radius, ...)` | lower half of a sphere centred on the waterline |
+| `sphere` | `sphere(radius, centre_depth, ...)` | sphere below the free surface |
+| `spar` | `spar(profile, ...)` | body of revolution of a polyline profile `r z` from the waterline down, the bottom disc added: a stepped or tapered spar |
+| `cone` | `cone(top_radius, bottom_radius, draft, ...)` | truncated cone |
+| `heave-plate` | `heave_plate(column_radius, draft, plate_radius, ...)` | cylinder column with a dipole annulus at its bottom, sharing the nodes of the column's bottom ring |
+| `disc` | `disc(radius, depth, ...)` | free circular dipole sheet, no hull |
+| `plate` | `plate(length, width, depth, ...)` | free rectangular dipole sheet, no hull |
+
+```
+python hams_mesh.py cylinder --radius 5 --draft 10 --panel-size 0.8 --waterline-grading 0.5 --edge-grading 0.5 --lid
+python hams_mesh.py spar --profile 3.25 0 3.25 -4 4.7 -12 4.7 -120 --panel-size 1.5 --edge-grading 0.5
+python hams_mesh.py heave-plate --column-radius 10 --draft 9.9 --plate-radius 15 --panel-size 0.75 --edge-grading 1
+python hams_mesh.py cylinder --radius 2 --draft 4 --panel-size 0.4 --at 0 0 --at 20 0 --at 10 15 30 --lid --out-dir Input
+```
+
+- **Fineness.** `--panel-size` sets a target panel edge, from which the panel counts follow (around a circle, rounded up to a multiple of 4). The counts of each shape (`--ntheta`, `--nz`, `--nr`, `--nx`, `--ny`, `--nphi`, `--nplate`, `--nrings`, and `--counts` per profile segment for `spar`) override it.
+- **Grading.** `--waterline-grading G` makes the rows finer towards z = 0, and `--edge-grading G` towards sharp edges (the bilge corner of a cylinder or box, the corners of a spar profile) and towards the free rim of a dipole sheet. G runs from 0 (uniform) to 1 (sine spacing). A segment fine at one end has its nodes at (1 − G) u + G f(u), with f(u) = 1 − cos(πu/2) or sin(πu/2); fine at both ends, f(u) = (1 − cos πu)/2 with the larger G. The counts stay those of uniform spacing, so grading makes the end panels smaller than the panel size. Grade a dipole annulus or disc towards its rim, with G = 1 as recommended in [Input Files](input_files.md#dipolemeshpnl-optional-single-body).
+- **Outputs**, in `--out-dir` (default the current folder): `HullMesh.pnl`; `WaterPlaneMesh.pnl` with `--lid` (for `IRSP = 1`); and `Hydrostatic.in`. The script prints the volume, waterplane area, mass and restoring it wrote, and the `ControlFile.in` lines to paste: the rotation centre and `If_remove_irr_freq`.
+- **Dipole panels** are written in `HullMesh.pnl`, with one node list shared with the hull. Line 4 is `NELEM NTND ISX ISY NDIPOLE`, and the fifth number is written only when `NDIPOLE > 0`. The hull panels are followed by the line `# Start Definition of Dipole Panels` and the `NDIPOLE` dipole panels, in the same panel format and numbered from 1. No `DipoleMesh.pnl` is written. Dipole sheets support one body only, `ISOLV = 1`, no symmetry and first order only, and the script reminds you of this.
+- **Arrays.** With more than one `--at X Y [ANGLE]` (angle about z in degrees), the same body is written at each position as `HullMesh_i.pnl`, `WaterPlaneMesh_i.pnl` and `Hydrostatic_i.in`, and the `Number_of_bodies`, `LCS_i` and `Reference_body_center_i` lines are printed.
+  - The meshes are in the body's own frame, placed by the LCS lines, as `ReadBodyMeshMulti` does: rotation about z, then the shift.
+  - The centre of gravity, rotation centre and matrices of `Hydrostatic_i.in` are global, as in `examples/example1_multi_bodies`.
+  - The LCS and rotation-centre lines use the fixed formats of `ReadControlFile` (`26x,4f12.3` and `28x,3f12.3`). The LCS angle is in radians with 3 decimals, so positions and angles are rounded to what HAMS reads before the hydrostatics are computed.
+- **Hydrostatics.** The volume, the centre of buoyancy and the waterplane moments come from the panels themselves, by the divergence theorem on the hull closed at z = 0. This is exact for the flat panels, with a 7-point degree-5 rule on each triangle. By default the mass is a uniform solid filling the submerged volume: mass ρV, centre of gravity at the centre of buoyancy, and its inertia from the same panels. `--mass`, `--cog` (in the body frame) and `--gyration` (radii about the centre of gravity) replace it, with a warning if the mass is not ρV. The restoring is that of WAMIT, about the rotation centre (x, y, `--centre-z`), C33, C34, C35, C44, C45, C46, C55 and C56. External damping and stiffness are zero. ρ = 1000 kg/m³ and g = 9.80665 m/s², as `Const_mod`. For the uniform cylinder the matrices equal those of `SecondOrder/make_mesh.py` to 1e-9.
+- **Checks before writing**:
+  - normals as HAMS computes them (`CalTransNormals`) point out of the fluid;
+  - the hull is closed apart from its waterline on z = 0, and every edge is shared by two panels in opposite order;
+  - no node is above z = 0, and no hull panel centroid is on z = 0;
+  - the dipole input checks of `DIPOLE_SETUP` ([ReadPanelMesh.f90](../src/ReadPanelMesh.f90)): every dipole node at least one panel size below z = 0, no dipole centroid on a hull centroid, and no overlap with a coplanar hull panel;
+  - every lid node lies on z = 0, with a warning if a lid centroid is closer to the hull wall than 0.3 waterline rows ([Lid mesh requirements](input_files.md#lid-mesh-requirements)). The lid's outer ring is one waterline row wide for that reason.
+- **`--plot PNG`** draws the mesh: hull grey, dipole sheets orange, lid blue.
+- **Tests.** `python -m pytest pre_postprocessing_python/HAMS_InputOutput/Input/Mesh` runs 16 tests (about 6 s), one per shape. They check the volume and waterplane area against the exact values within the panel error: equal to the inscribed polygon or frustum where that is exact, and within the sagitta bound for the spheres. They also read the files back as HAMS reads them, and test the checks, the lid, the hydrostatics about an offset centre and with a given mass, the multi-body set and its control lines.
 
 
 ## Output Postprocessing
