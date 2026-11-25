@@ -5,7 +5,7 @@
 !> mean drift of each body, the far-field mean drift of the array and the total elevation at the field points. At 64 panels per
 !> cylinder these are mesh errors, not accuracy claims: the limits are about twice the errors measured when the test was
 !> written, and a wrong sign, conjugate, body index or moment centre gives errors of order 1. The converged comparison is in
-!> docs/second_order_validation.md, "Linton & Evans array".
+!> second_order_validation.md (additional-validation branch), "Linton & Evans array".
 module test_integration_array
 
     use testdrive, only : new_unittest, unittest_type, error_type, check, test_failed

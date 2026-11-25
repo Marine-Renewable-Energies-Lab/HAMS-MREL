@@ -73,12 +73,12 @@ MODULE SecondOrderTypes
       ! The partial waves outside R: 1 samples (the centroid route at the circle samples, fitted), 2 panels (straight from the
       ! hull integral by Graf's addition theorem, mode check on every 8th sample; item 3 of the field-pass speed-ups).
       ! Default panels: the accuracy gate passed on the sharp cylinder m2 (126 rows, none failed; 2026-11-20;
-      ! validation-runs/fs-speedups/gate/G1_table.md).
+      ! additional-validation:validation-runs/fs-speedups/gate/G1_table.md).
       INTEGER :: qtf_fs_circle = 2
       ! The inner free-surface fields: 1 stencil (the 5-point stencil of the Green route, with phi_zz), 2 source (phi and grad
       ! phi from the source strengths, phi_zz removed from the inner integral by Green's theorem in the plane; item 2 of the
       ! field-pass speed-ups). Default stencil: source stays off because it failed the accuracy gate (the result depends on the hull
-      ! mesh, see validation-runs/fs-speedups/gate/G1_table.md).
+      ! mesh, see additional-validation:validation-runs/fs-speedups/gate/G1_table.md).
       INTEGER :: qtf_fs_inner = 1
       ! Field-pass rows (psi, grad psi at the hull, free-surface and field points): the deep-water Green function is used
       ! where k0 h >= field_deep_kh (k0 the wave number of the frequency, h the depth); 0 switches it off
@@ -87,7 +87,7 @@ MODULE SecondOrderTypes
       ! (its deepest node); below it the rows keep the finite-depth Green function at every frequency. 0 switches the guard
       ! off. On the sharp cylinder (fixed body) the deep rows at k0 h >= 10 moved the free-surface part of the sum QTF (F_z)
       ! from 0.72 % to 7.29 % of the exact maximum at 2.5 drafts (h = 25 m) and from 0.74 % to 2.96 % at 5 drafts (h = 50 m);
-      ! at 10 drafts (h = 100 m) they passed the accuracy gate (validation-runs/fs-speedups/deep_inner/findings.md). So the
+      ! at 10 drafts (h = 100 m) they passed the accuracy gate (additional-validation:validation-runs/fs-speedups/deep_inner/findings.md). So the
       ! default is 10 drafts, the shallowest depth measured to pass
       REAL(8) :: field_deep_draft = 10D0
       ! Panel weights of the B2 hull term at sharp edges (SharpEdge), with qtf_b2 = control; edges where the normals differ

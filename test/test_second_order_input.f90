@@ -1092,7 +1092,7 @@ subroutine test_qtf_fs_circle_key(error)
   call remove_directory(root)
 end subroutine test_qtf_fs_circle_key
 
-!> The defaults after the accuracy gate (validation-runs/fs-speedups/gate/G1_table.md), read from an input without either
+!> The defaults after the accuracy gate (additional-validation:validation-runs/fs-speedups/gate/G1_table.md), read from an input without either
 !> key: qtf_fs_circle = panels (2, passed) and qtf_fs_inner = stencil (1, failed on the hull mesh and stays off)
 subroutine test_qtf_fs_defaults(error)
   type(error_type), allocatable, intent(out) :: error

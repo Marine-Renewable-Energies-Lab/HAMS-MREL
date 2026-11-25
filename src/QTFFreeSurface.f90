@@ -2668,7 +2668,7 @@ CONTAINS
    END SUBROUTINE fs_local_rankine
 
    SUBROUTINE fs_waterline_fit_setup(mesh, geom, pts, step, fit, scale)
-      ! The near-waterline fit of the inner fields (Phase 7c-2; docs/second_order_validation.md, the free-surface part of
+      ! The near-waterline fit of the inner fields (Phase 7c-2; second_order_validation.md (additional-validation branch), the free-surface part of
       ! the sum). Within about one hull panel of a waterline the 5-point stencil of fs_inner_fields differences the field
       ! of constant panels below the scale on which it is smooth (fs_inner_steps shrinks its offsets to millimetres there):
       ! with exact panel data on the sharp m1 hull grad phi is 3-105 % and phi_zz 20-450 % off within 1 m of the

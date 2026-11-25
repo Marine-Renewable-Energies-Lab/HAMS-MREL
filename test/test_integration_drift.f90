@@ -7019,7 +7019,7 @@ contains
     !> psi and grad psi of a main-grid frequency taken in the fields passes of that frequency give every output file
     !> unchanged, line for line, against expected_output of each case:
     !>   qtf_fs_main (free surface only, qtf_b2 = body) and qtf_b2c_main (C and F only, qtf_terms = body): the outputs at
-    !>   88e19bd (validation-runs/fs-speedups/base_88e19bd), with field_deep_kh = 0 in SecondOrder.in (their largest
+    !>   88e19bd (additional-validation:validation-runs/fs-speedups/base_88e19bd), with field_deep_kh = 0 in SecondOrder.in (their largest
     !>   k0 h, 2.2 and 5.1, is below the default 10 too, so the default gives the same);
     !>   the four psi_reuse fixtures (run_psi_reuse_cases): the outputs at 85d867e, before the reuse.
     !> Stored again with qtf_fs_circle = panels as the default (the accuracy gate, 2026-11-20): qtf_fs_main and qtf_psi_reuse_half,
@@ -7098,7 +7098,7 @@ contains
     ! ---------------------------------------------------------------------------------------------- circle from the panels
 
     !> qtf_fs_samples: qtf_fs_main with qtf_fs_circle = samples (the partial waves outside R from the circle samples and their
-    !> fit, the route before the accuracy gate, validation-runs/fs-speedups/gate/G1_table.md, made panels the
+    !> fit, the route before the accuracy gate, additional-validation:validation-runs/fs-speedups/gate/G1_table.md, made panels the
     !> default; item 3 of the field-pass speed-ups), with its run time
     subroutine run_qtf_fs_samples(error)
         type(error_type), allocatable, intent(out) :: error

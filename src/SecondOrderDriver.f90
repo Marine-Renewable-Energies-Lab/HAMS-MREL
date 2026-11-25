@@ -578,7 +578,7 @@ CONTAINS
       IF (fs_np > 0) THEN
          ! The free-surface terms on the generated mesh get more accurate as the hull mesh is refined (the mesh takes a
          ! column at every hull waterline node): on the sharp cylinder, free body, 12 / 4.5 / 2.2 % of the exact value
-         ! at m1 / m2 / m3 (docs/second_order_validation.md). Say so in the log, with the rows, so that a coarse hull is
+         ! at m1 / m2 / m3 (second_order_validation.md (additional-validation branch)). Say so in the log, with the rows, so that a coarse hull is
          ! checked on a finer one
          WRITE (*, '(a,I0,a)') ' QTF free surface note: generated inner mesh, ', nrows, ' radial rows; the free-surface'// &
             ' terms get more accurate with a finer hull mesh (sharp cylinder: 12 % at m1, 4.5 % at m2). Check them on a'// &

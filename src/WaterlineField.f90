@@ -58,7 +58,7 @@ CONTAINS
       ! the draft of the hull (draft_ratio = 0: no depth guard). In water shallow relative to the draft the deep row misses
       ! the seabed by more than the threshold in k0 h accounts for: on the sharp cylinder the sum free-surface F_z moved by
       ! 6.6 percentage points at 2.5 drafts and 2.2 at 5 drafts, and passed the gate at 10 drafts
-      ! (validation-runs/fs-speedups/deep_inner/findings.md).
+      ! (additional-validation:validation-runs/fs-speedups/deep_inner/findings.md).
       REAL(8), INTENT(IN) :: depth, draft, k0, kh_min, draft_ratio
 
       deep_rows_allowed = depth > 0D0 .AND. kh_min > 0D0 .AND. k0*depth >= kh_min .AND. &

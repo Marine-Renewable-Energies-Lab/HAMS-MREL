@@ -3490,7 +3490,7 @@ subroutine test_pair_terms_ibp_order(error)
   end do
 end subroutine test_pair_terms_ibp_order
 
-!> Input of the accuracy gate (validation-runs/fs-speedups/gate/G1_table.md): the inner fields and the inner integral
+!> Input of the accuracy gate (additional-validation:validation-runs/fs-speedups/gate/G1_table.md): the inner fields and the inner integral
 !> of the stencil route (today: fs_inner_fields, the driver's offsets, the near-waterline fit) and of the source route
 !> (fs_inner_fields_source from the source strengths of velocity_source, without phi_zz), both from the exact potential
 !> on the sharp m1 hull, side by side against the exact values: phi and grad phi at the rings 0.1 to 3.5 m from the
@@ -3500,7 +3500,7 @@ end subroutine test_pair_terms_ibp_order
 !> route by fs_inner_pair_ibp + fs_line_pair, with the exact grad psi_k at the grid points and psi_k on both edges from
 !> fs_fields_exact_grid_psi*.txt, the states on the outer edge r = 15 m from the partial waves of fs_circle_modes, as the
 !> driver takes them, and on the waterline r = a d_n of the total field = V_n = 0, a fixed wall-sided body). The table is
-!> printed only (no file, no times in it); validation-runs/fs-speedups/gate/fs_inner_source_exact.txt is a copy of it.
+!> printed only (no file, no times in it); additional-validation:validation-runs/fs-speedups/gate/fs_inner_source_exact.txt is a copy of it.
 !> The times of the two routes are printed apart. Gates: each route within SRC_* (1.3x measured).
 subroutine test_inner_source_matches_exact(error)
   type(error_type), allocatable, intent(out) :: error
