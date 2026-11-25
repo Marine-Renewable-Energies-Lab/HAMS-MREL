@@ -292,12 +292,12 @@ Control now gives the same small asymmetry as far-field [measured]. Before the f
 
 ### Snellius studies
 
-The convergence study of F_x, F_y and M_z and the study of F_z, M_x and M_y on finer meshes are in [Second-order validation](../../../docs/second_order_validation.md#control-surface-method).
+The convergence study of F_x, F_y and M_z and the study of F_z, M_x and M_y on finer meshes are in Second-order validation (in `docs/second_order_validation.md` on the `additional-validation` branch).
 
 <a id="second-order-qtf-tests"></a>
 ## Second-order QTF tests
 
-The unit and integration tests of the second-order QTF methods, with their measured values and limits. They were moved here from [Second-order validation](../../../docs/second_order_validation.md#unit-and-integration-tests), which keeps a summary per feature. The limits are measured values with a margin (mostly 1.3 times the measured value, rounded up) unless a test is an identity; laptop, ifort 2022.1, Windows.
+The unit and integration tests of the second-order QTF methods, with their measured values and limits. They were moved here from Second-order validation (in `docs/second_order_validation.md` on the `additional-validation` branch), which keeps a summary per feature. The limits are measured values with a margin (mostly 1.3 times the measured value, rounded up) unless a test is an identity; laptop, ifort 2022.1, Windows.
 
 ### Direct method with the free-surface forcing
 
@@ -402,7 +402,7 @@ Four fixtures, all with `qtf_direct = 1`, `qtf_terms = full`, `qtf = 1`, `qtf_ma
   The gap falls at order about 0.6 in the panel size for both kernels (the difference kernel was measured in a temporary `qtf = 3` variant, and the 1008-panel run was temporary, neither committed). A sum-path error would not fall with the mesh, so this is read as the shared waterline and sharp-edge mesh error of the sharp cylinder. The sum constant is 3 to 10 times the difference one: Ω is higher, and the diagonal B terms are large (the sphere of `direct_sum_matches_indirect_pair` also has a diagonal about 4 times the pairs). The gates are, at 448 panels, all pairs at most 7.7e-2 and the pair (0.4, 0.5) at most 2.1e-2 (1.3 times measured), and a 112 to 448 ratio of at least 1.3 (measured 1.49).
 - **The sum at the inner mesh for Ω⁺.** With an inner mesh built for 1.1 rad/s (100 points) `direct_fs_sum_equals_indirect` gave 1.54e-2, with the mesh for 1.40 rad/s (180 points) 6.0e-3 and for 2.0 rad/s (648 points) 4.5e-3. The body-part gap is 2.6e-3 to 2.9e-3, so the free-surface mesh is the larger part of the difference, and the driver builds the inner mesh for the largest sum frequency.
 - **The sign.** With s_D = +1 the free-surface part agrees with the indirect one to 6.0e-3; with −1 the gap is 1.55 (order 1), so the sign carries over from the difference, and the free-surface part is not vacuous.
-- **Known limit.** `fs_green_matrix_large_kh` finds `FINGREEN3D` about 2e-4 off the exact eigenfunction series at ν h ≈ 50 with small R/h (1.40e-4 at the worst panel, growing with ν h); the panel rule is not the cause (1.2e-7 on the exact series). It is small next to the 6e-3 mesh error, and is listed in the [open items](../../../docs/second_order_validation.md#open-items).
+- **Known limit.** `fs_green_matrix_large_kh` finds `FINGREEN3D` about 2e-4 off the exact eigenfunction series at ν h ≈ 50 with small R/h (1.40e-4 at the worst panel, growing with ν h); the panel rule is not the cause (1.2e-7 on the exact series). It is small next to the 6e-3 mesh error, and is listed in the open items (in `docs/second_order_validation.md` on the `additional-validation` branch).
 
 #### Integration tests
 
@@ -419,7 +419,7 @@ Seven fixtures, written by `make_drift_fixtures.py` into `test/data/qtf_directsu
 | `direct_sum_off_unchanged`: `.12d` and `QTF_DirectTerms.txt` of `qtf_direct_irsp`, `qtf_direct_two` (body forcing) and `qtf_directfs_round`, `_irsp`, `_two` (free-surface forcing); no sum solve in their logs | byte for byte | exact |
 | `direct_sum_qtf3_diff_unchanged`: `.11d`, `.12d`, `.10d` and `QTF_DirectTerms.txt` of `_d3` against `_d1` | byte for byte | exact |
 
-- **The gap of the rounded hull.** The direct sum is 12.7% from the in-run indirect sum on the rounded hull, and 13.8% on the lid hull, whose gap without D_FS is 77.5%. The gap is in the moments; the forces are 1.6% and 3.8%. It is the same on the half and the whole mesh (13.4%), so it is not a half-mesh effect. The cause is taken to be the coarse hull bottom, as for the difference at the same hull (3.9e-2 there), larger at Ω = 1.4 to 2.2 rad/s, where the waves are short on a 480-panel hull. The rounded-hull meshes m1 to m3 on Snellius settled it: the gap falls to 2.7% and 1.2% (moments) at m2 and m3, so it is mesh error ([Snellius validation](../../../docs/second_order_validation.md#snellius-validation-of-the-sum-frequency)).
+- **The gap of the rounded hull.** The direct sum is 12.7% from the in-run indirect sum on the rounded hull, and 13.8% on the lid hull, whose gap without D_FS is 77.5%. The gap is in the moments; the forces are 1.6% and 3.8%. It is the same on the half and the whole mesh (13.4%), so it is not a half-mesh effect. The cause is taken to be the coarse hull bottom, as for the difference at the same hull (3.9e-2 there), larger at Ω = 1.4 to 2.2 rad/s, where the waves are short on a 480-panel hull. The rounded-hull meshes m1 to m3 on Snellius settled it: the gap falls to 2.7% and 1.2% (moments) at m2 and m3, so it is mesh error (Snellius validation (in `docs/second_order_validation.md` on the `additional-validation` branch)).
 - **Not vacuous.** The lid hull gap without D_FS is 5.6 times the one with it, so the free-surface forcing of the sum is tested by the whole path as well as by `direct_fs_sum_equals_indirect`.
 - **The outputs of the difference direct method do not change.** `direct_sum_off_unchanged` and `direct_sum_qtf3_diff_unchanged` compare the whole files. The stored free-surface-forcing files were made with the merge binary of the second-order-drift branch (c716ed7), after reproducing the stored `qtf_direct_irsp` output byte for byte; the `qtf = 1` runs of this build match them to the byte.
 - **The pins are of this build.** `expected_sum.txt` is written from this build by `extract_direct_field_expected.py` (7 digits): it pins the rows against later changes and is not an independent reference. The `.12s` file holds both orders of an unequal pair (48 rows for 2 frequencies and 2 headings, not 36), as `.10s` does.
