@@ -1162,7 +1162,8 @@ end subroutine test_direct_fs_field_body_only
 !> The difference kernel stays the default of the free-surface block, bit for bit (Phase 7c-2 Task 3): the setup of
 !> test_direct_fs_pair_order (448-panel cylinder in depth 15, Omega = 0.3, the pair with Omega < 0 and its swap), the
 !> free-surface part of the load (parts slice 3) of both columns against the values printed from the code before the
-!> kernel argument (47a088c, 17 digits, round-trip).
+!> kernel argument (47a088c, 17 digits, round-trip). Printed again at the merge of main's single g (DISPERSION from
+!> g = 9.807 to Const_mod's 9.80665): they moved by at most 1.2e-4 of the largest.
 subroutine test_direct_fs_kernel_default(error)
   type(error_type), allocatable, intent(out) :: error
   real(8), parameter :: om(2) = [1.1d0, 0.8d0], be(2) = [0.6d0, 0.2d0]
@@ -1176,12 +1177,12 @@ subroutine test_direct_fs_kernel_default(error)
   type(pw_set), allocatable, target :: pwa(:, :)
   real(8), allocatable :: delta(:)
   complex(8), parameter :: ref(6, 2) = reshape([ &
-    (-9.28011862284723793d+003, -1.58996225652049793d+003), (-5.53128512487465105d+003, -5.60546249834230548d+003), &
-    (-9.64951827467202929d+003, 2.44785001101434909d+003), (-1.59831547302308281d+004, -1.54319340405809598d+004), &
-    (2.72171741392803997d+004, 1.61880845966158904d+003), (-5.10208002063424919d-013, -2.20115977439925862d-012), &
-    (-9.28011862284723793d+003, 1.58996225652049793d+003), (-5.53128512487465105d+003, 5.60546249834230548d+003), &
-    (-9.64951827467202929d+003, -2.44785001101434909d+003), (-1.59831547302308281d+004, 1.54319340405809598d+004), &
-    (2.72171741392803997d+004, -1.61880845966158904d+003), (-5.10208002063424919d-013, 2.20115977439925862d-012)], [6, 2])
+    (-9.27995863068147810d+003, -1.58886198061486903d+003), (-5.53121799474604722d+003, -5.60510515086619216d+003), &
+    (-9.64925858196820082d+003, 2.44823219856080686d+003), (-1.59832169016786684d+004, -1.54310962170309213d+004), &
+    (2.72170912635856585d+004, 1.61555653903165421d+003), (-5.10002847458964345d-013, -2.20078491958482441d-012), &
+    (-9.27995863068147810d+003, 1.58886198061486903d+003), (-5.53121799474604722d+003, 5.60510515086619216d+003), &
+    (-9.64925858196820082d+003, -2.44823219856080686d+003), (-1.59832169016786684d+004, 1.54310962170309213d+004), &
+    (2.72170912635856585d+004, -1.61555653903165421d+003), (-5.10002847458964345d-013, 2.20078491958482441d-012)], [6, 2])
   complex(8) :: t(6, 2), parts(6, 2, 3), xis(6, 2), parts_k(6, 2, 3), t_k(6, 2)
   integer :: pairs(4, 2), npc, mmax, nev, p, k
   real(8) :: centre(2), radius, omega

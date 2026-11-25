@@ -7,7 +7,7 @@ module testing_utilities
     public :: get_running_exe_path
     public :: get_repo_root_path
     public :: native_path
-    public:: test_oamass_files_are_close
+    public :: test_hams_matrices_are_close
 
     ! Path to HAMS suppied by the user
     public :: hamsexe_path
@@ -148,56 +148,99 @@ module testing_utilities
     end subroutine read_matrix_with_format
 
 
-    function frobenius_norm(A) result(norm)
+    ! Compares the six Hams_format files of one matrix (kind = 'OAMASS' or 'ODAMPING',
+    ! files kind1.txt to kind6.txt) in dirB against the reference in dirA.
+    ! File i, row (frequency f, body pair a-b), column j holds M_ij^ab(f).
+    ! Each entry is scaled by the self-block diagonals of the reference:
+    !     max |B_ij^ab - A_ij^ab| / sqrt(D_i^a D_j^b) < tolerance,  D_i^a = |A_ii^aa|,
+    ! with D floored at diag_floor times the largest diagonal at that frequency.
+    ! A norm over a whole file is not used: couplings that symmetry makes zero
+    ! (e.g. surge-heave in a mirror-symmetric array) carry solver noise of ~1e-4
+    ! of the heave term, can exceed the file's physical entries and dominate its
+    ! norm. Scaled this way they count at their true size, ~1e-6.
+    ! The floor keeps near-zero diagonals (yaw of an axisymmetric hull) from
+    ! blowing up the ratio.
+    subroutine test_hams_matrices_are_close(dirA, dirB, kind, tolerance, error)
         implicit none
-        real(kind=8), intent(in) :: A(:,:)
-        real(kind=8) :: sum, norm
-        integer :: i, j
+        character(len=*), intent(in) :: dirA, dirB, kind
+        real(kind=8), intent(in) :: tolerance
+        type(error_type), allocatable, intent(out) :: error
+        real(kind=8), parameter :: diag_floor = 1.0d-6
+        character(len=*), parameter :: fmt = '(F7.3,1X,F7.3,1X,6E14.5)'
+        real(kind=8), allocatable :: F(:,:), MA(:,:,:), MB(:,:,:), dg(:,:)
+        real(kind=8) :: d, dmax, worst, worst_freq
+        integer :: i, j, nrow, npair, nbody, nfreq, ifreq, ipair, a, b, r0, worst_loc(4)
+        character(len=1) :: istr
+        character(len=16) :: worst_str, tolerance_str, freq_str
+        character(len=64) :: where_str
 
-        sum = 0.0d0
-        do i = 1, size(A, 1)
-            do j = 1, size(A, 2)
-                sum = sum + A(i,j)**2
+        do i = 1, 6
+            write(istr, '(I1)') i
+            call read_matrix_with_format(dirA//kind//istr//'.txt', fmt, 8, F)
+            if (i == 1) then
+                nrow = size(F, 1)
+                allocate(MA(nrow, 6, 6), MB(nrow, 6, 6))
+            end if
+            call check(error, size(F, 1) == nrow, "Row count differs in "//dirA//kind//istr//'.txt')
+            if (allocated(error)) return
+            MA(:, i, :) = F(:, 3:8)
+            call read_matrix_with_format(dirB//kind//istr//'.txt', fmt, 8, F)
+            call check(error, size(F, 1) == nrow, "Row count differs in "//dirB//kind//istr//'.txt')
+            if (allocated(error)) return
+            MB(:, i, :) = F(:, 3:8)
+        end do
+
+        ! Rows per frequency (column 2) give the number of body pairs
+        call read_matrix_with_format(dirA//kind//'1.txt', fmt, 8, F)
+        npair = 1
+        do while (npair < nrow)
+            if (F(npair + 1, 2) /= F(1, 2)) exit
+            npair = npair + 1
+        end do
+        nbody = nint(sqrt(real(npair, 8)))
+        call check(error, nbody * nbody == npair .and. mod(nrow, npair) == 0, &
+                   "Cannot read the body pairs of "//dirA//kind//'1.txt')
+        if (allocated(error)) return
+        nfreq = nrow / npair
+
+        allocate(dg(6, nbody))
+        worst = -1.0d0
+        worst_loc = 0
+        worst_freq = 0.0d0
+        do ifreq = 1, nfreq
+            r0 = (ifreq - 1) * npair
+            do a = 1, nbody
+                do i = 1, 6
+                    dg(i, a) = abs(MA(r0 + (a - 1) * nbody + a, i, i))
+                end do
+            end do
+            dmax = maxval(dg)
+            if (dmax <= 0.0d0) dmax = 1.0d0
+            dg = max(dg, diag_floor * dmax)
+            do ipair = 1, npair
+                a = (ipair - 1) / nbody + 1
+                b = mod(ipair - 1, nbody) + 1
+                do i = 1, 6
+                    do j = 1, 6
+                        d = abs(MB(r0 + ipair, i, j) - MA(r0 + ipair, i, j)) / sqrt(dg(i, a) * dg(j, b))
+                        if (d > worst) then
+                            worst = d
+                            worst_loc = [a, b, i, j]
+                            worst_freq = F(r0 + ipair, 2)
+                        end if
+                    end do
+                end do
             end do
         end do
 
-        norm = sqrt(sum)
-    end function frobenius_norm 
-
-
-    ! Checks ||A - B||_F / ||A||_F < tolerance, where A is the reference file.
-    ! The comparison is relative because entries in OAMASS span ~1e5 and are printed
-    ! to 5 significant figures, so one last-digit change is already an absolute
-    ! difference of order 1.
-    subroutine test_oamass_files_are_close(fileA, fileB, tolerance, error)
-        implicit none
-        character(len=*), intent(in) :: fileA, fileB
-        real(kind=8), intent(in) :: tolerance
-        type(error_type), allocatable, intent(out) :: error
-        real(kind=8), allocatable :: A(:,:), B(:,:)
-        real(kind=8) :: ref_norm, rel_diff
-        character(len=16) :: rel_diff_str, tolerance_str
-
-        ! Load data into matrices
-        call read_matrix_with_format(fileA, '(F7.3,1X,F7.3,1X,6E14.5)', 8, A)
-        call read_matrix_with_format(fileB, '(F7.3,1X,F7.3,1X,6E14.5)', 8, B)
-
-        ! Check sizes
-        call check(error, size(A,1) == size(B,1))
-        if (allocated(error)) return
-        call check(error, size(A,2) == size(B,2))
-        if (allocated(error)) return
-
-        ! Relative Frobenius norm (guard against an all-zero reference)
-        ref_norm = frobenius_norm(A)
-        if (ref_norm < 1.0d-30) ref_norm = 1.0d0
-
-        rel_diff = frobenius_norm(A - B) / ref_norm
-        write(rel_diff_str, '(ES10.3)') rel_diff
+        write(worst_str, '(ES10.3)') worst
         write(tolerance_str, '(ES10.3)') tolerance
-        call check(error, rel_diff < tolerance, "Relative difference "//trim(rel_diff_str)// &
-                   " is not below tolerance "//trim(tolerance_str)//" for "//fileB)
-        if (allocated(error)) return
-    end subroutine test_oamass_files_are_close
+        write(freq_str, '(F7.3)') worst_freq
+        write(where_str, '(A,I0,A,I0,A,I0,A,I0)') "bodies ", worst_loc(1), "-", worst_loc(2), &
+            ", modes ", worst_loc(3), "-", worst_loc(4)
+        call check(error, worst < tolerance, "Scaled difference "//trim(worst_str)// &
+                   " is not below tolerance "//trim(tolerance_str)//" ("//trim(where_str)// &
+                   ", column 2 = "//trim(adjustl(freq_str))//") for "//dirB//kind//"1-6.txt")
+    end subroutine test_hams_matrices_are_close
 
 end module testing_utilities

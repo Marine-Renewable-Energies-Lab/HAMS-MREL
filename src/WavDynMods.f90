@@ -133,6 +133,23 @@
         
 !
         END MODULE PanelMesh_mod
+
+!---------------------------------------------------------------------------------------------
+!        Data module for dipole (zero-thickness) panels, read from the optional DipoleMesh.pnl
+!        (notes/specs/2026-11-24-dipole-panels-design.md). DNELEM = 0 and nothing allocated without it.
+!---------------------------------------------------------------------------------------------
+!
+        MODULE DipoleMesh_mod
+!
+        INTEGER,PUBLIC:: DNELEM=0,DNTND=0
+!
+        INTEGER,ALLOCATABLE,PUBLIC:: DNCN(:),DNCON(:,:)                     ! nodes per panel (3 or 4), node numbers
+        REAL*8,ALLOCATABLE,PUBLIC:: DPXYZ(:,:)                               ! node coordinates
+        REAL*8,ALLOCATABLE,PUBLIC:: DPXYZ_C(:,:)                             ! panel centroids
+        REAL*8,ALLOCATABLE,PUBLIC:: DNRM(:,:)                                ! generalised normals nu_D (1:3) and (x - XR) x nu_D (4:6)
+        REAL*8,ALLOCATABLE,PUBLIC:: DDS(:),DPNSZ(:)                          ! panel areas and sizes
+!
+        END MODULE DipoleMesh_mod
         
 !---------------------------------------------------------------------------------------------
 !        Data module for declaring variables of general computation
@@ -146,7 +163,7 @@
 !
         COMPLEX*16,PUBLIC:: CI
 !
-        DATA G,PI,RHO/9.80665D0,3.141592653589793D0, 1000.D0/                  !G is mostly acceleration due to gravity, PI is the mathematical pi, RHO/9.81 is conversion to N, Actual pi value, 1025 - Default density of sea water 
+        DATA G,PI,RHO/9.80665D0,3.141592653589793D0, 1000.D0/                  !G is the acceleration due to gravity (standard value, the only one used in the code), PI is the mathematical pi, RHO is the water density
         DATA CI/(0.0D0, 1.0D0)/
         DATA RXY  /  1.D0,  1.D0,  1.D0, -1.D0  /
         DATA RX   /  1.D0, -1.D0,  1.D0,  1.D0  /

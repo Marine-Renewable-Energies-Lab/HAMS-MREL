@@ -35,6 +35,8 @@ SecondOrder/
 
 Dependencies: `numpy`, `matplotlib`, `shapely`. The WEC-Sim conversion scripts additionally use `cmath`, `os`, and `datetime` (all standard library).
 
+Where a script takes the gravitational acceleration `g`, its default is 9.80665 m/s², the standard value that the Fortran code uses everywhere (`G` in `Const_mod`, [src/WavDynMods.f90](../src/WavDynMods.f90)). Keep the two the same.
+
 ## Input Generation
 
 ### Single Body

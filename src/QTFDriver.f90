@@ -149,6 +149,9 @@ MODULE QTFDriver
    PUBLIC :: potential_part, qtf_motion_part, qtf_motion_load, psi_at_points
 
    LOGICAL :: active = .FALSE.
+   ! moment_origin = moving: the moments of the QTF files about XR moving with the body (NearFieldDrift module header).
+   ! The motion (pair_force) always takes them about the moving point.
+   LOGICAL :: moment_moving = .FALSE.
    INTEGER :: kind_qtf = 0, nbeta = 0, nkept = 0, all_headings_pairs = 0
    REAL(8) :: max_dw = 0D0
    CHARACTER(LEN=:), ALLOCATABLE :: outdir
@@ -312,6 +315,7 @@ CONTAINS
          CALL check_pairs(omegas_main)
       END IF
       kind_qtf = opts%qtf
+      moment_moving = opts%moment_origin == 2
       max_dw = opts%qtf_max_dw
       all_headings_pairs = MERGE(1, 0, opts%mean_drift == 2)
       nbeta = SIZE(beta_in_deg)
@@ -1834,16 +1838,22 @@ CONTAINS
       END IF
    END FUNCTION qtf_stored_mb
 
-   SUBROUTINE qtf_pair_load(mesh, geom, kernel, i1, b1, i2, b2, total)
+   SUBROUTINE qtf_pair_load(mesh, geom, kernel, i1, b1, i2, b2, total, moving_point)
       ! Near-field load of the stored pair (frequency i1, heading b1; frequency i2, heading b2) under kernel, summed over
-      ! the terms: total(6, nbody), force then moment about xr of each body, e^{-i omega t}, per unit amplitudes.
+      ! the terms: total(6, nbody), force then moment about xr of each body, e^{-i omega t}, per unit amplitudes. The moments
+      ! are about the moving xr with moving_point, by default as moment_origin of the run.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       INTEGER, INTENT(IN) :: kernel, i1, b1, i2, b2
       COMPLEX(8), INTENT(OUT) :: total(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL :: moving_point
       COMPLEX(8) :: terms(6, 6, mesh%nbody)
+      LOGICAL :: mv
 
-      CALL near_field_pair(mesh, geom, store(i1, b1), store(i2, b2), store_wl(:, i1, b1), store_wl(:, i2, b2), terms, kernel)
+      mv = moment_moving
+      IF (PRESENT(moving_point)) mv = moving_point
+      CALL near_field_pair(mesh, geom, store(i1, b1), store(i2, b2), store_wl(:, i1, b1), store_wl(:, i2, b2), terms, kernel, &
+                           moving_point=mv)
       total = SUM(terms, DIM=2)
    END SUBROUTINE qtf_pair_load
 
@@ -2575,6 +2585,8 @@ CONTAINS
          WRITE (*, '(a)') ' QTF motion: the mesh or the kept frequencies do not fit the store of qtf_init.'
          ERROR STOP 1
       END IF
+      IF (.NOT. moment_moving) WRITE (*, '(a)') ' QTF motion: the moments of its forces are about XR moving with the body'// &
+         ' (pair_force); moment_origin = fixed applies to the force files only'
       ! rho of the first-order states, which potential_pair uses for the forces too
       rho = store(1, 1)%rho
       ALLOCATE (diff_m(nkept, nkept), sum_m(nkept, nkept), a(nmode, nmode), b(nmode, nmode), lhs(nmode, nmode))
@@ -2727,8 +2739,12 @@ CONTAINS
    SUBROUTINE pair_force(mesh, geom, kernel, route, i, b1, j, b2, f)
       ! The force f(6 nbody) of the row (i, b1, j, b2) of the file of kernel and route, unscaled, e^{-i Omega t}: the
       ! quadratic part (qtf_pair_load) plus T_pot (route 1) or T_dir (route 2), or for the sum T+_pot or T+_dir. The same
-      ! sums as write_file, element by element, so that the force is the one of the file to the bit; on the difference
-      ! diagonal the potential part is left out, as write_sum does.
+      ! sums as write_file, element by element, so that the force is the one of the file to the bit with
+      ! moment_origin = moving; on the difference diagonal the potential part is left out, as write_sum does. The moments
+      ! are always about xr moving with the body, whatever moment_origin: (2) of QTFMotion has no second-order inertia
+      ! terms, and about a space-fixed point the rate of change of angular momentum has xi x m xi'', which for a free body
+      ! is the P(xi x F^(1)) that the moving point leaves out (NearFieldDrift module header). The potential part has no
+      ! moment arm of first order, so it is the same for both.
       TYPE(panel_mesh), INTENT(IN) :: mesh
       TYPE(surface_geom), INTENT(IN) :: geom
       INTEGER, INTENT(IN) :: kernel, route, i, b1, j, b2
@@ -2736,7 +2752,7 @@ CONTAINS
       COMPLEX(8) :: total(6, mesh%nbody)
       INTEGER :: h
 
-      CALL qtf_pair_load(mesh, geom, kernel, i, b1, j, b2, total)
+      CALL qtf_pair_load(mesh, geom, kernel, i, b1, j, b2, total, moving_point=.TRUE.)
       ! Mode k = 6 (body - 1) + c, as the rows of the files
       f = RESHAPE(total, [6*mesh%nbody])
       h = heading_pair(b1, b2)

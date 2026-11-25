@@ -187,8 +187,13 @@ module test_integration_drift
     ! IRSP = 1 against the whole mesh without removal, and two hulls 2000 m apart against one alone, over max |T_pot| of the
     ! rows of forces or of moments: the plan's 2% (8.7e-4 and 6.8e-3 measured)
     real(8), parameter :: pot_irsp_limit = 2d-2
-    ! The half mesh is the same discrete problem as the whole mesh, by images: 5.9e-7 measured, 2x measured, rounded up
-    real(8), parameter :: pot_half_limit = 1.2d-6
+    ! The half mesh is the same discrete problem as the whole mesh, by images: 5.9e-7 measured, 2x measured, rounded up.
+    ! After the merge of main's single g (DISPERSION from g = 9.807 to Const_mod's 9.80665): 4.19e-5 (the first-order
+    ! AmssDamp.1 half against whole from 1.5e-8 to 4.7e-6). With G = 9.8066 instead (a diagnostic build) it is 5.2e-7 again
+    ! (AmssDamp.1 6.4e-8): at h = 100 m and nu h of 9 to 12 the mirrored pairs of the half mesh differ from the whole
+    ! mesh's at rounding level, and Limes of PIDCOCK (R/h < 0.05) gives outliers at particular k (see limit_shallow of
+    ! test_source_velocity for the sweep of g). 1.3x the value after, rounded up. Follow-up: Limes outliers of PIDCOCK
+    real(8), parameter :: pot_half_limit = 5.5d-5
     real(8), parameter :: pot_distant_limit = 2d-2
     ! Every second frequency of the grid: psi is solved at each Omega, so the common pairs are the same computation
     real(8), parameter :: pot_spacing_limit = 1d-10
@@ -239,8 +244,11 @@ module test_integration_drift
     real(8), parameter :: direct_sharp_force_limit = 1.1d-1, direct_sharp_other_limit = 6.7d-2
     ! qtf_direct_full (480 panels, velocity by differencing, Omega = 0.15): 6.95e-3 measured; the GMRES run 6.94e-3. 1.3x
     real(8), parameter :: direct_body_limit = 9.1d-3
-    ! The half mesh against the whole mesh: 2.57e-6 measured (T_pot 5.9e-7, pot_half_limit), 2x measured, rounded up
-    real(8), parameter :: direct_half_limit = 5.2d-6
+    ! The half mesh against the whole mesh: 2.57e-6 measured (T_pot 5.9e-7, pot_half_limit), 2x measured, rounded up.
+    ! After the merge of main's single g (g = 9.807 to 9.80665 in DISPERSION): 4.03e-5; 1.30e-6 with G = 9.8066 (a
+    ! diagnostic build): Limes outliers of PIDCOCK (R/h < 0.05) at particular k, as for pot_half_limit. 1.3x the value
+    ! after, rounded up. Follow-up: Limes outliers of PIDCOCK
+    real(8), parameter :: direct_half_limit = 5.3d-5
     ! qtf_direct_two (two hulls of 220 panels, 30 m apart): forces 1.21e-2, moments 0.229 (M_y at (0.80, 1.00), where
     ! max |T_pot| of the moments is 0.24). One such hull alone gives the same: 1.23e-2 and 0.574 of its own smaller
     ! moments (5.6e-2 against 5.4e-2 per rho g), and 7.2e-2 with 6 bottom rings instead of 3: the bottom of the coarse
@@ -326,9 +334,14 @@ module test_integration_drift
     ! differ by 5.7e-4, 8.8e-4 and 3.4e-3 of the row maximum at k0 h = 10, 20 and 40 on the test cylinder (gbench: 1.25e-3
     ! at k0 h = 10 on OC4); at 40 that is the error of the finite-depth field mode, 3.3e-3 from the direct sum, with the
     ! deep-water row within 8e-5 (field_row_deep_within_tol of test_field_velocity).
+    ! After the merge of main's single g (DISPERSION from g = 9.807 to Const_mod's 9.80665, so that V and k agree):
+    ! 1.737e-6, 2.562e-4, 1.018e-4 and 3.552e-4. A diagnostic build with G = 9.8066 gives the same four values, so this
+    ! is not an outlier at a particular k but a steady change: the deep-water rows take V and the finite-depth rows k,
+    ! which differed by 3.5e-5 before. Two gaps grew and two fell. The limits of .11d and QTF_PotentialTerms.txt are
+    ! 1.3x the values after, rounded up; the other two keep theirs.
     character(len=*), parameter :: deep_kh_files(4) = [character(len=40) :: qtf_indirect_file, qtf_indirect_sum_file, &
                                                        pot_terms_file, pot_sum_terms_file]
-    real(8), parameter :: deep_kh_limits(4) = [1.6d-6, 1.1d-3, 9.2d-5, 1.4d-3]
+    real(8), parameter :: deep_kh_limits(4) = [2.3d-6, 1.1d-3, 1.4d-4, 1.4d-3]
     ! psi and grad psi of a main-grid frequency in the fields passes (item 4 of the field-pass speed-ups): the fixtures of
     ! run_psi_reuse_cases, and all the cases of psi_reuse_byte_identical (two with psi on the grid among the 88e19bd fixtures)
     character(len=20), parameter :: psi_reuse_new(4) = [character(len=20) :: "qtf_psi_reuse", "qtf_psi_reuse_src", &
@@ -4630,7 +4643,8 @@ contains
     !> QTF_Indirect.11d of qtf_round_body against the file written by the binary before Phase 7a (commit d32b623), stored in
     !> test/data/qtf_round_body/expected_output: the same rows and keys, and values within the printed digits
     !> (pot_printed_limit of max |T| of the rows of forces or of moments; the number of identical rows is printed). Phase 7a
-    !> Task 4 shared the row writer of .11d with .12d; this pins .11d independently of the binary under test.
+    !> Task 4 shared the row writer of .11d with .12d; this pins .11d independently of the binary under test. Stored again
+    !> at the merge of main's single g (DISPERSION from g = 9.807 to Const_mod's 9.80665): at most 2.8e-4 of max |T|.
     subroutine qtf_indirect_reference(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=*), parameter :: reference = "test/data/qtf_round_body/expected_output/QTF_Indirect.11d"
@@ -5163,7 +5177,7 @@ contains
     !> (Dean and Dalrymple 1991), and the difference diagonal of the pressure is the mean of the squared velocity.
     subroutine qtf_field_tiny_stokes(error)
         type(error_type), allocatable, intent(out) :: error
-        real(8), parameter :: omega = 0.9d0, h = 20d0, g_disp = 9.807d0
+        real(8), parameter :: omega = 0.9d0, h = 20d0
         real(8), parameter :: xs(3) = [30d0, 30d0, 30d0], zs(3) = [0d0, 0d0, -3d0]
         real(8), allocatable :: f(:,:)
         character(len=:), allocatable :: header(:)
@@ -5171,9 +5185,9 @@ contains
         real(8) :: k, worst
         integer :: r, ipt, n, it
 
-        k = omega**2/g_disp
+        k = omega**2/g
         do it = 1, 100
-            k = k - (k*tanh(k*h) - omega**2/g_disp)/(tanh(k*h) + k*h/cosh(k*h)**2)
+            k = k - (k*tanh(k*h) - omega**2/g)/(tanh(k*h) + k*h/cosh(k*h)**2)
         end do
         call read_field_file(output_dir("qtf_field_tiny")//qtf_field_file, f, header, error)
         if (allocated(error)) return
@@ -6107,7 +6121,9 @@ contains
     !> of qtf_direct_round, qtf_direct_irsp and qtf_direct_two are the files of the binary before the free-surface forcing
     !> (commit 17dfbff, which leaves the direct path as merged in Phase 7a), stored in expected_output of each case, and
     !> the log has no free-surface line of the direct solve. These three do not run the free-surface passes, so the default
-    !> qtf_fs_circle = panels (ab8dae1) left their files as stored
+    !> qtf_fs_circle = panels (ab8dae1) left their files as stored. All the stored outputs of the qtf fixtures were stored
+    !> again at the merge of main's single g (DISPERSION from g = 9.807 to Const_mod's 9.80665): QTF files moved by
+    !> 1e-4 to 3e-4 of max |T| of the forces or moments, first-order files by 1e-5 to 5e-5
     subroutine direct_fs_off_unchanged(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=16), parameter :: cases(3) = [character(len=16) :: "qtf_direct_round", "qtf_direct_irsp", &
@@ -6553,7 +6569,8 @@ contains
     !> QTF_Direct.12d and QTF_DirectTerms.txt of the qtf = 1 fixtures of both phases are the files of the binary before the
     !> sum frequency (the merge c716ed7), stored in expected_output of each case; the 7b files were stored again with the
     !> near-waterline fit of the 7c-2 fix wave, which changes their free-surface forcing next to the waterline (at most
-    !> 4.9e-3 of the largest value; most rows to the bit). The 7a files are unchanged. 7a: qtf_direct_irsp and
+    !> 4.9e-3 of the largest value; most rows to the bit). The 7a files are unchanged, apart from the merge of main's single
+    !> g, which moved all of them (see direct_fs_off_unchanged). 7a: qtf_direct_irsp and
     !> qtf_direct_two (qtf_direct_round has qtf = 3 and is a sum case: its .12d is the same file, direct_fs_off_unchanged);
     !> 7b: qtf_directfs_round, qtf_directfs_irsp and qtf_directfs_two. The logs have no line of a sum solve
     subroutine direct_sum_off_unchanged(error)
@@ -7011,6 +7028,8 @@ contains
     !> deep-water field rows, k0 h >= 0.25, apply on that route only: panels moves it by 1.2e-2). It was stored again when
     !> the C/F passes went back to finite-depth rows (the deep-water rows miss the seabed images below z = 0,
     !> field_row_deep_seabed): QTF_Indirect.11d moved by 8.6e-3 and QTF_PotentialTerms.txt by 3.2e-4 of the largest value.
+    !> All six were stored again at the merge of main's single g (DISPERSION from g = 9.807 to Const_mod's 9.80665):
+    !> QTF_Indirect.11d by 1.0e-4 to 3.0e-4 of max |T| of the forces or moments, the first-order files by 1e-5 to 8e-5.
     subroutine psi_reuse_byte_identical(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=*), parameter :: files(11) = [character(len=22) :: "AmssDamp.1", "ExcForce.3", "Hydrostat.hst", &
@@ -7285,7 +7304,8 @@ contains
     !> qtf_directsum_round is unchanged. They are unchanged by the indirect route: QTF_Direct.12s and QTF_DirectTermsSum.txt
     !> of both cases are those of the base without the indirect route (stored in expected_output), byte for byte for
     !> round (from the 7c-2 merge 4ba2ddb) and, apart from the stored-again change above, for irsp (from the v2.3.4 merge
-    !> 5792fb9, whose lid fixes move irsp)
+    !> 5792fb9, whose lid fixes move irsp). Both were stored again at the merge of main's single g (see
+    !> direct_fs_off_unchanged): QTF_Direct.12s by 1.6e-4 and 9.1e-5, QTF_DirectTermsSum.txt by 1.1e-4 of the largest value
     subroutine indirect_sum_off_unchanged(error)
         type(error_type), allocatable, intent(out) :: error
         character(len=21), parameter :: cases(2) = [character(len=21) :: "qtf_directsum_round", "qtf_directsum_irsp"]

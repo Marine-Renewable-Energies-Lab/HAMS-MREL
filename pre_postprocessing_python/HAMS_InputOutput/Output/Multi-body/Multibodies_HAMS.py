@@ -29,7 +29,7 @@ class Multibodies_HAMS():
         self.n_bodies = int([line[1] for line in lines if 'Number_of_bodies' in line][0])
         f.close()
 
-    def obtain_wavenumber_shallow_water(self, period, depth, g = 9.81):
+    def obtain_wavenumber_shallow_water(self, period, depth, g = 9.80665):
         """
         This function calculates the wave length of regular waves in shallow water
         """
@@ -55,7 +55,7 @@ class Multibodies_HAMS():
             error = abs(error)
         return k
 
-    def get_frequency_information(self, g = 9.81):
+    def get_frequency_information(self, g = 9.80665):
         """
         This function obtains the all the information from the Control.in file for postprocessing
         """

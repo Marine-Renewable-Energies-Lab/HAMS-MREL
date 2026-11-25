@@ -124,6 +124,7 @@ subroutine test_all_keys(error)
     "motion_state = fixed", &
     "waterline_offset = 0.02d0", &
     "waterline_method = field", &
+    "moment_origin = moving", &
     "velocity_method = source", &
     "drift_methods = far near", &
     "mean_drift = 2"])
@@ -135,6 +136,7 @@ subroutine test_all_keys(error)
   call check(error, opts%do_far .and. opts%do_near, "drift_methods")
   call check(error, opts%velocity_method, 2, "velocity_method")
   call check(error, opts%waterline_method, 2, "waterline_method")
+  call check(error, opts%moment_origin, 2, "moment_origin")
   call check(error, abs(opts%waterline_offset - 0.02d0) < 1d-15, "waterline_offset")
   call check(error, opts%motion_fixed, "motion_state")
   call check(error, opts%n_azimuth, 180, "n_azimuth")

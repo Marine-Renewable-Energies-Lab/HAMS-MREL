@@ -493,8 +493,8 @@ end subroutine test_mode_miss_threads
 !> a miss of 1.1e-6 and 1.5e-7; item 4 1.7e-6 and 1.7e-7; item 5 1.7e-15. With mmax 50, nev 30 (other depth nodes) the
 !> samples were 2.9e-5 off the panel waves, as they are off the direct sum. So the brief's 1e-6 is put on the direct sum
 !> (item 1, pw_limit), and samples_limit is the measured sample error rounded up. The direct sum takes nu = k0 tanh k0h
-!> of the wave numbers (g = 9.807 of DISPERSION), as the partial waves do; with the V of the globals (g = 9.80665) both
-!> routes were 2e-6 to 4e-6 off it.
+!> of the wave numbers, as the partial waves do. (Before DISPERSION took Const_mod's G it had g = 9.807, and with the V
+!> of the globals, g = 9.80665, both routes were 2e-6 to 4e-6 off it; the two are now the same.)
 subroutine test_from_panels_samples(error)
   type(error_type), allocatable, intent(out) :: error
   real(8), parameter :: radius = 15d0, pw_limit = 1d-8, samples_limit = 3d-6
@@ -512,7 +512,7 @@ subroutine test_from_panels_samples(error)
   character(len=200) :: info
 
   call set_wave(fx_depth)
-  ! The nu of the wave numbers (DISPERSION, g = 9.807): k0 tanh k0h. V of the globals has g = 9.80665, 3.4e-5 apart
+  ! The nu of the wave numbers (DISPERSION): k0 tanh k0h, equal to V of the globals to rounding (both use Const_mod's G)
   nu = WK * tanh(WK * fx_depth)
   call make_cylinder(10d0, 10d0, 32, 8, 6, full, .true.)
   call pw_evanescent_from_wvn(nev, kev)
@@ -1978,18 +1978,20 @@ end subroutine test_moments_cost
 !> The difference kernel is the default, bit for bit (Phase 7c-2 Task 3): on the synthetic fields of fs_pair_terms_order
 !> (both incident waves, 12 chords), fs_pair_terms (t_in, t_out, r_far), fs_forcing_points and three outer moments of the
 !> basis of psi against the values printed from the code before the kernel argument (47a088c, 17 digits, round-trip),
-!> without the kernel argument and with kernel = KERNEL_DIFF. A mismatch prints the values.
+!> without the kernel argument and with kernel = KERNEL_DIFF. A mismatch prints the values. Printed again at the merge of
+!> main's single g (DISPERSION from g = 9.807 to Const_mod's 9.80665): r_far moved by 3.5e-5 (the change of g), the
+!> values by at most 1.4e-4 of the largest.
 subroutine test_kernel_default(error)
   type(error_type), allocatable, intent(out) :: error
   real(8), parameter :: om1 = 1d0, om2 = 0.8d0, b1 = 0.3d0, b2 = -0.5d0
   integer, parameter :: npoly = 12
-  real(8), parameter :: rf_ref = 2.69884203762059587d+003
+  real(8), parameter :: rf_ref = 2.69874865732208809d+003
   complex(8), parameter :: ref(9) = [ &
     (-7.24342032070703468d+000, 1.53559242799299533d+000), (1.23854798148363354d+001, -4.44698132104596322d+000), &
-    (-1.03223975586585220d+003, -5.33975601675838107d+002), (-8.37712822663757038d+002, -7.07227326613316677d+002), &
+    (-1.03228454753752044d+003, -5.33990387802328314d+002), (-8.37759835106820674d+002, -7.07216681469090304d+002), &
     (-8.23949933467954532d-002, 2.12136804605483759d-001), (-3.97114099000321741d-001, 2.17977241832092911d-001), &
-    (-3.00338205537782450d+001, -1.76014593334371412d+001), (-2.76434867007945728d-001, -5.50332129958162231d+000), &
-    (-3.39774989672709353d+003, 4.65917953875059652d+002)]
+    (-3.00351537883815141d+001, -1.76017798091338520d+001), (-2.76223120484348050d-001, -5.50321930835696094d+000), &
+    (-3.39746735093199550d+003, 4.65545198931812251d+002)]
   type(fs_point_field) :: f1(4), i1(4), f2(4), i2(4)
   type(pw_set) :: pw1, pw2, pwp(2)
   complex(8) :: psi(4, 2), tin(2), tout(2), q(4), mom(-sy_mmax:sy_mmax, 0:sy_nev), got(9)

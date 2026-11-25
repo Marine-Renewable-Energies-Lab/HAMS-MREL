@@ -56,8 +56,9 @@ CONTAINS
    END SUBROUTINE depth_factor
 
    PURE REAL(8) FUNCTION wave_gravity(omega, k, h)
-      ! The gravity of the wave the solver used. VINP and DINP in finite depth have the factor omega/(k sinh kh), and k
-      ! comes from DISPERSION, which has its own g = 9.807, so their wave has omega^2/(k tanh kh), not the g of Const_mod.
+      ! The gravity of the wave the solver used. VINP and DINP in finite depth have the factor omega/(k sinh kh), so their
+      ! wave has omega^2/(k tanh kh). k comes from DISPERSION, which uses the G of Const_mod, so this is G to rounding; it
+      ! is kept so that a k from any other source still gives the incident field of that k.
       REAL(8), INTENT(IN) :: omega, k, h
 
       IF (h < 0D0) THEN
