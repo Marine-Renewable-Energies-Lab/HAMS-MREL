@@ -78,7 +78,7 @@ ifort /Qmkl /O3 /heap-arrays0 /exe:HAMS_MREL.exe ^
   BodyIntgrMulti.f90 HMatrix.f90 IterativeSolvers.f90 AssbMatx_irr.f90 ^
   AssbMatx.f90 AssbMatx_irrMulti.f90 AssbMatxMulti.f90 DipoleAssb.f90 ^
   HydroStatic.f90 HydroStaticMulti.f90 NormalProcess.f90 ReadPanelMesh.f90 ^
-  ReadPanelMeshMulti.f90 ImplementSubs.f90 PotentWavForce.f90 ^
+  ReadPanelMeshMulti.f90 DipoleMulti.f90 ImplementSubs.f90 PotentWavForce.f90 ^
   PotentWavForceMulti.f90 PressureElevation.f90 PressureElevationMulti.f90 ^
   SolveMotion.f90 SolveMotionMulti.f90 PrintOutput.f90 NearFieldDrift.f90 ^
   FarFieldDrift.f90 SecondOrderIncident.f90 PartialWaves.f90 ^
@@ -138,7 +138,7 @@ gfortran -O3 -fopenmp -fno-stack-arrays -ffree-line-length-none -o HAMS_MREL.exe
   BodyIntgrMulti.f90 HMatrix.f90 IterativeSolvers.f90 AssbMatx_irr.f90 ^
   AssbMatx.f90 AssbMatx_irrMulti.f90 AssbMatxMulti.f90 DipoleAssb.f90 ^
   HydroStatic.f90 HydroStaticMulti.f90 NormalProcess.f90 ReadPanelMesh.f90 ^
-  ReadPanelMeshMulti.f90 ImplementSubs.f90 PotentWavForce.f90 ^
+  ReadPanelMeshMulti.f90 DipoleMulti.f90 ImplementSubs.f90 PotentWavForce.f90 ^
   PotentWavForceMulti.f90 PressureElevation.f90 PressureElevationMulti.f90 ^
   SolveMotion.f90 SolveMotionMulti.f90 PrintOutput.f90 NearFieldDrift.f90 ^
   FarFieldDrift.f90 SecondOrderIncident.f90 PartialWaves.f90 ^

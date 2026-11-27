@@ -150,6 +150,67 @@
         REAL*8,ALLOCATABLE,PUBLIC:: DDS(:),DPNSZ(:)                          ! panel areas and sizes
 !
         END MODULE DipolePanel_mod
+
+!---------------------------------------------------------------------------------------------
+!        Data module for dipole panels of several bodies (NBODY > 1): the dipole blocks of all HullMesh_N.pnl, body by
+!        body, in global coordinates. DNELEM_TOTAL = 0 and nothing allocated without them. DipoleMulti fills and uses it.
+!---------------------------------------------------------------------------------------------
+!
+        MODULE DipolePanelMulti_mod
+!
+        INTEGER,PUBLIC:: DNELEM_TOTAL=0,DNTND_TOTAL=0
+!
+        INTEGER,ALLOCATABLE,PUBLIC:: DNELEM_MULTI(:)                        ! dipole panels of each body
+        INTEGER,ALLOCATABLE,PUBLIC:: DSTART(:),DEND(:)                       ! each body's range of dipole panels
+        INTEGER,ALLOCATABLE,PUBLIC:: DOWNER(:)                               ! the body that owns each dipole panel
+        INTEGER,ALLOCATABLE,PUBLIC:: DNCN_COMB(:),DNCON_COMB(:,:)            ! nodes per panel, node numbers
+        REAL*8,ALLOCATABLE,PUBLIC:: DPXYZ_COMB(:,:)                          ! node coordinates (global)
+        REAL*8,ALLOCATABLE,PUBLIC:: DPXYZ_C_COMB(:,:)                        ! panel centroids
+        REAL*8,ALLOCATABLE,PUBLIC:: DNRM_COMB(:,:)                           ! nu_D (1:3), (x - XR_owner) x nu_D (4:6)
+        REAL*8,ALLOCATABLE,PUBLIC:: DDS_COMB(:),DPNSZ_COMB(:)                ! panel areas and sizes
+!
+        CONTAINS
+!
+!       Room for the dipole blocks of NB bodies with NDIP(b) panels each: the counts, ranges and owners, and the
+!       connectivity that DIPOLE_READ_PANELS_MULTI fills. Node numbers there index the combined node list.
+        SUBROUTINE DIPOLE_MULTI_INIT(NB,NDIP)
+        INTEGER,INTENT(IN):: NB,NDIP(NB)
+        INTEGER:: B
+        CALL DIPOLE_MULTI_RELEASE
+        ALLOCATE(DNELEM_MULTI(NB),DSTART(NB),DEND(NB))
+        DNELEM_MULTI=NDIP
+        DNELEM_TOTAL=SUM(NDIP)
+        DO B=1,NB
+         DSTART(B)=SUM(NDIP(1:B-1))+1
+         DEND(B)=DSTART(B)+NDIP(B)-1
+        ENDDO
+        IF (DNELEM_TOTAL.GT.0) THEN
+         ALLOCATE(DOWNER(DNELEM_TOTAL),DNCN_COMB(DNELEM_TOTAL),DNCON_COMB(DNELEM_TOTAL,4))
+         DNCN_COMB=0
+         DNCON_COMB=0
+         DO B=1,NB
+          IF (NDIP(B).GT.0) DOWNER(DSTART(B):DEND(B))=B
+         ENDDO
+        ENDIF
+        END SUBROUTINE DIPOLE_MULTI_INIT
+!
+        SUBROUTINE DIPOLE_MULTI_RELEASE
+        IF (ALLOCATED(DNELEM_MULTI)) DEALLOCATE(DNELEM_MULTI)
+        IF (ALLOCATED(DSTART)) DEALLOCATE(DSTART)
+        IF (ALLOCATED(DEND)) DEALLOCATE(DEND)
+        IF (ALLOCATED(DOWNER)) DEALLOCATE(DOWNER)
+        IF (ALLOCATED(DNCN_COMB)) DEALLOCATE(DNCN_COMB)
+        IF (ALLOCATED(DNCON_COMB)) DEALLOCATE(DNCON_COMB)
+        IF (ALLOCATED(DPXYZ_COMB)) DEALLOCATE(DPXYZ_COMB)
+        IF (ALLOCATED(DPXYZ_C_COMB)) DEALLOCATE(DPXYZ_C_COMB)
+        IF (ALLOCATED(DNRM_COMB)) DEALLOCATE(DNRM_COMB)
+        IF (ALLOCATED(DDS_COMB)) DEALLOCATE(DDS_COMB)
+        IF (ALLOCATED(DPNSZ_COMB)) DEALLOCATE(DPNSZ_COMB)
+        DNELEM_TOTAL=0
+        DNTND_TOTAL=0
+        END SUBROUTINE DIPOLE_MULTI_RELEASE
+!
+        END MODULE DipolePanelMulti_mod
         
 !---------------------------------------------------------------------------------------------
 !        Data module for declaring variables of general computation

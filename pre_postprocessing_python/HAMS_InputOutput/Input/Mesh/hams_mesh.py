@@ -34,7 +34,7 @@ Outputs, in --out-dir (default the current folder), for one body:
 and the ControlFile.in lines to paste (rotation centre, If_remove_irr_freq). With more than one --at X Y [ANGLE], the
 same body is written at each position as the multi-body set HullMesh_i.pnl, WaterPlaneMesh_i.pnl, Hydrostatic_i.in
 (meshes in the body's own frame, placed by the LCS lines; centre of gravity, rotation centre and matrices global), and the
-Number_of_bodies, LCS_i and Reference_body_center_i lines are printed. Dipole sheets support one body only.
+Number_of_bodies, LCS_i and Reference_body_center_i lines are printed; dipole sheets go into each HullMesh_i.pnl.
 
 Every mesh is checked before it is written:
     - normals as HAMS computes them (CalTransNormals, src/NormalProcess.f90) point out of the fluid, into the body;
@@ -830,8 +830,6 @@ def write_input(body, out_dir=".", positions=((0.0, 0.0, 0.0),), irsp=False, cen
         raise ValueError("the %s has no hull panels: HAMS stops at input when HullMesh.pnl has NELEM = 0, so a dipole "
                          "sheet cannot be written alone. Add it to a hull body (add_sheets, or --disc / --plate on a "
                          "hull subcommand)" % body.name)
-    if mesh.dipoles and len(positions) > 1:
-        raise ValueError("dipole panels support one body only")
     boundary = check_hull(mesh)
     check_dipoles(mesh)
     warnings = []

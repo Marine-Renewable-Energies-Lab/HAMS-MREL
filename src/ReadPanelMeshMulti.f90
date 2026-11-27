@@ -26,13 +26,15 @@ MODULE ReadPanelMeshMulti
    USE PanelMesh_mod
    USE Inerfs_mod
    USE NormalProcess
-   
+   USE DipolePanelMulti_mod, ONLY: DNELEM_MULTI,DSTART,DEND,DNCN_COMB,DNCON_COMB
+
    IMPLICIT NONE
 
       ! ..... Public Subroutines ...................................................................................................
 
    PUBLIC :: ReadBodyMeshMulti
    PUBLIC :: ReadWTPLMeshMulti
+   PUBLIC :: DIPOLE_READ_PANELS_MULTI
    !
    !PUBLIC :: CalNormals                                           ! This subroutine is already available in ReadPanelMesh
 
@@ -67,8 +69,34 @@ CONTAINS
          READ(2, *) M, NCN_MULTI(BODY_N,IEL), (NCON_MULTI(BODY_N,IEL,J), J=1, NCN_MULTI(BODY_N,IEL))
 30      CONTINUE
 
+        ! Dipole panels of this body (NDIPOLE > 0 on line 4 of HullMesh_N.pnl): the block after the hull panels.
+        IF (ALLOCATED(DNELEM_MULTI)) THEN
+         IF (DNELEM_MULTI(BODY_N).GT.0) CALL DIPOLE_READ_PANELS_MULTI(2,BODY_N,SUM(NTND_MULTI(1:BODY_N-1)))
+        ENDIF
+
       RETURN
       END SUBROUTINE ReadBodyMeshMulti
+
+!=======================================================================
+!SUBROUTINE DIPOLE_READ_PANELS_MULTI
+!   !   Reads the dipole block of body BODY_N from unit U, placed right after its hull panels: one comment line
+!   !   (# Start Definition of Dipole Panels), then DNELEM_MULTI(BODY_N) panel lines in the hull panel format, into
+!   !   DSTART(BODY_N)..DEND(BODY_N) of DNCN_COMB and DNCON_COMB. The node numbers refer to the body's node list; they are
+!   !   stored plus NODE_OFFSET, the nodes of the bodies before, so that they index the combined node list
+!   !   (BuildCombinedArrays). DIPOLE_SETUP_MULTI takes the nodes the sheets use out of it.
+      SUBROUTINE DIPOLE_READ_PANELS_MULTI(U,BODY_N,NODE_OFFSET)
+      IMPLICIT   NONE
+      INTEGER,INTENT(IN):: U,BODY_N,NODE_OFFSET
+      INTEGER:: IEL,J,M,K
+
+      READ(U,*)
+      DO K=DSTART(BODY_N),DEND(BODY_N)
+       READ(U,*) M,DNCN_COMB(K),(DNCON_COMB(K,J),J=1,DNCN_COMB(K))
+       DNCON_COMB(K,1:DNCN_COMB(K))=DNCON_COMB(K,1:DNCN_COMB(K))+NODE_OFFSET
+      ENDDO
+
+      RETURN
+      END SUBROUTINE DIPOLE_READ_PANELS_MULTI
 
 !=======================================================================
 !SUBROUTINE ReadWTPLMeshMulti

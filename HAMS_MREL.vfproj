@@ -106,6 +106,7 @@
 		<File RelativePath=".\src\SingularIntgrMulti.f90"/>
 		<File RelativePath=".\src\DipoleIntgr.f90"/>
 		<File RelativePath=".\src\DipoleAssb.f90"/>
+		<File RelativePath=".\src\DipoleMulti.f90"/>
 		<File RelativePath=".\src\SolveMotion.f90"/>
 		<File RelativePath=".\src\SolveMotionMulti.f90"/>
 		<File RelativePath=".\src\WavDynMods.f90"/>

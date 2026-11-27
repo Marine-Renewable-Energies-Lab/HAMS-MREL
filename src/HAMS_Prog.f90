@@ -89,6 +89,8 @@ program HAMS_MREL
     use FieldOutput_mod
     use DipolePanel_mod, only: DNELEM
     use DipoleAssb
+    use DipolePanelMulti_mod, only: DNELEM_TOTAL, DIPOLE_MULTI_INIT, DIPOLE_MULTI_RELEASE
+    use DipoleMulti
     use HAMS_mod
     use SecondOrderTypes
     use SecondOrderInput
@@ -114,6 +116,8 @@ program HAMS_MREL
     integer :: ndip_in                     ! NDIPOLE of that line, 0 when absent
     logical :: header_ok
     complex(8), allocatable :: dip_af(:,:), dip_c(:,:), dip_b(:,:), dip_d(:,:)   ! dipole panels with IRSP = 1
+    integer, allocatable :: ndip_multi(:)  ! NDIPOLE of each HullMesh_N.pnl (several bodies)
+    integer :: nh_dip                      ! hull panels of all bodies, with dipole panels on several bodies
 
     print*
     write(*,'(80A)') ' ------------------------HAMS-MREL (Hydrodynamic Analysis of Marine Structures - Marine Renewable Energies Lab)---------------------'
@@ -442,7 +446,8 @@ program HAMS_MREL
       
     else if (NBODY > 1) then
           
-        ALLOCATE (NELEM_MULTI(NBODY), NTND_MULTI(NBODY))
+        ALLOCATE (NELEM_MULTI(NBODY), NTND_MULTI(NBODY), ndip_multi(NBODY))
+        ndip_multi = 0
         IF (IRSP.NE.0) THEN     ! Irregular frequency removal
             WRITE(*,*) 'Removal of irregular frequencies has been activated.'    
             ALLOCATE (iNELEM_MULTI(NBODY), iNTND_MULTI(NBODY))
@@ -475,11 +480,8 @@ program HAMS_MREL
             IF (.NOT.header_ok) THEN
                 WRITE(*,'(A)') ' Error: '//TRIM(MESH_MULTI)//', line 4: cannot read NELEM NTND ISX ISY [NDIPOLE].'
                 STOP 1
-            ELSEIF (ndip_in.GT.0) THEN
-                WRITE(*,'(A)') ' Error: '//TRIM(MESH_MULTI)//' has dipole panels (NDIPOLE > 0 on line 4);'// &
-                               ' dipole panels support one body only.'
-                STOP 1
             ENDIF
+            ndip_multi(FILE_M)=ndip_in            ! dipole panels, read by ReadBodyMeshMulti after the hull panels
             NELEM_MULTI(FILE_M)=NELEM
             NTND_MULTI(FILE_M)=NTND
             CLOSE(2)
@@ -506,6 +508,8 @@ program HAMS_MREL
             ENDIF
         ENDDO
        
+        CALL DIPOLE_MULTI_INIT(NBODY, ndip_multi)  ! room for the dipole blocks (DipolePanelMulti_mod)
+
         ! Allocation of variables
         ALLOCATE(XYZ_GLOBAL_MULTI(NBODY,MAXVAL(NTND_MULTI),3),DS_MULTI(NBODY,MAXVAL(NELEM_MULTI)),PNSZ_MULTI(NBODY,MAXVAL(NELEM_MULTI)))
         ALLOCATE(NCN_MULTI(NBODY,MAXVAL(NELEM_MULTI)),NCON_MULTI(NBODY,MAXVAL(NELEM_MULTI),4))
@@ -655,6 +659,30 @@ program HAMS_MREL
         ! Pack the per-body padded geometry into the contiguous _COMB arrays once.
         ! This was previously redone every frequency inside CALGREEN_MULTI / ASSB_LEFT_MULTI (Phase 2.3 / 3.1).
         CALL BuildCombinedArrays
+        ! Dipole panels on several bodies (docs/developer_documentation.md): the unknowns are the hull potentials of all
+        ! bodies and the sheet jumps, NTOT = NH + DNELEM_TOTAL, solved by DipoleMulti; the arrays above are resized.
+        CALL DIPOLE_SETUP_MULTI(NSYS, ISOLV, so_opts%active, NFP, success, so_msg)
+        IF (.NOT.success) THEN
+            WRITE(*,'(A)') TRIM(so_msg)
+            STOP 1
+        ENDIF
+        IF (DNELEM_TOTAL.GT.0) THEN
+            nh_dip = DIPOLE_NH_MULTI()
+            ntot_dip = nh_dip + DNELEM_TOTAL
+            DEALLOCATE(AMAT_MULTI, BRMAT_MULTI, BDMAT_MULTI, IPIV_MULTI_COMB, MXPOT_MULTI_COMB)
+            ALLOCATE(IPIV_MULTI_COMB(ntot_dip,1), MXPOT_MULTI_COMB(ntot_dip,6*NBODY+1,1))
+            IF (IRSP.EQ.1) THEN
+                ! the lid solve has its own matrices; the base-path ones stay as placeholders
+                ALLOCATE(AMAT_MULTI(1,1,1), BRMAT_MULTI(1,6*NBODY,1), BDMAT_MULTI(1,1))
+                DEALLOCATE(CMAT_MULTI, DRMAT_MULTI, DDMAT_MULTI)
+                ALLOCATE(CMAT_MULTI(1,1,1), DRMAT_MULTI(1,6*NBODY,1), DDMAT_MULTI(1,1))
+                ALLOCATE(dip_af(ntot_dip+iNELEM_TOTAL,ntot_dip), dip_c(ntot_dip,ntot_dip))
+                ALLOCATE(dip_b(ntot_dip+iNELEM_TOTAL,6*NBODY), dip_d(ntot_dip,6*NBODY))
+            ELSE
+                ALLOCATE(AMAT_MULTI(ntot_dip,ntot_dip,1), BRMAT_MULTI(ntot_dip,6*NBODY,1), BDMAT_MULTI(ntot_dip,1))
+            ENDIF
+            write(*,*) ' Number of dipole panels, all bodies:',DNELEM_TOTAL
+        ENDIF
         IF (so_opts%active) CALL so_setup_multi(so_opts, trim(inputdir), trim(outputdir))
         ! The per-body padded arrays are no longer referenced; free them now.
         DEALLOCATE(XYZ_GLOBAL_MULTI, XYZ_MULTI_P, DS_MULTI, PNSZ_MULTI, NCN_MULTI, NCON_MULTI, DXYZ_MULTI_P, GEONRM_MULTI_P)
@@ -753,7 +781,13 @@ program HAMS_MREL
                 BETA=WVHD(II)*PI/180.0D0
                 WRITE(6,3000) WVHD(II)
          
-                IF (IRSP.EQ.0) THEN
+                IF (DNELEM_TOTAL.GT.0.AND.IRSP.EQ.1) THEN
+                    CALL DIPOLE_ASSB_RHS_IRR_MULTI(dip_af,dip_b(:,1:1),dip_d(:,1:1),ntot_dip,iNELEM_TOTAL,1,2,0)
+                    CALL DIPOLE_SOLVE_MULTI(dip_c,IPIV_MULTI_COMB(:,1),dip_d(:,1:1),ntot_dip,1,6*NBODY+1)
+                ELSEIF (DNELEM_TOTAL.GT.0) THEN
+                    CALL DIPOLE_ASSB_DBC_MULTI(BDMAT_MULTI(:,1),ntot_dip)
+                    CALL DIPOLE_SOLVE_MULTI(AMAT_MULTI(:,:,1),IPIV_MULTI_COMB(:,1),BDMAT_MULTI(:,1),ntot_dip,1,6*NBODY+1)
+                ELSEIF (IRSP.EQ.0) THEN
                     CALL ASSB_DBC_MULTI(BDMAT_MULTI,TNELEM,NSYS)
                     CALL DIFFRACTION_SOLVER_MULTI(AMAT_MULTI,BDMAT_MULTI,IPIV_MULTI_COMB,MXPOT_MULTI_COMB,TNELEM,NSYS)
                 ELSEIF (IRSP.EQ.1) THEN
@@ -825,6 +859,10 @@ program HAMS_MREL
             ! were already freed right after BuildCombinedArrays (Phase 2.3).
             DEALLOCATE(iNELEM_MULTI,iNTND_MULTI)
         ENDIF
+        CALL DIPOLE_RELEASE_MULTI
+        CALL DIPOLE_MULTI_RELEASE
+        IF (ALLOCATED(dip_af)) DEALLOCATE(dip_af, dip_c, dip_b, dip_d)
+        IF (ALLOCATED(ndip_multi)) DEALLOCATE(ndip_multi)
 
         CALL ReportCompletion()
     end if
@@ -859,7 +897,22 @@ contains
     ! The radiation problem of all the bodies at the wave of CalWaveProperts or SetWaveFromOmega:
     ! MXPOT_MULTI_COMB(:,1:6*NBODY,:)
     subroutine SolveRadiationMulti()
-        IF (IRSP.EQ.0) THEN
+        IF (DNELEM_TOTAL.GT.0.AND.IRSP.EQ.1) THEN
+            CALL CALGREEN_MULTI_IRR
+            CALL DIPOLE_ASSB_LEFT_IRR_MULTI(dip_af,dip_c,IPIV_MULTI_COMB(:,1),ntot_dip,iNELEM_TOTAL)
+            DO FILE_M=1,NBODY
+                CALL DIPOLE_ASSB_RHS_IRR_MULTI(dip_af,dip_b(:,6*(FILE_M-1)+1:6*FILE_M),dip_d(:,6*(FILE_M-1)+1:6*FILE_M), &
+                                               ntot_dip,iNELEM_TOTAL,6,1,FILE_M)
+            ENDDO
+            CALL DIPOLE_SOLVE_MULTI(dip_c,IPIV_MULTI_COMB(:,1),dip_d,ntot_dip,6*NBODY,1)
+        ELSEIF (DNELEM_TOTAL.GT.0) THEN
+            CALL CALGREEN_MULTI
+            CALL DIPOLE_ASSB_LEFT_MULTI(AMAT_MULTI(:,:,1),IPIV_MULTI_COMB(:,1),ntot_dip)
+            DO FILE_M=1,NBODY
+                CALL DIPOLE_ASSB_RBC_MULTI(BRMAT_MULTI(:,6*(FILE_M-1)+1:6*FILE_M,1),ntot_dip,FILE_M)
+            ENDDO
+            CALL DIPOLE_SOLVE_MULTI(AMAT_MULTI(:,:,1),IPIV_MULTI_COMB(:,1),BRMAT_MULTI(:,:,1),ntot_dip,6*NBODY,1)
+        ELSEIF (IRSP.EQ.0) THEN
             CALL CALGREEN_MULTI
             CALL ASSB_LEFT_MULTI(AMAT_MULTI,IPIV_MULTI_COMB,TNELEM,NSYS)                 ! Should AMAT_MULTI be symmetric?
             NELEM_GLOBAL=0

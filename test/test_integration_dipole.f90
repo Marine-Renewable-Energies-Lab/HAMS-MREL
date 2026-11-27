@@ -34,7 +34,6 @@ contains
                      new_unittest("ndipole_zero_bit_identical", test_ndipole_zero), &
                      new_unittest("column_plate_end_to_end", test_plate), &
                      new_unittest("column_plate_one_file_layout", test_layouts), &
-                     new_unittest("multibody_ndipole_stops", test_multibody), &
                      new_unittest("sheet_only_stops", test_sheet_only)]
     end subroutine collect_tests_dipole
 
@@ -161,13 +160,6 @@ contains
             if (allocated(error)) return
         end do
     end subroutine test_layouts
-
-    !> Three bodies (test/data/config1) with a fifth field NDIPOLE = 4 on line 4 of HullMesh_2.pnl
-    !> (test/data/dipole/multibody_ndipole): the run stops while reading the meshes, with the one-body message.
-    subroutine test_multibody(error)
-        type(error_type), allocatable, intent(out) :: error
-        call run_expecting_stop("multibody_ndipole", "HullMesh_2.pnl has dipole panels", "one body only", error)
-    end subroutine test_multibody
 
     !> A HullMesh.pnl with dipole panels only (NELEM = 0, the disc of test/data/dipole/disc_deep;
     !> test/data/dipole/sheet_only): the run stops after reading line 4, with the no-hull-panels message.

@@ -259,8 +259,13 @@ def test_multi_body(tmp_path):
     assert lcs[2] == pytest.approx([10.0, 15.0, 0.0, 0.524])
     xr = [[float(l[28 + 12 * k:40 + 12 * k]) for k in range(3)] for l in lines[6:9]]
     assert xr[1] == pytest.approx([20.0, 0.0, 0.0])
-    with pytest.raises(ValueError, match="one body"):
-        hm.write_input(hm.heave_plate(5.0, 6.0, 8.0, panel_size=1.0), str(tmp_path / "x"), positions[:2])
+    # Dipole sheets on several bodies: each HullMesh_i.pnl carries the body's dipole block, in its own frame
+    hp = hm.heave_plate(5.0, 6.0, 8.0, panel_size=1.0)
+    hm.write_input(hp, str(tmp_path / "x"), positions[:2])
+    for i in (1, 2):
+        nodes, panels, dipoles, _ = hm.read_pnl(os.path.join(str(tmp_path / "x"), "HullMesh_%d.pnl" % i))
+        assert len(dipoles) == len(hp.mesh.dipoles) > 0
+        assert np.allclose(nodes, hp.mesh.nodes, atol=1e-9)
 
 
 def test_command_line(tmp_path, capsys):

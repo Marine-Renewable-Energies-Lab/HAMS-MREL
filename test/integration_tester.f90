@@ -14,6 +14,7 @@ program integration_tester
     use test_integration_drift,   only : setup_drift_motion, collect_tests_drift_motion
     use test_integration_array,   only : setup_array,   collect_tests_array
     use test_integration_dipole,  only : setup_dipole,  collect_tests_dipole
+    use test_integration_dipole_multi, only : setup_dipole_multi, collect_tests_dipole_multi
     use testing_utilities
 
     implicit none
@@ -47,7 +48,9 @@ program integration_tester
         new_testsuite("setup_array",   setup_array),   &
         new_testsuite("test_array",    collect_tests_array),  &
         new_testsuite("setup_dipole",  setup_dipole),  &
-        new_testsuite("test_dipole",   collect_tests_dipole)  &
+        new_testsuite("test_dipole",   collect_tests_dipole), &
+        new_testsuite("setup_dipole_multi", setup_dipole_multi), &
+        new_testsuite("test_dipole_multi", collect_tests_dipole_multi) &
     ]
 
     ! An optional second argument (after the executable) runs only the suites whose name ends with it, for example

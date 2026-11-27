@@ -45,6 +45,7 @@ program unit_tester
     use test_dipole_input, only : collect_dipole_input
     use test_dipole_solve, only : collect_dipole_solve
     use test_dipole_bodies, only : collect_dipole_bodies
+    use test_dipole_multi, only : collect_dipole_multi
 
     implicit none
     integer :: stat, is
@@ -99,7 +100,8 @@ program unit_tester
         new_testsuite("green_hessian", collect_green_hessian), &
         new_testsuite("dipole_input", collect_dipole_input), &
         new_testsuite("dipole_solve", collect_dipole_solve), &
-        new_testsuite("dipole_bodies", collect_dipole_bodies) &
+        new_testsuite("dipole_bodies", collect_dipole_bodies), &
+        new_testsuite("dipole_multi", collect_dipole_multi) &
     ]
 
     stat = 0
@@ -133,7 +135,8 @@ program unit_tester
                                      .and. testsuites(is)%name /= "qtf_motion" &
                                      .and. testsuites(is)%name /= "dipole_input" &
                                      .and. testsuites(is)%name /= "dipole_solve" &
-                                     .and. testsuites(is)%name /= "dipole_bodies"))
+                                     .and. testsuites(is)%name /= "dipole_bodies" &
+                                     .and. testsuites(is)%name /= "dipole_multi"))
     end do
 
     if (stat > 0) then
