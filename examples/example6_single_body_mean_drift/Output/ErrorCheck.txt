@@ -1,0 +1,11 @@
+ Water depth:    50.0000000000000      
+
+ Starting Frequency:   0.300000000000000      
+
+ Spacing Between Frequencies:   0.100000000000000      
+
+ The rotation center is input as (please confirm if it is correct):
+       0.000       0.000       0.000
+ 
+ The center of gravity is input as (please confirm if it is correct):
+       0.000      -0.000      -5.000
