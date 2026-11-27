@@ -126,6 +126,23 @@ ifx -qmkl -heap-arrays 0 -o HAMS_MREL WavDynMods.f90 InputFiles.f90 WavDynSubs.f
 
 This produces the executable `hamsmrel` in the `src` directory. The `-qmkl` and `-qopenmp` flags link the MKL library and enable OpenMP parallelization. The `-heap-arrays 0` flag forces all automatic arrays onto the heap — without it, large multi-body cases overflow the per-thread stack and abort on the first frequency. See the explanation in the [non-HPC build section above](#step-3-build-and-execute) for details.
 
+#### Compiler version for the second-order and dipole-panel features
+
+On DelftBlue, `module load intel/oneapi-all` gives `ifx` 2022.2. Built with that compiler at its default optimisation, HAMS-MREL stops with a segmentation fault (`forrtl: severe (174)`) at the first frequency of runs that use the second-order mean-drift methods, for example `examples/example6_single_body_mean_drift` and `examples/example7_single_body_qtf`. The same source built with oneAPI 2026.1 runs these examples to the end. Build with oneAPI 2026.1, which DelftBlue provides as a full installation that is set up with its `setvars.sh` script:
+
+```bash
+# Set up the oneAPI 2026.1 compilers and MKL (instead of module load intel/oneapi-all)
+module purge
+source /apps/generic/intel/oneapi_2026.1/setvars.sh > /dev/null
+ifx --version        # should print ifx (IFX) 2026.1.0
+
+# Compile as in Step 1, from the src directory
+cd HAMS-MREL/src/
+ifx -qmkl -heap-arrays 0 -o hamsmrel <source files as in Step 1> -qopenmp
+```
+
+Use the same two set-up lines in the Slurm job script of Step 2, in place of `module load intel/oneapi-all`, so that the program finds the matching run-time and MKL libraries. First-order runs work with both compilers: on examples 1 to 5 the two builds agree to within 0.4% of the largest value of each output, the largest differences being in the motions.
+
 ### Step 2: Submit a Slurm job
 
 Create a Slurm job script, for example `slurmjob.sh`:
